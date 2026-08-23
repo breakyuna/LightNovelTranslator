@@ -2,7 +2,10 @@ package com.example.data.repository
 
 import com.example.data.db.*
 import com.example.data.model.*
+import com.example.core.security.ApiKeyCipher
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 
 class ProjectRepository(private val projectDao: ProjectDao) {
     val allProjects: Flow<List<ProjectEntity>> = projectDao.getAllProjects()
@@ -11,8 +14,8 @@ class ProjectRepository(private val projectDao: ProjectDao) {
     fun getProjectFlowById(id: Long): Flow<ProjectEntity?> = projectDao.getProjectFlowById(id)
     suspend fun insertProject(project: ProjectEntity): Long = projectDao.insertProject(project)
     suspend fun updateProject(project: ProjectEntity) = projectDao.updateProject(project)
-    suspend fun updateProjectStats(projectId: Long, translatedCount: Int, promptTokens: Long, compTokens: Long, cost: Double) =
-        projectDao.updateProjectStats(projectId, translatedCount, promptTokens, compTokens, cost)
+    suspend fun updateProjectStats(projectId: Long, translatedCount: Int, promptTokens: Long, compTokens: Long, cost: Double, currency: String) =
+        projectDao.updateProjectStats(projectId, translatedCount, promptTokens, compTokens, cost, currency)
     suspend fun deleteProjectById(id: Long) = projectDao.deleteProjectById(id)
 }
 
@@ -31,12 +34,14 @@ class ChapterRepository(private val chapterDao: ChapterDao) {
         promptTokens: Long,
         completionTokens: Long,
         cost: Double,
-        errorMsg: String?
-    ) = chapterDao.updateTranslationResult(id, status, wordCount, promptTokens, completionTokens, cost, errorMsg)
+        errorMsg: String?,
+        translatedFileName: String? = null
+    ) = chapterDao.updateTranslationResult(id, status, wordCount, promptTokens, completionTokens, cost, errorMsg, translatedFileName)
     suspend fun updateStatus(id: Long, status: ChapterStatus) = chapterDao.updateStatus(id, status)
     suspend fun updateSummary(id: Long, summary: String) = chapterDao.updateSummary(id, summary)
     suspend fun deleteChaptersByProject(projectId: Long) = chapterDao.deleteChaptersByProject(projectId)
     suspend fun deleteChapterById(id: Long) = chapterDao.deleteChapterById(id)
+    suspend fun replaceChapters(projectId: Long, chapters: List<ChapterEntity>) = chapterDao.replaceChapters(projectId, chapters)
 }
 
 class GlossaryRepository(private val glossaryDao: GlossaryDao) {
@@ -49,21 +54,51 @@ class GlossaryRepository(private val glossaryDao: GlossaryDao) {
     suspend fun deleteGlossaryByProject(projectId: Long) = glossaryDao.deleteGlossaryByProject(projectId)
 }
 
-class ApiProviderRepository(private val apiProviderDao: ApiProviderDao) {
+class ApiProviderRepository(
+    private val apiProviderDao: ApiProviderDao,
+    private val apiKeyCipher: ApiKeyCipher
+) {
     val allProviders: Flow<List<ApiProviderEntity>> = apiProviderDao.getAllProviders()
-    suspend fun getDefaultProvider(): ApiProviderEntity? = apiProviderDao.getDefaultProvider()
-    suspend fun getProviderById(id: Long): ApiProviderEntity? = apiProviderDao.getProviderById(id)
-    suspend fun insertProvider(provider: ApiProviderEntity): Long = apiProviderDao.insertProvider(provider)
-    suspend fun updateProvider(provider: ApiProviderEntity) = apiProviderDao.updateProvider(provider)
+        .map { providers -> providers.map(::decryptProvider) }
+
+    suspend fun getDefaultProvider(): ApiProviderEntity? = apiProviderDao.getDefaultProvider()?.let(::decryptProvider)
+    suspend fun getProviderById(id: Long): ApiProviderEntity? = apiProviderDao.getProviderById(id)?.let(::decryptProvider)
+    suspend fun insertProvider(provider: ApiProviderEntity): Long = apiProviderDao.insertProvider(encryptProvider(provider))
+    suspend fun updateProvider(provider: ApiProviderEntity) = apiProviderDao.updateProvider(encryptProvider(provider))
     suspend fun setDefaultProvider(id: Long) {
         apiProviderDao.clearDefaultFlags()
         apiProviderDao.setDefaultProvider(id)
     }
     suspend fun deleteProviderById(id: Long) = apiProviderDao.deleteProviderById(id)
+
+    suspend fun encryptLegacyKeys() {
+        apiProviderDao.getAllProviders().first().forEach { provider ->
+            val hasPlainApiKey = provider.apiKey.isNotBlank() && !apiKeyCipher.isEncrypted(provider.apiKey)
+            val headers = provider.customHeadersJson.trim()
+            val hasPlainCustomHeaders = headers.isNotBlank() && headers != "{}" && !apiKeyCipher.isEncrypted(headers)
+            if (hasPlainApiKey || hasPlainCustomHeaders) {
+                apiProviderDao.updateProvider(encryptProvider(provider))
+            }
+        }
+    }
+
+    private fun encryptProvider(provider: ApiProviderEntity): ApiProviderEntity {
+        val headers = provider.customHeadersJson.trim().ifBlank { "{}" }
+        return provider.copy(
+            apiKey = apiKeyCipher.encrypt(provider.apiKey.trim()),
+            customHeadersJson = if (headers == "{}") headers else apiKeyCipher.encrypt(headers)
+        )
+    }
+
+    private fun decryptProvider(provider: ApiProviderEntity): ApiProviderEntity = provider.copy(
+        apiKey = apiKeyCipher.decrypt(provider.apiKey),
+        customHeadersJson = apiKeyCipher.decrypt(provider.customHeadersJson).ifBlank { "{}" }
+    )
 }
 
 class TranslationLogRepository(private val translationLogDao: TranslationLogDao) {
     fun getLogsByProject(projectId: Long): Flow<List<TranslationLogEntity>> = translationLogDao.getLogsByProject(projectId)
+    suspend fun getLogsListByProject(projectId: Long): List<TranslationLogEntity> = translationLogDao.getLogsListByProject(projectId)
     suspend fun insertLog(log: TranslationLogEntity): Long = translationLogDao.insertLog(log)
     suspend fun deleteLogsByProject(projectId: Long) = translationLogDao.deleteLogsByProject(projectId)
 }

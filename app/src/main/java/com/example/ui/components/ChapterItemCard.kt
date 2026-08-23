@@ -13,7 +13,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -33,6 +32,7 @@ fun ChapterItemCard(
     onSelect: () -> Unit,
     onTranslate: () -> Unit,
     onPreview: () -> Unit,
+    costCurrency: String = "USD",
     modifier: Modifier = Modifier
 ) {
     val strings = LocalAppStrings.current
@@ -130,7 +130,7 @@ fun ChapterItemCard(
                     if (chapter.status == ChapterStatus.COMPLETED && chapter.estimatedCost > 0) {
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = TokenCalculator.formatCost(chapter.estimatedCost),
+                            text = TokenCalculator.formatCost(chapter.estimatedCost, costCurrency),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontSize = 11.sp,
                                 color = EmeraldAccent

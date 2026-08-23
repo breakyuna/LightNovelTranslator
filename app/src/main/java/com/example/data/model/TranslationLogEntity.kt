@@ -1,6 +1,7 @@
 package com.example.data.model
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -28,6 +29,7 @@ data class TranslationLogEntity(
     val completionTokens: Long,
     val totalTokens: Long,
     val estimatedCost: Double,
+    @ColumnInfo(defaultValue = "''") val currency: String = "USD",
     val durationMs: Long,
     val isSuccess: Boolean,
     val message: String = "",

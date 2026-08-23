@@ -13,19 +13,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.core.llm.TokenCalculator
 import com.example.data.model.ApiProviderEntity
 import com.example.data.model.PresetModels
 import com.example.data.model.ProviderType
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.EmeraldAccent
-import com.example.ui.theme.PrimaryIndigo
 import com.example.ui.theme.TertiaryAmber
 import com.example.ui.viewmodel.AppViewModel
 
@@ -276,7 +273,7 @@ fun ApiSettingsScreen(
                                 color = MaterialTheme.colorScheme.surfaceVariant
                             ) {
                                 Text(
-                                    text = "Prompt: $${provider.inputPricePerMillion}/M • Completion: $${provider.outputPricePerMillion}/M",
+                                    text = "Prompt: ${provider.currency} ${provider.inputPricePerMillion}/M • Completion: ${provider.currency} ${provider.outputPricePerMillion}/M",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontSize = 11.sp,
@@ -374,7 +371,12 @@ fun ProviderEditDialog(
     var currency by remember { mutableStateOf(provider?.currency ?: "USD") }
     var maxContextTokens by remember { mutableStateOf("${provider?.maxContextTokens ?: 8192}") }
     var temperature by remember { mutableStateOf(provider?.temperature ?: 0.3f) }
+    var customHeadersJson by remember { mutableStateOf(provider?.customHeadersJson ?: "{}") }
     var isDefault by remember { mutableStateOf(provider?.isDefault ?: false) }
+    var validationError by remember { mutableStateOf<String?>(null) }
+    val recommendedModels = PresetModels.presets.firstOrNull {
+        it.providerType == providerType && (baseUrl.startsWith(it.defaultBaseUrl) || it.defaultBaseUrl.startsWith(baseUrl))
+    }?.recommendedModels.orEmpty()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -394,13 +396,19 @@ fun ProviderEditDialog(
                             FilterChip(
                                 selected = selectedModel == preset.defaultModel && baseUrl == preset.defaultBaseUrl,
                                 onClick = {
+                                    val endpointChanged = baseUrl != preset.defaultBaseUrl || providerType != preset.providerType
                                     name = preset.name
                                     providerType = preset.providerType
                                     baseUrl = preset.defaultBaseUrl
+                                    if (endpointChanged) {
+                                        apiKey = ""
+                                        customHeadersJson = "{}"
+                                    }
                                     selectedModel = preset.defaultModel
                                     inputPrice = "${preset.defaultInputPrice}"
                                     outputPrice = "${preset.defaultOutputPrice}"
                                     currency = preset.currency
+                                    maxContextTokens = "${preset.defaultMaxContextTokens}"
                                 },
                                 label = { Text(preset.name, fontSize = 11.sp) }
                             )
@@ -418,10 +426,31 @@ fun ProviderEditDialog(
                     )
                 }
 
+                if (recommendedModels.isNotEmpty()) {
+                    item {
+                        Text("Recommended model IDs", style = MaterialTheme.typography.labelSmall)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(recommendedModels) { model ->
+                                FilterChip(
+                                    selected = selectedModel == model,
+                                    onClick = { selectedModel = model },
+                                    label = { Text(model, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
+
                 item {
                     OutlinedTextField(
                         value = baseUrl,
-                        onValueChange = { baseUrl = it },
+                        onValueChange = {
+                            if (it != baseUrl) {
+                                apiKey = ""
+                                customHeadersJson = "{}"
+                            }
+                            baseUrl = it
+                        },
                         label = { Text(strings.baseUrlLabel) },
                         placeholder = { Text("https://api.deepseek.com/v1") },
                         singleLine = true,
@@ -519,25 +548,44 @@ fun ProviderEditDialog(
                         Text(strings.setDefaultProviderCheck, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
+
+                validationError?.let { error ->
+                    item {
+                        Text(
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    val inP = inputPrice.toDoubleOrNull() ?: 0.0
-                    val outP = outputPrice.toDoubleOrNull() ?: 0.0
-                    val maxCtx = maxContextTokens.toIntOrNull() ?: 8192
+                    val inP = inputPrice.toDoubleOrNull()
+                    val outP = outputPrice.toDoubleOrNull()
+                    val maxCtx = maxContextTokens.toIntOrNull()
+                    validationError = when {
+                        baseUrl.isBlank() -> "Base URL is required"
+                        inP == null || inP < 0.0 -> "Input price must be a non-negative number"
+                        outP == null || outP < 0.0 -> "Output price must be a non-negative number"
+                        maxCtx == null || maxCtx !in 4_096..2_000_000 -> "Max context tokens must be between 4,096 and 2,000,000"
+                        else -> null
+                    }
+                    if (validationError != null) return@Button
                     val entity = provider?.copy(
                         name = name.trim(),
                         providerType = providerType,
                         baseUrl = baseUrl.trim(),
                         apiKey = apiKey.trim(),
                         selectedModel = selectedModel.trim(),
-                        inputPricePerMillion = inP,
-                        outputPricePerMillion = outP,
+                        inputPricePerMillion = inP!!,
+                        outputPricePerMillion = outP!!,
                         currency = currency,
-                        maxContextTokens = maxCtx,
+                        maxContextTokens = maxCtx!!,
                         temperature = temperature,
+                        customHeadersJson = customHeadersJson,
                         isDefault = isDefault
                     ) ?: ApiProviderEntity(
                         name = name.trim(),
@@ -545,16 +593,17 @@ fun ProviderEditDialog(
                         baseUrl = baseUrl.trim(),
                         apiKey = apiKey.trim(),
                         selectedModel = selectedModel.trim(),
-                        inputPricePerMillion = inP,
-                        outputPricePerMillion = outP,
+                        inputPricePerMillion = inP!!,
+                        outputPricePerMillion = outP!!,
                         currency = currency,
-                        maxContextTokens = maxCtx,
+                        maxContextTokens = maxCtx!!,
                         temperature = temperature,
+                        customHeadersJson = customHeadersJson,
                         isDefault = isDefault
                     )
                     onSave(entity)
                 },
-                enabled = name.isNotBlank() && selectedModel.isNotBlank()
+                enabled = name.isNotBlank() && baseUrl.isNotBlank() && selectedModel.isNotBlank()
             ) {
                 Text(strings.saveProvider)
             }
@@ -566,4 +615,3 @@ fun ProviderEditDialog(
         }
     )
 }
-

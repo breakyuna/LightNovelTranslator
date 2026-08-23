@@ -1,7 +1,6 @@
 package com.example.ui.screens.workspace
 
 import android.content.Intent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -14,8 +13,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -24,7 +21,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.example.core.llm.TokenCalculator
 import com.example.core.parser.TxtParser
-import com.example.data.model.ChapterEntity
 import com.example.data.model.ChapterStatus
 import com.example.ui.components.ChapterItemCard
 import com.example.ui.components.MetricStatCard
@@ -50,7 +46,9 @@ fun ProjectWorkspaceScreen(
     val project by viewModel.activeProject.collectAsState()
     val chapters by viewModel.activeChapters.collectAsState()
     val providers by viewModel.allProviders.collectAsState()
-    val defaultProvider = providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()
+    val defaultProvider = providers.firstOrNull { it.id == project?.defaultProviderId }
+        ?: providers.firstOrNull { it.isDefault }
+        ?: providers.firstOrNull()
 
     var selectedFilter by remember { mutableStateOf<ChapterStatus?>(null) }
     var searchQuery by remember { mutableStateOf("") }
@@ -95,11 +93,13 @@ fun ProjectWorkspaceScreen(
                     }
                 },
                 actions = {
-                    IconButton(
-                        onClick = { showSplitDialog = true },
-                        modifier = Modifier.testTag("open_splitter_button")
-                    ) {
-                        Icon(Icons.Default.ContentCut, contentDescription = strings.openChapterSplitter)
+                    if (currentProject.fileType == "TXT") {
+                        IconButton(
+                            onClick = { showSplitDialog = true },
+                            modifier = Modifier.testTag("open_splitter_button")
+                        ) {
+                            Icon(Icons.Default.ContentCut, contentDescription = strings.openChapterSplitter)
+                        }
                     }
                     IconButton(
                         onClick = onNavigateToGlossary,
@@ -188,7 +188,7 @@ fun ProjectWorkspaceScreen(
 
                 MetricStatCard(
                     title = "${strings.tokensLabel} & ${strings.totalCostLabel}",
-                    value = TokenCalculator.formatCost(currentProject.totalCost),
+                    value = TokenCalculator.formatCost(currentProject.totalCost, currentProject.costCurrency),
                     subtitle = "${TokenCalculator.formatTokenCount(currentProject.totalPromptTokens + currentProject.totalCompletionTokens)} tok",
                     icon = Icons.Default.AttachMoney,
                     accentColor = TertiaryAmber,
@@ -270,7 +270,8 @@ fun ProjectWorkspaceScreen(
                                     viewModel.showMessage(strings.noProvidersConfigured)
                                 }
                             },
-                            onPreview = { onNavigateToReader(chapter.id) }
+                            onPreview = { onNavigateToReader(chapter.id) },
+                            costCurrency = currentProject.costCurrency
                         )
                     }
                 }
@@ -340,6 +341,13 @@ fun ChapterSplitDialog(
     val strings = LocalAppStrings.current
     var selectedPreset by remember { mutableStateOf("chinese") }
     var customRegexText by remember { mutableStateOf(currentRegex) }
+    var showDestructiveConfirm by remember { mutableStateOf(false) }
+    var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    fun requestDestructiveAction(action: () -> Unit) {
+        pendingAction = action
+        showDestructiveConfirm = true
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -415,7 +423,7 @@ fun ChapterSplitDialog(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Button(
-                            onClick = onRunAgentSplit,
+                            onClick = { requestDestructiveAction(onRunAgentSplit) },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
                             modifier = Modifier.fillMaxWidth().testTag("run_agent_split_button")
                         ) {
@@ -428,7 +436,7 @@ fun ChapterSplitDialog(
             }
         },
         confirmButton = {
-            Button(onClick = { onReSplitWithRegex(customRegexText) }) {
+            Button(onClick = { requestDestructiveAction { onReSplitWithRegex(customRegexText) } }) {
                 Text(strings.resliceByRegex)
             }
         },
@@ -438,6 +446,35 @@ fun ChapterSplitDialog(
             }
         }
     )
+
+    if (showDestructiveConfirm) {
+        AlertDialog(
+            onDismissRequest = {
+                showDestructiveConfirm = false
+                pendingAction = null
+            },
+            title = { Text(strings.confirmDestructiveAction) },
+            text = { Text(strings.destructiveSplitWarning) },
+            confirmButton = {
+                Button(onClick = {
+                    val action = pendingAction
+                    showDestructiveConfirm = false
+                    pendingAction = null
+                    action?.invoke()
+                }) {
+                    Text(strings.confirmDestructiveAction)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showDestructiveConfirm = false
+                    pendingAction = null
+                }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -534,4 +571,3 @@ fun ExportNovelDialog(
         }
     )
 }
-

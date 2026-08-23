@@ -1,8 +1,8 @@
 package com.example.core.parser
 
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream
 import java.util.zip.ZipInputStream
 import java.util.regex.Pattern
 
@@ -22,12 +22,21 @@ data class ExtractedImage(
 object EpubParser {
 
     fun parseEpub(epubBytes: ByteArray, imagesOutputDirectory: File? = null): ParsedEpubBook {
+        require(epubBytes.size <= MAX_EPUB_BYTES) { "EPUB exceeds the 100 MB import limit" }
         val zipMap = mutableMapOf<String, ByteArray>()
+        var totalUncompressedBytes = 0L
+        var entryCount = 0
         ZipInputStream(ByteArrayInputStream(epubBytes)).use { zis ->
             var entry = zis.nextEntry
             while (entry != null) {
+                entryCount++
+                require(entryCount <= MAX_ZIP_ENTRIES) { "EPUB contains too many files" }
                 if (!entry.isDirectory) {
-                    val bytes = zis.readBytes()
+                    val bytes = readEntryLimited(zis)
+                    totalUncompressedBytes += bytes.size
+                    require(totalUncompressedBytes <= MAX_UNCOMPRESSED_BYTES) {
+                        "EPUB expands beyond the 250 MB safety limit"
+                    }
                     zipMap[entry.name] = bytes
                 }
                 entry = zis.nextEntry
@@ -54,6 +63,7 @@ object EpubParser {
         val manifest = mutableMapOf<String, Pair<String, String>>() // id -> (href, mediaType)
         val spineItems = mutableListOf<String>() // list of idref
         val extractedImages = mutableListOf<ExtractedImage>()
+        val imageNamesByPath = mutableMapOf<String, String>()
 
         if (opfBytes != null) {
             val opfXml = String(opfBytes, Charsets.UTF_8)
@@ -89,11 +99,26 @@ object EpubParser {
                         val fullImagePath = resolvePath(opfDir, href)
                         val imgBytes = zipMap[fullImagePath] ?: zipMap[href]
                         if (imgBytes != null) {
-                            val fileName = href.substringAfterLast("/")
-                            extractedImages.add(ExtractedImage(fileName, type, imgBytes))
+                            val baseName = href.substringAfterLast("/").substringBefore('?')
+                                .replace(Regex("[^A-Za-z0-9._-]"), "_")
+                                .take(100)
+                                .ifBlank { "illustration" }
+                            val fileName = "${Integer.toHexString(fullImagePath.hashCode())}_$baseName"
+                            imageNamesByPath[fullImagePath] = fileName
+                            // The Android import path writes images to disk immediately, so do not
+                            // retain another full copy in the returned object or ZIP map.
+                            extractedImages.add(
+                                ExtractedImage(
+                                    fileName,
+                                    type,
+                                    if (imagesOutputDirectory == null) imgBytes else ByteArray(0)
+                                )
+                            )
                             if (imagesOutputDirectory != null) {
                                 val outFile = File(imagesOutputDirectory, fileName)
                                 outFile.writeBytes(imgBytes)
+                                zipMap.remove(fullImagePath)
+                                zipMap.remove(href)
                             }
                         }
                     }
@@ -124,7 +149,10 @@ object EpubParser {
             val fullHtmlPath = resolvePath(opfDir, href)
             val htmlBytes = zipMap[fullHtmlPath] ?: zipMap[href] ?: continue
             val htmlContent = String(htmlBytes, Charsets.UTF_8)
-            val (chapterTitle, textBody) = cleanHtmlToPlainText(htmlContent, chapterIndex)
+            val htmlDir = fullHtmlPath.substringBeforeLast('/', "").let { if (it.isBlank()) "" else "$it/" }
+            val (chapterTitle, textBody) = cleanHtmlToPlainText(
+                htmlContent, chapterIndex, htmlDir, imageNamesByPath
+            )
 
             if (textBody.isNotBlank()) {
                 chapters.add(
@@ -143,7 +171,10 @@ object EpubParser {
             for ((key, bytes) in zipMap) {
                 if (key.endsWith(".html", ignoreCase = true) || key.endsWith(".xhtml", ignoreCase = true) || key.endsWith(".htm", ignoreCase = true)) {
                     val htmlContent = String(bytes, Charsets.UTF_8)
-                    val (cTitle, textBody) = cleanHtmlToPlainText(htmlContent, chapterIndex)
+                    val htmlDir = key.substringBeforeLast('/', "").let { if (it.isBlank()) "" else "$it/" }
+                    val (cTitle, textBody) = cleanHtmlToPlainText(
+                        htmlContent, chapterIndex, htmlDir, imageNamesByPath
+                    )
                     if (textBody.isNotBlank()) {
                         chapters.add(
                             ParsedChapter(
@@ -185,7 +216,12 @@ object EpubParser {
         return stack.joinToString("/")
     }
 
-    private fun cleanHtmlToPlainText(html: String, fallbackIndex: Int): Pair<String, String> {
+    private fun cleanHtmlToPlainText(
+        html: String,
+        fallbackIndex: Int,
+        htmlDir: String,
+        imageNamesByPath: Map<String, String>
+    ): Pair<String, String> {
         // Extract Heading if available
         var extractedTitle = "Chapter $fallbackIndex"
         val hMatcher = Pattern.compile("<h[1-3][^>]*>(.*?)</h[1-3]>", Pattern.CASE_INSENSITIVE or Pattern.DOTALL).matcher(html)
@@ -203,7 +239,8 @@ object EpubParser {
         while (imgMatcher.find()) {
             val fullTag = imgMatcher.group(0)!!
             val src = imgMatcher.group(1)!!
-            val fileName = src.substringAfterLast("/")
+            val normalizedPath = resolvePath(htmlDir, src.substringBefore('#').substringBefore('?'))
+            val fileName = imageNamesByPath[normalizedPath] ?: src.substringAfterLast("/").substringBefore('?')
             imgReplacements.add(Pair(fullTag, "\n\n[IMG:$fileName]\n\n"))
         }
         for ((tag, rep) in imgReplacements) {
@@ -215,7 +252,8 @@ object EpubParser {
         while (svgImgMatcher.find()) {
             val fullTag = svgImgMatcher.group(0)!!
             val src = svgImgMatcher.group(1)!!
-            val fileName = src.substringAfterLast("/")
+            val normalizedPath = resolvePath(htmlDir, src.substringBefore('#').substringBefore('?'))
+            val fileName = imageNamesByPath[normalizedPath] ?: src.substringAfterLast("/").substringBefore('?')
             svgReplacements.add(Pair(fullTag, "\n\n[IMG:$fileName]\n\n"))
         }
         for ((tag, rep) in svgReplacements) {
@@ -243,4 +281,23 @@ object EpubParser {
 
         return Pair(extractedTitle, cleaned)
     }
+
+    private fun readEntryLimited(input: ZipInputStream): ByteArray {
+        val output = ByteArrayOutputStream()
+        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+        var total = 0
+        while (true) {
+            val count = input.read(buffer)
+            if (count < 0) break
+            total += count
+            require(total <= MAX_ENTRY_BYTES) { "EPUB contains an oversized file" }
+            output.write(buffer, 0, count)
+        }
+        return output.toByteArray()
+    }
+
+    private const val MAX_EPUB_BYTES = 100 * 1024 * 1024
+    private const val MAX_ENTRY_BYTES = 25 * 1024 * 1024
+    private const val MAX_UNCOMPRESSED_BYTES = 250L * 1024 * 1024
+    private const val MAX_ZIP_ENTRIES = 10_000
 }

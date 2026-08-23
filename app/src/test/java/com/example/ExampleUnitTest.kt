@@ -1,13 +1,87 @@
 package com.example
 
 import com.example.core.llm.TokenCalculator
+import com.example.core.llm.TranslationPrompts
+import com.example.core.llm.LlmResult
 import com.example.core.parser.TxtParser
+import com.example.core.translator.TranslationQualityValidator
+import com.example.core.agent.TermExtractionAgent
 import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.getAppStrings
 import org.junit.Assert.*
 import org.junit.Test
 
 class ExampleUnitTest {
+
+    @Test
+    fun translationQualityValidatorDetectsOmissionsAndMarkerChanges() {
+        val source = """
+            First source paragraph with enough detail to establish the scene and its characters.
+
+            [IMG:illustration01.jpg]
+
+            Second source paragraph continues the action with several complete sentences and dialogue.
+        """.trimIndent().repeat(4)
+        val missing = TranslationQualityValidator.validate(source, "A very short summary.")
+        assertFalse(missing.isAcceptable)
+        assertTrue(missing.problems.any { it.contains("short") || it.contains("paragraph") })
+
+        val alteredMarker = TranslationQualityValidator.validate(source, source.replace("illustration01.jpg", "other.jpg"))
+        assertFalse(alteredMarker.isAcceptable)
+        assertTrue(alteredMarker.problems.any { it.contains("image markers") })
+    }
+
+    @Test
+    fun termExtractionPromptRequiresRequestedTargetLanguage() {
+        val prompt = TranslationPrompts.buildTermExtractionPrompt(
+            textSample = "Alice entered the Silver Keep.",
+            sourceLanguage = "English",
+            targetLanguage = "Japanese",
+            existingTerms = listOf("Alice")
+        )
+        assertTrue(prompt.contains("Required target language for every suggested translation: Japanese"))
+        assertTrue(prompt.contains("Alice"))
+    }
+
+    @Test
+    fun termExtractionPromptSamplesTheMiddleAndTailOfLongChapters() {
+        val text = "HEAD_TERM " + "x".repeat(7000) + " MIDDLE_TERM " + "y".repeat(7000) + " TAIL_TERM"
+        val prompt = TranslationPrompts.buildTermExtractionPrompt(text, "English", "Chinese")
+        assertTrue(prompt.contains("HEAD_TERM"))
+        assertTrue(prompt.contains("MIDDLE_TERM"))
+        assertTrue(prompt.contains("TAIL_TERM"))
+    }
+
+    @Test
+    fun malformedTerminologyJsonIsRejected() {
+        assertThrows(IllegalArgumentException::class.java) {
+            TermExtractionAgent.parseTermsJson(1L, "not-json")
+        }
+    }
+
+    @Test
+    fun malformedTerminologyResponseKeepsUsageForAccounting() {
+        val result = TermExtractionAgent.parseExtractionResult(
+            projectId = 1L,
+            result = LlmResult(
+                text = "not-json",
+                promptTokens = 12,
+                completionTokens = 3,
+                durationMs = 10,
+                isSuccess = true
+            )
+        )
+
+        assertTrue(result.terms.isEmpty())
+        assertEquals(12, result.usage.promptTokens)
+        assertNotNull(result.parseError)
+    }
+
+    @Test
+    fun costCalculationDoesNotRoundEachRequest() {
+        val cost = TokenCalculator.calculateCost(1, 1, 0.1, 0.2)
+        assertEquals(0.0000003, cost, 0.0000000001)
+    }
 
     @Test
     fun testI18nStrings() {

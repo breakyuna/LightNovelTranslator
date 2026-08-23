@@ -17,7 +17,8 @@ object TxtExporter {
         includeOriginalParallel: Boolean = false
     ): File {
         val exportsDir = fileManager.getExportsDir(project.id)
-        val sanitizedTitle = project.title.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val sanitizedTitle = project.title.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
+            .trim().take(80).ifBlank { "translated_novel" }
         val exportFile = File(exportsDir, "${sanitizedTitle}_translated.txt")
 
         val sb = StringBuilder()
@@ -58,11 +59,12 @@ object TxtExporter {
             sb.append("\n\n\n")
         }
 
-        if (includeGlossaryAppendix && glossary.isNotEmpty()) {
+        val approvedGlossary = glossary.filterNot { it.isAutoExtracted }
+        if (includeGlossaryAppendix && approvedGlossary.isNotEmpty()) {
             sb.append("=========================================\n")
             sb.append("【附录：专有名词与术语表 / Glossary Appendix】\n")
             sb.append("=========================================\n\n")
-            for (term in glossary) {
+            for (term in approvedGlossary) {
                 sb.append("• [${term.category.label}] ${term.originalTerm}  ==>  ${term.translatedTerm}")
                 if (term.notes.isNotBlank()) {
                     sb.append(" (${term.notes})")

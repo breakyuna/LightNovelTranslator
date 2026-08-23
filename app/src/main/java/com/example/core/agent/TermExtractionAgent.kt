@@ -1,6 +1,7 @@
 package com.example.core.agent
 
 import com.example.core.llm.LlmClient
+import com.example.core.llm.LlmResult
 import com.example.core.llm.TranslationPrompts
 import com.example.data.model.ApiProviderEntity
 import com.example.data.model.GlossaryEntity
@@ -9,12 +10,49 @@ import org.json.JSONArray
 
 class TermExtractionAgent(private val llmClient: LlmClient) {
 
+    data class ExtractionResult(
+        val terms: List<GlossaryEntity>,
+        val usage: LlmResult,
+        val parseError: String? = null
+    )
+
     suspend fun extractTerms(
         projectId: Long,
         sampleText: String,
-        provider: ApiProviderEntity
+        provider: ApiProviderEntity,
+        sourceLanguage: String,
+        targetLanguage: String,
+        existingTerms: Collection<String> = emptyList()
     ): List<GlossaryEntity> {
-        val prompt = TranslationPrompts.buildTermExtractionPrompt(sampleText)
+        val extraction = extractTermsWithUsage(
+            projectId,
+            sampleText,
+            provider,
+            sourceLanguage,
+            targetLanguage,
+            existingTerms
+        )
+        check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
+            extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+        }
+        check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
+        return extraction.terms
+    }
+
+    suspend fun extractTermsWithUsage(
+        projectId: Long,
+        sampleText: String,
+        provider: ApiProviderEntity,
+        sourceLanguage: String,
+        targetLanguage: String,
+        existingTerms: Collection<String> = emptyList()
+    ): ExtractionResult {
+        val prompt = TranslationPrompts.buildTermExtractionPrompt(
+            sampleText,
+            sourceLanguage,
+            targetLanguage,
+            existingTerms
+        )
 
         val result = llmClient.executeCompletion(
             provider = provider,
@@ -23,14 +61,19 @@ class TermExtractionAgent(private val llmClient: LlmClient) {
             temperature = 0.3f
         )
 
-        if (!result.isSuccess || result.text.isBlank()) {
-            return emptyList()
-        }
-
-        return parseTermsJson(projectId, result.text)
+        return parseExtractionResult(projectId, result)
     }
 
     companion object {
+        fun parseExtractionResult(projectId: Long, result: LlmResult): ExtractionResult {
+            if (!result.isSuccess || result.text.isBlank()) return ExtractionResult(emptyList(), result)
+            return try {
+                ExtractionResult(parseTermsJson(projectId, result.text), result)
+            } catch (error: IllegalArgumentException) {
+                ExtractionResult(emptyList(), result, error.message ?: "Invalid terminology JSON")
+            }
+        }
+
         fun parseTermsJson(projectId: Long, rawText: String): List<GlossaryEntity> {
             val terms = mutableListOf<GlossaryEntity>()
             try {
@@ -50,10 +93,10 @@ class TermExtractionAgent(private val llmClient: LlmClient) {
                     val notes = obj.optString("notes", "").trim()
 
                     if (orig.isNotBlank() && sugg.isNotBlank()) {
-                        val category = try {
-                            TermCategory.valueOf(catStr)
-                        } catch (e: Exception) {
-                            TermCategory.CHARACTER
+                        val category = when (catStr) {
+                            "FACTION", "RACE", "CONCEPT" -> TermCategory.LORE
+                            "TITLE" -> TermCategory.HONORIFIC
+                            else -> runCatching { TermCategory.valueOf(catStr) }.getOrDefault(TermCategory.CUSTOM)
                         }
 
                         terms.add(
@@ -68,7 +111,8 @@ class TermExtractionAgent(private val llmClient: LlmClient) {
                         )
                     }
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                throw IllegalArgumentException("Invalid terminology JSON", error)
             }
             return terms
         }

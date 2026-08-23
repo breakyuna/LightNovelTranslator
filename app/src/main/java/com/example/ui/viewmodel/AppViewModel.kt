@@ -1,7 +1,6 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.core.agent.ChapterSplitAgent
@@ -10,9 +9,11 @@ import com.example.core.exporter.EpubExporter
 import com.example.core.exporter.TxtExporter
 import com.example.core.llm.LlmClient
 import com.example.core.llm.LlmResult
+import com.example.core.llm.TokenCalculator
 import com.example.core.parser.*
 import com.example.core.project.ProjectFileManager
 import com.example.core.sample.SampleNovelProvider
+import com.example.core.security.ApiKeyCipher
 import com.example.core.translator.TranslationJobState
 import com.example.core.translator.TranslationManager
 import com.example.data.db.AppDatabase
@@ -22,6 +23,7 @@ import com.example.ui.i18n.AppLanguage
 import com.example.ui.i18n.AppStrings
 import com.example.ui.i18n.getAppStrings
 import android.content.Context
+import androidx.room.withTransaction
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -81,7 +83,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val projectRepo = ProjectRepository(db.projectDao())
     val chapterRepo = ChapterRepository(db.chapterDao())
     val glossaryRepo = GlossaryRepository(db.glossaryDao())
-    val providerRepo = ApiProviderRepository(db.apiProviderDao())
+    val providerRepo = ApiProviderRepository(db.apiProviderDao(), ApiKeyCipher())
     val logRepo = TranslationLogRepository(db.translationLogDao())
 
     val fileManager = ProjectFileManager(application)
@@ -98,6 +100,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val chapterSplitAgent = ChapterSplitAgent(llmClient)
     val termExtractionAgent = TermExtractionAgent(llmClient)
+
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            providerRepo.encryptLegacyKeys()
+        }
+    }
 
     // Data flows
     val allProjects: StateFlow<List<ProjectEntity>> = projectRepo.allProjects
@@ -215,7 +223,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     translatedTerm = trans,
                     category = TermCategory.CHARACTER,
                     notes = note,
-                    isAutoExtracted = true
+                    isAutoExtracted = false
                 )
             }
             glossaryRepo.insertTerms(terms)
@@ -231,7 +239,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun importFile(
-        uri: Uri,
         fileName: String,
         fileBytes: ByteArray,
         sourceLang: String = "Auto",
@@ -240,10 +247,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         customRegex: String? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
+            var createdProjectId: Long? = null
             try {
+                require(fileBytes.size <= MAX_IMPORT_BYTES) { "File exceeds the 100 MB import limit" }
                 val isEpub = fileName.endsWith(".epub", ignoreCase = true) || fileName.endsWith(".equb", ignoreCase = true)
                 val fileType = if (isEpub) "EPUB" else "TXT"
-                val defaultTitle = fileName.substringBeforeLast(".")
+                val defaultTitle = fileName.substringBeforeLast(".").trim().take(300).ifBlank { "Imported novel" }
 
                 val tempProject = ProjectEntity(
                     title = defaultTitle,
@@ -251,12 +260,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     sourceFileName = fileName,
                     fileType = fileType,
                     projectDirPath = "",
-                    sourceLanguage = sourceLang,
-                    targetLanguage = targetLang,
-                    translationStyle = style
+                    sourceLanguage = sourceLang.trim().take(80).ifBlank { "Auto" },
+                    targetLanguage = targetLang.trim().take(80).ifBlank { "Chinese" },
+                    translationStyle = style.trim().take(120).ifBlank { "Literary Novel" }
                 )
 
                 val projectId = projectRepo.insertProject(tempProject)
+                createdProjectId = projectId
                 val dirPath = fileManager.getProjectDir(projectId).absolutePath
                 fileManager.saveRawFile(projectId, fileName, fileBytes)
 
@@ -267,14 +277,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (isEpub) {
                     val imagesDir = fileManager.getImagesDir(projectId)
                     val epubBook = EpubParser.parseEpub(fileBytes, imagesDir)
-                    if (epubBook.title.isNotBlank()) parsedTitle = epubBook.title
-                    if (epubBook.author.isNotBlank()) parsedAuthor = epubBook.author
+                    if (epubBook.title.isNotBlank()) parsedTitle = epubBook.title.trim().take(300)
+                    if (epubBook.author.isNotBlank()) parsedAuthor = epubBook.author.trim().take(300)
                     parsedChapters = epubBook.chapters
                 } else {
                     val (text, _) = TxtParser.detectCharsetAndRead(fileBytes)
                     val regex = if (!customRegex.isNullOrBlank()) customRegex else TxtParser.REGEX_CHINESE
                     parsedChapters = TxtParser.splitIntoChapters(text, regex)
                 }
+
+                require(parsedChapters.isNotEmpty()) { "No readable chapters were found in this file" }
 
                 val chapterEntities = parsedChapters.map { parsed ->
                     val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
@@ -307,6 +319,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     showMessage("Successfully imported \"$parsedTitle\" with ${chapterEntities.size} chapters!")
                 }
             } catch (e: Exception) {
+                createdProjectId?.let { projectId ->
+                    projectRepo.deleteProjectById(projectId)
+                    fileManager.deleteProjectFiles(projectId)
+                }
                 withContext(Dispatchers.Main) {
                     showMessage("Import failed: ${e.localizedMessage}")
                 }
@@ -336,6 +352,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun reSplitChapters(projectId: Long, regexPattern: String) {
         viewModelScope.launch(Dispatchers.IO) {
+            try {
             val project = projectRepo.getProjectById(projectId) ?: return@launch
             val rawFile = fileManager.getRawDir(projectId).listFiles()?.firstOrNull() ?: return@launch
             val rawBytes = rawFile.readBytes()
@@ -343,47 +360,79 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val (fullText, _) = TxtParser.detectCharsetAndRead(rawBytes)
             val parsedChapters = TxtParser.splitIntoChapters(fullText, regexPattern)
 
-            // Clear old chapters
-            chapterRepo.deleteChaptersByProject(projectId)
-
-            val chapterEntities = parsedChapters.map { parsed ->
-                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
-                val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
-                ChapterEntity(
-                    projectId = projectId,
-                    chapterIndex = parsed.index,
-                    title = parsed.title,
-                    originalFileName = origName,
-                    translatedFileName = transName,
-                    originalWordCount = parsed.wordCount,
-                    status = ChapterStatus.PENDING
-                )
-            }
-            chapterRepo.insertChapters(chapterEntities)
-            val totalWords = chapterEntities.sumOf { it.originalWordCount }
-            projectRepo.updateProject(project.copy(totalChapters = chapterEntities.size, translatedChapters = 0, totalOriginalWords = totalWords))
+            require(parsedChapters.isNotEmpty()) { "No chapters matched this pattern" }
+            val chapterEntities = replaceChaptersSafely(project, parsedChapters)
 
             withContext(Dispatchers.Main) {
                 showMessage("Chapters re-split into ${chapterEntities.size} parts.")
+            }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    showMessage("Chapter split failed: ${e.localizedMessage ?: "invalid input"}")
+                }
             }
         }
     }
 
     fun runAgentChapterSplit(projectId: Long, provider: ApiProviderEntity) {
         viewModelScope.launch(Dispatchers.IO) {
+            val usage = mutableListOf<LlmResult>()
+            try {
             showMessage("Agent is analyzing book structure...")
             val project = projectRepo.getProjectById(projectId) ?: return@launch
+            requireCompatibleCurrency(project, provider)
             val rawFile = fileManager.getRawDir(projectId).listFiles()?.firstOrNull() ?: return@launch
             val (fullText, _) = TxtParser.detectCharsetAndRead(rawFile.readBytes())
 
-            val parsedChapters = chapterSplitAgent.analyzeAndSplit(fullText, provider)
+            val parsedChapters = chapterSplitAgent.analyzeAndSplit(
+                fullText = fullText,
+                provider = provider,
+                onProgress = { completed, total -> showMessage("AI splitter analyzed window $completed/$total...") },
+                onUsage = { usage += it }
+            )
 
-            chapterRepo.deleteChaptersByProject(projectId)
+            if (parsedChapters.isEmpty()) {
+                withContext(Dispatchers.Main) { showMessage("AI splitter did not find any valid chapters.") }
+                return@launch
+            }
+            val chapterEntities = replaceChaptersSafely(project, parsedChapters)
+            recordAgentUsage(projectId, "AI chapter split", provider, usage)
+
+            withContext(Dispatchers.Main) {
+                showMessage("Agent identified ${chapterEntities.size} chapters successfully!")
+            }
+            } catch (e: Exception) {
+                if (usage.isNotEmpty()) {
+                    try {
+                        recordAgentUsage(
+                            projectId,
+                            "AI chapter split (partial)",
+                            provider,
+                            usage,
+                            operationSuccessful = false
+                        )
+                    } catch (_: Exception) {
+                        // Preserve the original splitter failure for the user.
+                    }
+                }
+                withContext(Dispatchers.Main) {
+            showMessage("AI chapter split failed: ${e.localizedMessage ?: "provider or input error"}")
+                }
+            }
+        }
+    }
+
+    private suspend fun replaceChaptersSafely(
+        project: ProjectEntity,
+        parsedChapters: List<ParsedChapter>
+    ): List<ChapterEntity> {
+        val transaction = fileManager.beginChapterFileTransaction(project.id)
+        try {
             val chapterEntities = parsedChapters.map { parsed ->
-                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
+                val origName = fileManager.saveOriginalChapter(transaction, parsed.index, parsed.content, parsed.title)
                 val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
                 ChapterEntity(
-                    projectId = projectId,
+                    projectId = project.id,
                     chapterIndex = parsed.index,
                     title = parsed.title,
                     originalFileName = origName,
@@ -392,42 +441,81 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     status = ChapterStatus.PENDING
                 )
             }
-            chapterRepo.insertChapters(chapterEntities)
+            fileManager.commitChapterFileTransaction(transaction)
             val totalWords = chapterEntities.sumOf { it.originalWordCount }
-            projectRepo.updateProject(project.copy(totalChapters = chapterEntities.size, translatedChapters = 0, totalOriginalWords = totalWords))
-
-            withContext(Dispatchers.Main) {
-                showMessage("Agent identified ${chapterEntities.size} chapters successfully!")
+            db.withTransaction {
+                chapterRepo.replaceChapters(project.id, chapterEntities)
+                projectRepo.updateProject(
+                    project.copy(
+                        totalChapters = chapterEntities.size,
+                        translatedChapters = 0,
+                        totalOriginalWords = totalWords,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
             }
+            fileManager.finalizeChapterFileTransaction(transaction)
+            return chapterEntities
+        } catch (error: Exception) {
+            fileManager.rollbackChapterFileTransaction(transaction)
+            throw error
         }
     }
 
     fun extractTermsFromChapter(chapterId: Long, provider: ApiProviderEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
-            val projectId = chapter.projectId
-            val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
-            val transText = fileManager.readTranslatedChapter(projectId, chapter.translatedFileName)
-            val sample = if (origText.isNotBlank()) origText else transText
+            try {
+                val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
+                val projectId = chapter.projectId
+                val project = projectRepo.getProjectById(projectId) ?: return@launch
+                requireCompatibleCurrency(project, provider)
+                val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+                val transText = fileManager.readTranslatedChapter(projectId, chapter.translatedFileName)
+                val sample = if (origText.isNotBlank()) origText else transText
 
-            if (sample.isBlank()) {
-                withContext(Dispatchers.Main) { showMessage("Chapter content is empty.") }
-                return@launch
-            }
-
-            showMessage("Extracting terms from chapter ${chapter.chapterIndex}...")
-            val extracted = termExtractionAgent.extractTerms(projectId, sample.take(4000), provider)
-            val existing = glossaryRepo.getGlossaryListByProject(projectId).map { it.originalTerm.trim().lowercase() }.toSet()
-            val newTerms = extracted.filter { !existing.contains(it.originalTerm.trim().lowercase()) }
-
-            if (newTerms.isNotEmpty()) {
-                glossaryRepo.insertTerms(newTerms)
-                withContext(Dispatchers.Main) {
-                    showMessage("Added ${newTerms.size} new terms from chapter ${chapter.chapterIndex}!")
+                if (sample.isBlank()) {
+                    withContext(Dispatchers.Main) { showMessage("Chapter content is empty.") }
+                    return@launch
                 }
-            } else {
+
+                showMessage("Extracting terms from chapter ${chapter.chapterIndex}...")
+                val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
+                val extraction = termExtractionAgent.extractTermsWithUsage(
+                    projectId = projectId,
+                    sampleText = sample,
+                    provider = provider,
+                    sourceLanguage = project.sourceLanguage,
+                    targetLanguage = project.targetLanguage,
+                    existingTerms = currentTerms.map { it.originalTerm }
+                )
+                val existing = currentTerms.map { normalizeTerm(it.originalTerm) }.toSet()
+                val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
+                    .filter { normalizeTerm(it.originalTerm) !in existing }
+                recordAgentUsage(
+                    projectId,
+                    "Chapter ${chapter.chapterIndex} terminology extraction",
+                    provider,
+                    listOf(extraction.usage),
+                    operationSuccessful = extraction.parseError == null && extraction.usage.isSuccess
+                )
+                check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
+                    extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+                }
+                check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
+
+                if (newTerms.isNotEmpty()) {
+                    glossaryRepo.insertTerms(newTerms)
+                    withContext(Dispatchers.Main) {
+                        showMessage("Added ${newTerms.size} terminology candidates from chapter ${chapter.chapterIndex} for review.")
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        showMessage("No new unique terms found in chapter ${chapter.chapterIndex}.")
+                    }
+                }
+            } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
-                    showMessage("No new unique terms found in chapter ${chapter.chapterIndex}.")
+                    showMessage("Terminology extraction failed: ${error.localizedMessage ?: "provider or format error"}")
                 }
             }
         }
@@ -449,6 +537,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun approveGlossaryTerm(term: GlossaryEntity) {
+        updateGlossaryTerm(term.copy(isAutoExtracted = false))
+    }
+
     fun deleteGlossaryTerm(termId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             glossaryRepo.deleteTermById(termId)
@@ -457,35 +549,176 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun runAutoExtractTerms(projectId: Long, provider: ApiProviderEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            showMessage("Extracting key character and lore terms...")
-            val chapters = chapterRepo.getChaptersListByProject(projectId)
-            if (chapters.isEmpty()) {
-                withContext(Dispatchers.Main) { showMessage("No chapters to extract from.") }
-                return@launch
-            }
-
-            val sampleBuilder = StringBuilder()
-            for (ch in chapters.take(4)) {
-                sampleBuilder.append(fileManager.readOriginalChapter(projectId, ch.originalFileName)).append("\n")
-            }
-
-            val extracted = termExtractionAgent.extractTerms(projectId, sampleBuilder.toString(), provider)
-            if (extracted.isNotEmpty()) {
-                glossaryRepo.insertTerms(extracted)
-                withContext(Dispatchers.Main) {
-                    showMessage("Extracted ${extracted.size} new terminology entries!")
+            try {
+                showMessage("Extracting key character and lore terms...")
+                val chapters = chapterRepo.getChaptersListByProject(projectId)
+                if (chapters.isEmpty()) {
+                    withContext(Dispatchers.Main) { showMessage("No chapters to extract from.") }
+                    return@launch
                 }
-            } else {
+
+                val project = projectRepo.getProjectById(projectId) ?: return@launch
+                requireCompatibleCurrency(project, provider)
+                val knownTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
+                val knownKeys = knownTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
+                val extractedCandidates = mutableListOf<GlossaryEntity>()
+                val windows = chapters.flatMap { chapter ->
+                    val text = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+                    splitTermScanWindows(text).map { window -> "[Chapter ${chapter.chapterIndex}: ${chapter.title}]\n$window" }
+                }
+
+                for ((windowIndex, sample) in windows.withIndex()) {
+                    val extraction = termExtractionAgent.extractTermsWithUsage(
+                        projectId = projectId,
+                        sampleText = sample,
+                        provider = provider,
+                        sourceLanguage = project.sourceLanguage,
+                        targetLanguage = project.targetLanguage,
+                        existingTerms = knownTerms.map { it.originalTerm } + extractedCandidates.map { it.originalTerm }
+                    )
+                    extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
+                        if (knownKeys.add(normalizeTerm(term.originalTerm))) extractedCandidates += term
+                    }
+                    recordAgentUsage(
+                        projectId,
+                        "Terminology scan ${windowIndex + 1}",
+                        provider,
+                        listOf(extraction.usage),
+                        operationSuccessful = extraction.parseError == null && extraction.usage.isSuccess
+                    )
+                    check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
+                        extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+                    }
+                    check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
+                    withContext(Dispatchers.Main) {
+                        showMessage("Terminology scan ${windowIndex + 1}/${windows.size} completed.")
+                    }
+                }
+
+                if (extractedCandidates.isNotEmpty()) {
+                    glossaryRepo.insertTerms(extractedCandidates)
+                    withContext(Dispatchers.Main) {
+                        showMessage("Added ${extractedCandidates.size} terminology candidates for review!")
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        showMessage("Extraction completed (0 new terms identified).")
+                    }
+                }
+            } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
-                    showMessage("Extraction completed (0 new terms identified).")
+                    showMessage("Terminology scan failed: ${error.localizedMessage ?: "provider or format error"}")
                 }
             }
         }
     }
 
+    private fun splitTermScanWindows(text: String): List<String> {
+        if (text.isBlank()) return emptyList()
+        if (text.length <= TERM_SCAN_WINDOW_CHARS) return listOf(text)
+        val windows = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            val end = minOf(text.length, start + TERM_SCAN_WINDOW_CHARS)
+            windows += text.substring(start, end)
+            if (end == text.length) break
+            start = end - TERM_SCAN_OVERLAP_CHARS
+        }
+        return windows
+    }
+
+    private fun requireCompatibleCurrency(project: ProjectEntity, provider: ApiProviderEntity) {
+        if (project.totalCost <= 0.0) return
+        require(
+            project.costCurrency.isNotBlank() &&
+                !project.costCurrency.equals("UNKNOWN", ignoreCase = true) &&
+                !project.costCurrency.equals("MIXED", ignoreCase = true) &&
+                project.costCurrency.equals(provider.currency, ignoreCase = true)
+        ) {
+            "This project has historical cost data with an unknown or different currency. Reconcile the project cost before another AI request."
+        }
+    }
+
+    private suspend fun recordAgentUsage(
+        projectId: Long,
+        title: String,
+        provider: ApiProviderEntity,
+        results: List<LlmResult>,
+        operationSuccessful: Boolean = results.all { it.isSuccess }
+    ) {
+        val promptTokens = results.sumOf { it.promptTokens }
+        val completionTokens = results.sumOf { it.completionTokens }
+        val cost = TokenCalculator.calculateCost(
+            promptTokens,
+            completionTokens,
+            provider.inputPricePerMillion,
+            provider.outputPricePerMillion
+        )
+        logRepo.insertLog(
+            TranslationLogEntity(
+                projectId = projectId,
+                chapterIndex = 0,
+                chapterTitle = title,
+                modelName = provider.selectedModel,
+                providerName = provider.name,
+                promptTokens = promptTokens,
+                completionTokens = completionTokens,
+                totalTokens = promptTokens + completionTokens,
+                estimatedCost = cost,
+                currency = provider.currency,
+                durationMs = results.sumOf { it.durationMs },
+                isSuccess = operationSuccessful && results.all { it.isSuccess },
+                message = title
+            )
+        )
+        refreshProjectStatsFromLogs(projectId, provider.currency)
+    }
+
+    private suspend fun refreshProjectStatsFromLogs(projectId: Long, fallbackCurrency: String) {
+        val chapters = chapterRepo.getChaptersListByProject(projectId)
+        val logs = logRepo.getLogsListByProject(projectId)
+        val currencies = logs.map { it.currency.trim() }
+            .filter { it.isNotBlank() && !it.equals("UNKNOWN", ignoreCase = true) }
+            .toSet()
+        val hasUnknownCost = logs.any {
+            it.estimatedCost > 0.0 &&
+                (it.currency.isBlank() || it.currency.equals("UNKNOWN", ignoreCase = true))
+        }
+        val currency = when {
+            hasUnknownCost -> "UNKNOWN"
+            currencies.size > 1 -> "MIXED"
+            currencies.size == 1 -> currencies.first()
+            else -> fallbackCurrency
+        }
+        projectRepo.updateProjectStats(
+            projectId,
+            chapters.count { it.status == ChapterStatus.COMPLETED },
+            logs.sumOf { it.promptTokens },
+            logs.sumOf { it.completionTokens },
+            logs.sumOf { it.estimatedCost },
+            currency
+        )
+    }
+
+    companion object {
+        private const val TERM_SCAN_WINDOW_CHARS = 9_000
+        private const val TERM_SCAN_OVERLAP_CHARS = 1_000
+        private const val MAX_IMPORT_BYTES = 100 * 1024 * 1024
+    }
+
     // ==========================================
     // Translation Execution & Controls
     // ==========================================
+
+    fun setActiveProjectProvider(providerId: Long) {
+        val projectId = _activeProjectId.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val project = projectRepo.getProjectById(projectId) ?: return@launch
+            projectRepo.updateProject(
+                project.copy(defaultProviderId = providerId, updatedAt = System.currentTimeMillis())
+            )
+        }
+    }
 
     fun startContinuousTranslation(provider: ApiProviderEntity) {
         val projId = _activeProjectId.value ?: return
@@ -561,12 +794,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun saveChapterTranslationDirectly(chapterId: Long, newTranslatedContent: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
-            fileManager.saveTranslatedChapter(chapter.projectId, chapter.chapterIndex, newTranslatedContent)
+            val translatedFileName = fileManager.saveTranslatedChapter(
+                chapter.projectId,
+                chapter.chapterIndex,
+                newTranslatedContent,
+                chapter.title
+            )
             val wordCount = TxtParser.countWords(newTranslatedContent)
             chapterRepo.updateChapter(
                 chapter.copy(
                     translatedWordCount = wordCount,
+                    translatedFileName = translatedFileName,
                     status = ChapterStatus.COMPLETED,
+                    summary = "",
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -593,33 +833,61 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         onResult: (String) -> Unit
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
-            val glossary = glossaryRepo.getGlossaryListByProject(chapter.projectId)
+            try {
+                val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
+                val project = projectRepo.getProjectById(chapter.projectId) ?: return@launch
+                requireCompatibleCurrency(project, provider)
+                require(originalParagraph.isNotBlank()) { "Original paragraph is empty" }
+                val paragraphBudget = TokenCalculator.calculateChunkBudget(provider.maxContextTokens, 1_200L)
+                require(TokenCalculator.estimateTokens(originalParagraph) <= paragraphBudget) {
+                    "Paragraph is too long for this provider's context window"
+                }
+                val glossary = glossaryRepo.getGlossaryListByProject(chapter.projectId)
+                    .asSequence()
+                    .filter { !it.isAutoExtracted && it.originalTerm.length in 1..200 }
+                    .filter { originalParagraph.contains(it.originalTerm, ignoreCase = true) }
+                    .distinctBy { it.originalTerm.trim().lowercase() }
+                    .take(12)
+                    .toList()
 
-            val prompt = """
-Re-translate the following paragraph with instruction: "$customInstruction".
+                val prompt = """
+Re-translate the following paragraph from ${project.sourceLanguage.take(80)} to ${project.targetLanguage.take(80)} with instruction: "${customInstruction.take(1_000)}".
 Maintain consistency with glossary:
-${glossary.joinToString("\n") { "• ${it.originalTerm} -> ${it.translatedTerm}" }}
+${glossary.joinToString("\n") { "• ${it.originalTerm.take(120)} -> ${it.translatedTerm.take(120)}" }}
 
 Original Paragraph:
 $originalParagraph
 
 Output ONLY the new translated paragraph text.
-            """.trimIndent()
+                """.trimIndent()
 
-            val result = llmClient.executeCompletion(
-                provider = provider,
-                systemPrompt = "You are a master novel translator. Output only the revised paragraph.",
-                userPrompt = prompt
-            )
-
-            if (result.isSuccess) {
+                val result = llmClient.executeCompletion(
+                    provider = provider,
+                    systemPrompt = "You are a master novel translator. Output only the revised paragraph.",
+                    userPrompt = prompt,
+                    maxTokens = minOf(16_384, maxOf(1_024, provider.maxContextTokens / 2))
+                )
+                val validation = if (result.isSuccess && !result.isTruncated && result.text.isNotBlank()) {
+                    com.example.core.translator.TranslationQualityValidator.validate(originalParagraph, result.text)
+                } else {
+                    com.example.core.translator.TranslationValidation(false, listOf(result.errorMessage ?: "empty or truncated response"))
+                }
+                recordAgentUsage(
+                    chapter.projectId,
+                    "Chapter ${chapter.chapterIndex} paragraph ${paragraphIndex + 1} re-translation",
+                    provider,
+                    listOf(result),
+                    operationSuccessful = validation.isAcceptable
+                )
+                check(validation.isAcceptable) {
+                    "Re-translation rejected: ${validation.problems.joinToString()}"
+                }
                 withContext(Dispatchers.Main) {
                     onResult(result.text.trim())
                 }
-            } else {
+            } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
-                    showMessage("Re-translation failed: ${result.errorMessage}")
+                    showMessage("Re-translation failed: ${error.localizedMessage ?: "provider or quality error"}")
                 }
             }
         }
@@ -681,19 +949,25 @@ Output ONLY the new translated paragraph text.
 
     fun saveProvider(provider: ApiProviderEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            if (provider.id == 0L) {
-                val newId = providerRepo.insertProvider(provider)
-                if (provider.isDefault) {
-                    providerRepo.setDefaultProvider(newId)
+            try {
+                if (provider.id == 0L) {
+                    val newId = providerRepo.insertProvider(provider)
+                    if (provider.isDefault) {
+                        providerRepo.setDefaultProvider(newId)
+                    }
+                } else {
+                    providerRepo.updateProvider(provider)
+                    if (provider.isDefault) {
+                        providerRepo.setDefaultProvider(provider.id)
+                    }
                 }
-            } else {
-                providerRepo.updateProvider(provider)
-                if (provider.isDefault) {
-                    providerRepo.setDefaultProvider(provider.id)
+                withContext(Dispatchers.Main) {
+                    showMessage("API Provider \"${provider.name}\" saved.")
                 }
-            }
-            withContext(Dispatchers.Main) {
-                showMessage("API Provider \"${provider.name}\" saved.")
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    showMessage("Failed to save provider: ${error.localizedMessage ?: "storage error"}")
+                }
             }
         }
     }
@@ -733,4 +1007,8 @@ Output ONLY the new translated paragraph text.
             }
         }
     }
+
+    private fun normalizeTerm(value: String): String =
+        java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFKC).lowercase()
+
 }

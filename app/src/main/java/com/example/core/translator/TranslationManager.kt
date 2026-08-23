@@ -1,7 +1,6 @@
 package com.example.core.translator
 
 import com.example.core.llm.LlmClient
-import com.example.core.llm.LlmResult
 import com.example.core.llm.TokenCalculator
 import com.example.core.llm.TranslationPrompts
 import com.example.core.parser.TxtParser
@@ -94,9 +93,27 @@ class TranslationManager(
         isPaused.set(false)
         isCancelled.set(false)
 
-        activeJob = scope.launch(Dispatchers.IO) {
+        val failureHandler = CoroutineExceptionHandler { _, throwable ->
+            if (throwable !is CancellationException) {
+                _jobState.value = TranslationJobState.Error(
+                    throwable.localizedMessage ?: "Unexpected translation pipeline failure"
+                )
+            }
+        }
+        activeJob = scope.launch(Dispatchers.IO + failureHandler) {
             val project = projectRepository.getProjectById(projectId) ?: run {
                 _jobState.value = TranslationJobState.Error("Project not found")
+                return@launch
+            }
+            if (project.totalCost > 0.0 &&
+                (project.costCurrency.isBlank() ||
+                    project.costCurrency.equals("UNKNOWN", ignoreCase = true) ||
+                    project.costCurrency.equals("MIXED", ignoreCase = true) ||
+                    !project.costCurrency.equals(provider.currency, ignoreCase = true))
+            ) {
+                _jobState.value = TranslationJobState.Error(
+                    "This project has historical cost data with an unknown or different currency. Reconcile the project cost before translating again."
+                )
                 return@launch
             }
 
@@ -151,67 +168,127 @@ class TranslationManager(
                         cost = 0.0,
                         errorMsg = "Original chapter file is empty"
                     )
+                    translationLogRepository.insertLog(
+                        TranslationLogEntity(
+                            projectId = projectId,
+                            chapterIndex = chapter.chapterIndex,
+                            chapterTitle = chapter.title,
+                            modelName = provider.selectedModel,
+                            providerName = provider.name,
+                            promptTokens = 0,
+                            completionTokens = 0,
+                            totalTokens = 0,
+                            estimatedCost = 0.0,
+                            currency = provider.currency,
+                            durationMs = 0,
+                            isSuccess = false,
+                            message = "Chapter ${chapter.chapterIndex} Error: original file is empty"
+                        )
+                    )
+                    refreshProjectStats(projectId, provider.currency)
                     errorCount++
                     continue
                 }
 
-                // 1. Context isolation: Find summary strictly from the previous chapter (index - 1)
-                var previousContextSummary: String? = null
-                if (chapter.chapterIndex > 1) {
-                    val prevChapter = allChapters.firstOrNull { it.chapterIndex == chapter.chapterIndex - 1 }
-                    if (prevChapter != null) {
-                        if (prevChapter.summary.isNotBlank()) {
-                            previousContextSummary = prevChapter.summary
-                        } else if (prevChapter.status == ChapterStatus.COMPLETED) {
-                            // Generate summary on-the-fly for previous chapter
-                            val prevTransText = fileManager.readTranslatedChapter(projectId, prevChapter.translatedFileName)
-                            if (prevTransText.isNotBlank()) {
-                                val sPrompt = TranslationPrompts.buildChapterSummaryPrompt(prevTransText)
-                                val sResult = llmClient.executeCompletion(
-                                    provider = provider,
-                                    systemPrompt = "You are a concise narrative context summarizer.",
-                                    userPrompt = sPrompt,
-                                    temperature = 0.2f
-                                )
-                                if (sResult.isSuccess && sResult.text.isNotBlank()) {
-                                    val summaryText = sResult.text.trim()
-                                    chapterRepository.updateSummary(prevChapter.id, summaryText)
-                                    previousContextSummary = summaryText
+                // Only reviewed terms that actually occur in this chapter are mandatory.
+                val activeGlossary = selectGlossaryForPrompt(
+                    glossary = glossary,
+                    originalText = originalText,
+                    maxContextTokens = provider.maxContextTokens
+                )
 
-                                    val sCost = TokenCalculator.calculateCost(
-                                        promptTokens = sResult.promptTokens,
-                                        completionTokens = sResult.completionTokens,
-                                        inputPricePerMillion = provider.inputPricePerMillion,
-                                        outputPricePerMillion = provider.outputPricePerMillion
-                                    )
-                                    runningPromptTokens += sResult.promptTokens
-                                    runningCompTokens += sResult.completionTokens
-                                    runningCost += sCost
+                // Always reload context so summaries generated earlier in this same batch are visible.
+                val latestChapters = chapterRepository.getChaptersListByProject(projectId)
+                val previousChapters = latestChapters
+                    .filter { it.chapterIndex < chapter.chapterIndex }
+                    .sortedBy { it.chapterIndex }
+                val immediatePrevious = previousChapters.lastOrNull()
 
-                                    translationLogRepository.insertLog(
-                                        TranslationLogEntity(
-                                            projectId = projectId,
-                                            chapterIndex = prevChapter.chapterIndex,
-                                            chapterTitle = prevChapter.title,
-                                            modelName = provider.selectedModel,
-                                            providerName = provider.name,
-                                            promptTokens = sResult.promptTokens,
-                                            completionTokens = sResult.completionTokens,
-                                            totalTokens = sResult.promptTokens + sResult.completionTokens,
-                                            estimatedCost = sCost,
-                                            durationMs = sResult.durationMs,
-                                            isSuccess = true,
-                                            message = "Generated narrative summary for context continuity"
-                                        )
-                                    )
-                                }
-                            }
+                var immediateSummary = immediatePrevious?.summary.orEmpty()
+                if (immediatePrevious != null && immediateSummary.isBlank() && immediatePrevious.status == ChapterStatus.COMPLETED) {
+                    val prevTransText = fileManager.readTranslatedChapter(projectId, immediatePrevious.translatedFileName)
+                    if (prevTransText.isNotBlank()) {
+                        val sResult = llmClient.executeCompletion(
+                            provider = provider,
+                            systemPrompt = "You maintain concise, factual continuity notes for a novel translator.",
+                            userPrompt = TranslationPrompts.buildChapterSummaryPrompt(prevTransText),
+                            temperature = 0.2f,
+                            maxTokens = 800
+                        )
+                        val sCost = TokenCalculator.calculateCost(
+                            sResult.promptTokens,
+                            sResult.completionTokens,
+                            provider.inputPricePerMillion,
+                            provider.outputPricePerMillion
+                        )
+                        runningPromptTokens += sResult.promptTokens
+                        runningCompTokens += sResult.completionTokens
+                        runningCost += sCost
+                        if (sResult.isSuccess && sResult.text.isNotBlank()) {
+                            immediateSummary = sResult.text.trim()
+                            chapterRepository.updateSummary(immediatePrevious.id, immediateSummary)
                         }
+                        translationLogRepository.insertLog(
+                            TranslationLogEntity(
+                                projectId = projectId,
+                                chapterIndex = immediatePrevious.chapterIndex,
+                                chapterTitle = immediatePrevious.title,
+                                modelName = provider.selectedModel,
+                                providerName = provider.name,
+                                promptTokens = sResult.promptTokens,
+                                completionTokens = sResult.completionTokens,
+                                totalTokens = sResult.promptTokens + sResult.completionTokens,
+                                estimatedCost = sCost,
+                                currency = provider.currency,
+                                durationMs = sResult.durationMs,
+                                isSuccess = sResult.isSuccess && sResult.text.isNotBlank(),
+                                message = if (sResult.isSuccess && sResult.text.isNotBlank()) {
+                                    "Generated missing narrative summary for continuity"
+                                } else {
+                                    "Failed to generate missing narrative summary: ${sResult.errorMessage ?: "empty response"}"
+                                }
+                            )
+                        )
                     }
                 }
 
+                val lowContextMode = provider.maxContextTokens < 8_192
+                val recentSummaries = previousChapters.takeLast(if (lowContextMode) 1 else 3).mapNotNull { previous ->
+                    val summary = if (previous.id == immediatePrevious?.id && immediateSummary.isNotBlank()) {
+                        immediateSummary
+                    } else {
+                        previous.summary
+                    }
+                    summary.takeIf { it.isNotBlank() }?.let {
+                        "Chapter ${previous.chapterIndex} (${previous.title.take(120)}): ${it.take(if (lowContextMode) 300 else 600)}"
+                    }
+                }
+
+                val previousContextSummary = buildString {
+                    if (recentSummaries.isNotEmpty()) {
+                        append("RECENT CHAPTER SUMMARIES:\n")
+                        append(recentSummaries.joinToString("\n"))
+                    }
+                    if (immediatePrevious != null && !lowContextMode) {
+                        val previousOriginal = fileManager.readOriginalChapter(projectId, immediatePrevious.originalFileName)
+                        val previousTranslation = fileManager.readTranslatedChapter(projectId, immediatePrevious.translatedFileName)
+                        if (previousOriginal.isNotBlank()) {
+                            append("\n\nPREVIOUS CHAPTER SOURCE ENDING:\n")
+                            append(previousOriginal.takeLast(600))
+                        }
+                        if (previousTranslation.isNotBlank()) {
+                            append("\n\nPREVIOUS CHAPTER TRANSLATION ENDING:\n")
+                            append(previousTranslation.takeLast(600))
+                        }
+                    }
+                }.ifBlank { null }
+
                 // 2. Token Budget & Natural Paragraph Chunking
-                val overheadEstimate = 700L + (glossary.size * 25L) + (if (previousContextSummary != null) 200L else 0L)
+                val glossaryOverhead = activeGlossary.sumOf {
+                    TokenCalculator.estimateTokens(it.originalTerm + it.translatedTerm + it.notes) + 12L
+                }
+                val overheadEstimate = 700L + glossaryOverhead +
+                    (previousContextSummary?.let(TokenCalculator::estimateTokens) ?: 0L)
                 val maxChunkTokens = TokenCalculator.calculateChunkBudget(
                     maxContextTokens = provider.maxContextTokens,
                     overheadEstimate = overheadEstimate
@@ -222,6 +299,7 @@ class TranslationManager(
                 var chapterPromptTokens = 0L
                 var chapterCompTokens = 0L
                 var chapterCost = 0.0
+                var chapterDurationMs = 0L
                 var chapterFailed = false
                 var chapterErrorReason = ""
 
@@ -268,7 +346,7 @@ class TranslationManager(
                             chunkIndex = chunkIdx + 1,
                             totalChunks = chunks.size,
                             chunkText = currentChunkText,
-                            glossary = glossary,
+                            glossary = activeGlossary,
                             previousContextSummary = previousContextSummary,
                             previousChunkTranslationReference = prevChunkRef
                         )
@@ -276,7 +354,7 @@ class TranslationManager(
                         TranslationPrompts.buildUserPrompt(
                             chapterTitle = chapter.title,
                             chapterText = currentChunkText,
-                            glossary = glossary,
+                            glossary = activeGlossary,
                             previousContextSummary = previousContextSummary
                         )
                     }
@@ -285,44 +363,90 @@ class TranslationManager(
                         provider = provider,
                         systemPrompt = systemPrompt,
                         userPrompt = userPrompt,
-                        maxTokens = minOf(4096, provider.maxContextTokens / 2)
+                        maxTokens = effectiveMaxOutputTokens(provider)
                     )
 
-                    // Handle Truncation / Continuation
-                    if (result.isSuccess && result.isTruncated && result.text.isNotBlank()) {
-                        val continuationPrompt = TranslationPrompts.buildContinuationPrompt(
-                            originalChunkText = currentChunkText,
-                            partialTranslation = result.text
-                        )
+                    // Continue at most three times and preserve the provider's final truncation state.
+                    var continuationAttempts = 0
+                    while (result.isSuccess && result.isTruncated && result.text.isNotBlank() && continuationAttempts < 3) {
                         val contResult = llmClient.executeCompletion(
                             provider = provider,
                             systemPrompt = systemPrompt,
-                            userPrompt = continuationPrompt,
-                            maxTokens = minOf(4096, provider.maxContextTokens / 2)
+                            userPrompt = TranslationPrompts.buildContinuationPrompt(currentChunkText, result.text),
+                            maxTokens = effectiveMaxOutputTokens(provider)
                         )
-                        if (contResult.isSuccess && contResult.text.isNotBlank()) {
-                            val mergedText = result.text.trim() + "\n" + contResult.text.trim()
+                        if (!contResult.isSuccess || contResult.text.isBlank()) {
                             result = result.copy(
-                                text = mergedText,
+                                isSuccess = false,
+                                errorMessage = contResult.errorMessage ?: "Truncated translation could not be continued",
                                 promptTokens = result.promptTokens + contResult.promptTokens,
                                 completionTokens = result.completionTokens + contResult.completionTokens,
-                                durationMs = result.durationMs + contResult.durationMs,
-                                isTruncated = false
+                                durationMs = result.durationMs + contResult.durationMs
                             )
+                            break
+                        }
+                        result = result.copy(
+                            text = mergeContinuation(result.text, contResult.text),
+                            promptTokens = result.promptTokens + contResult.promptTokens,
+                            completionTokens = result.completionTokens + contResult.completionTokens,
+                            durationMs = result.durationMs + contResult.durationMs,
+                            finishReason = contResult.finishReason,
+                            isTruncated = contResult.isTruncated
+                        )
+                        continuationAttempts++
+                    }
+                    if (result.isSuccess && result.isTruncated) {
+                        result = result.copy(
+                            isSuccess = false,
+                            errorMessage = "Translation remained truncated after $continuationAttempts continuation attempts"
+                        )
+                    }
+
+                    // Reject omissions, altered illustration markers and obvious refusals, then retry once.
+                    if (result.isSuccess && result.text.isNotBlank()) {
+                        val validation = TranslationQualityValidator.validate(currentChunkText, result.text)
+                        if (!validation.isAcceptable) {
+                            val retry = llmClient.executeCompletion(
+                                provider = provider,
+                                systemPrompt = systemPrompt,
+                                userPrompt = TranslationPrompts.buildValidationRetryPrompt(userPrompt, validation.problems),
+                                maxTokens = effectiveMaxOutputTokens(provider)
+                            )
+                            val retryValidation = if (retry.isSuccess && !retry.isTruncated) {
+                                TranslationQualityValidator.validate(currentChunkText, retry.text)
+                            } else {
+                                TranslationValidation(false, listOf(retry.errorMessage ?: "retry was truncated"))
+                            }
+                            result = if (retryValidation.isAcceptable) {
+                                retry.copy(
+                                    promptTokens = result.promptTokens + retry.promptTokens,
+                                    completionTokens = result.completionTokens + retry.completionTokens,
+                                    durationMs = result.durationMs + retry.durationMs
+                                )
+                            } else {
+                                result.copy(
+                                    isSuccess = false,
+                                    errorMessage = "Translation validation failed: ${retryValidation.problems.joinToString()}",
+                                    promptTokens = result.promptTokens + retry.promptTokens,
+                                    completionTokens = result.completionTokens + retry.completionTokens,
+                                    durationMs = result.durationMs + retry.durationMs
+                                )
+                            }
                         }
                     }
 
+                    val chunkCost = TokenCalculator.calculateCost(
+                        promptTokens = result.promptTokens,
+                        completionTokens = result.completionTokens,
+                        inputPricePerMillion = provider.inputPricePerMillion,
+                        outputPricePerMillion = provider.outputPricePerMillion
+                    )
+                    chapterPromptTokens += result.promptTokens
+                    chapterCompTokens += result.completionTokens
+                    chapterCost += chunkCost
+                    chapterDurationMs += result.durationMs
                     if (result.isSuccess && result.text.isNotBlank()) {
-                        val chunkCost = TokenCalculator.calculateCost(
-                            promptTokens = result.promptTokens,
-                            completionTokens = result.completionTokens,
-                            inputPricePerMillion = provider.inputPricePerMillion,
-                            outputPricePerMillion = provider.outputPricePerMillion
-                        )
                         translatedChunks.add(result.text.trim())
-                        chapterPromptTokens += result.promptTokens
-                        chapterCompTokens += result.completionTokens
-                        chapterCost += chunkCost
                     } else {
                         chapterFailed = true
                         chapterErrorReason = result.errorMessage ?: "Translation chunk ${chunkIdx + 1}/${chunks.size} failed"
@@ -341,31 +465,54 @@ class TranslationManager(
                         provider = provider,
                         systemPrompt = "You are a concise narrative context summarizer. Be brief.",
                         userPrompt = summaryPrompt,
-                        temperature = 0.2f
+                        temperature = 0.2f,
+                        maxTokens = 800
+                    )
+                    chapterDurationMs += summaryResult.durationMs
+                    chapterPromptTokens += summaryResult.promptTokens
+                    chapterCompTokens += summaryResult.completionTokens
+                    chapterCost += TokenCalculator.calculateCost(
+                        promptTokens = summaryResult.promptTokens,
+                        completionTokens = summaryResult.completionTokens,
+                        inputPricePerMillion = provider.inputPricePerMillion,
+                        outputPricePerMillion = provider.outputPricePerMillion
                     )
                     var finalSummary = ""
                     if (summaryResult.isSuccess && summaryResult.text.isNotBlank()) {
                         finalSummary = summaryResult.text.trim()
-                        val summaryCost = TokenCalculator.calculateCost(
-                            promptTokens = summaryResult.promptTokens,
-                            completionTokens = summaryResult.completionTokens,
-                            inputPricePerMillion = provider.inputPricePerMillion,
-                            outputPricePerMillion = provider.outputPricePerMillion
-                        )
-                        chapterPromptTokens += summaryResult.promptTokens
-                        chapterCompTokens += summaryResult.completionTokens
-                        chapterCost += summaryCost
                     }
 
                     // 2. Progressive Glossary Expansion: auto-extract unrecorded key proper nouns
+                    var termExtractionWarning: String? = null
                     try {
                         val existingKeys = glossary.map { it.originalTerm.trim().lowercase() }.toSet()
-                        val termExtractPrompt = "Extract 1-4 novel character names, factions or magical items from this chapter translation that are not in current terms. Format as JSON: [{\"original\": \"...\", \"suggested\": \"...\", \"category\": \"CHARACTER/LOCATION/ITEM/FACTION\", \"notes\": \"...\"}]. Return only JSON array.\n\nOriginal sample:\n${originalText.take(1200)}\n\nTranslation sample:\n${fullTranslatedText.take(1200)}"
+                        val termExtractPrompt = """
+                            Extract 1-6 important proper nouns from this chapter that are not already known.
+                            Source language: ${project.sourceLanguage}
+                            Required translation language: ${project.targetLanguage}
+                            Allowed categories: CHARACTER, LOCATION, LORE, SKILL, ITEM, HONORIFIC, CUSTOM.
+                            Return JSON only: [{"original":"...","suggested":"...","category":"CHARACTER","notes":"brief evidence"}].
+
+                            Original chapter sample:
+                            ${representativeExcerpt(originalText, 6000)}
+
+                            Translation sample:
+                            ${representativeExcerpt(fullTranslatedText, 6000)}
+                        """.trimIndent()
                         val termResult = llmClient.executeCompletion(
                             provider = provider,
                             systemPrompt = "You are a terminology extraction assistant. Return only JSON array.",
                             userPrompt = termExtractPrompt,
                             temperature = 0.2f
+                        )
+                        chapterPromptTokens += termResult.promptTokens
+                        chapterCompTokens += termResult.completionTokens
+                        chapterDurationMs += termResult.durationMs
+                        chapterCost += TokenCalculator.calculateCost(
+                            termResult.promptTokens,
+                            termResult.completionTokens,
+                            provider.inputPricePerMillion,
+                            provider.outputPricePerMillion
                         )
                         if (termResult.isSuccess && termResult.text.isNotBlank()) {
                             val parsedNewTerms = com.example.core.agent.TermExtractionAgent.parseTermsJson(projectId, termResult.text)
@@ -378,8 +525,17 @@ class TranslationManager(
                                 glossaryRepository.insertTerms(brandNewTerms)
                                 glossary = glossaryRepository.getGlossaryListByProject(projectId)
                             }
+                        } else {
+                            termExtractionWarning = termResult.errorMessage ?: "terminology extraction returned no usable response"
                         }
-                    } catch (_: Exception) {}
+                    } catch (error: Exception) {
+                        termExtractionWarning = error.localizedMessage ?: "terminology extraction failed"
+                    }
+
+                    if (!summaryResult.isSuccess || summaryResult.text.isBlank()) {
+                        val summaryWarning = summaryResult.errorMessage ?: "chapter summary returned no usable response"
+                        termExtractionWarning = listOfNotNull(termExtractionWarning, summaryWarning).joinToString("; ")
+                    }
 
                     runningPromptTokens += chapterPromptTokens
                     runningCompTokens += chapterCompTokens
@@ -394,7 +550,8 @@ class TranslationManager(
                         promptTokens = chapterPromptTokens,
                         completionTokens = chapterCompTokens,
                         cost = chapterCost,
-                        errorMsg = null
+                        errorMsg = null,
+                        translatedFileName = transFileName
                     )
 
                     // Insert Log
@@ -409,9 +566,12 @@ class TranslationManager(
                             completionTokens = chapterCompTokens,
                             totalTokens = chapterPromptTokens + chapterCompTokens,
                             estimatedCost = chapterCost,
-                            durationMs = 0,
+                            currency = provider.currency,
+                            durationMs = chapterDurationMs,
                             isSuccess = true,
-                            message = if (chunks.size > 1) {
+                            message = if (termExtractionWarning != null) {
+                                "Chapter ${chapter.chapterIndex} completed with warning: $termExtractionWarning"
+                            } else if (chunks.size > 1) {
                                 "Chapter ${chapter.chapterIndex} completed across ${chunks.size} chunks ($wordCount words)"
                             } else {
                                 "Chapter ${chapter.chapterIndex} translated successfully ($wordCount words)"
@@ -430,6 +590,9 @@ class TranslationManager(
                     )
                     onChapterFinished?.invoke(updatedChapter)
                 } else {
+                    runningPromptTokens += chapterPromptTokens
+                    runningCompTokens += chapterCompTokens
+                    runningCost += chapterCost
                     errorCount++
                     val errorMsg = chapterErrorReason.ifBlank { "Translation failed" }
                     chapterRepository.updateTranslationResult(
@@ -453,7 +616,8 @@ class TranslationManager(
                             completionTokens = chapterCompTokens,
                             totalTokens = chapterPromptTokens + chapterCompTokens,
                             estimatedCost = chapterCost,
-                            durationMs = 0,
+                            currency = provider.currency,
+                            durationMs = chapterDurationMs,
                             isSuccess = false,
                             message = "Chapter ${chapter.chapterIndex} Error: $errorMsg"
                         )
@@ -461,12 +625,7 @@ class TranslationManager(
                 }
 
                 // Update project cumulative stats in DB
-                val updatedChapters = chapterRepository.getChaptersListByProject(projectId)
-                val totalDone = updatedChapters.count { it.status == ChapterStatus.COMPLETED }
-                val totalP = updatedChapters.sumOf { it.promptTokens }
-                val totalC = updatedChapters.sumOf { it.completionTokens }
-                val totalCostSum = updatedChapters.sumOf { it.estimatedCost }
-                projectRepository.updateProjectStats(projectId, totalDone, totalP, totalC, totalCostSum)
+                refreshProjectStats(projectId, provider.currency)
 
                 delay(120) // Safe spacing between translation cycles
             }
@@ -481,6 +640,32 @@ class TranslationManager(
                 errorCount = errorCount
             )
         }
+    }
+
+    private suspend fun refreshProjectStats(projectId: Long, fallbackCurrency: String) {
+        val chapters = chapterRepository.getChaptersListByProject(projectId)
+        val logs = translationLogRepository.getLogsListByProject(projectId)
+        val currencies = logs.map { it.currency.trim() }
+            .filter { it.isNotBlank() && !it.equals("UNKNOWN", ignoreCase = true) }
+            .toSet()
+        val hasUnknownCost = logs.any {
+            it.estimatedCost > 0.0 &&
+                (it.currency.isBlank() || it.currency.equals("UNKNOWN", ignoreCase = true))
+        }
+        val currency = when {
+            hasUnknownCost -> "UNKNOWN"
+            currencies.size > 1 -> "MIXED"
+            currencies.size == 1 -> currencies.first()
+            else -> fallbackCurrency
+        }
+        projectRepository.updateProjectStats(
+            projectId = projectId,
+            translatedCount = chapters.count { it.status == ChapterStatus.COMPLETED },
+            promptTokens = logs.sumOf { it.promptTokens },
+            compTokens = logs.sumOf { it.completionTokens },
+            cost = logs.sumOf { it.estimatedCost },
+            currency = currency
+        )
     }
 
     /**
@@ -547,6 +732,17 @@ class TranslationManager(
         var curTok = 0L
         for (s in sentences) {
             val st = TokenCalculator.estimateTokens(s)
+            if (st > maxTokensPerChunk) {
+                if (cur.isNotBlank()) {
+                    result.add(cur.toString().trim())
+                    cur = StringBuilder()
+                    curTok = 0L
+                }
+                // A sentence without usable punctuation must still respect the request budget.
+                val safeChars = maxOf(1, (maxTokensPerChunk / 1.6).toInt())
+                s.chunked(safeChars).forEach { part -> result.add(part.trim()) }
+                continue
+            }
             if (curTok + st > maxTokensPerChunk && cur.isNotBlank()) {
                 result.add(cur.toString().trim())
                 cur = StringBuilder()
@@ -560,4 +756,62 @@ class TranslationManager(
         }
         return if (result.isNotEmpty()) result else listOf(paragraph.trim())
     }
+
+    private fun representativeExcerpt(text: String, maxChars: Int): String {
+        if (text.length <= maxChars) return text
+        val part = maxChars / 3
+        val middleStart = (text.length / 2 - part / 2).coerceAtLeast(0)
+        return text.take(part) + "\n[…]\n" +
+            text.substring(middleStart, (middleStart + part).coerceAtMost(text.length)) +
+            "\n[…]\n" + text.takeLast(part)
+    }
+
+    private fun selectGlossaryForPrompt(
+        glossary: List<GlossaryEntity>,
+        originalText: String,
+        maxContextTokens: Int
+    ): List<GlossaryEntity> {
+        val budget = maxOf(200L, maxContextTokens.coerceAtLeast(4_096).toLong() / 12L)
+        var used = 0L
+        val selected = mutableListOf<GlossaryEntity>()
+        val seen = mutableSetOf<String>()
+        for (term in glossary) {
+            val original = term.originalTerm.trim()
+            if (term.isAutoExtracted || original.isBlank() || original.length > 200) continue
+            val key = original.lowercase()
+            if (!seen.add(key) || !originalText.contains(original, ignoreCase = true)) continue
+            val bounded = term.copy(
+                originalTerm = original.take(120),
+                translatedTerm = term.translatedTerm.trim().take(120),
+                notes = term.notes.trim().take(240)
+            )
+            val cost = TokenCalculator.estimateTokens(
+                bounded.originalTerm + bounded.translatedTerm + bounded.notes
+            ) + 12L
+            if (used + cost > budget) continue
+            selected += bounded
+            used += cost
+            if (selected.size == 40) break
+        }
+        return selected
+    }
+
+    private fun mergeContinuation(previous: String, continuation: String): String {
+        val left = previous.trimEnd()
+        val right = continuation.trimStart()
+        val leftTail = left.takeLast(800)
+        val rightHead = right.take(800)
+        val maxOverlap = minOf(leftTail.length, rightHead.length)
+        var overlap = 0
+        for (size in maxOverlap downTo 20) {
+            if (leftTail.takeLast(size) == rightHead.take(size)) {
+                overlap = size
+                break
+            }
+        }
+        return left + "\n" + right.drop(overlap).trimStart()
+    }
+
+    private fun effectiveMaxOutputTokens(provider: ApiProviderEntity): Int =
+        minOf(16_384, maxOf(1_024, provider.maxContextTokens / 2))
 }

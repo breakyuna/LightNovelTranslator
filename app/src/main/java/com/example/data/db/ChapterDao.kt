@@ -28,7 +28,7 @@ interface ChapterDao {
     @Update
     suspend fun updateChapter(chapter: ChapterEntity)
 
-    @Query("UPDATE chapters SET status = :status, translatedWordCount = :wordCount, promptTokens = :promptTokens, completionTokens = :completionTokens, estimatedCost = :cost, errorMessage = :errorMsg, lastTranslatedAt = :translatedAt, updatedAt = :updatedAt WHERE id = :id")
+    @Query("UPDATE chapters SET status = :status, translatedFileName = COALESCE(:translatedFileName, translatedFileName), translatedWordCount = :wordCount, promptTokens = :promptTokens, completionTokens = :completionTokens, estimatedCost = :cost, errorMessage = :errorMsg, lastTranslatedAt = :translatedAt, updatedAt = :updatedAt WHERE id = :id")
     suspend fun updateTranslationResult(
         id: Long,
         status: ChapterStatus,
@@ -37,6 +37,7 @@ interface ChapterDao {
         completionTokens: Long,
         cost: Double,
         errorMsg: String?,
+        translatedFileName: String? = null,
         translatedAt: Long? = System.currentTimeMillis(),
         updatedAt: Long = System.currentTimeMillis()
     )
@@ -52,4 +53,10 @@ interface ChapterDao {
 
     @Query("DELETE FROM chapters WHERE id = :id")
     suspend fun deleteChapterById(id: Long)
+
+    @Transaction
+    suspend fun replaceChapters(projectId: Long, chapters: List<ChapterEntity>) {
+        deleteChaptersByProject(projectId)
+        insertChapters(chapters)
+    }
 }

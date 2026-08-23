@@ -21,8 +21,8 @@ interface ProjectDao {
     @Update
     suspend fun updateProject(project: ProjectEntity)
 
-    @Query("UPDATE projects SET translatedChapters = :translatedCount, totalPromptTokens = :promptTokens, totalCompletionTokens = :compTokens, totalCost = :cost, updatedAt = :updatedAt WHERE id = :projectId")
-    suspend fun updateProjectStats(projectId: Long, translatedCount: Int, promptTokens: Long, compTokens: Long, cost: Double, updatedAt: Long = System.currentTimeMillis())
+    @Query("UPDATE projects SET translatedChapters = :translatedCount, totalPromptTokens = :promptTokens, totalCompletionTokens = :compTokens, totalCost = :cost, costCurrency = :currency, updatedAt = :updatedAt WHERE id = :projectId")
+    suspend fun updateProjectStats(projectId: Long, translatedCount: Int, promptTokens: Long, compTokens: Long, cost: Double, currency: String, updatedAt: Long = System.currentTimeMillis())
 
     @Query("DELETE FROM projects WHERE id = :id")
     suspend fun deleteProjectById(id: Long)

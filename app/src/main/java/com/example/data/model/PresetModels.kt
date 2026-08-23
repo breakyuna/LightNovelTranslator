@@ -10,6 +10,7 @@ data class ModelPreset(
     val defaultInputPrice: Double,
     val defaultOutputPrice: Double,
     val currency: String = "USD",
+    val defaultMaxContextTokens: Int = 8192,
     val description: String
 )
 
@@ -25,6 +26,7 @@ object PresetModels {
             defaultInputPrice = 0.14,
             defaultOutputPrice = 0.28,
             currency = "USD",
+            defaultMaxContextTokens = 32_768,
             description = "High quality novel & literary translation with low token pricing."
         ),
         ModelPreset(
@@ -32,11 +34,12 @@ object PresetModels {
             name = "Google Gemini Direct",
             providerType = ProviderType.GEMINI_DIRECT,
             defaultBaseUrl = "https://generativelanguage.googleapis.com",
-            recommendedModels = listOf("gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"),
-            defaultModel = "gemini-3.5-flash",
-            defaultInputPrice = 0.10,
-            defaultOutputPrice = 0.40,
+            recommendedModels = listOf("gemini-2.5-flash", "gemini-2.5-pro", "gemini-flash-latest"),
+            defaultModel = "gemini-2.5-flash",
+            defaultInputPrice = 0.30,
+            defaultOutputPrice = 2.50,
             currency = "USD",
+            defaultMaxContextTokens = 32_768,
             description = "High speed, large context window, excellent nuanced multilingual comprehension."
         ),
         ModelPreset(
@@ -44,11 +47,12 @@ object PresetModels {
             name = "OpenAI API",
             providerType = ProviderType.OPENAI_COMPATIBLE,
             defaultBaseUrl = "https://api.openai.com/v1",
-            recommendedModels = listOf("gpt-4o", "gpt-4o-mini", "gpt-4.5-preview", "o3-mini"),
-            defaultModel = "gpt-4o-mini",
-            defaultInputPrice = 0.15,
-            defaultOutputPrice = 0.60,
+            recommendedModels = listOf("gpt-5.2", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini"),
+            defaultModel = "gpt-5-mini",
+            defaultInputPrice = 0.25,
+            defaultOutputPrice = 2.00,
             currency = "USD",
+            defaultMaxContextTokens = 32_768,
             description = "Industry benchmark for conversational clarity and prompt adhering."
         ),
         ModelPreset(
@@ -56,11 +60,12 @@ object PresetModels {
             name = "Anthropic Claude",
             providerType = ProviderType.ANTHROPIC_CLAUDE,
             defaultBaseUrl = "https://api.anthropic.com/v1",
-            recommendedModels = listOf("claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-7-sonnet-20250219"),
-            defaultModel = "claude-3-5-haiku-20241022",
-            defaultInputPrice = 0.80,
-            defaultOutputPrice = 4.00,
+            recommendedModels = listOf("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001"),
+            defaultModel = "claude-haiku-4-5-20251001",
+            defaultInputPrice = 1.00,
+            defaultOutputPrice = 5.00,
             currency = "USD",
+            defaultMaxContextTokens = 32_768,
             description = "Superior literary prose, natural sentence flow, and character tone preservation."
         ),
         ModelPreset(
@@ -73,6 +78,7 @@ object PresetModels {
             defaultInputPrice = 2.0,
             defaultOutputPrice = 8.0,
             currency = "CNY",
+            defaultMaxContextTokens = 32_768,
             description = "Fast Domestic China hosted models with low latency."
         ),
         ModelPreset(
@@ -85,6 +91,7 @@ object PresetModels {
             defaultInputPrice = 0.14,
             defaultOutputPrice = 0.28,
             currency = "USD",
+            defaultMaxContextTokens = 32_768,
             description = "Universal aggregator with access to hundreds of AI models."
         ),
         ModelPreset(
@@ -97,6 +104,7 @@ object PresetModels {
             defaultInputPrice = 0.8,
             defaultOutputPrice = 2.0,
             currency = "CNY",
+            defaultMaxContextTokens = 32_768,
             description = "Specialized Chinese-English and East Asian language capabilities."
         ),
         ModelPreset(
@@ -109,6 +117,7 @@ object PresetModels {
             defaultInputPrice = 0.1,
             defaultOutputPrice = 0.1,
             currency = "CNY",
+            defaultMaxContextTokens = 32_768,
             description = "Fast and economical with generous free tier options."
         ),
         ModelPreset(
@@ -121,6 +130,7 @@ object PresetModels {
             defaultInputPrice = 0.0,
             defaultOutputPrice = 0.0,
             currency = "USD",
+            defaultMaxContextTokens = 16_384,
             description = "Offline 100% private local LLM. Use localhost or your LAN PC IP:11434."
         ),
         ModelPreset(
@@ -133,6 +143,7 @@ object PresetModels {
             defaultInputPrice = 0.5,
             defaultOutputPrice = 1.5,
             currency = "USD",
+            defaultMaxContextTokens = 16_384,
             description = "Connect any custom OpenAI or proxy API gateway."
         )
     )

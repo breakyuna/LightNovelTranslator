@@ -5,9 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -20,9 +20,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,11 +30,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.core.parser.TxtParser
-import com.example.data.model.ChapterEntity
 import com.example.data.model.ChapterStatus
 import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AppViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 enum class ReaderTheme(val bg: Color, val text: Color, val surface: Color) {
     LIGHT(BackgroundLight, OnBackgroundLight, SurfaceLight),
@@ -69,17 +70,32 @@ fun BilingualReaderScreen(
     val project by viewModel.activeProject.collectAsState()
     val chapters by viewModel.activeChapters.collectAsState()
     val providers by viewModel.allProviders.collectAsState()
-    val defaultProvider = providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()
+    val context = LocalContext.current
+    val readerPrefs = remember { context.getSharedPreferences("reader_preferences", 0) }
+    val defaultProvider = providers.firstOrNull { it.id == project?.defaultProviderId }
+        ?: providers.firstOrNull { it.isDefault }
+        ?: providers.firstOrNull()
 
     var currentChapterId by remember(chapterId) { mutableStateOf(chapterId) }
     val currentChapter = chapters.find { it.id == currentChapterId } ?: chapters.firstOrNull()
 
-    var viewMode by remember { mutableStateOf(ViewMode.NOVEL_READER) }
-    var readerTheme by remember { mutableStateOf(ReaderTheme.SEPIA) }
-    var fontSizeSp by remember { mutableStateOf(17) }
-    var lineHeightMultiplier by remember { mutableStateOf(1.7f) }
-    var readerFont by remember { mutableStateOf(ReaderFont.SERIF) }
-    var enableIndent by remember { mutableStateOf(true) }
+    var viewMode by remember { mutableStateOf(enumPreference(readerPrefs.getString("view_mode", null), ViewMode.NOVEL_READER)) }
+    var readerTheme by remember { mutableStateOf(enumPreference(readerPrefs.getString("theme", null), ReaderTheme.SEPIA)) }
+    var fontSizeSp by remember { mutableStateOf(readerPrefs.getInt("font_size", 17).coerceIn(12, 30)) }
+    var lineHeightMultiplier by remember { mutableStateOf(readerPrefs.getFloat("line_height", 1.7f).coerceIn(1.2f, 2.4f)) }
+    var readerFont by remember { mutableStateOf(enumPreference(readerPrefs.getString("font", null), ReaderFont.SERIF)) }
+    var enableIndent by remember { mutableStateOf(readerPrefs.getBoolean("indent", true)) }
+
+    LaunchedEffect(viewMode, readerTheme, fontSizeSp, lineHeightMultiplier, readerFont, enableIndent) {
+        readerPrefs.edit()
+            .putString("view_mode", viewMode.name)
+            .putString("theme", readerTheme.name)
+            .putInt("font_size", fontSizeSp)
+            .putFloat("line_height", lineHeightMultiplier)
+            .putString("font", readerFont.name)
+            .putBoolean("indent", enableIndent)
+            .apply()
+    }
 
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showTocSheet by remember { mutableStateOf(false) }
@@ -90,16 +106,22 @@ fun BilingualReaderScreen(
     var selectedOriginalParagraph by remember { mutableStateOf("") }
     var selectedTranslatedParagraph by remember { mutableStateOf("") }
 
-    val rawOriginal = remember(currentChapter, project) {
-        if (project != null && currentChapter != null) {
-            viewModel.fileManager.readOriginalChapter(project!!.id, currentChapter.originalFileName)
-        } else ""
-    }
-
-    val rawTranslated = remember(currentChapter, project) {
-        if (project != null && currentChapter != null) {
-            viewModel.fileManager.readTranslatedChapter(project!!.id, currentChapter.translatedFileName)
-        } else ""
+    var rawOriginal by remember { mutableStateOf("") }
+    var rawTranslated by remember { mutableStateOf("") }
+    LaunchedEffect(currentChapter?.id, currentChapter?.updatedAt, project?.id) {
+        val activeProject = project
+        val activeChapter = currentChapter
+        if (activeProject == null || activeChapter == null) {
+            rawOriginal = ""
+            rawTranslated = ""
+        } else {
+            val loaded = withContext(Dispatchers.IO) {
+                viewModel.fileManager.readOriginalChapter(activeProject.id, activeChapter.originalFileName) to
+                    viewModel.fileManager.readTranslatedChapter(activeProject.id, activeChapter.translatedFileName)
+            }
+            rawOriginal = loaded.first
+            rawTranslated = loaded.second
+        }
     }
 
     // Split strictly by paragraphs without sentence-level splitting
@@ -497,16 +519,15 @@ fun BilingualReaderScreen(
 
                 // Theme selection
                 Text(text = strings.themeSettingsTitle, style = MaterialTheme.typography.labelMedium)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
+                LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    ReaderThemeChip(strings.themeLight, ReaderTheme.LIGHT, readerTheme) { readerTheme = it }
-                    ReaderThemeChip(strings.themeSepia, ReaderTheme.SEPIA, readerTheme) { readerTheme = it }
-                    ReaderThemeChip(strings.themeMint, ReaderTheme.MINT, readerTheme) { readerTheme = it }
-                    ReaderThemeChip(strings.themeSlate, ReaderTheme.SLATE, readerTheme) { readerTheme = it }
-                    ReaderThemeChip(strings.themeDark, ReaderTheme.DARK, readerTheme) { readerTheme = it }
-                    ReaderThemeChip(strings.themeAmoled, ReaderTheme.AMOLED, readerTheme) { readerTheme = it }
+                    item { ReaderThemeChip(strings.themeLight, ReaderTheme.LIGHT, readerTheme) { readerTheme = it } }
+                    item { ReaderThemeChip(strings.themeSepia, ReaderTheme.SEPIA, readerTheme) { readerTheme = it } }
+                    item { ReaderThemeChip(strings.themeMint, ReaderTheme.MINT, readerTheme) { readerTheme = it } }
+                    item { ReaderThemeChip(strings.themeSlate, ReaderTheme.SLATE, readerTheme) { readerTheme = it } }
+                    item { ReaderThemeChip(strings.themeDark, ReaderTheme.DARK, readerTheme) { readerTheme = it } }
+                    item { ReaderThemeChip(strings.themeAmoled, ReaderTheme.AMOLED, readerTheme) { readerTheme = it } }
                 }
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
@@ -528,6 +549,22 @@ fun BilingualReaderScreen(
                 }
 
                 // Font Size & Line Height & Indent Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Text size: ${fontSizeSp}sp", style = MaterialTheme.typography.bodyMedium)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { fontSizeSp = (fontSizeSp - 1).coerceAtLeast(12) }) {
+                            Icon(Icons.Default.Remove, contentDescription = "Decrease text size")
+                        }
+                        IconButton(onClick = { fontSizeSp = (fontSizeSp + 1).coerceAtMost(30) }) {
+                            Icon(Icons.Default.Add, contentDescription = "Increase text size")
+                        }
+                    }
+                }
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -739,6 +776,9 @@ fun BilingualReaderScreen(
         )
     }
 }
+
+private inline fun <reified T : Enum<T>> enumPreference(value: String?, fallback: T): T =
+    runCatching { enumValueOf<T>(value.orEmpty()) }.getOrDefault(fallback)
 
 @Composable
 fun ReaderThemeChip(name: String, theme: ReaderTheme, currentTheme: ReaderTheme, onSelect: (ReaderTheme) -> Unit) {

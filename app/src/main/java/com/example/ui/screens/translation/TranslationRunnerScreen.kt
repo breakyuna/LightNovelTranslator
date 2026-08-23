@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -15,7 +16,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -23,9 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.core.llm.TokenCalculator
 import com.example.core.translator.TranslationJobState
-import com.example.data.model.ApiProviderEntity
 import com.example.data.model.ChapterStatus
-import com.example.ui.components.MetricStatCard
 import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.EmeraldAccent
 import com.example.ui.theme.PrimaryIndigo
@@ -49,7 +47,9 @@ fun TranslationRunnerScreen(
     val jobState by viewModel.translationState.collectAsState()
 
     var selectedProviderId by remember { mutableStateOf<Long?>(null) }
-    val defaultProvider = providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()
+    val defaultProvider = providers.firstOrNull { it.id == project?.defaultProviderId }
+        ?: providers.firstOrNull { it.isDefault }
+        ?: providers.firstOrNull()
     val activeProvider = providers.firstOrNull { it.id == selectedProviderId } ?: defaultProvider
 
     var rangeStart by remember { mutableStateOf("1") }
@@ -59,6 +59,15 @@ fun TranslationRunnerScreen(
     val dontShowWarning by viewModel.dontShowContinuousWarning.collectAsState()
     var showContinuousConfirmDialog by remember { mutableStateOf(false) }
     var dontRemindChecked by remember { mutableStateOf(false) }
+
+    LaunchedEffect(providers, project?.defaultProviderId) {
+        if (providers.none { it.id == selectedProviderId }) selectedProviderId = defaultProvider?.id
+    }
+    LaunchedEffect(chapters.size) {
+        if (rangeEnd == "1" || rangeEnd.toIntOrNull() !in 1..chapters.size.coerceAtLeast(1)) {
+            rangeEnd = chapters.size.coerceAtLeast(1).toString()
+        }
+    }
 
     val remainingChapters = chapters.filter { it.status != ChapterStatus.COMPLETED }
     val remainingWords = remainingChapters.sumOf { it.originalWordCount }
@@ -131,9 +140,22 @@ fun TranslationRunnerScreen(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "In: $${activeProvider?.inputPricePerMillion}/M • Out: $${activeProvider?.outputPricePerMillion}/M",
+                                    text = "In: ${activeProvider?.currency} ${activeProvider?.inputPricePerMillion}/M • Out: ${activeProvider?.currency} ${activeProvider?.outputPricePerMillion}/M",
                                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(providers, key = { it.id }) { provider ->
+                                FilterChip(
+                                    selected = provider.id == activeProvider?.id,
+                                    onClick = {
+                                        selectedProviderId = provider.id
+                                        viewModel.setActiveProjectProvider(provider.id)
+                                    },
+                                    label = { Text(provider.name, maxLines = 1) }
                                 )
                             }
                         }
@@ -426,7 +448,7 @@ fun TranslationRunnerScreen(
                                         color = MaterialTheme.colorScheme.onSurface
                                     )
                                     Text(
-                                        text = "${log.modelName} • ${log.totalTokens} tok • ${TokenCalculator.formatCost(log.estimatedCost)} • ${log.durationMs}ms",
+                                        text = "${log.modelName} • ${log.totalTokens} tok • ${TokenCalculator.formatCost(log.estimatedCost, log.currency.ifBlank { providers.firstOrNull { it.name == log.providerName }?.currency ?: activeProvider?.currency ?: "USD" })} • ${log.durationMs}ms",
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontSize = 10.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -472,7 +494,7 @@ fun TranslationRunnerScreen(
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Text(
-                                text = "${strings.continuousEstCost}: ${TokenCalculator.formatCost(estTotalCost)}",
+                                text = "${strings.continuousEstCost}: ${TokenCalculator.formatCost(estTotalCost, activeProvider?.currency ?: "USD")}",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TertiaryAmber)
                             )
                         }
@@ -519,4 +541,3 @@ fun TranslationRunnerScreen(
         )
     }
 }
-

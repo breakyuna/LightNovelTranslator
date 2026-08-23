@@ -20,6 +20,7 @@ Strict Translation Rules:
 4. Completeness: Translate every single paragraph and sentence faithfully. Never skip, truncate, summarize, or omit anything.
 5. Formatting: Retain the original paragraph breaks and dialogue punctuation conventions.
 6. Output Format: Output ONLY the translated novel content. Do NOT include greetings, preamble, explanations, notes, or markdown fences unless the original text contains them.
+7. Illustrations: Preserve every [IMG:filename] marker byte-for-byte and in the same order and paragraph position.
         """.trimIndent()
     }
 
@@ -110,11 +111,18 @@ Original Text Segment:
 $originalChunkText
 
 Partial Translation Already Generated (DO NOT repeat this, continue immediately from where it left off):
-...${partialTranslation.takeLast(300)}
+...${partialTranslation.takeLast(1200)}
 
 === CONTINUATION OUTPUT ONLY ===
         """.trimIndent()
     }
+
+    fun buildValidationRetryPrompt(originalPrompt: String, problems: List<String>): String = """
+$originalPrompt
+
+IMPORTANT RETRY: The previous response was rejected because ${problems.joinToString("; ")}.
+Translate the complete requested source again from the beginning. Preserve every paragraph break and every [IMG:filename] marker exactly. Do not summarize, explain, refuse, or use Markdown fences.
+    """.trimIndent()
 
     fun buildChapterSummaryPrompt(translatedChapter: String): String {
         val excerpt = if (translatedChapter.length > 5000) {
@@ -139,9 +147,20 @@ $excerpt
         """.trimIndent()
     }
 
-    fun buildTermExtractionPrompt(textSample: String): String {
+    fun buildTermExtractionPrompt(
+        textSample: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+        existingTerms: Collection<String> = emptyList()
+    ): String {
+        val existing = existingTerms.asSequence().map { it.trim().take(120) }
+            .filter { it.isNotBlank() }.take(300).joinToString(", ")
         return """
-You are an expert novel editor and lore archivist. Analyze the following novel excerpt and extract key proper nouns and terms to build a translation glossary.
+    You are an expert novel editor and lore archivist. Analyze the following novel excerpt and extract key proper nouns and terms to build a translation glossary.
+
+Source language: $sourceLanguage
+Required target language for every suggested translation: $targetLanguage
+Existing source terms that MUST NOT be returned again: ${existing.ifBlank { "None" }}
 
 Extract entities under these categories:
 - CHARACTER (Names, nicknames, aliases)
@@ -162,8 +181,17 @@ Output format: Return valid JSON array of objects:
 ]
 
 Text Excerpt:
-${textSample.take(4000)}
+${representativeExcerpt(textSample, 12000)}
         """.trimIndent()
+    }
+
+    private fun representativeExcerpt(text: String, maxChars: Int): String {
+        if (text.length <= maxChars) return text
+        val part = maxChars / 3
+        val middleStart = (text.length / 2 - part / 2).coerceAtLeast(0)
+        return text.take(part) + "\n[…]\n" +
+            text.substring(middleStart, (middleStart + part).coerceAtMost(text.length)) +
+            "\n[…]\n" + text.takeLast(part)
     }
 
     fun buildAgentChapterSplitPrompt(rawTextSample: String): String {
@@ -181,7 +209,7 @@ Return a JSON array of detected chapters:
 ]
 
 Text Sample:
-${rawTextSample.take(5000)}
+${rawTextSample.take(22000)}
         """.trimIndent()
     }
 }

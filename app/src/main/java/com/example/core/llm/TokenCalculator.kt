@@ -1,6 +1,5 @@
 package com.example.core.llm
 
-import kotlin.math.roundToInt
 
 object TokenCalculator {
 
@@ -45,13 +44,18 @@ object TokenCalculator {
     ): Double {
         val inputCost = (promptTokens.toDouble() / 1_000_000.0) * inputPricePerMillion
         val outputCost = (completionTokens.toDouble() / 1_000_000.0) * outputPricePerMillion
-        val total = inputCost + outputCost
-        return (total * 10000.0).roundToInt() / 10000.0 // Round to 4 decimal places
+        return inputCost + outputCost
     }
 
     fun formatCost(cost: Double, currency: String = "USD"): String {
-        val symbol = if (currency.equals("CNY", ignoreCase = true) || currency.equals("RMB", ignoreCase = true)) "¥" else "$"
-        return "$symbol${String.format("%.4f", cost)}"
+        val normalized = currency.trim().uppercase()
+        val amount = String.format("%.4f", cost)
+        return when (normalized) {
+            "USD" -> "\$$amount"
+            "CNY", "RMB" -> "¥$amount"
+            "", "UNKNOWN", "MIXED" -> "$amount (${normalized.ifBlank { "?" }})"
+            else -> "$amount $normalized"
+        }
     }
 
     /**
@@ -63,11 +67,11 @@ object TokenCalculator {
         overheadEstimate: Long = 800L
     ): Long {
         val totalCtx = maxContextTokens.coerceAtLeast(4096).toLong()
-        // Allocate up to 40% of context to target translation output, or at least 2000 tokens
-        val outputBudget = minOf(4096L, totalCtx / 3)
+        // Reserve enough output room for languages whose translation expands substantially.
+        val outputBudget = minOf(16_384L, maxOf(2_048L, totalCtx / 2))
         val availableInputTokens = totalCtx - outputBudget - overheadEstimate
-        // CJK characters take ~1.6 tokens each. Aim for ~1500 to 3000 tokens per chunk for best translation coherence
-        return maxOf(600L, minOf(availableInputTokens, 3000L))
+        // Long-context models should translate a normal chapter in one request when possible.
+        return maxOf(600L, minOf(availableInputTokens, 12_000L))
     }
 
     fun formatTokenCount(tokens: Long): String {

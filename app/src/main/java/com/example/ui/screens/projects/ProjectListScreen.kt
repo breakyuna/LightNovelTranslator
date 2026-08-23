@@ -1,6 +1,7 @@
 package com.example.ui.screens.projects
 
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -35,6 +36,11 @@ import com.example.ui.theme.PrimaryIndigo
 import com.example.ui.theme.SecondaryCyan
 import com.example.ui.theme.TertiaryAmber
 import com.example.ui.viewmodel.AppViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,8 +53,6 @@ fun ProjectListScreen(
     val strings = LocalAppStrings.current
     val projects by viewModel.allProjects.collectAsState()
     var showImportDialog by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -217,7 +221,6 @@ fun ProjectListScreen(
             onDismiss = { showImportDialog = false },
             onImport = { name, bytes, srcLang, tgtLang, style, regex ->
                 viewModel.importFile(
-                    uri = Uri.EMPTY,
                     fileName = name,
                     fileBytes = bytes,
                     sourceLang = srcLang,
@@ -360,7 +363,7 @@ fun ProjectCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = "${strings.totalCostLabel}: ${TokenCalculator.formatCost(project.totalCost)}",
+                    text = "${strings.totalCostLabel}: ${TokenCalculator.formatCost(project.totalCost, project.costCurrency)}",
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 11.sp,
                         fontWeight = FontWeight.SemiBold,
@@ -406,6 +409,8 @@ fun ImportNovelDialog(
     var fileBytes by remember { mutableStateOf<ByteArray?>(null) }
     var pastedText by remember { mutableStateOf("") }
     var isPasteMode by remember { mutableStateOf(false) }
+    var importError by remember { mutableStateOf<String?>(null) }
+    var isReadingFile by remember { mutableStateOf(false) }
 
     var sourceLang by remember { mutableStateOf("English") }
     var targetLang by remember { mutableStateOf("Chinese") }
@@ -413,20 +418,50 @@ fun ImportNovelDialog(
     var customRegex by remember { mutableStateOf("") }
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val bytes = inputStream?.readBytes()
-                val name = uri.lastPathSegment?.substringAfterLast("/") ?: "imported_novel.txt"
-                if (bytes != null) {
+            scope.launch {
+                isReadingFile = true
+                importError = null
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        var displayName = "imported_novel.txt"
+                        var declaredSize: Long? = null
+                        context.contentResolver.query(
+                            uri,
+                            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                            null,
+                            null,
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let {
+                                    displayName = cursor.getString(it) ?: displayName
+                                }
+                                cursor.getColumnIndex(OpenableColumns.SIZE).takeIf { it >= 0 && !cursor.isNull(it) }?.let {
+                                    declaredSize = cursor.getLong(it)
+                                }
+                            }
+                        }
+                        require(declaredSize == null || declaredSize!! <= MAX_IMPORT_BYTES) {
+                            "File exceeds the 100 MB import limit"
+                        }
+                        val bytes = context.contentResolver.openInputStream(uri)?.use(::readLimited)
+                            ?: error("Unable to open the selected file")
+                        displayName to bytes
+                    }
+                }.onSuccess { (name, bytes) ->
                     fileBytes = bytes
                     fileName = name
+                }.onFailure { error ->
+                    fileBytes = null
+                    fileName = ""
+                    importError = error.localizedMessage ?: "Unable to read the selected file"
                 }
-            } catch (e: Exception) {
-                // Read error
+                isReadingFile = false
             }
         }
     }
@@ -457,12 +492,19 @@ fun ImportNovelDialog(
 
                 if (!isPasteMode) {
                     OutlinedButton(
-                        onClick = { launcher.launch("*/*") },
+                        onClick = { launcher.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
+                        enabled = !isReadingFile,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.UploadFile, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(if (fileName.isNotBlank()) "${strings.selectedFilePrefix}$fileName" else strings.chooseFileBtn)
+                        Text(
+                            when {
+                                isReadingFile -> "Reading file…"
+                                fileName.isNotBlank() -> "${strings.selectedFilePrefix}$fileName"
+                                else -> strings.chooseFileBtn
+                            }
+                        )
                     }
                 } else {
                     OutlinedTextField(
@@ -474,6 +516,10 @@ fun ImportNovelDialog(
                             .height(120.dp),
                         maxLines = 6
                     )
+                }
+
+                importError?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
 
                 // Source Language Input & Quick Selection Scroll Window
@@ -589,3 +635,18 @@ fun ImportNovelDialog(
     )
 }
 
+private const val MAX_IMPORT_BYTES = 100L * 1024 * 1024
+
+private fun readLimited(input: InputStream): ByteArray {
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0L
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        require(total <= MAX_IMPORT_BYTES) { "File exceeds the 100 MB import limit" }
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}

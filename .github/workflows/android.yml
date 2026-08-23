@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
   workflow_dispatch:
 
@@ -21,25 +24,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Set up Gradle 9.3.1
+      - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
 
-      - name: Generate debug keystore
-        run: |
-          keytool -genkeypair \
-            -keystore debug.keystore \
-            -storepass android \
-            -keypass android \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Build Debug APK
-        run: gradle assembleDebug
+      - name: Test, lint and build Debug APK
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

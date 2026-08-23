@@ -1,12 +1,12 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -28,6 +28,7 @@ import com.example.ui.theme.TertiaryAmber
 fun TermItemCard(
     term: GlossaryEntity,
     onEdit: () -> Unit,
+    onApprove: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -103,6 +104,20 @@ fun TermItemCard(
                 }
 
                 Spacer(modifier = Modifier.weight(1f))
+
+                if (term.isAutoExtracted) {
+                    IconButton(
+                        onClick = onApprove,
+                        modifier = Modifier.size(32.dp).testTag("approve_term_${term.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = strings.approveTerminology,
+                            tint = EmeraldAccent,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
 
                 IconButton(
                     onClick = onEdit,

@@ -1,6 +1,5 @@
 package com.example.core.parser
 
-import java.io.ByteArrayInputStream
 import java.nio.charset.Charset
 
 data class ParsedChapter(
@@ -58,11 +57,8 @@ object TxtParser {
         fallbackChunkWords: Int = 2500
     ): List<ParsedChapter> {
         val lines = fullText.lines()
-        val pattern = try {
-            Regex(regexPattern, RegexOption.MULTILINE)
-        } catch (e: Exception) {
-            Regex(REGEX_CHINESE, RegexOption.MULTILINE)
-        }
+        require(regexPattern.length <= 500) { "Chapter regex is too long" }
+        val pattern = Regex(regexPattern, RegexOption.MULTILINE)
 
         val chapters = mutableListOf<ParsedChapter>()
         var currentTitle = "Preface / Prologue"

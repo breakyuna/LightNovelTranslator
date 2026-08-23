@@ -16,7 +16,8 @@ object EpubExporter {
         fileManager: ProjectFileManager
     ): File {
         val exportsDir = fileManager.getExportsDir(project.id)
-        val sanitizedTitle = project.title.replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val sanitizedTitle = project.title.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
+            .trim().take(80).ifBlank { "translated_novel" }
         val exportFile = File(exportsDir, "${sanitizedTitle}_translated.epub")
 
         val imagesDir = fileManager.getImagesDir(project.id)
@@ -95,7 +96,7 @@ img {
                     "svg" -> "image/svg+xml"
                     else -> "image/jpeg"
                 }
-                manifestItems.append("""    <item id="img_$idx" href="images/${imgFile.name}" media-type="$mime"/>${"\n"}""")
+                manifestItems.append("""    <item id="img_$idx" href="images/${escapeXml(imgFile.name)}" media-type="$mime"/>${"\n"}""")
                 addZipEntry(zos, "OEBPS/images/${imgFile.name}", imgFile.readBytes())
             }
 

@@ -83,6 +83,8 @@ interface AppStrings {
     val aiAgentSlicerDesc: String
     val runAiAgentSlicer: String
     val resliceByRegex: String
+    val destructiveSplitWarning: String
+    val confirmDestructiveAction: String
 
     // Export Dialog
     val exportTitle: String
@@ -194,6 +196,7 @@ interface AppStrings {
     val contextNotesPlaceholder: String
     val notesPlaceholder: String
     val aiExtractedBadge: String
+    val approveTerminology: String
     val catCharacter: String
     val categoryCharacter: String
     val catLocation: String
@@ -353,15 +356,17 @@ object ChineseStrings : AppStrings {
 
     // Splitter Dialog
     override val splitterTitle = "章节裁剪与 Agent 智能分割"
-    override val splitterDesc = "指定章节切分规则，或者在章节名不规范时使用 AI Agent 智能分析与分割："
+    override val splitterDesc = "指定章节切分规则，或者使用 AI Agent 智能分析与分割。重新切分会删除现有译文和进度，请先确认已备份："
     override val presetChinese = "第X章"
     override val presetEnglish = "Chapter X"
     override val presetMarkdown = "Markdown #"
     override val regexPatternLabel = "章节正则表达式"
     override val aiAgentSlicerTitle = "AI Agent 智能切分 (针对不规范或缺失标题的小说)"
-    override val aiAgentSlicerDesc = "使用大模型分析自然段落与剧情转折，自动标记章节切分点并裁剪文件。"
+    override val aiAgentSlicerDesc = "使用大模型分析自然段落与剧情转折，自动标记章节切分点并重建章节文件，原有译文不会保留。"
     override val runAiAgentSlicer = "运行 AI Agent 智能切分"
     override val resliceByRegex = "按正则重新切分"
+    override val destructiveSplitWarning = "此操作会删除当前章节译文、摘要和进度，且只保留重新生成的章节文件。确定继续吗？"
+    override val confirmDestructiveAction = "确认重建"
 
     // Export Dialog
     override val exportTitle = "导出已翻译小说"
@@ -473,6 +478,7 @@ object ChineseStrings : AppStrings {
     override val contextNotesPlaceholder = "例如：银月骑士团圣骑士，主角导师"
     override val notesPlaceholder = "例如：银月骑士团圣骑士，主角导师"
     override val aiExtractedBadge = "AI 提炼"
+    override val approveTerminology = "审核通过该术语"
     override val catCharacter = "角色人名"
     override val categoryCharacter = "角色人名"
     override val catLocation = "地名场景"
@@ -632,15 +638,17 @@ object EnglishStrings : AppStrings {
 
     // Splitter Dialog
     override val splitterTitle = "Chapter Splitter & AI Agent Slicer"
-    override val splitterDesc = "Specify slicing regex or use AI Agent to split unstructured novel chapters:"
+    override val splitterDesc = "Specify a slicing regex or use AI Agent to split unstructured chapters. Re-splitting deletes existing translations and progress, so back up first:"
     override val presetChinese = "第X章 (Chinese)"
     override val presetEnglish = "Chapter X (English)"
     override val presetMarkdown = "Markdown #"
     override val regexPatternLabel = "Chapter Regex Pattern"
     override val aiAgentSlicerTitle = "AI Agent Smart Slicer (For non-standard/unmarked novels)"
-    override val aiAgentSlicerDesc = "Analyzes narrative progression and plot beats to mark chapter boundaries."
+    override val aiAgentSlicerDesc = "Analyzes narrative progression and plot beats to rebuild chapter files; existing translations are not preserved."
     override val runAiAgentSlicer = "Run AI Agent Slicer"
     override val resliceByRegex = "Re-slice by Regex"
+    override val destructiveSplitWarning = "This deletes current translations, summaries, and progress, keeping only the rebuilt chapter files. Continue?"
+    override val confirmDestructiveAction = "Rebuild"
 
     // Export Dialog
     override val exportTitle = "Export Translated Novel"
@@ -752,6 +760,7 @@ object EnglishStrings : AppStrings {
     override val contextNotesPlaceholder = "e.g. Silvermoon Paladin mentor"
     override val notesPlaceholder = "e.g. Silvermoon Paladin mentor"
     override val aiExtractedBadge = "AI Extracted"
+    override val approveTerminology = "Approve terminology"
     override val catCharacter = "Character"
     override val categoryCharacter = "Character"
     override val catLocation = "Location"

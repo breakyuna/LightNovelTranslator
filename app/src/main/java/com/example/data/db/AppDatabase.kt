@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.model.*
 import kotlinx.coroutines.CoroutineScope
@@ -30,7 +31,7 @@ class Converters {
     fun toTermCategory(value: String): TermCategory = try {
         TermCategory.valueOf(value)
     } catch (e: Exception) {
-        TermCategory.CHARACTER
+        TermCategory.CUSTOM
     }
 
     @TypeConverter
@@ -52,7 +53,7 @@ class Converters {
         ApiProviderEntity::class,
         TranslationLogEntity::class
     ],
-    version = 1,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -64,6 +65,20 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun translationLogDao(): TranslationLogDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE projects ADD COLUMN costCurrency TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE translation_logs ADD COLUMN currency TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE projects SET costCurrency = 'UNKNOWN' WHERE totalCost > 0 AND (costCurrency IS NULL OR costCurrency = '')")
+                db.execSQL("UPDATE translation_logs SET currency = 'UNKNOWN' WHERE currency IS NULL OR currency = ''")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -74,6 +89,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "novel_translator_db"
                 )
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -84,14 +100,15 @@ abstract class AppDatabase : RoomDatabase() {
                                     // Pre-populate standard providers
                                     dao.insertProvider(
                                         ApiProviderEntity(
-                                            name = "Google Gemini (Built-in)",
+                                            name = "Google Gemini",
                                             providerType = ProviderType.GEMINI_DIRECT,
                                             baseUrl = "https://generativelanguage.googleapis.com",
                                             apiKey = "",
-                                            selectedModel = "gemini-3.5-flash",
-                                            inputPricePerMillion = 0.10,
-                                            outputPricePerMillion = 0.40,
+                                            selectedModel = "gemini-2.5-flash",
+                                            inputPricePerMillion = 0.30,
+                                            outputPricePerMillion = 2.50,
                                             currency = "USD",
+                                            maxContextTokens = 32_768,
                                             isDefault = true
                                         )
                                     )
@@ -105,6 +122,7 @@ abstract class AppDatabase : RoomDatabase() {
                                             inputPricePerMillion = 0.14,
                                             outputPricePerMillion = 0.28,
                                             currency = "USD",
+                                            maxContextTokens = 32_768,
                                             isDefault = false
                                         )
                                     )
@@ -114,10 +132,11 @@ abstract class AppDatabase : RoomDatabase() {
                                             providerType = ProviderType.OPENAI_COMPATIBLE,
                                             baseUrl = "https://api.openai.com/v1",
                                             apiKey = "",
-                                            selectedModel = "gpt-4o-mini",
-                                            inputPricePerMillion = 0.15,
-                                            outputPricePerMillion = 0.60,
+                                            selectedModel = "gpt-5-mini",
+                                            inputPricePerMillion = 0.25,
+                                            outputPricePerMillion = 2.00,
                                             currency = "USD",
+                                            maxContextTokens = 32_768,
                                             isDefault = false
                                         )
                                     )
@@ -127,10 +146,11 @@ abstract class AppDatabase : RoomDatabase() {
                                             providerType = ProviderType.ANTHROPIC_CLAUDE,
                                             baseUrl = "https://api.anthropic.com/v1",
                                             apiKey = "",
-                                            selectedModel = "claude-3-5-haiku-20241022",
-                                            inputPricePerMillion = 0.80,
-                                            outputPricePerMillion = 4.00,
+                                            selectedModel = "claude-haiku-4-5-20251001",
+                                            inputPricePerMillion = 1.00,
+                                            outputPricePerMillion = 5.00,
                                             currency = "USD",
+                                            maxContextTokens = 32_768,
                                             isDefault = false
                                         )
                                     )

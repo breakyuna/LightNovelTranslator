@@ -34,7 +34,9 @@ fun GlossaryScreen(
     val project by viewModel.activeProject.collectAsState()
     val glossary by viewModel.activeGlossary.collectAsState()
     val providers by viewModel.allProviders.collectAsState()
-    val defaultProvider = providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()
+    val defaultProvider = providers.firstOrNull { it.id == project?.defaultProviderId }
+        ?: providers.firstOrNull { it.isDefault }
+        ?: providers.firstOrNull()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<TermCategory?>(null) }
@@ -222,6 +224,7 @@ fun GlossaryScreen(
                         TermItemCard(
                             term = term,
                             onEdit = { editingTerm = term },
+                            onApprove = { viewModel.approveGlossaryTerm(term) },
                             onDelete = { viewModel.deleteGlossaryTerm(term.id) }
                         )
                     }
@@ -334,7 +337,8 @@ fun TermEditDialog(
                             originalTerm = original.trim(),
                             translatedTerm = translated.trim(),
                             category = category,
-                            notes = notes.trim()
+                            notes = notes.trim(),
+                            isAutoExtracted = false
                         ) ?: GlossaryEntity(
                             projectId = projectId,
                             originalTerm = original.trim(),
@@ -358,4 +362,3 @@ fun TermEditDialog(
         }
     )
 }
-
