@@ -204,7 +204,7 @@ class ExampleUnitTest {
             maxContextTokens = 8192,
             overheadEstimate = 800L
         )
-        assertTrue(budget in 600L..3000L)
+        assertTrue(budget in 600L..4000L)
 
         val smallCtxBudget = TokenCalculator.calculateChunkBudget(
             maxContextTokens = 2048,

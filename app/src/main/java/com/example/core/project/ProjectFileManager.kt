@@ -2,6 +2,7 @@ package com.example.core.project
 
 import android.content.Context
 import java.io.File
+import java.util.UUID
 
 class ProjectFileManager(private val context: Context) {
 
@@ -76,7 +77,7 @@ class ProjectFileManager(private val context: Context) {
 
     fun beginChapterFileTransaction(projectId: Long): ChapterFileTransaction {
         val projectDir = getProjectDir(projectId)
-        val suffix = "${System.currentTimeMillis()}_${Thread.currentThread().id}"
+        val suffix = "${System.currentTimeMillis()}_${UUID.randomUUID()}"
         val stagingRoot = File(projectDir, ".chapter_staging_$suffix")
         val stagingChapters = File(stagingRoot, "chapters")
         val stagingTranslations = File(stagingRoot, "translations")

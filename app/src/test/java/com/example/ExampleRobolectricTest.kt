@@ -105,9 +105,10 @@ class ExampleRobolectricTest {
         assertEquals("张无忌", terms[1].originalTerm)
         assertEquals(TermCategory.CHARACTER, terms[1].category)
 
-        // Test malformed JSON graceful fallback
+        // Malformed provider output must be surfaced instead of masquerading as zero terms.
         val malformed = "This is not json at all."
-        val emptyTerms = TermExtractionAgent.parseTermsJson(1L, malformed)
-        assertTrue(emptyTerms.isEmpty())
+        assertThrows(IllegalArgumentException::class.java) {
+            TermExtractionAgent.parseTermsJson(1L, malformed)
+        }
     }
 }
