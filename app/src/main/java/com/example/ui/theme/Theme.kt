@@ -6,6 +6,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
+enum class AppThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK
+}
+
 private val DarkColorScheme = darkColorScheme(
     primary = PrimaryIndigoDark,
     onPrimary = OnPrimaryDark,
@@ -52,16 +58,22 @@ private val LightColorScheme = lightColorScheme(
 
 @Composable
 fun NovelTranslatorTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = false, // Use our custom refined colors by default
+    themeMode: AppThemeMode = AppThemeMode.SYSTEM,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    val isDark = when (themeMode) {
+        AppThemeMode.SYSTEM -> isSystemInDarkTheme()
+        AppThemeMode.LIGHT -> false
+        AppThemeMode.DARK -> true
+    }
+
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            if (isDark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> DarkColorScheme
+        isDark -> DarkColorScheme
         else -> LightColorScheme
     }
 
@@ -71,3 +83,4 @@ fun NovelTranslatorTheme(
         content = content
     )
 }
+

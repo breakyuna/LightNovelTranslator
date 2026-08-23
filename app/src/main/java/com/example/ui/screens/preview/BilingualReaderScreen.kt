@@ -5,11 +5,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,9 +25,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.core.parser.TxtParser
 import com.example.data.model.ChapterEntity
+import com.example.data.model.ChapterStatus
 import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AppViewModel
@@ -30,13 +39,22 @@ import com.example.ui.viewmodel.AppViewModel
 enum class ReaderTheme(val bg: Color, val text: Color, val surface: Color) {
     LIGHT(BackgroundLight, OnBackgroundLight, SurfaceLight),
     SEPIA(SepiaBackground, SepiaOnBackground, SepiaSurface),
+    MINT(MintBackground, MintOnBackground, MintSurface),
+    SLATE(SlateBackground, SlateOnBackground, SlateSurface),
     DARK(BackgroundDark, OnBackgroundDark, SurfaceDark),
-    SLATE(SlateBackground, SlateOnBackground, SlateSurface)
+    AMOLED(AmoledBackground, AmoledOnBackground, AmoledSurface)
 }
 
 enum class ViewMode {
+    NOVEL_READER,
     TRANSLATED_ONLY,
     BILINGUAL_PARALLEL
+}
+
+enum class ReaderFont(val label: String, val family: FontFamily) {
+    SERIF("Serif", FontFamily.Serif),
+    SANS("Sans", FontFamily.SansSerif),
+    MONO("Mono", FontFamily.Monospace)
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,9 +74,15 @@ fun BilingualReaderScreen(
     var currentChapterId by remember(chapterId) { mutableStateOf(chapterId) }
     val currentChapter = chapters.find { it.id == currentChapterId } ?: chapters.firstOrNull()
 
-    var viewMode by remember { mutableStateOf(ViewMode.BILINGUAL_PARALLEL) }
+    var viewMode by remember { mutableStateOf(ViewMode.NOVEL_READER) }
     var readerTheme by remember { mutableStateOf(ReaderTheme.SEPIA) }
-    var fontSizeSp by remember { mutableStateOf(16) }
+    var fontSizeSp by remember { mutableStateOf(17) }
+    var lineHeightMultiplier by remember { mutableStateOf(1.7f) }
+    var readerFont by remember { mutableStateOf(ReaderFont.SERIF) }
+    var enableIndent by remember { mutableStateOf(true) }
+
+    var showSettingsSheet by remember { mutableStateOf(false) }
+    var showTocSheet by remember { mutableStateOf(false) }
 
     var showEditDialog by remember { mutableStateOf(false) }
     var showPolishDialog by remember { mutableStateOf(false) }
@@ -78,12 +102,13 @@ fun BilingualReaderScreen(
         } else ""
     }
 
+    // Split strictly by paragraphs without sentence-level splitting
     val origParagraphs = remember(rawOriginal) {
-        rawOriginal.split(Regex("\n{2,}|\r\n\r\n")).filter { it.isNotBlank() }
+        rawOriginal.split(Regex("\n{2,}|\r\n\r\n")).map { it.trim() }.filter { it.isNotBlank() }
     }
 
     val transParagraphs = remember(rawTranslated) {
-        rawTranslated.split(Regex("\n{2,}|\r\n\r\n")).filter { it.isNotBlank() }
+        rawTranslated.split(Regex("\n{2,}|\r\n\r\n")).map { it.trim() }.filter { it.isNotBlank() }
     }
 
     val maxParagraphCount = maxOf(origParagraphs.size, transParagraphs.size)
@@ -91,6 +116,9 @@ fun BilingualReaderScreen(
     val currentIdx = chapters.indexOfFirst { it.id == currentChapterId }
     val prevChapter = if (currentIdx > 0) chapters.getOrNull(currentIdx - 1) else null
     val nextChapter = if (currentIdx != -1 && currentIdx < chapters.size - 1) chapters.getOrNull(currentIdx + 1) else null
+
+    val origWords = remember(rawOriginal) { TxtParser.countWords(rawOriginal) }
+    val transWords = remember(rawTranslated) { TxtParser.countWords(rawTranslated) }
 
     Scaffold(
         topBar = {
@@ -100,10 +128,11 @@ fun BilingualReaderScreen(
                         Text(
                             text = currentChapter?.title ?: strings.readerTitle,
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = "${strings.chapterPrefix}${currentChapter?.chapterIndex ?: 1} ${strings.ofChapter} ${chapters.size}",
+                            text = "${strings.chapterPrefix}${currentChapter?.chapterIndex ?: 1}/${chapters.size} • ${origWords}${strings.wordsUnit} / ${transWords}${strings.wordsUnit}",
                             style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -115,34 +144,38 @@ fun BilingualReaderScreen(
                     }
                 },
                 actions = {
-                    // Toggle Bilingual vs Translated
+                    // Extract Terms from this Chapter
                     IconButton(
                         onClick = {
-                            viewMode = if (viewMode == ViewMode.BILINGUAL_PARALLEL) ViewMode.TRANSLATED_ONLY else ViewMode.BILINGUAL_PARALLEL
+                            if (currentChapter != null && defaultProvider != null) {
+                                viewModel.extractTermsFromChapter(currentChapter.id, defaultProvider)
+                            } else {
+                                viewModel.showMessage(strings.noProvidersConfigured)
+                            }
                         },
-                        modifier = Modifier.testTag("toggle_view_mode_button")
+                        modifier = Modifier.testTag("extract_terms_chapter_btn")
                     ) {
                         Icon(
-                            imageVector = if (viewMode == ViewMode.BILINGUAL_PARALLEL) Icons.Default.VerticalSplit else Icons.Default.Article,
-                            contentDescription = strings.toggleBilingualDesc,
+                            imageVector = Icons.Default.AutoStories,
+                            contentDescription = strings.extractNewTermsAction,
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
 
-                    // Font Size -
+                    // Table of Contents / Chapter Switcher
                     IconButton(
-                        onClick = { if (fontSizeSp > 12) fontSizeSp -= 2 },
-                        modifier = Modifier.size(36.dp)
+                        onClick = { showTocSheet = true },
+                        modifier = Modifier.testTag("toc_button")
                     ) {
-                        Text("A-", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+                        Icon(Icons.Default.Menu, contentDescription = strings.tocSheetTitle)
                     }
 
-                    // Font Size +
+                    // Reader Settings (Themes, Fonts, Indent)
                     IconButton(
-                        onClick = { if (fontSizeSp < 28) fontSizeSp += 2 },
-                        modifier = Modifier.size(36.dp)
+                        onClick = { showSettingsSheet = true },
+                        modifier = Modifier.testTag("reader_settings_button")
                     ) {
-                        Text("A+", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+                        Icon(Icons.Default.FormatSize, contentDescription = strings.settingsTitle)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = readerTheme.bg)
@@ -153,22 +186,38 @@ fun BilingualReaderScreen(
                 color = readerTheme.surface,
                 tonalElevation = 4.dp
             ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    // Theme Switcher Row
+                Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    // View Mode Tabs: Novel Reader vs Translated vs Bilingual Parallel
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceEvenly,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        ReaderThemeChip(strings.themeLight, ReaderTheme.LIGHT, readerTheme) { readerTheme = it }
-                        ReaderThemeChip(strings.themeSepia, ReaderTheme.SEPIA, readerTheme) { readerTheme = it }
-                        ReaderThemeChip(strings.themeDark, ReaderTheme.DARK, readerTheme) { readerTheme = it }
-                        ReaderThemeChip(strings.themeSlate, ReaderTheme.SLATE, readerTheme) { readerTheme = it }
+                        FilterChip(
+                            selected = viewMode == ViewMode.NOVEL_READER,
+                            onClick = { viewMode = ViewMode.NOVEL_READER },
+                            label = { Text(strings.novelReaderTitle, style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = viewMode == ViewMode.TRANSLATED_ONLY,
+                            onClick = { viewMode = ViewMode.TRANSLATED_ONLY },
+                            label = { Text(strings.translatedChaptersCount, style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.AutoMirrored.Filled.Article, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = viewMode == ViewMode.BILINGUAL_PARALLEL,
+                            onClick = { viewMode = ViewMode.BILINGUAL_PARALLEL },
+                            label = { Text(strings.toggleBilingual, style = MaterialTheme.typography.labelSmall) },
+                            leadingIcon = { Icon(Icons.Default.VerticalSplit, contentDescription = null, modifier = Modifier.size(14.dp)) },
+                            modifier = Modifier.weight(1f)
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
 
-                    // Prev / Next Chapter Buttons
+                    // Prev / Next Chapter Navigation
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -179,13 +228,13 @@ fun BilingualReaderScreen(
                             enabled = prevChapter != null,
                             modifier = Modifier.testTag("prev_chapter_button")
                         ) {
-                            Icon(Icons.Default.NavigateBefore, contentDescription = null)
+                            Icon(Icons.AutoMirrored.Filled.NavigateBefore, contentDescription = null)
                             Text(strings.prevChapterBtn)
                         }
 
                         Text(
                             text = "${currentIdx + 1} / ${chapters.size}",
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
                             color = readerTheme.text
                         )
 
@@ -195,7 +244,7 @@ fun BilingualReaderScreen(
                             modifier = Modifier.testTag("next_chapter_button")
                         ) {
                             Text(strings.nextChapterBtn)
-                            Icon(Icons.Default.NavigateNext, contentDescription = null)
+                            Icon(Icons.AutoMirrored.Filled.NavigateNext, contentDescription = null)
                         }
                     }
                 }
@@ -220,146 +269,346 @@ fun BilingualReaderScreen(
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(horizontal = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                    contentPadding = PaddingValues(vertical = 16.dp)
+                        .padding(horizontal = if (viewMode == ViewMode.NOVEL_READER) 20.dp else 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(if (viewMode == ViewMode.NOVEL_READER) 16.dp else 12.dp),
+                    contentPadding = PaddingValues(vertical = 18.dp)
                 ) {
+                    // Chapter Title Header
                     item {
-                        Text(
-                            text = currentChapter?.title ?: "",
-                            style = MaterialTheme.typography.titleLarge.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = (fontSizeSp + 4).sp,
-                                fontFamily = FontFamily.Serif
-                            ),
-                            color = readerTheme.text,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        HorizontalDivider(color = readerTheme.text.copy(alpha = 0.2f))
+                        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
+                            Text(
+                                text = currentChapter?.title ?: "",
+                                style = MaterialTheme.typography.headlineSmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = (fontSizeSp + 5).sp,
+                                    fontFamily = readerFont.family
+                                ),
+                                color = readerTheme.text,
+                                textAlign = if (viewMode == ViewMode.NOVEL_READER) TextAlign.Center else TextAlign.Start,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Spacer(modifier = Modifier.height(10.dp))
+                            HorizontalDivider(color = readerTheme.text.copy(alpha = 0.15f))
+                        }
                     }
 
-                    if (viewMode == ViewMode.TRANSLATED_ONLY) {
-                        if (transParagraphs.isEmpty()) {
-                            item {
-                                Text(
-                                    text = strings.chapterNotTranslatedYet,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = readerTheme.text.copy(alpha = 0.6f)
-                                )
-                            }
-                        } else {
-                            itemsIndexed(transParagraphs) { index, para ->
-                                Card(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            selectedParagraphIndex = index
-                                            selectedOriginalParagraph = origParagraphs.getOrElse(index) { "" }
-                                            selectedTranslatedParagraph = para
-                                            showEditDialog = true
-                                        },
-                                    shape = RoundedCornerShape(10.dp),
-                                    colors = CardDefaults.cardColors(containerColor = readerTheme.surface.copy(alpha = 0.6f)),
-                                    border = BorderStroke(0.5.dp, readerTheme.text.copy(alpha = 0.1f))
-                                ) {
-                                    Text(
-                                        text = para,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontSize = fontSizeSp.sp,
-                                            lineHeight = (fontSizeSp * 1.65).sp,
-                                            fontFamily = FontFamily.Serif
-                                        ),
-                                        color = readerTheme.text,
-                                        modifier = Modifier.padding(12.dp)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        // Bilingual Comparison Mode
-                        items(maxParagraphCount) { index ->
-                            val origP = origParagraphs.getOrElse(index) { "" }
-                            val transP = transParagraphs.getOrElse(index) { "" }
-
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("bilingual_row_$index"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = CardDefaults.cardColors(containerColor = readerTheme.surface),
-                                border = BorderStroke(1.dp, readerTheme.text.copy(alpha = 0.12f))
-                            ) {
-                                Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
-                                    // Original Text
-                                    if (origP.isNotBlank()) {
-                                        Text(
-                                            text = origP,
-                                            style = MaterialTheme.typography.bodyMedium.copy(
-                                                fontSize = (fontSizeSp - 1).sp,
-                                                lineHeight = ((fontSizeSp - 1) * 1.5).sp,
-                                                color = readerTheme.text.copy(alpha = 0.65f)
-                                            )
-                                        )
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                        HorizontalDivider(color = readerTheme.text.copy(alpha = 0.1f))
-                                        Spacer(modifier = Modifier.height(8.dp))
-                                    }
-
-                                    // Translated Text
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
+                    when (viewMode) {
+                        ViewMode.NOVEL_READER -> {
+                            // Immersive Novel Reading Mode
+                            if (transParagraphs.isEmpty()) {
+                                item {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = if (transP.isNotBlank()) transP else strings.pendingTranslation,
-                                            style = MaterialTheme.typography.bodyLarge.copy(
-                                                fontSize = fontSizeSp.sp,
-                                                lineHeight = (fontSizeSp * 1.6).sp,
-                                                fontWeight = FontWeight.Medium,
-                                                fontFamily = FontFamily.Serif,
-                                                color = if (transP.isNotBlank()) readerTheme.text else readerTheme.text.copy(alpha = 0.4f)
-                                            ),
-                                            modifier = Modifier.weight(1f)
+                                            text = strings.chapterNotTranslatedYet,
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = readerTheme.text.copy(alpha = 0.7f)
                                         )
-
-                                        Row {
-                                            IconButton(
+                                        Spacer(modifier = Modifier.height(12.dp))
+                                        if (defaultProvider != null && currentChapter != null) {
+                                            Button(
                                                 onClick = {
-                                                    selectedParagraphIndex = index
-                                                    selectedOriginalParagraph = origP
-                                                    selectedTranslatedParagraph = transP
-                                                    showPolishDialog = true
-                                                },
-                                                modifier = Modifier.size(32.dp)
+                                                    viewModel.translateSingleChapter(currentChapter.id, defaultProvider)
+                                                }
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.AutoFixHigh,
-                                                    contentDescription = strings.aiRetranslateAction,
-                                                    tint = MaterialTheme.colorScheme.secondary,
-                                                    modifier = Modifier.size(16.dp)
-                                                )
-                                            }
-
-                                            IconButton(
-                                                onClick = {
-                                                    selectedParagraphIndex = index
-                                                    selectedOriginalParagraph = origP
-                                                    selectedTranslatedParagraph = transP
-                                                    showEditDialog = true
-                                                },
-                                                modifier = Modifier.size(32.dp)
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = strings.editInPlaceAction,
-                                                    tint = readerTheme.text.copy(alpha = 0.7f),
-                                                    modifier = Modifier.size(16.dp)
-                                                )
+                                                Icon(Icons.Default.Translate, contentDescription = null)
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(strings.startAutoTranslationBtn)
                                             }
                                         }
                                     }
                                 }
+                            } else {
+                                itemsIndexed(transParagraphs) { index, para ->
+                                    val formattedPara = if (enableIndent) "　　$para" else para
+                                    Text(
+                                        text = formattedPara,
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            fontSize = fontSizeSp.sp,
+                                            lineHeight = (fontSizeSp * lineHeightMultiplier).sp,
+                                            fontFamily = readerFont.family,
+                                            color = readerTheme.text
+                                        ),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedParagraphIndex = index
+                                                selectedOriginalParagraph = origParagraphs.getOrElse(index) { "" }
+                                                selectedTranslatedParagraph = para
+                                                showEditDialog = true
+                                            }
+                                    )
+                                }
+                            }
+                        }
+
+                        ViewMode.TRANSLATED_ONLY -> {
+                            // Translated Paragraphs with Card Containers
+                            if (transParagraphs.isEmpty()) {
+                                item {
+                                    Text(
+                                        text = strings.chapterNotTranslatedYet,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = readerTheme.text.copy(alpha = 0.6f)
+                                    )
+                                }
+                            } else {
+                                itemsIndexed(transParagraphs) { index, para ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedParagraphIndex = index
+                                                selectedOriginalParagraph = origParagraphs.getOrElse(index) { "" }
+                                                selectedTranslatedParagraph = para
+                                                showEditDialog = true
+                                            },
+                                        shape = RoundedCornerShape(10.dp),
+                                        colors = CardDefaults.cardColors(containerColor = readerTheme.surface.copy(alpha = 0.7f)),
+                                        border = BorderStroke(0.5.dp, readerTheme.text.copy(alpha = 0.12f))
+                                    ) {
+                                        Text(
+                                            text = if (enableIndent) "　　$para" else para,
+                                            style = MaterialTheme.typography.bodyLarge.copy(
+                                                fontSize = fontSizeSp.sp,
+                                                lineHeight = (fontSizeSp * lineHeightMultiplier).sp,
+                                                fontFamily = readerFont.family
+                                            ),
+                                            color = readerTheme.text,
+                                            modifier = Modifier.padding(12.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        ViewMode.BILINGUAL_PARALLEL -> {
+                            // Bilingual Comparison Mode
+                            items(maxParagraphCount) { index ->
+                                val origP = origParagraphs.getOrElse(index) { "" }
+                                val transP = transParagraphs.getOrElse(index) { "" }
+
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("bilingual_row_$index"),
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = readerTheme.surface),
+                                    border = BorderStroke(1.dp, readerTheme.text.copy(alpha = 0.12f))
+                                ) {
+                                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                                        // Original Text
+                                        if (origP.isNotBlank()) {
+                                            Text(
+                                                text = origP,
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontSize = (fontSizeSp - 1).sp,
+                                                    lineHeight = ((fontSizeSp - 1) * 1.5).sp,
+                                                    color = readerTheme.text.copy(alpha = 0.65f)
+                                                )
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            HorizontalDivider(color = readerTheme.text.copy(alpha = 0.1f))
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                        }
+
+                                        // Translated Text
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = if (transP.isNotBlank()) transP else strings.pendingTranslation,
+                                                style = MaterialTheme.typography.bodyLarge.copy(
+                                                    fontSize = fontSizeSp.sp,
+                                                    lineHeight = (fontSizeSp * lineHeightMultiplier).sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontFamily = readerFont.family,
+                                                    color = if (transP.isNotBlank()) readerTheme.text else readerTheme.text.copy(alpha = 0.4f)
+                                                ),
+                                                modifier = Modifier.weight(1f)
+                                            )
+
+                                            Row {
+                                                IconButton(
+                                                    onClick = {
+                                                        selectedParagraphIndex = index
+                                                        selectedOriginalParagraph = origP
+                                                        selectedTranslatedParagraph = transP
+                                                        showPolishDialog = true
+                                                    },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.AutoFixHigh,
+                                                        contentDescription = strings.aiRetranslateAction,
+                                                        tint = MaterialTheme.colorScheme.secondary,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+
+                                                IconButton(
+                                                    onClick = {
+                                                        selectedParagraphIndex = index
+                                                        selectedOriginalParagraph = origP
+                                                        selectedTranslatedParagraph = transP
+                                                        showEditDialog = true
+                                                    },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Edit,
+                                                        contentDescription = strings.editInPlaceAction,
+                                                        tint = readerTheme.text.copy(alpha = 0.7f),
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Reader Settings Bottom Sheet
+    if (showSettingsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettingsSheet = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = strings.novelReaderTitle,
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+
+                // Theme selection
+                Text(text = strings.themeSettingsTitle, style = MaterialTheme.typography.labelMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ReaderThemeChip(strings.themeLight, ReaderTheme.LIGHT, readerTheme) { readerTheme = it }
+                    ReaderThemeChip(strings.themeSepia, ReaderTheme.SEPIA, readerTheme) { readerTheme = it }
+                    ReaderThemeChip(strings.themeMint, ReaderTheme.MINT, readerTheme) { readerTheme = it }
+                    ReaderThemeChip(strings.themeSlate, ReaderTheme.SLATE, readerTheme) { readerTheme = it }
+                    ReaderThemeChip(strings.themeDark, ReaderTheme.DARK, readerTheme) { readerTheme = it }
+                    ReaderThemeChip(strings.themeAmoled, ReaderTheme.AMOLED, readerTheme) { readerTheme = it }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                // Font Family selection
+                Text(text = strings.fontSerif + " / " + strings.fontSans, style = MaterialTheme.typography.labelMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    ReaderFont.values().forEach { f ->
+                        FilterChip(
+                            selected = readerFont == f,
+                            onClick = { readerFont = f },
+                            label = { Text(f.label) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // Font Size & Line Height & Indent Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "${strings.lineHeightLabel}: ${lineHeightMultiplier}x", style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = lineHeightMultiplier == 1.5f, onClick = { lineHeightMultiplier = 1.5f }, label = { Text("1.5x") })
+                        FilterChip(selected = lineHeightMultiplier == 1.7f, onClick = { lineHeightMultiplier = 1.7f }, label = { Text("1.7x") })
+                        FilterChip(selected = lineHeightMultiplier == 2.0f, onClick = { lineHeightMultiplier = 2.0f }, label = { Text("2.0x") })
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = strings.indentLabel, style = MaterialTheme.typography.bodyMedium)
+                    Switch(
+                        checked = enableIndent,
+                        onCheckedChange = { enableIndent = it }
+                    )
+                }
+            }
+        }
+    }
+
+    // Table of Contents (TOC) Bottom Sheet
+    if (showTocSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showTocSheet = false }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp)
+            ) {
+                Text(
+                    text = "${strings.tocSheetTitle} (${chapters.size})",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
+                LazyColumn(
+                    modifier = Modifier.fillMaxHeight(0.6f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(chapters, key = { it.id }) { ch ->
+                        val isCurr = ch.id == currentChapterId
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isCurr) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = if (isCurr) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    currentChapterId = ch.id
+                                    showTocSheet = false
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${ch.chapterIndex}. ${ch.title}",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (isCurr) FontWeight.Bold else FontWeight.Normal),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = if (ch.status == ChapterStatus.COMPLETED) strings.filterDone else strings.filterPending,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (ch.status == ChapterStatus.COMPLETED) EmeraldAccent else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
                     }
@@ -504,8 +753,7 @@ fun ReaderThemeChip(name: String, theme: ReaderTheme, currentTheme: ReaderTheme,
             text = name,
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
             color = theme.text,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
         )
     }
 }
-

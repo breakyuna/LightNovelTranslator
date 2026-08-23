@@ -120,7 +120,7 @@ class TranslationManager(
                 return@launch
             }
 
-            val glossary = glossaryRepository.getGlossaryListByProject(projectId)
+            var glossary = glossaryRepository.getGlossaryListByProject(projectId)
 
             var completedCount = 0
             var errorCount = 0
@@ -332,10 +332,10 @@ class TranslationManager(
 
                 if (!chapterFailed && translatedChunks.size == chunks.size) {
                     val fullTranslatedText = translatedChunks.joinToString("\n\n")
-                    val transFileName = fileManager.saveTranslatedChapter(projectId, chapter.chapterIndex, fullTranslatedText)
+                    val transFileName = fileManager.saveTranslatedChapter(projectId, chapter.chapterIndex, fullTranslatedText, chapter.title)
                     val wordCount = TxtParser.countWords(fullTranslatedText)
 
-                    // Generate summary for this completed chapter
+                    // 1. Generate summary for this completed chapter
                     val summaryPrompt = TranslationPrompts.buildChapterSummaryPrompt(fullTranslatedText)
                     val summaryResult = llmClient.executeCompletion(
                         provider = provider,
@@ -356,6 +356,30 @@ class TranslationManager(
                         chapterCompTokens += summaryResult.completionTokens
                         chapterCost += summaryCost
                     }
+
+                    // 2. Progressive Glossary Expansion: auto-extract unrecorded key proper nouns
+                    try {
+                        val existingKeys = glossary.map { it.originalTerm.trim().lowercase() }.toSet()
+                        val termExtractPrompt = "Extract 1-4 novel character names, factions or magical items from this chapter translation that are not in current terms. Format as JSON: [{\"original\": \"...\", \"suggested\": \"...\", \"category\": \"CHARACTER/LOCATION/ITEM/FACTION\", \"notes\": \"...\"}]. Return only JSON array.\n\nOriginal sample:\n${originalText.take(1200)}\n\nTranslation sample:\n${fullTranslatedText.take(1200)}"
+                        val termResult = llmClient.executeCompletion(
+                            provider = provider,
+                            systemPrompt = "You are a terminology extraction assistant. Return only JSON array.",
+                            userPrompt = termExtractPrompt,
+                            temperature = 0.2f
+                        )
+                        if (termResult.isSuccess && termResult.text.isNotBlank()) {
+                            val parsedNewTerms = com.example.core.agent.TermExtractionAgent.parseTermsJson(projectId, termResult.text)
+                            val brandNewTerms = parsedNewTerms.filter { 
+                                it.originalTerm.isNotBlank() && 
+                                it.translatedTerm.isNotBlank() && 
+                                !existingKeys.contains(it.originalTerm.trim().lowercase()) 
+                            }
+                            if (brandNewTerms.isNotEmpty()) {
+                                glossaryRepository.insertTerms(brandNewTerms)
+                                glossary = glossaryRepository.getGlossaryListByProject(projectId)
+                            }
+                        }
+                    } catch (_: Exception) {}
 
                     runningPromptTokens += chapterPromptTokens
                     runningCompTokens += chapterCompTokens

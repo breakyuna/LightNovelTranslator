@@ -59,5 +59,13 @@ val SlateBackground = Color(0xFF1E293B)
 val SlateOnBackground = Color(0xFFE2E8F0)
 val SlateSurface = Color(0xFF334155)
 
+val MintBackground = Color(0xFFEBF5EA)
+val MintOnBackground = Color(0xFF1B4324)
+val MintSurface = Color(0xFFDFEEDD)
+
+val AmoledBackground = Color(0xFF000000)
+val AmoledOnBackground = Color(0xFFE2E8F0)
+val AmoledSurface = Color(0xFF141414)
+
 val EmeraldAccent = Color(0xFF10B981)
 val RoseAccent = Color(0xFFF43F5E)

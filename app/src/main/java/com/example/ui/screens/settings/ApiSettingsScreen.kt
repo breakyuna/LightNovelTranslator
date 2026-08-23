@@ -85,6 +85,52 @@ fun ApiSettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(top = 8.dp, bottom = 80.dp)
         ) {
+            // Theme Mode Card
+            item {
+                val themeMode by viewModel.themeMode.collectAsState()
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.DarkMode, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = strings.themeSettingsTitle,
+                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            FilterChip(
+                                selected = themeMode == com.example.ui.theme.AppThemeMode.SYSTEM,
+                                onClick = { viewModel.setThemeMode(com.example.ui.theme.AppThemeMode.SYSTEM) },
+                                label = { Text(strings.themeFollowSystem) },
+                                leadingIcon = { Icon(Icons.Default.BrightnessAuto, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = themeMode == com.example.ui.theme.AppThemeMode.LIGHT,
+                                onClick = { viewModel.setThemeMode(com.example.ui.theme.AppThemeMode.LIGHT) },
+                                label = { Text(strings.themeLightMode) },
+                                leadingIcon = { Icon(Icons.Default.LightMode, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilterChip(
+                                selected = themeMode == com.example.ui.theme.AppThemeMode.DARK,
+                                onClick = { viewModel.setThemeMode(com.example.ui.theme.AppThemeMode.DARK) },
+                                label = { Text(strings.themeDarkMode) },
+                                leadingIcon = { Icon(Icons.Default.DarkMode, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+
             // Language Selection Card
             item {
                 Card(

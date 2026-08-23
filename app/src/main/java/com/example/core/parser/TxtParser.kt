@@ -124,7 +124,7 @@ object TxtParser {
                 chapters.add(
                     ParsedChapter(
                         index = chapterIndex,
-                        title = "Section $chapterIndex",
+                        title = "第 ${chapterIndex} 章",
                         content = contentStr,
                         wordCount = countWords(contentStr)
                     )
@@ -142,7 +142,7 @@ object TxtParser {
             chapters.add(
                 ParsedChapter(
                     index = chapterIndex,
-                    title = "Section $chapterIndex",
+                    title = "第 ${chapterIndex} 章",
                     content = contentStr,
                     wordCount = countWords(contentStr)
                 )

@@ -56,9 +56,17 @@ fun TranslationRunnerScreen(
     var rangeEnd by remember { mutableStateOf("${chapters.size.coerceAtLeast(1)}") }
     var isAutoContinuousMode by remember { mutableStateOf(true) }
 
-    val pendingCount = chapters.count { it.status == ChapterStatus.PENDING }
-    val doneCount = chapters.count { it.status == ChapterStatus.COMPLETED }
-    val errorCount = chapters.count { it.status == ChapterStatus.ERROR }
+    val dontShowWarning by viewModel.dontShowContinuousWarning.collectAsState()
+    var showContinuousConfirmDialog by remember { mutableStateOf(false) }
+    var dontRemindChecked by remember { mutableStateOf(false) }
+
+    val remainingChapters = chapters.filter { it.status != ChapterStatus.COMPLETED }
+    val remainingWords = remainingChapters.sumOf { it.originalWordCount }
+    val estPromptTokens = (remainingWords * 1.35).toLong()
+    val estCompTokens = (remainingWords * 1.25).toLong()
+    val estTotalCost = if (activeProvider != null) {
+        TokenCalculator.calculateCost(estPromptTokens, estCompTokens, activeProvider.inputPricePerMillion, activeProvider.outputPricePerMillion)
+    } else 0.0
 
     Scaffold(
         topBar = {
@@ -307,7 +315,11 @@ fun TranslationRunnerScreen(
                         onClick = {
                             if (activeProvider != null) {
                                 if (isAutoContinuousMode) {
-                                    viewModel.startContinuousTranslation(activeProvider)
+                                    if (dontShowWarning) {
+                                        viewModel.startContinuousTranslation(activeProvider)
+                                    } else {
+                                        showContinuousConfirmDialog = true
+                                    }
                                 } else {
                                     val start = rangeStart.toIntOrNull() ?: 1
                                     val end = rangeEnd.toIntOrNull() ?: chapters.size
@@ -428,6 +440,83 @@ fun TranslationRunnerScreen(
                 }
             }
         }
+    }
+
+    if (showContinuousConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showContinuousConfirmDialog = false },
+            icon = { Icon(Icons.Default.WarningAmber, contentDescription = null, tint = TertiaryAmber) },
+            title = { Text(strings.continuousWarningTitle, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)) },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = strings.continuousWarningDesc,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = "${strings.continuousEstWords}: ${remainingChapters.size} (${remainingWords} ${strings.wordsUnit})",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
+                            )
+                            Text(
+                                text = "${strings.continuousEstTokens}: ~${TokenCalculator.formatTokenCount(estPromptTokens + estCompTokens)}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                text = "${strings.continuousEstCost}: ${TokenCalculator.formatCost(estTotalCost)}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TertiaryAmber)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = dontRemindChecked,
+                            onCheckedChange = { dontRemindChecked = it }
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = strings.dontRemindThisSession,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (dontRemindChecked) {
+                            viewModel.setDontShowContinuousWarning(true)
+                        }
+                        showContinuousConfirmDialog = false
+                        if (activeProvider != null) {
+                            viewModel.startContinuousTranslation(activeProvider)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryIndigo)
+                ) {
+                    Text(strings.continueTranslation)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showContinuousConfirmDialog = false }) {
+                    Text(strings.cancel)
+                }
+            }
+        )
     }
 }
 

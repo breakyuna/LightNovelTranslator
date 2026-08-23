@@ -24,8 +24,9 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val strings by viewModel.currentStrings.collectAsState()
+            val themeMode by viewModel.themeMode.collectAsState()
             CompositionLocalProvider(LocalAppStrings provides strings) {
-                NovelTranslatorTheme {
+                NovelTranslatorTheme(themeMode = themeMode) {
                     Surface(modifier = Modifier.fillMaxSize()) {
                         AppNavigation(viewModel = viewModel)
                     }

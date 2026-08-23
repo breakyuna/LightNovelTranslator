@@ -28,9 +28,35 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("novel_translator_prefs", Context.MODE_PRIVATE)
+
+    private val _themeMode = MutableStateFlow(
+        try {
+            val modeStr = prefs.getString("app_theme_mode", com.example.ui.theme.AppThemeMode.SYSTEM.name)
+            com.example.ui.theme.AppThemeMode.valueOf(modeStr ?: com.example.ui.theme.AppThemeMode.SYSTEM.name)
+        } catch (_: Exception) {
+            com.example.ui.theme.AppThemeMode.SYSTEM
+        }
+    )
+    val themeMode: StateFlow<com.example.ui.theme.AppThemeMode> = _themeMode.asStateFlow()
+
+    fun setThemeMode(mode: com.example.ui.theme.AppThemeMode) {
+        _themeMode.value = mode
+        prefs.edit().putString("app_theme_mode", mode.name).apply()
+    }
+
+    private val _dontShowContinuousWarning = MutableStateFlow(
+        prefs.getBoolean("dont_show_continuous_warning", false)
+    )
+    val dontShowContinuousWarning: StateFlow<Boolean> = _dontShowContinuousWarning.asStateFlow()
+
+    fun setDontShowContinuousWarning(dontShow: Boolean) {
+        _dontShowContinuousWarning.value = dontShow
+        prefs.edit().putBoolean("dont_show_continuous_warning", dontShow).apply()
+    }
 
     private val _currentLanguage = MutableStateFlow(
         try {
@@ -167,8 +193,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // Split chapters
             val parsedChapters = TxtParser.splitIntoChapters(sampleContent, TxtParser.REGEX_CHINESE)
             val chapterEntities = parsedChapters.map { parsed ->
-                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content)
-                val transName = "trans_${String.format("%04d", parsed.index)}.txt"
+                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
+                val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
                 ChapterEntity(
                     projectId = projectId,
                     chapterIndex = parsed.index,
@@ -251,8 +277,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val chapterEntities = parsedChapters.map { parsed ->
-                    val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content)
-                    val transName = "trans_${String.format("%04d", parsed.index)}.txt"
+                    val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
+                    val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
                     ChapterEntity(
                         projectId = projectId,
                         chapterIndex = parsed.index,
@@ -321,8 +347,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             chapterRepo.deleteChaptersByProject(projectId)
 
             val chapterEntities = parsedChapters.map { parsed ->
-                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content)
-                val transName = "trans_${String.format("%04d", parsed.index)}.txt"
+                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
+                val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
                 ChapterEntity(
                     projectId = projectId,
                     chapterIndex = parsed.index,
@@ -354,8 +380,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             chapterRepo.deleteChaptersByProject(projectId)
             val chapterEntities = parsedChapters.map { parsed ->
-                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content)
-                val transName = "trans_${String.format("%04d", parsed.index)}.txt"
+                val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
+                val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
                 ChapterEntity(
                     projectId = projectId,
                     chapterIndex = parsed.index,
@@ -372,6 +398,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.Main) {
                 showMessage("Agent identified ${chapterEntities.size} chapters successfully!")
+            }
+        }
+    }
+
+    fun extractTermsFromChapter(chapterId: Long, provider: ApiProviderEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
+            val projectId = chapter.projectId
+            val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+            val transText = fileManager.readTranslatedChapter(projectId, chapter.translatedFileName)
+            val sample = if (origText.isNotBlank()) origText else transText
+
+            if (sample.isBlank()) {
+                withContext(Dispatchers.Main) { showMessage("Chapter content is empty.") }
+                return@launch
+            }
+
+            showMessage("Extracting terms from chapter ${chapter.chapterIndex}...")
+            val extracted = termExtractionAgent.extractTerms(projectId, sample.take(4000), provider)
+            val existing = glossaryRepo.getGlossaryListByProject(projectId).map { it.originalTerm.trim().lowercase() }.toSet()
+            val newTerms = extracted.filter { !existing.contains(it.originalTerm.trim().lowercase()) }
+
+            if (newTerms.isNotEmpty()) {
+                glossaryRepo.insertTerms(newTerms)
+                withContext(Dispatchers.Main) {
+                    showMessage("Added ${newTerms.size} new terms from chapter ${chapter.chapterIndex}!")
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    showMessage("No new unique terms found in chapter ${chapter.chapterIndex}.")
+                }
             }
         }
     }

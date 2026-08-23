@@ -41,8 +41,21 @@ class ProjectFileManager(private val context: Context) {
         return dir
     }
 
-    fun saveOriginalChapter(projectId: Long, chapterIndex: Int, content: String): String {
-        val fileName = "chap_${String.format("%04d", chapterIndex)}.txt"
+    fun sanitizeChapterFileName(chapterIndex: Int, title: String, isTranslated: Boolean = false): String {
+        val cleanTitle = title.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
+            .trim()
+            .take(45)
+            .trimEnd('_', ' ')
+        val prefix = String.format("%04d", chapterIndex)
+        return if (cleanTitle.isNotBlank()) {
+            if (isTranslated) "${prefix}_${cleanTitle}_translated.txt" else "${prefix}_${cleanTitle}.txt"
+        } else {
+            if (isTranslated) "trans_${prefix}.txt" else "chap_${prefix}.txt"
+        }
+    }
+
+    fun saveOriginalChapter(projectId: Long, chapterIndex: Int, content: String, title: String = ""): String {
+        val fileName = sanitizeChapterFileName(chapterIndex, title, isTranslated = false)
         val file = File(getChaptersDir(projectId), fileName)
         file.writeText(content, Charsets.UTF_8)
         return fileName
@@ -53,8 +66,8 @@ class ProjectFileManager(private val context: Context) {
         return if (file.exists()) file.readText(Charsets.UTF_8) else ""
     }
 
-    fun saveTranslatedChapter(projectId: Long, chapterIndex: Int, content: String): String {
-        val fileName = "trans_${String.format("%04d", chapterIndex)}.txt"
+    fun saveTranslatedChapter(projectId: Long, chapterIndex: Int, content: String, title: String = ""): String {
+        val fileName = sanitizeChapterFileName(chapterIndex, title, isTranslated = true)
         val file = File(getTranslationsDir(projectId), fileName)
         file.writeText(content, Charsets.UTF_8)
         return fileName

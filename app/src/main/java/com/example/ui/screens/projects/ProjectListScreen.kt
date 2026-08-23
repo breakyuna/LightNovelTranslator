@@ -8,10 +8,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -173,7 +175,7 @@ fun ProjectListScreen(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(
-                            imageVector = Icons.Default.LibraryBooks,
+                            imageVector = Icons.AutoMirrored.Filled.LibraryBooks,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             modifier = Modifier.size(64.dp)
@@ -316,14 +318,14 @@ fun ProjectCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Progress Bar
+            // Word Count & Progress Stats
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${strings.progressLabel}: ${project.translatedChapters} / ${project.totalChapters} ${strings.chaptersCount}",
+                    text = "${strings.progressLabel}: ${project.translatedChapters} / ${project.totalChapters} ${strings.chaptersCount} • ${project.totalOriginalWords} ${strings.wordsUnit}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -474,19 +476,66 @@ fun ImportNovelDialog(
                     )
                 }
 
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Source Language Input & Quick Selection Scroll Window
+                Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = sourceLang,
                         onValueChange = { sourceLang = it },
                         label = { Text(strings.sourceLangLabel) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${strings.presetLanguagesLabel} (${strings.sourceLangLabel}):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    val presetLangs = listOf("English", "中文", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "Auto")
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(presetLangs) { lang ->
+                            FilterChip(
+                                selected = sourceLang.equals(lang, ignoreCase = true),
+                                onClick = { sourceLang = lang },
+                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+
+                // Target Language Input & Quick Selection Scroll Window
+                Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = targetLang,
                         onValueChange = { targetLang = it },
                         label = { Text(strings.targetLangLabel) },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${strings.presetLanguagesLabel} (${strings.targetLangLabel}):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    val targetPresetLangs = listOf("中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "繁體中文")
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(targetPresetLangs) { lang ->
+                            FilterChip(
+                                selected = targetLang.equals(lang, ignoreCase = true),
+                                onClick = { targetLang = lang },
+                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
                 }
 
                 OutlinedTextField(

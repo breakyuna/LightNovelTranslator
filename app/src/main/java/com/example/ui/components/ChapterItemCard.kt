@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -146,7 +147,7 @@ fun ChapterItemCard(
                     modifier = Modifier.testTag("preview_chapter_${chapter.chapterIndex}")
                 ) {
                     Icon(
-                        imageVector = Icons.Default.MenuBook,
+                        imageVector = Icons.AutoMirrored.Filled.MenuBook,
                         contentDescription = strings.previewRead,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
