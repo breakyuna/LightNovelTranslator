@@ -1,0 +1,6 @@
+{
+  "name": "Novel Translator",
+  "description": "LLM-powered novel translation studio with chapter slicing, terminology management, multi-model support, and bilingual preview.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
