@@ -729,6 +729,48 @@ fun TranslationRunnerScreen(
                                     }
                                 }
                             }
+
+                            if (requestLogs.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        text = "请求级明细（包含重试、失败和未知用量）",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                }
+                                items(requestLogs.take(200), key = { "request_${it.id}" }) { request ->
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                                    ) {
+                                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text(
+                                                text = "${request.operation} · ${request.providerName}/${request.modelName}",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                            )
+                                            Text(
+                                                text = "尝试 #${request.attemptNumber} · ${if (request.isSuccess) "成功" else "失败"} · ${request.usageSource}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (request.isSuccess) EmeraldAccent else RoseAccent
+                                            )
+                                            Text(
+                                                text = "Prompt ${request.promptTokens} · Completion ${request.completionTokens} · ${TokenCalculator.formatCost(request.estimatedCost, request.currency)} · ${request.durationMs}ms",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            request.errorCategory?.let { category ->
+                                                Text(
+                                                    text = "$category${request.errorMessage?.let { ": $it" }.orEmpty()}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = RoseAccent,
+                                                    maxLines = 2
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -818,47 +860,6 @@ fun TranslationRunnerScreen(
                                 )
                             }
 
-                            if (requestLogs.isNotEmpty()) {
-                                item {
-                                    Text(
-                                        text = "请求级明细（包含重试、失败和未知用量）",
-                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                        modifier = Modifier.padding(top = 8.dp)
-                                    )
-                                }
-                                items(requestLogs.take(200), key = { "request_${it.id}" }) { request ->
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
-                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                                    ) {
-                                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                            Text(
-                                                text = "${request.operation} · ${request.providerName}/${request.modelName}",
-                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
-                                            )
-                                            Text(
-                                                text = "尝试 #${request.attemptNumber} · ${if (request.isSuccess) "成功" else "失败"} · ${request.usageSource}",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = if (request.isSuccess) EmeraldAccent else RoseAccent
-                                            )
-                                            Text(
-                                                text = "Prompt ${request.promptTokens} · Completion ${request.completionTokens} · ${TokenCalculator.formatCost(request.estimatedCost, request.currency)} · ${request.durationMs}ms",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            request.errorCategory?.let { category ->
-                                                Text(
-                                                    text = "$category${request.errorMessage?.let { ": $it" }.orEmpty()}",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = RoseAccent,
-                                                    maxLines = 2
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
 
                     Row(
