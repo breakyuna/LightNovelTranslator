@@ -21,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -56,14 +57,13 @@ fun ApiSettingsScreen(
     val projects by viewModel.allProjects.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
 
-    var selectedTab by remember { mutableStateOf(initialTab.coerceIn(0, 2)) } // 0: LLM Settings, 1: System Logs, 2: General & Storage
+    var selectedTab by remember { mutableStateOf(initialTab.coerceIn(0, 5)) }
+    var generalSection by remember { mutableStateOf(0) } // 0: appearance, 1: language, 2: system info
 
     var showAddDialog by remember { mutableStateOf(false) }
     var editingProvider by remember { mutableStateOf<ApiProviderEntity?>(null) }
     var testingProviderId by remember { mutableStateOf<Long?>(null) }
-    var fetchingProviderId by remember { mutableStateOf<Long?>(null) }
     var testResultMessage by remember { mutableStateOf<Pair<Long, String>?>(null) }
-    var fetchedModelsMap by remember { mutableStateOf<Map<Long, List<String>>>(emptyMap()) }
 
     // Log Filter
     var logFilter by remember { mutableStateOf("ALL") } // ALL, ERROR, TRANSLATION, API
@@ -84,66 +84,41 @@ fun ApiSettingsScreen(
                 TopAppBar(
                     title = {
                         Column {
-                            Text(strings.settingsTitle, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
                             Text(
-                                text = strings.settingsSubtitle,
+                                text = when (selectedTab) {
+                                    1 -> strings.llmSettingsSection
+                                    2 -> strings.systemLogsSection
+                                    3 -> strings.themeSettingsTitle
+                                    4 -> strings.languageSettingTitle
+                                    5 -> strings.aboutStorageSection
+                                    else -> strings.settingsTitle
+                                },
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = if (selectedTab == 0) strings.settingsSubtitle else strings.settingsTitle,
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack, modifier = Modifier.testTag("settings_back_button")) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.cancel)
-                        }
+                            IconButton(
+                                onClick = {
+                                    if (selectedTab == 0) onBack() else selectedTab = 0
+                                },
+                                modifier = Modifier.testTag("settings_back_button")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = strings.cancel)
+                            }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                 )
 
-                // Category Tabs
-                PrimaryTabRow(
-                    selectedTabIndex = selectedTab,
-                    containerColor = MaterialTheme.colorScheme.background,
-                    contentColor = MaterialTheme.colorScheme.primary
-                ) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.llmSettingsSection, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("${strings.systemLogsSection} (${systemLogs.size})", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    )
-                    Tab(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.SettingsSuggest, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.generalSettingsSection, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                            }
-                        }
-                    )
-                }
             }
         },
         floatingActionButton = {
-            if (selectedTab == 0) {
+            if (selectedTab == 1) {
                 ExtendedFloatingActionButton(
                     onClick = { showAddDialog = true },
                     icon = { Icon(Icons.Default.Add, contentDescription = null) },
@@ -158,6 +133,81 @@ fun ApiSettingsScreen(
     ) { padding ->
         when (selectedTab) {
             0 -> {
+                // ==================== SYSTEM SETTINGS OVERVIEW ====================
+                val isChinese = currentLang == AppLanguage.CHINESE
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding)
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(top = 14.dp, bottom = 40.dp)
+                ) {
+                    item {
+                        Text(
+                            text = if (isChinese) "请选择要修改的系统设置" else "Choose a system setting to configure",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                    }
+                    item {
+                        SettingsEntryCard(
+                            number = 1,
+                            title = strings.llmSettingsSection,
+                            description = if (isChinese) "管理 LLM 接口、模型、API Key 与费率" else "Manage LLM providers, models, API keys, and pricing",
+                            icon = Icons.Default.Tune,
+                            onClick = { selectedTab = 1 }
+                        )
+                    }
+                    item {
+                        SettingsEntryCard(
+                            number = 2,
+                            title = strings.systemLogsSection,
+                            description = if (isChinese) "查看运行状态、接口调用与错误日志（${systemLogs.size}）" else "Inspect runtime, API, and error logs (${systemLogs.size})",
+                            icon = Icons.Default.Terminal,
+                            onClick = { selectedTab = 2 }
+                        )
+                    }
+                    item {
+                        SettingsEntryCard(
+                            number = 3,
+                            title = strings.themeSettingsTitle,
+                            description = if (isChinese) "选择跟随系统、浅色或深色外观" else "Choose system, light, or dark appearance",
+                            icon = Icons.Default.DarkMode,
+                            onClick = {
+                                generalSection = 0
+                                selectedTab = 3
+                            }
+                        )
+                    }
+                    item {
+                        SettingsEntryCard(
+                            number = 4,
+                            title = strings.languageSettingTitle,
+                            description = if (isChinese) "切换应用界面语言" else "Change the application display language",
+                            icon = Icons.Default.Language,
+                            onClick = {
+                                generalSection = 1
+                                selectedTab = 4
+                            }
+                        )
+                    }
+                    item {
+                        SettingsEntryCard(
+                            number = 5,
+                            title = if (isChinese) "系统信息" else "System Information",
+                            description = if (isChinese) "查看应用版本、数据库与本地工程状态" else "View app version, database, and local project status",
+                            icon = Icons.Default.Info,
+                            onClick = {
+                                generalSection = 2
+                                selectedTab = 5
+                            }
+                        )
+                    }
+                }
+            }
+            1 -> {
                 // ==================== LLM SETTINGS TAB ====================
                 LazyColumn(
                     modifier = Modifier
@@ -310,28 +360,6 @@ fun ApiSettingsScreen(
                                     }
                                 }
 
-                                // Fetched Models Chips (if fetched)
-                                val modelsForThis = fetchedModelsMap[provider.id]
-                                if (!modelsForThis.isNullOrEmpty()) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    Text(
-                                        text = "${strings.selectModelFromList} (${modelsForThis.size}):",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(modelsForThis) { modelName ->
-                                            FilterChip(
-                                                selected = provider.selectedModel == modelName,
-                                                onClick = {
-                                                    viewModel.saveProvider(provider.copy(selectedModel = modelName))
-                                                },
-                                                label = { Text(modelName, fontSize = 11.sp) }
-                                            )
-                                        }
-                                    }
-                                }
-
                                 // Test Connection Result
                                 if (testResultMessage?.first == provider.id) {
                                     Spacer(modifier = Modifier.height(6.dp))
@@ -345,50 +373,20 @@ fun ApiSettingsScreen(
                                 }
 
                                 Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    // Fetch Models Button
-                                    OutlinedButton(
-                                        onClick = {
-                                            fetchingProviderId = provider.id
-                                            viewModel.fetchModelsFromEndpoint(provider) { res ->
-                                                fetchingProviderId = null
-                                                res.onSuccess { models ->
-                                                    fetchedModelsMap = fetchedModelsMap + (provider.id to models)
-                                                    testResultMessage = Pair(provider.id, String.format(strings.fetchModelsSuccess, models.size))
-                                                }.onFailure { err ->
-                                                    testResultMessage = Pair(provider.id, String.format(strings.fetchModelsError, err.message ?: "Unknown"))
-                                                }
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) {
-                                        if (fetchingProviderId == provider.id) {
-                                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(strings.fetchingModels, fontSize = 12.sp)
-                                        } else {
-                                            Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(strings.fetchModelsBtn, fontSize = 12.sp)
+                                // The endpoint model fetcher is intentionally kept in the edit page.
+                                Button(
+                                    onClick = {
+                                        testingProviderId = provider.id
+                                        viewModel.testProviderConnection(provider) { _, msg ->
+                                            testResultMessage = Pair(provider.id, msg)
+                                            testingProviderId = null
                                         }
-                                    }
-
-                                    // Test Connection Button
-                                    Button(
-                                        onClick = {
-                                            testingProviderId = provider.id
-                                            viewModel.testProviderConnection(provider) { success, msg ->
-                                                testResultMessage = Pair(provider.id, msg)
-                                                testingProviderId = null
-                                            }
-                                        },
-                                        modifier = Modifier.weight(1f).testTag("test_provider_${provider.id}"),
-                                        shape = RoundedCornerShape(10.dp)
-                                    ) {
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("test_provider_${provider.id}"),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
                                         if (testingProviderId == provider.id) {
                                             CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                                             Spacer(modifier = Modifier.width(6.dp))
@@ -398,7 +396,6 @@ fun ApiSettingsScreen(
                                             Spacer(modifier = Modifier.width(4.dp))
                                             Text(strings.testConnectionBtn, fontSize = 12.sp)
                                         }
-                                    }
                                 }
                             }
                         }
@@ -406,7 +403,7 @@ fun ApiSettingsScreen(
                 }
             }
 
-            1 -> {
+            2 -> {
                 // ==================== SYSTEM LOGS TAB ====================
                 LazyColumn(
                     modifier = Modifier
@@ -653,7 +650,7 @@ fun ApiSettingsScreen(
                 }
             }
 
-            2 -> {
+            3, 4, 5 -> {
                 // ==================== GENERAL & STORAGE TAB ====================
                 LazyColumn(
                     modifier = Modifier
@@ -664,7 +661,7 @@ fun ApiSettingsScreen(
                     contentPadding = PaddingValues(top = 12.dp, bottom = 40.dp)
                 ) {
                     // Theme Mode Card
-                    item {
+                    if (generalSection == 0) item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
@@ -709,7 +706,7 @@ fun ApiSettingsScreen(
                     }
 
                     // Language Selection Card
-                    item {
+                    if (generalSection == 1) item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
@@ -743,7 +740,7 @@ fun ApiSettingsScreen(
                     }
 
                     // Storage & System Info Card
-                    item {
+                    if (generalSection == 2) item {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(14.dp),
@@ -811,6 +808,65 @@ fun ApiSettingsScreen(
                 editingProvider = null
             }
         )
+    }
+}
+
+@Composable
+private fun SettingsEntryCard(
+    number: Int,
+    title: String,
+    description: String,
+    icon: ImageVector,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                modifier = Modifier.size(38.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = number.toString(),
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

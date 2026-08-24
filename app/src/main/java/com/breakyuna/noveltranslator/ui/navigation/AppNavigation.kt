@@ -110,7 +110,7 @@ fun AppNavigation(
                     }
                 }
                 NavItem.LOGS -> {
-                    navController.navigate(Screen.Settings.createRoute(1)) {
+                    navController.navigate(Screen.Settings.createRoute(2)) {
                         launchSingleTop = true
                     }
                 }

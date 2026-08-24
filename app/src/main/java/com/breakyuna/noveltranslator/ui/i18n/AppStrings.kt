@@ -332,7 +332,7 @@ interface AppStrings {
 object ChineseStrings : AppStrings {
     override val appTitle = "小说翻译工作室"
     override val appSubtitle = "基于大语言模型的小说全自动/交互式翻译系统"
-    override val openSettings = "API 接口与语言设置"
+    override val openSettings = "系统设置"
     override val getStartedTitle = "快速体验示例工程"
     override val getStartedDesc = "一键加载预设的多章节奇幻小说《星穹炼金师》与丰富术语表"
     override val loadDemo = "加载示例"
@@ -534,10 +534,10 @@ object ChineseStrings : AppStrings {
     override val categoryGeneral = "通用术语"
 
     // Settings
-    override val settingsTitle = "LLM 接口与系统设置"
-    override val settingsSubtitle = "大模型接入、Token 费率核算与语言切换"
-    override val languageSettingTitle = "界面语言设置 (Display Language)"
-    override val languageSettingsTitle = "界面语言设置 (Display Language)"
+    override val settingsTitle = "系统设置"
+    override val settingsSubtitle = "管理应用功能、LLM 接口与系统状态"
+    override val languageSettingTitle = "语言"
+    override val languageSettingsTitle = "语言"
     override val languageSettingDesc = "支持简体中文 (默认) 与 English 实时切换，所有界面元素即时生效。"
     override val languageSettingsDesc = "支持简体中文 (默认) 与 English 实时切换，所有界面元素即时生效。"
     override val chineseDefault = "简体中文 (默认)"
@@ -585,11 +585,11 @@ object ChineseStrings : AppStrings {
     override val fetchModelsSuccess = "成功拉取到 %d 个可用模型"
     override val fetchModelsError = "拉取模型失败: %s"
     override val selectModelFromList = "从端点拉取的模型中选择"
-    override val llmSettingsSection = "LLM 设置与接口管理"
-    override val systemLogsSection = "系统运行与报错日志"
+    override val llmSettingsSection = "LLM 设置"
+    override val systemLogsSection = "系统日志"
     override val systemLogsDesc = "记录系统全周期运行事件、LLM 接口调用耗时以及翻译错误排查日志"
     override val generalSettingsSection = "界面与常规设置"
-    override val aboutStorageSection = "系统运行状态与存储"
+    override val aboutStorageSection = "系统信息"
     override val clearLogsBtn = "清空日志"
     override val exportLogsBtn = "导出日志"
     override val copyLogsBtn = "复制全部日志"
@@ -606,7 +606,7 @@ object ChineseStrings : AppStrings {
     override val databaseStatusLabel = "本地数据库状态"
 
     // Theme Mode
-    override val themeSettingsTitle = "主题与色彩外观"
+    override val themeSettingsTitle = "外观主题"
     override val themeFollowSystem = "跟随系统"
     override val themeLightMode = "浅色模式"
     override val themeDarkMode = "深色模式"
@@ -642,8 +642,8 @@ object ChineseStrings : AppStrings {
     override val navTranslation = "翻译驾驶舱"
     override val navGlossary = "术语专有名词库"
     override val navReader = "双语/译文阅读器"
-    override val navSettings = "系统与 LLM 设置"
-    override val navLogs = "运行与报错日志"
+    override val navSettings = "系统设置"
+    override val navLogs = "系统日志"
     override val navCurrentProject = "当前工程"
     override val navNoActiveProject = "尚未选择项目"
     override val navSwitchProject = "切换项目"
@@ -654,7 +654,7 @@ object ChineseStrings : AppStrings {
 object EnglishStrings : AppStrings {
     override val appTitle = "Novel Translator"
     override val appSubtitle = "LLM-Powered Novel Translation Studio"
-    override val openSettings = "API Settings & Languages"
+    override val openSettings = "System Settings"
     override val getStartedTitle = "Get Started Instantly"
     override val getStartedDesc = "Load a pre-configured multi-chapter fantasy novel with rich terminology."
     override val loadDemo = "Load Demo"
@@ -856,10 +856,10 @@ object EnglishStrings : AppStrings {
     override val categoryGeneral = "General Term"
 
     // Settings
-    override val settingsTitle = "LLM Providers & Settings"
-    override val settingsSubtitle = "API configuration, token calculation, and display language"
-    override val languageSettingTitle = "Display Language"
-    override val languageSettingsTitle = "Display Language"
+    override val settingsTitle = "System Settings"
+    override val settingsSubtitle = "Manage app features, LLM providers, and system status"
+    override val languageSettingTitle = "Language"
+    override val languageSettingsTitle = "Language"
     override val languageSettingDesc = "Switch instantly between 简体中文 (Default) and English."
     override val languageSettingsDesc = "Switch instantly between 简体中文 (Default) and English."
     override val chineseDefault = "简体中文 (Default)"
@@ -907,11 +907,11 @@ object EnglishStrings : AppStrings {
     override val fetchModelsSuccess = "Successfully fetched %d models"
     override val fetchModelsError = "Failed to fetch models: %s"
     override val selectModelFromList = "Select from fetched models"
-    override val llmSettingsSection = "LLM Settings & Providers"
-    override val systemLogsSection = "System Runtime & Error Logs"
+    override val llmSettingsSection = "LLM Settings"
+    override val systemLogsSection = "System Logs"
     override val systemLogsDesc = "Tracks system lifecycle, LLM latency, and translation errors for diagnostics"
     override val generalSettingsSection = "General Preferences"
-    override val aboutStorageSection = "System Status & Storage"
+    override val aboutStorageSection = "System Information"
     override val clearLogsBtn = "Clear Logs"
     override val exportLogsBtn = "Export Logs"
     override val copyLogsBtn = "Copy All Logs"
@@ -928,7 +928,7 @@ object EnglishStrings : AppStrings {
     override val databaseStatusLabel = "Local Database Status"
 
     // Theme Mode
-    override val themeSettingsTitle = "Theme & Appearance"
+    override val themeSettingsTitle = "Appearance"
     override val themeFollowSystem = "System Default"
     override val themeLightMode = "Light"
     override val themeDarkMode = "Dark"
@@ -964,8 +964,8 @@ object EnglishStrings : AppStrings {
     override val navTranslation = "Translation Cockpit"
     override val navGlossary = "Glossary & Terms"
     override val navReader = "Bilingual Reader"
-    override val navSettings = "Settings & LLM"
-    override val navLogs = "System & Error Logs"
+    override val navSettings = "System Settings"
+    override val navLogs = "System Logs"
     override val navCurrentProject = "Active Project"
     override val navNoActiveProject = "No Project Selected"
     override val navSwitchProject = "Switch Project"
@@ -981,3 +981,4 @@ fun getAppStrings(language: AppLanguage): AppStrings {
         AppLanguage.ENGLISH -> EnglishStrings
     }
 }
+

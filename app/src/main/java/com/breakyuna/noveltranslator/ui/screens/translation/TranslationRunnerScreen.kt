@@ -30,6 +30,9 @@ import com.breakyuna.noveltranslator.ui.theme.PrimaryIndigo
 import com.breakyuna.noveltranslator.ui.theme.RoseAccent
 import com.breakyuna.noveltranslator.ui.theme.TertiaryAmber
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -421,7 +424,7 @@ fun TranslationRunnerScreen(
                     FilterChip(
                         selected = logTab == 1,
                         onClick = { logTab = 1 },
-                        label = { Text("章节归档 (${logs.size})", fontSize = 12.sp) }
+                        label = { Text("翻译历史 (${logs.size})", fontSize = 12.sp) }
                     )
                 }
                 if (logTab == 0 && liveLogs.isNotEmpty()) {
@@ -587,38 +590,126 @@ fun TranslationRunnerScreen(
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            items(logs, key = { it.id }) { log ->
-                                Row(
+                            val totalPromptTokens = logs.sumOf { it.promptTokens }
+                            val totalCompletionTokens = logs.sumOf { it.completionTokens }
+                            val totalCost = logs.sumOf { it.estimatedCost }
+                            val historyCurrency = logs.map { it.currency.trim() }
+                                .firstOrNull { it.isNotBlank() }
+                                ?: activeProvider?.currency
+                                ?: "USD"
+
+                            item {
+                                Card(
                                     modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                    ),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(8.dp)
-                                            .clip(CircleShape)
-                                            .background(if (log.isSuccess) EmeraldAccent else RoseAccent)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "[${strings.chapterPrefix}${log.chapterIndex}] ${log.message}",
-                                            style = MaterialTheme.typography.bodySmall.copy(
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Medium
-                                            ),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "${log.modelName} • ${log.totalTokens} tok • ${TokenCalculator.formatCost(log.estimatedCost, log.currency.ifBlank { providers.firstOrNull { it.name == log.providerName }?.currency ?: activeProvider?.currency ?: "USD" })} • ${log.durationMs}ms",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 10.sp,
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "翻译历史汇总",
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                            )
+                                            Text(
+                                                text = "${logs.size} 次记录",
+                                                style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Prompt ${TokenCalculator.formatTokenCount(totalPromptTokens)}", style = MaterialTheme.typography.labelSmall)
+                                            Text("Completion ${TokenCalculator.formatTokenCount(totalCompletionTokens)}", style = MaterialTheme.typography.labelSmall)
+                                            Text("Total ${TokenCalculator.formatTokenCount(totalPromptTokens + totalCompletionTokens)}", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                                        }
+                                        Text(
+                                            text = "累计费用：${TokenCalculator.formatCost(totalCost, historyCurrency)}",
+                                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TertiaryAmber)
                                         )
                                     }
                                 }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f))
+                            }
+
+                            items(logs, key = { it.id }) { log ->
+                                val currency = log.currency.ifBlank {
+                                    providers.firstOrNull { it.name == log.providerName }?.currency
+                                        ?: activeProvider?.currency
+                                        ?: "USD"
+                                }
+                                Card(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (log.isSuccess) EmeraldAccent.copy(alpha = 0.18f) else RoseAccent.copy(alpha = 0.35f)
+                                    )
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(8.dp)
+                                                    .clip(CircleShape)
+                                                    .background(if (log.isSuccess) EmeraldAccent else RoseAccent)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "[${strings.chapterPrefix}${log.chapterIndex}] ${log.chapterTitle}",
+                                                modifier = Modifier.weight(1f),
+                                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = if (log.isSuccess) "成功" else "失败",
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    color = if (log.isSuccess) EmeraldAccent else RoseAccent,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            )
+                                        }
+                                        Text(
+                                            text = log.message,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 2
+                                        )
+                                        Text(
+                                            text = "${log.providerName} • ${log.modelName}",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text("Prompt ${log.promptTokens} · Completion ${log.completionTokens}", style = MaterialTheme.typography.labelSmall)
+                                            Text("Total ${log.totalTokens}", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold))
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(TokenCalculator.formatCost(log.estimatedCost, currency), style = MaterialTheme.typography.labelSmall.copy(color = TertiaryAmber, fontWeight = FontWeight.Bold))
+                                            Text("${log.durationMs}ms • ${formatHistoryTimestamp(log.timestamp)}", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -704,3 +795,7 @@ fun TranslationRunnerScreen(
         )
     }
 }
+
+private fun formatHistoryTimestamp(timestamp: Long): String =
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
