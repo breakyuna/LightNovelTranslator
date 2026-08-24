@@ -16,6 +16,7 @@ import com.breakyuna.noveltranslator.ui.screens.glossary.GlossaryScreen
 import com.breakyuna.noveltranslator.ui.screens.preview.BilingualReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.projects.ProjectListScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
+import com.breakyuna.noveltranslator.ui.screens.tasks.TaskQueueScreen
 import com.breakyuna.noveltranslator.ui.screens.translation.TranslationRunnerScreen
 import com.breakyuna.noveltranslator.ui.screens.workspace.ProjectWorkspaceScreen
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
@@ -29,6 +30,7 @@ sealed class Screen(val route: String) {
     object Translation : Screen("translation/{projectId}") {
         fun createRoute(projectId: Long) = "translation/$projectId"
     }
+    object TaskQueue : Screen("task_queue")
     object Reader : Screen("reader/{chapterId}") {
         fun createRoute(chapterId: Long) = "reader/$chapterId"
     }
@@ -87,6 +89,11 @@ fun AppNavigation(
                         navController.navigate(Screen.Translation.createRoute(proj.id)) {
                             launchSingleTop = true
                         }
+                    }
+                }
+                NavItem.TASK_QUEUE -> {
+                    navController.navigate(Screen.TaskQueue.route) {
+                        launchSingleTop = true
                     }
                 }
                 NavItem.GLOSSARY -> {
@@ -238,6 +245,15 @@ fun AppNavigation(
                                         }
                                     )
                                 }
+                                composable(Screen.TaskQueue.route) {
+                                    TaskQueueScreen(
+                                        viewModel = viewModel,
+                                        onBack = { navController.popBackStack() },
+                                        onOpenDrawer = {
+                                            coroutineScope.launch { drawerState.open() }
+                                        }
+                                    )
+                                }
                                 composable(
                                     route = Screen.Settings.route,
                                     arguments = listOf(navArgument("tab") {
@@ -317,6 +333,16 @@ fun AppNavigation(
                                 onNavigateToReader = { chId ->
                                     navController.navigate(Screen.Reader.createRoute(chId))
                                 },
+                                onOpenDrawer = {
+                                    coroutineScope.launch { drawerState.open() }
+                                }
+                            )
+                        }
+
+                        composable(Screen.TaskQueue.route) {
+                            TaskQueueScreen(
+                                viewModel = viewModel,
+                                onBack = { navController.popBackStack() },
                                 onOpenDrawer = {
                                     coroutineScope.launch { drawerState.open() }
                                 }

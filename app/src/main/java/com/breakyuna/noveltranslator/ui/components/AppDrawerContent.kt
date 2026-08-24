@@ -36,6 +36,7 @@ enum class NavItem(
     PROJECTS(Icons.Default.LibraryBooks, requiresProject = false),
     WORKSPACE(Icons.Default.Dashboard, requiresProject = true),
     TRANSLATION(Icons.Default.Translate, requiresProject = true),
+    TASK_QUEUE(Icons.Default.FormatListNumbered, requiresProject = false),
     GLOSSARY(Icons.Default.Book, requiresProject = true),
     READER(Icons.AutoMirrored.Filled.MenuBook, requiresProject = true),
     SETTINGS(Icons.Default.Settings, requiresProject = false),
@@ -46,6 +47,7 @@ enum class NavItem(
             PROJECTS -> strings.navHome
             WORKSPACE -> strings.navWorkspace
             TRANSLATION -> strings.navTranslation
+            TASK_QUEUE -> strings.taskQueueTitle
             GLOSSARY -> strings.navGlossary
             READER -> strings.navReader
             SETTINGS -> strings.navSettings
@@ -195,6 +197,7 @@ fun AppDrawerContent(
                 NavItem.PROJECTS,
                 NavItem.WORKSPACE,
                 NavItem.TRANSLATION,
+                NavItem.TASK_QUEUE,
                 NavItem.GLOSSARY,
                 NavItem.READER
             )
@@ -216,6 +219,7 @@ fun AppDrawerContent(
                         NavItem.PROJECTS -> currentRoute?.startsWith("projects") == true
                         NavItem.WORKSPACE -> currentRoute?.startsWith("workspace") == true
                         NavItem.TRANSLATION -> currentRoute?.startsWith("translation") == true
+                        NavItem.TASK_QUEUE -> currentRoute?.startsWith("task_queue") == true
                         NavItem.GLOSSARY -> currentRoute?.startsWith("glossary") == true
                         NavItem.READER -> currentRoute?.startsWith("reader") == true
                         else -> false

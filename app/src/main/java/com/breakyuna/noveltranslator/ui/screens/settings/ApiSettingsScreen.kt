@@ -897,6 +897,7 @@ fun ProviderEditDialog(
     var isFetchingModels by remember { mutableStateOf(false) }
     var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
     var fetchModelNotice by remember { mutableStateOf<String?>(null) }
+    var modelSearchQuery by remember { mutableStateOf("") }
 
     val recommendedModels = PresetModels.presets.firstOrNull {
         it.providerType == providerType && (baseUrl.startsWith(it.defaultBaseUrl) || it.defaultBaseUrl.startsWith(baseUrl))
@@ -1055,15 +1056,64 @@ fun ProviderEditDialog(
 
                 // If models fetched from endpoint
                 if (fetchedModels.isNotEmpty()) {
+                    val matchingModels = fetchedModels.filter {
+                        modelSearchQuery.isBlank() || it.contains(modelSearchQuery.trim(), ignoreCase = true)
+                    }
+
                     item {
-                        Text(strings.selectModelFromList, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(fetchedModels) { model ->
-                                FilterChip(
-                                    selected = selectedModel == model,
-                                    onClick = { selectedModel = model },
-                                    label = { Text(model, fontSize = 11.sp) }
-                                )
+                        OutlinedTextField(
+                            value = modelSearchQuery,
+                            onValueChange = { modelSearchQuery = it },
+                            label = { Text(strings.searchModelPlaceholder) },
+                            placeholder = { Text("输入关键词搜索拉取的模型...") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            trailingIcon = {
+                                if (modelSearchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { modelSearchQuery = "" }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = strings.selectModelFromList,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                            Text(
+                                text = String.format(strings.matchingModelsCount, matchingModels.size),
+                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.primary, fontSize = 10.5.sp)
+                            )
+                        }
+
+                        if (matchingModels.isEmpty()) {
+                            Text(
+                                text = strings.noMatchingModels,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        } else {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                items(matchingModels) { model ->
+                                    FilterChip(
+                                        selected = selectedModel == model,
+                                        onClick = { selectedModel = model },
+                                        label = { Text(model, fontSize = 11.sp) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -1091,6 +1141,24 @@ fun ProviderEditDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+
+                // If user is typing in modelId and there are matches from fetchedModels
+                if (fetchedModels.isNotEmpty() && selectedModel.isNotBlank() && !fetchedModels.contains(selectedModel)) {
+                    val liveMatches = fetchedModels.filter { it.contains(selectedModel.trim(), ignoreCase = true) }.take(5)
+                    if (liveMatches.isNotEmpty()) {
+                        item {
+                            Text("匹配到的模型建议:", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(liveMatches) { match ->
+                                    SuggestionChip(
+                                        onClick = { selectedModel = match },
+                                        label = { Text(match, fontSize = 10.5.sp) }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
 
                 item {

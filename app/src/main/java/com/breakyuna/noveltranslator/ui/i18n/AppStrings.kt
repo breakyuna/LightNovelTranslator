@@ -327,6 +327,61 @@ interface AppStrings {
     val navSwitchProject: String
     val navMenuDesc: String
     val navCollapseDrawer: String
+
+    // Task Queue & Concurrency
+    val navTaskQueue: String
+    val taskQueueTitle: String
+    val taskQueueSubtitle: String
+    val maxConcurrencyLabel: String
+    val concurrencyLimitNotice: String
+    val tasksQueuedCount: String
+    val tasksRunningCount: String
+    val tasksCompletedCount: String
+    val tasksFailedCount: String
+    val clearCompletedTasks: String
+    val pauseAllTasks: String
+    val resumeAllTasks: String
+    val addTaskToQueue: String
+    val taskAddedToQueueToast: String
+    val noTasksInQueue: String
+    val taskStatusQueued: String
+    val taskStatusRunning: String
+    val taskStatusPaused: String
+    val taskStatusCompleted: String
+    val taskStatusFailed: String
+    val taskStatusCancelled: String
+    val retryTaskBtn: String
+    val cancelTaskBtn: String
+    val pauseTaskBtn: String
+    val resumeTaskBtn: String
+
+    // AI Term Extraction & Project Isolation
+    val termExtractionDialogTitle: String
+    val extractionScopeLabel: String
+    val scopeAllChapters: String
+    val scopeFirstNChapters: String
+    val scopeCustomRange: String
+    val scopeSelectedChapters: String
+    val startExtraction: String
+    val pauseExtraction: String
+    val resumeExtraction: String
+    val stopExtraction: String
+    val extractionProgressScanning: String
+    val extractionCandidatesFound: String
+    val extractionReviewTitle: String
+    val extractionReviewSubtitle: String
+    val saveSelectedTerms: String
+    val selectAll: String
+    val deselectAll: String
+    val projectBoundNotice: String
+    val selectProjectPrompt: String
+    val noProjectSelectedGlossary: String
+
+    // Model Search
+    val searchModelPlaceholder: String
+    val matchingModelsCount: String
+    val noMatchingModels: String
+    val allEndpointModels: String
 }
 
 object ChineseStrings : AppStrings {
@@ -649,6 +704,61 @@ object ChineseStrings : AppStrings {
     override val navSwitchProject = "切换项目"
     override val navMenuDesc = "导航菜单"
     override val navCollapseDrawer = "收起导航栏"
+
+    // Task Queue & Concurrency
+    override val navTaskQueue = "任务队列"
+    override val taskQueueTitle = "后台任务队列"
+    override val taskQueueSubtitle = "多任务并发与后台调度队列"
+    override val maxConcurrencyLabel = "并发任务数上限"
+    override val concurrencyLimitNotice = "超过并发上限的任务将自动在后台队列中排队，当前任务执行完毕后依次自动启动。"
+    override val tasksQueuedCount = "排队中"
+    override val tasksRunningCount = "进行中"
+    override val tasksCompletedCount = "已完成"
+    override val tasksFailedCount = "失败"
+    override val clearCompletedTasks = "清空已完成"
+    override val pauseAllTasks = "暂停队列"
+    override val resumeAllTasks = "恢复队列"
+    override val addTaskToQueue = "加入任务队列"
+    override val taskAddedToQueueToast = "已将 %d 个章节加入并发翻译队列！"
+    override val noTasksInQueue = "队列中暂无翻译任务"
+    override val taskStatusQueued = "排队等待"
+    override val taskStatusRunning = "正在翻译"
+    override val taskStatusPaused = "已暂停"
+    override val taskStatusCompleted = "翻译完成"
+    override val taskStatusFailed = "执行失败"
+    override val taskStatusCancelled = "已取消"
+    override val retryTaskBtn = "重试"
+    override val cancelTaskBtn = "取消"
+    override val pauseTaskBtn = "暂停"
+    override val resumeTaskBtn = "继续"
+
+    // AI Term Extraction & Project Isolation
+    override val termExtractionDialogTitle = "AI 智能提炼专有名词"
+    override val extractionScopeLabel = "提炼扫描范围"
+    override val scopeAllChapters = "全书所有章节"
+    override val scopeFirstNChapters = "前 %d 章"
+    override val scopeCustomRange = "自定义章节范围"
+    override val scopeSelectedChapters = "当前选中章节"
+    override val startExtraction = "开始智能提炼"
+    override val pauseExtraction = "暂停扫描"
+    override val resumeExtraction = "继续扫描"
+    override val stopExtraction = "停止并查看结果"
+    override val extractionProgressScanning = "正在扫描: 第 %d 章 (分块 %d/%d)... 已发现 %d 个候选术语"
+    override val extractionCandidatesFound = "共发现 %d 个候选专有名词与术语"
+    override val extractionReviewTitle = "审核提炼出的专有名词"
+    override val extractionReviewSubtitle = "勾选需要保存至当前工程术语表的专有名词"
+    override val saveSelectedTerms = "保存选中的 %d 个术语至工程"
+    override val selectAll = "全选"
+    override val deselectAll = "取消全选"
+    override val projectBoundNotice = "🔒 术语表已严格绑定至工程: 《%s》"
+    override val selectProjectPrompt = "请先选择一个小说工程"
+    override val noProjectSelectedGlossary = "未选择工程，请在左侧或上方选择一个工程查看其术语表"
+
+    // Model Search
+    override val searchModelPlaceholder = "搜索端点模型名称 (如 deepseek, gpt-4o, claude, qwen)..."
+    override val matchingModelsCount = "已匹配到 %d 个端点模型"
+    override val noMatchingModels = "未找到与关键词匹配的模型"
+    override val allEndpointModels = "端点拉取的全部模型 (%d 个)"
 }
 
 object EnglishStrings : AppStrings {
@@ -971,6 +1081,61 @@ object EnglishStrings : AppStrings {
     override val navSwitchProject = "Switch Project"
     override val navMenuDesc = "Navigation Menu"
     override val navCollapseDrawer = "Collapse Menu"
+
+    // Task Queue & Concurrency
+    override val navTaskQueue = "Task Queue"
+    override val taskQueueTitle = "Background Task Queue"
+    override val taskQueueSubtitle = "Concurrent & Background Translation Queue"
+    override val maxConcurrencyLabel = "Max Concurrent Tasks"
+    override val concurrencyLimitNotice = "Tasks exceeding the limit will automatically queue and start in order as slots open."
+    override val tasksQueuedCount = "Queued"
+    override val tasksRunningCount = "Running"
+    override val tasksCompletedCount = "Completed"
+    override val tasksFailedCount = "Failed"
+    override val clearCompletedTasks = "Clear Completed"
+    override val pauseAllTasks = "Pause Queue"
+    override val resumeAllTasks = "Resume Queue"
+    override val addTaskToQueue = "Add to Queue"
+    override val taskAddedToQueueToast = "Added %d chapter(s) to concurrent task queue!"
+    override val noTasksInQueue = "No translation tasks in queue"
+    override val taskStatusQueued = "Queued"
+    override val taskStatusRunning = "Translating"
+    override val taskStatusPaused = "Paused"
+    override val taskStatusCompleted = "Completed"
+    override val taskStatusFailed = "Failed"
+    override val taskStatusCancelled = "Cancelled"
+    override val retryTaskBtn = "Retry"
+    override val cancelTaskBtn = "Cancel"
+    override val pauseTaskBtn = "Pause"
+    override val resumeTaskBtn = "Resume"
+
+    // AI Term Extraction & Project Isolation
+    override val termExtractionDialogTitle = "AI Terminology Extraction"
+    override val extractionScopeLabel = "Scan Scope"
+    override val scopeAllChapters = "All Chapters"
+    override val scopeFirstNChapters = "First %d Chapters"
+    override val scopeCustomRange = "Custom Chapter Range"
+    override val scopeSelectedChapters = "Selected Chapters"
+    override val startExtraction = "Start Extraction"
+    override val pauseExtraction = "Pause Scan"
+    override val resumeExtraction = "Resume Scan"
+    override val stopExtraction = "Stop & Review"
+    override val extractionProgressScanning = "Scanning: Chap %d (Chunk %d/%d)... Discovered %d candidate terms"
+    override val extractionCandidatesFound = "Found %d candidate terms & entities"
+    override val extractionReviewTitle = "Review Extracted Terminology"
+    override val extractionReviewSubtitle = "Select terms to save to the project glossary"
+    override val saveSelectedTerms = "Save %d Selected Terms to Project"
+    override val selectAll = "Select All"
+    override val deselectAll = "Deselect All"
+    override val projectBoundNotice = "🔒 Glossary is strictly isolated & bound to: 《%s》"
+    override val selectProjectPrompt = "Please select a novel project first"
+    override val noProjectSelectedGlossary = "No project selected. Select a project on the left or top to view its isolated glossary."
+
+    // Model Search
+    override val searchModelPlaceholder = "Search endpoint models (e.g. deepseek, gpt-4o, claude, qwen)..."
+    override val matchingModelsCount = "Matched %d endpoint models"
+    override val noMatchingModels = "No models matched the search query"
+    override val allEndpointModels = "All Endpoint Models (%d)"
 }
 
 val LocalAppStrings = staticCompositionLocalOf<AppStrings> { ChineseStrings }

@@ -17,6 +17,8 @@ import com.breakyuna.noveltranslator.core.parser.*
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
 import com.breakyuna.noveltranslator.core.sample.SampleNovelProvider
 import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
+import com.breakyuna.noveltranslator.core.task.TranslationTaskItem
+import com.breakyuna.noveltranslator.core.task.TranslationTaskManager
 import com.breakyuna.noveltranslator.core.translator.TranslationJobState
 import com.breakyuna.noveltranslator.core.translator.TranslationManager
 import com.breakyuna.noveltranslator.data.db.AppDatabase
@@ -25,10 +27,15 @@ import com.breakyuna.noveltranslator.data.repository.*
 import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
 import com.breakyuna.noveltranslator.ui.i18n.AppStrings
 import com.breakyuna.noveltranslator.ui.i18n.getAppStrings
+import com.breakyuna.noveltranslator.ui.screens.glossary.ExtractionScope
 import android.content.Context
 import androidx.room.withTransaction
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -116,6 +123,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     val chapterSplitAgent = ChapterSplitAgent(reliableLlmGateway)
     val termExtractionAgent = TermExtractionAgent(reliableLlmGateway)
+
+    val taskManager = TranslationTaskManager(
+        context = application,
+        projectRepository = projectRepo,
+        chapterRepository = chapterRepo,
+        glossaryRepository = glossaryRepo,
+        translationLogRepository = logRepo,
+        llmRequestLogRepository = llmRequestLogRepo,
+        fileManager = fileManager,
+        llmClient = reliableLlmGateway,
+        scope = viewModelScope
+    )
+
+    private val _termExtractionState = MutableStateFlow<TermExtractionUiState>(TermExtractionUiState.Idle)
+    val termExtractionState: StateFlow<TermExtractionUiState> = _termExtractionState.asStateFlow()
+    private var extractionJob: Job? = null
+    private var isExtractionPaused = false
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -646,70 +670,207 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun runAutoExtractTerms(projectId: Long, provider: ApiProviderEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
+    fun startControlledTermExtraction(
+        projectId: Long,
+        provider: ApiProviderEntity,
+        scopeType: ExtractionScope,
+        firstN: Int? = null,
+        startChapter: Int = 1,
+        endChapter: Int = 1000
+    ) {
+        extractionJob?.cancel()
+        isExtractionPaused = false
+
+        extractionJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                showMessage("Extracting key character and lore terms...")
-                val chapters = chapterRepo.getChaptersListByProject(projectId)
+                val project = projectRepo.getProjectById(projectId) ?: run {
+                    _termExtractionState.value = TermExtractionUiState.Error("Project not found")
+                    return@launch
+                }
+                requireCompatibleCurrency(project, provider)
+
+                var chapters = chapterRepo.getChaptersListByProject(projectId).sortedBy { it.chapterIndex }
                 if (chapters.isEmpty()) {
-                    withContext(Dispatchers.Main) { showMessage("No chapters to extract from.") }
+                    _termExtractionState.value = TermExtractionUiState.Error("No chapters available in project")
                     return@launch
                 }
 
-                val project = projectRepo.getProjectById(projectId) ?: return@launch
-                requireCompatibleCurrency(project, provider)
-                val knownTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
-                val knownKeys = knownTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
-                val extractedCandidates = mutableListOf<GlossaryEntity>()
-                val windows = chapters.flatMap { chapter ->
-                    val text = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
-                    splitTermScanWindows(text).map { window -> "[Chapter ${chapter.chapterIndex}: ${chapter.title}]\n$window" }
+                // Filter chapters by selected scope
+                chapters = when (scopeType) {
+                    ExtractionScope.FIRST_5 -> chapters.take(5)
+                    ExtractionScope.FIRST_20 -> chapters.take(20)
+                    ExtractionScope.CUSTOM_RANGE -> chapters.filter { it.chapterIndex in startChapter..endChapter }
+                    ExtractionScope.ALL -> chapters
                 }
 
-                for ((windowIndex, sample) in windows.withIndex()) {
+                if (chapters.isEmpty()) {
+                    _termExtractionState.value = TermExtractionUiState.Error("No chapters match the selected scope")
+                    return@launch
+                }
+
+                val knownTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
+                val knownKeys = knownTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
+                val discoveredCandidates = mutableListOf<GlossaryEntity>()
+
+                // Window samples with chapter metadata
+                data class ScanWindow(val chapter: ChapterEntity, val text: String, val index: Int)
+                val allWindows = mutableListOf<ScanWindow>()
+                for (chapter in chapters) {
+                    val originalText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+                    val windows = splitTermScanWindows(originalText)
+                    for (w in windows) {
+                        allWindows.add(
+                            ScanWindow(
+                                chapter = chapter,
+                                text = "[Chapter ${chapter.chapterIndex}: ${chapter.title}]\n$w",
+                                index = allWindows.size + 1
+                            )
+                        )
+                    }
+                }
+
+                val totalWindows = allWindows.size
+                var totalPromptTokens = 0L
+                var totalCompletionTokens = 0L
+                var totalEstimatedCost = 0.0
+
+                _termExtractionState.value = TermExtractionUiState.Scanning(
+                    projectId = projectId,
+                    currentChapterIndex = chapters.first().chapterIndex,
+                    currentChapterTitle = chapters.first().title,
+                    currentWindowIndex = 1,
+                    totalWindows = totalWindows,
+                    discoveredTerms = emptyList(),
+                    promptTokens = 0L,
+                    completionTokens = 0L,
+                    estimatedCost = 0.0,
+                    currency = provider.currency,
+                    isPaused = false
+                )
+
+                for ((windowIdx, windowItem) in allWindows.withIndex()) {
+                    while (isExtractionPaused && isActive) {
+                        delay(200)
+                    }
+                    if (!isActive) break
+
+                    _termExtractionState.value = TermExtractionUiState.Scanning(
+                        projectId = projectId,
+                        currentChapterIndex = windowItem.chapter.chapterIndex,
+                        currentChapterTitle = windowItem.chapter.title,
+                        currentWindowIndex = windowIdx + 1,
+                        totalWindows = totalWindows,
+                        discoveredTerms = discoveredCandidates.toList(),
+                        promptTokens = totalPromptTokens,
+                        completionTokens = totalCompletionTokens,
+                        estimatedCost = totalEstimatedCost,
+                        currency = provider.currency,
+                        isPaused = isExtractionPaused
+                    )
+
                     val extraction = termExtractionAgent.extractTermsWithUsage(
                         projectId = projectId,
-                        sampleText = sample,
+                        sampleText = windowItem.text,
                         provider = provider,
                         sourceLanguage = project.sourceLanguage,
                         targetLanguage = project.targetLanguage,
-                        existingTerms = knownTerms.map { it.originalTerm } + extractedCandidates.map { it.originalTerm }
+                        existingTerms = knownTerms.map { it.originalTerm } + discoveredCandidates.map { it.originalTerm }
                     )
+
                     extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
-                        if (knownKeys.add(normalizeTerm(term.originalTerm))) extractedCandidates += term
+                        if (knownKeys.add(normalizeTerm(term.originalTerm))) {
+                            discoveredCandidates += term.copy(projectId = projectId)
+                        }
                     }
+
+                    totalPromptTokens += extraction.usage.promptTokens
+                    totalCompletionTokens += extraction.usage.completionTokens
+                    val cost = TokenCalculator.calculateCost(
+                        extraction.usage.promptTokens,
+                        extraction.usage.completionTokens,
+                        provider.inputPricePerMillion,
+                        provider.outputPricePerMillion
+                    )
+                    totalEstimatedCost += cost
+
                     recordAgentUsage(
                         projectId,
-                        "Terminology scan ${windowIndex + 1}",
+                        "Terminology scan ${windowIdx + 1}/$totalWindows",
                         provider,
                         listOf(extraction.usage),
                         operationSuccessful = extraction.parseError == null && extraction.usage.isSuccess
                     )
-                    check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
-                        extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
-                    }
-                    check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
-                    withContext(Dispatchers.Main) {
-                        showMessage("Terminology scan ${windowIndex + 1}/${windows.size} completed.")
-                    }
                 }
 
-                if (extractedCandidates.isNotEmpty()) {
-                    glossaryRepo.insertTerms(extractedCandidates)
-                    withContext(Dispatchers.Main) {
-                        showMessage("Added ${extractedCandidates.size} terminology candidates for review!")
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        showMessage("Extraction completed (0 new terms identified).")
-                    }
-                }
-            } catch (error: Exception) {
-                withContext(Dispatchers.Main) {
-                    showMessage("Terminology scan failed: ${error.localizedMessage ?: "provider or format error"}")
-                }
+                // Completed scanning - go to Review
+                _termExtractionState.value = TermExtractionUiState.Review(
+                    projectId = projectId,
+                    candidates = discoveredCandidates.toList(),
+                    promptTokens = totalPromptTokens,
+                    completionTokens = totalCompletionTokens,
+                    estimatedCost = totalEstimatedCost,
+                    currency = provider.currency
+                )
+            } catch (ce: CancellationException) {
+                // Cancelled or stopped early by user
+            } catch (e: Exception) {
+                _termExtractionState.value = TermExtractionUiState.Error(
+                    e.localizedMessage ?: "Terminology scan failed"
+                )
             }
         }
+    }
+
+    fun pauseTermExtraction() {
+        isExtractionPaused = true
+        val current = _termExtractionState.value
+        if (current is TermExtractionUiState.Scanning) {
+            _termExtractionState.value = current.copy(isPaused = true)
+        }
+    }
+
+    fun resumeTermExtraction() {
+        isExtractionPaused = false
+        val current = _termExtractionState.value
+        if (current is TermExtractionUiState.Scanning) {
+            _termExtractionState.value = current.copy(isPaused = false)
+        }
+    }
+
+    fun stopTermExtraction() {
+        extractionJob?.cancel()
+        val current = _termExtractionState.value
+        if (current is TermExtractionUiState.Scanning) {
+            _termExtractionState.value = TermExtractionUiState.Review(
+                projectId = current.projectId,
+                candidates = current.discoveredTerms,
+                promptTokens = current.promptTokens,
+                completionTokens = current.completionTokens,
+                estimatedCost = current.estimatedCost,
+                currency = current.currency
+            )
+        } else {
+            _termExtractionState.value = TermExtractionUiState.Idle
+        }
+    }
+
+    fun saveExtractedTerms(projectId: Long, terms: List<GlossaryEntity>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val projectBoundTerms = terms.map { it.copy(projectId = projectId, isAutoExtracted = true) }
+            glossaryRepo.insertTerms(projectBoundTerms)
+            withContext(Dispatchers.Main) {
+                showMessage("Added ${projectBoundTerms.size} terms to project glossary!")
+            }
+        }
+    }
+
+    fun dismissTermExtraction() {
+        extractionJob?.cancel()
+        _termExtractionState.value = TermExtractionUiState.Idle
+    }
+
+    fun runAutoExtractTerms(projectId: Long, provider: ApiProviderEntity) {
+        startControlledTermExtraction(projectId, provider, ExtractionScope.ALL)
     }
 
     private fun splitTermScanWindows(text: String): List<String> {
@@ -1246,4 +1407,41 @@ Output ONLY the new translated paragraph text.
         chapterSegmentRepo.replaceForChapter(chapterId, rows)
     }
 
+    // ==========================================
+    // Background Task Queue Controls
+    // ==========================================
+    val taskQueueTasks = taskManager.tasks
+    val maxConcurrentTasks = taskManager.maxConcurrency
+    val isQueuePaused = taskManager.isQueuePaused
+
+    fun setMaxConcurrentTasks(limit: Int) {
+        taskManager.setMaxConcurrency(limit)
+    }
+
+    fun pauseTask(taskId: String) {
+        taskManager.pauseTask(taskId)
+    }
+
+    fun resumeTask(taskId: String) {
+        taskManager.resumeTask(taskId)
+    }
+
+    fun cancelTask(taskId: String) {
+        taskManager.cancelTask(taskId)
+    }
+
+    fun retryTask(taskId: String) {
+        taskManager.retryTask(taskId)
+    }
+
+    fun clearCompletedTasks() {
+        taskManager.clearCompletedTasks()
+    }
+
+    fun enqueueBatchChapters(project: ProjectEntity, chapters: List<ChapterEntity>, provider: ApiProviderEntity) {
+        taskManager.enqueueChapters(project, chapters, provider)
+        showMessage("已将 ${chapters.size} 个章节加入并发翻译队列")
+    }
+
 }
+

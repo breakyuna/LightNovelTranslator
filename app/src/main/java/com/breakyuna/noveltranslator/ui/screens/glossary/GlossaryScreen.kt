@@ -43,6 +43,7 @@ fun GlossaryScreen(
     var selectedCategory by remember { mutableStateOf<TermCategory?>(null) }
 
     var showAddDialog by remember { mutableStateOf(false) }
+    var showExtractionDialog by remember { mutableStateOf(false) }
     var editingTerm by remember { mutableStateOf<GlossaryEntity?>(null) }
 
     val filteredGlossary = glossary.filter { term ->
@@ -81,7 +82,7 @@ fun GlossaryScreen(
                     IconButton(
                         onClick = {
                             if (project != null && defaultProvider != null) {
-                                viewModel.runAutoExtractTerms(project!!.id, defaultProvider)
+                                showExtractionDialog = true
                             } else {
                                 viewModel.showMessage(strings.noProvidersConfigured)
                             }
@@ -116,11 +117,41 @@ fun GlossaryScreen(
                 .padding(padding)
                 .padding(horizontal = 16.dp)
         ) {
+            // Project Isolation Banner
+            if (project != null) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Lock,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = String.format(strings.projectBoundNotice, project!!.title),
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
             // AI Extraction Helper Card
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 8.dp),
+                    .padding(vertical = 6.dp),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
@@ -147,7 +178,7 @@ fun GlossaryScreen(
                     Button(
                         onClick = {
                             if (project != null && defaultProvider != null) {
-                                viewModel.runAutoExtractTerms(project!!.id, defaultProvider)
+                                showExtractionDialog = true
                             } else {
                                 viewModel.showMessage(strings.noProvidersConfigured)
                             }
@@ -261,6 +292,15 @@ fun GlossaryScreen(
                 viewModel.updateGlossaryTerm(updatedTerm)
                 editingTerm = null
             }
+        )
+    }
+
+    if (showExtractionDialog && project != null && defaultProvider != null) {
+        TermExtractionDialog(
+            viewModel = viewModel,
+            project = project!!,
+            provider = defaultProvider,
+            onDismiss = { showExtractionDialog = false }
         )
     }
 }

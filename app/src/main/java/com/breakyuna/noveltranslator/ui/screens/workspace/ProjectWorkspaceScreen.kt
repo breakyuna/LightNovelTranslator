@@ -4,6 +4,7 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -216,32 +217,77 @@ fun ProjectWorkspaceScreen(
                 shape = RoundedCornerShape(12.dp)
             )
 
-            Row(
+            LazyRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                FilterChip(
-                    selected = selectedFilter == null,
-                    onClick = { selectedFilter = null },
-                    label = { Text("${strings.filterAll} (${chapters.size})") }
-                )
-                FilterChip(
-                    selected = selectedFilter == ChapterStatus.PENDING,
-                    onClick = { selectedFilter = ChapterStatus.PENDING },
-                    label = { Text("${strings.filterPending} (${chapters.count { it.status == ChapterStatus.PENDING }})") }
-                )
-                FilterChip(
-                    selected = selectedFilter == ChapterStatus.COMPLETED,
-                    onClick = { selectedFilter = ChapterStatus.COMPLETED },
-                    label = { Text("${strings.filterDone} (${chapters.count { it.status == ChapterStatus.COMPLETED }})") }
-                )
-                FilterChip(
-                    selected = selectedFilter == ChapterStatus.ERROR,
-                    onClick = { selectedFilter = ChapterStatus.ERROR },
-                    label = { Text("${strings.filterError} (${chapters.count { it.status == ChapterStatus.ERROR }})") }
-                )
+                item {
+                    FilterChip(
+                        selected = selectedFilter == null,
+                        onClick = { selectedFilter = null },
+                        label = { Text("${strings.filterAll} (${chapters.size})") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == ChapterStatus.PENDING,
+                        onClick = { selectedFilter = ChapterStatus.PENDING },
+                        label = { Text("${strings.filterPending} (${chapters.count { it.status == ChapterStatus.PENDING }})") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == ChapterStatus.COMPLETED,
+                        onClick = { selectedFilter = ChapterStatus.COMPLETED },
+                        label = { Text("${strings.filterDone} (${chapters.count { it.status == ChapterStatus.COMPLETED }})") }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == ChapterStatus.ERROR,
+                        onClick = { selectedFilter = ChapterStatus.ERROR },
+                        label = { Text("${strings.filterError} (${chapters.count { it.status == ChapterStatus.ERROR }})") }
+                    )
+                }
+            }
+
+            // Batch Enqueue Banner
+            val pendingCount = chapters.count { it.status == ChapterStatus.PENDING || it.status == ChapterStatus.ERROR }
+            if (pendingCount > 0 && defaultProvider != null) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "待翻译章节: $pendingCount 章",
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
+                        )
+                        Button(
+                            onClick = {
+                                val targets = chapters.filter { it.status == ChapterStatus.PENDING || it.status == ChapterStatus.ERROR }
+                                viewModel.enqueueBatchChapters(currentProject, targets, defaultProvider)
+                            },
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.PlaylistAdd, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("加入并发队列", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
             }
 
             // Chapters List
