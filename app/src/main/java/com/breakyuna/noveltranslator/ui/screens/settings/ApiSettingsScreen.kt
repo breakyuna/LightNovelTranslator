@@ -40,6 +40,7 @@ import com.breakyuna.noveltranslator.ui.theme.PrimaryIndigo
 import com.breakyuna.noveltranslator.ui.theme.RoseAccent
 import com.breakyuna.noveltranslator.ui.theme.TertiaryAmber
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -888,7 +889,7 @@ fun ProviderEditDialog(
     var outputPrice by remember { mutableStateOf("${provider?.outputPricePerMillion ?: 0.28}") }
     var currency by remember { mutableStateOf(provider?.currency ?: "USD") }
     var maxContextTokens by remember { mutableStateOf("${provider?.maxContextTokens ?: 8192}") }
-    var temperature by remember { mutableStateOf(provider?.temperature ?: 0.3f) }
+    var temperatureText by remember { mutableStateOf("${provider?.temperature ?: 0.3f}") }
     var customHeadersJson by remember { mutableStateOf(provider?.customHeadersJson ?: "{}") }
     var isDefault by remember { mutableStateOf(provider?.isDefault ?: false) }
     var validationError by remember { mutableStateOf<String?>(null) }
@@ -919,14 +920,10 @@ fun ProviderEditDialog(
                             FilterChip(
                                 selected = selectedModel == preset.defaultModel && baseUrl == preset.defaultBaseUrl,
                                 onClick = {
-                                    val endpointChanged = baseUrl != preset.defaultBaseUrl || providerType != preset.providerType
                                     name = preset.name
                                     providerType = preset.providerType
                                     baseUrl = preset.defaultBaseUrl
-                                    if (endpointChanged) {
-                                        apiKey = ""
-                                        customHeadersJson = "{}"
-                                    }
+                                    // Preserve credentials and custom headers when changing endpoint.
                                     selectedModel = preset.defaultModel
                                     inputPrice = "${preset.defaultInputPrice}"
                                     outputPrice = "${preset.defaultOutputPrice}"
@@ -956,8 +953,6 @@ fun ProviderEditDialog(
                         value = baseUrl,
                         onValueChange = {
                             if (it != baseUrl) {
-                                apiKey = ""
-                                customHeadersJson = "{}"
                                 fetchedModels = emptyList()
                                 fetchModelNotice = null
                             }
@@ -1012,7 +1007,9 @@ fun ProviderEditDialog(
                                     inputPricePerMillion = 0.0,
                                     outputPricePerMillion = 0.0,
                                     currency = currency,
-                                    maxContextTokens = 8192
+                                    maxContextTokens = 8192,
+                                    temperature = temperatureText.toFloatOrNull() ?: 0.3f,
+                                    customHeadersJson = customHeadersJson
                                 )
                                 isFetchingModels = true
                                 fetchModelNotice = null
@@ -1116,6 +1113,28 @@ fun ProviderEditDialog(
                 }
 
                 item {
+                    OutlinedTextField(
+                        value = temperatureText,
+                        onValueChange = { temperatureText = it },
+                        label = { Text("Temperature (0–2)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
+                    OutlinedTextField(
+                        value = customHeadersJson,
+                        onValueChange = { customHeadersJson = it },
+                        label = { Text("自定义 Header（JSON 字符串对象）") },
+                        placeholder = { Text("{\"X-Client\":\"LightNovelTranslator\"}") },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                item {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
                             value = maxContextTokens,
@@ -1173,11 +1192,18 @@ fun ProviderEditDialog(
                     val inP = inputPrice.toDoubleOrNull()
                     val outP = outputPrice.toDoubleOrNull()
                     val maxCtx = maxContextTokens.toIntOrNull()
+                    val temp = temperatureText.toFloatOrNull()
+                    val headersValid = runCatching {
+                        val json = JSONObject(customHeadersJson.ifBlank { "{}" })
+                        json.keys().asSequence().all { key -> json.opt(key) is String }
+                    }.getOrDefault(false)
                     validationError = when {
                         baseUrl.isBlank() -> "Base URL is required"
                         inP == null || inP < 0.0 -> "Input price must be a non-negative number"
                         outP == null || outP < 0.0 -> "Output price must be a non-negative number"
                         maxCtx == null || maxCtx !in 4_096..2_000_000 -> "Max context tokens must be between 4,096 and 2,000,000"
+                        temp == null || temp !in 0f..2f -> "Temperature must be between 0 and 2"
+                        !headersValid -> "Custom headers must be a JSON object with string values"
                         else -> null
                     }
                     if (validationError != null) return@Button
@@ -1191,7 +1217,7 @@ fun ProviderEditDialog(
                         outputPricePerMillion = outP!!,
                         currency = currency,
                         maxContextTokens = maxCtx!!,
-                        temperature = temperature,
+                        temperature = temp!!,
                         customHeadersJson = customHeadersJson,
                         isDefault = isDefault
                     ) ?: ApiProviderEntity(
@@ -1204,7 +1230,7 @@ fun ProviderEditDialog(
                         outputPricePerMillion = outP!!,
                         currency = currency,
                         maxContextTokens = maxCtx!!,
-                        temperature = temperature,
+                        temperature = temp!!,
                         customHeadersJson = customHeadersJson,
                         isDefault = isDefault
                     )
@@ -1222,4 +1248,3 @@ fun ProviderEditDialog(
         }
     )
 }
-

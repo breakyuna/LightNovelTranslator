@@ -8,8 +8,11 @@ import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.exporter.EpubExporter
 import com.breakyuna.noveltranslator.core.exporter.TxtExporter
 import com.breakyuna.noveltranslator.core.llm.LlmClient
+import com.breakyuna.noveltranslator.core.llm.RetryingLlmGateway
+import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
+import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.parser.*
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
 import com.breakyuna.noveltranslator.core.sample.SampleNovelProvider
@@ -85,25 +88,41 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val glossaryRepo = GlossaryRepository(db.glossaryDao())
     val providerRepo = ApiProviderRepository(db.apiProviderDao(), ApiKeyCipher())
     val logRepo = TranslationLogRepository(db.translationLogDao())
+    val translationRunRepo = TranslationRunRepository(db.translationRunDao())
+    val translationChunkRepo = TranslationChunkRepository(db.translationChunkDao())
+    val llmRequestLogRepo = LlmRequestLogRepository(db.llmRequestLogDao())
+    private val translationAuditRepo = TranslationAuditRepository(db)
+    val chapterSegmentRepo = ChapterSegmentRepository(db.chapterSegmentDao())
 
     val fileManager = ProjectFileManager(application)
-    val llmClient = LlmClient()
+    private val rawLlmClient = LlmClient()
+    private val translationControlSignal = TranslationControlSignal()
+    val llmClient = RetryingLlmGateway(rawLlmClient, controlSignal = translationControlSignal)
+    private val reliableLlmGateway = llmClient
 
     val translationManager = TranslationManager(
         projectRepository = projectRepo,
         chapterRepository = chapterRepo,
         glossaryRepository = glossaryRepo,
         translationLogRepository = logRepo,
+        translationRunRepository = translationRunRepo,
+        translationChunkRepository = translationChunkRepo,
+        llmRequestLogRepository = llmRequestLogRepo,
+        translationAuditRepository = translationAuditRepo,
         fileManager = fileManager,
-        llmClient = llmClient
+        llmClient = reliableLlmGateway,
+        controlSignal = translationControlSignal
     )
 
-    val chapterSplitAgent = ChapterSplitAgent(llmClient)
-    val termExtractionAgent = TermExtractionAgent(llmClient)
+    val chapterSplitAgent = ChapterSplitAgent(reliableLlmGateway)
+    val termExtractionAgent = TermExtractionAgent(reliableLlmGateway)
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
             providerRepo.encryptLegacyKeys()
+            translationRunRepo.markInFlightInterrupted()
+            translationChunkRepo.resetRunningChunks()
+            chapterRepo.resetTranslatingStatuses()
         }
     }
 
@@ -116,6 +135,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _activeProjectId = MutableStateFlow<Long?>(null)
     val activeProjectId: StateFlow<Long?> = _activeProjectId.asStateFlow()
+
+    private val _recoverableRun = MutableStateFlow<TranslationRunEntity?>(null)
+    val recoverableRun: StateFlow<TranslationRunEntity?> = _recoverableRun.asStateFlow()
 
     val activeProject: StateFlow<ProjectEntity?> = _activeProjectId.flatMapLatest { id ->
         if (id == null) flowOf(null)
@@ -137,6 +159,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         else logRepo.getLogsByProject(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val activeRequestLogs: StateFlow<List<LlmRequestLogEntity>> = _activeProjectId.flatMapLatest { id ->
+        if (id == null) flowOf(emptyList())
+        else llmRequestLogRepo.getFlowByProject(id)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _selectedChapterId = MutableStateFlow<Long?>(null)
     val selectedChapterId: StateFlow<Long?> = _selectedChapterId.asStateFlow()
 
@@ -155,6 +182,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun clearSystemLogs() {
         com.breakyuna.noveltranslator.core.logger.SystemLogger.clearLogs()
     }
+
+    suspend fun getChapterSegments(chapterId: Long): List<ChapterSegmentEntity> =
+        chapterSegmentRepo.getByChapter(chapterId)
 
     fun getSystemLogFile(): File? {
         return com.breakyuna.noveltranslator.core.logger.SystemLogger.getLogFile()
@@ -175,6 +205,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun setActiveProject(projectId: Long?) {
         _activeProjectId.value = projectId
         _selectedChapterId.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            val candidate = projectId?.let { translationRunRepo.findLatestResumable(it) }
+            if (_activeProjectId.value == projectId) {
+                _recoverableRun.value = candidate
+            }
+            projectId?.let { syncProjectSegments(it) }
+        }
+    }
+
+    fun resumeRecoverableTranslation() {
+        val projectId = _activeProjectId.value ?: return
+        val run = _recoverableRun.value ?: return
+        val provider = allProviders.value.firstOrNull { it.id == run.providerId }
+        if (provider == null) {
+            showMessage("无法继续任务：原 Provider 已不存在，请检查设置")
+            return
+        }
+        _recoverableRun.value = null
+        translationManager.startTranslation(
+            scope = viewModelScope,
+            projectId = projectId,
+            provider = provider
+        )
+    }
+
+    fun abandonRecoverableTranslation() {
+        val runId = _recoverableRun.value?.id ?: return
+        _recoverableRun.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            translationRunRepo.updateState(
+                id = runId,
+                state = TranslationRunState.CANCELLED.name,
+                category = "CANCELLED",
+                message = "Abandoned by user",
+                nextRetryAt = null
+            )
+        }
     }
 
     fun setSelectedChapter(chapterId: Long?) {
@@ -261,85 +328,103 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         customRegex: String? = null
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            var createdProjectId: Long? = null
-            try {
-                require(fileBytes.size <= MAX_IMPORT_BYTES) { "File exceeds the 100 MB import limit" }
-                val isEpub = fileName.endsWith(".epub", ignoreCase = true) || fileName.endsWith(".equb", ignoreCase = true)
-                val fileType = if (isEpub) "EPUB" else "TXT"
-                val defaultTitle = fileName.substringBeforeLast(".").trim().take(300).ifBlank { "Imported novel" }
-
-                val tempProject = ProjectEntity(
-                    title = defaultTitle,
-                    author = "Unknown",
-                    sourceFileName = fileName,
-                    fileType = fileType,
-                    projectDirPath = "",
-                    sourceLanguage = sourceLang.trim().take(80).ifBlank { "Auto" },
-                    targetLanguage = targetLang.trim().take(80).ifBlank { "Chinese" },
-                    translationStyle = style.trim().take(120).ifBlank { "Literary Novel" }
-                )
-
-                val projectId = projectRepo.insertProject(tempProject)
-                createdProjectId = projectId
-                val dirPath = fileManager.getProjectDir(projectId).absolutePath
+            performImport(fileName, sourceLang, targetLang, style, customRegex, fileBytes) { projectId ->
                 fileManager.saveRawFile(projectId, fileName, fileBytes)
+            }
+        }
+    }
 
-                var parsedTitle = defaultTitle
-                var parsedAuthor = "Unknown"
-                var parsedChapters: List<ParsedChapter> = emptyList()
+    fun importFileFromUri(
+        uri: android.net.Uri,
+        fileName: String,
+        sourceLang: String = "Auto",
+        targetLang: String = "Chinese",
+        style: String = "Literary Novel",
+        customRegex: String? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            performImport(fileName, sourceLang, targetLang, style, customRegex, null) { projectId ->
+                getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                    fileManager.saveRawFile(projectId, fileName, input, MAX_IMPORT_BYTES.toLong())
+                } ?: error("Unable to open the selected file")
+            }
+        }
+    }
 
-                if (isEpub) {
-                    val imagesDir = fileManager.getImagesDir(projectId)
-                    val epubBook = EpubParser.parseEpub(fileBytes, imagesDir)
-                    if (epubBook.title.isNotBlank()) parsedTitle = epubBook.title.trim().take(300)
-                    if (epubBook.author.isNotBlank()) parsedAuthor = epubBook.author.trim().take(300)
-                    parsedChapters = epubBook.chapters
-                } else {
-                    val (text, _) = TxtParser.detectCharsetAndRead(fileBytes)
-                    val regex = if (!customRegex.isNullOrBlank()) customRegex else TxtParser.REGEX_CHINESE
-                    parsedChapters = TxtParser.splitIntoChapters(text, regex)
-                }
-
-                require(parsedChapters.isNotEmpty()) { "No readable chapters were found in this file" }
-
-                val chapterEntities = parsedChapters.map { parsed ->
-                    val origName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title)
-                    val transName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true)
-                    ChapterEntity(
-                        projectId = projectId,
-                        chapterIndex = parsed.index,
-                        title = parsed.title,
-                        originalFileName = origName,
-                        translatedFileName = transName,
-                        originalWordCount = parsed.wordCount,
-                        status = ChapterStatus.PENDING
-                    )
-                }
-                chapterRepo.insertChapters(chapterEntities)
-
-                val totalWords = chapterEntities.sumOf { it.originalWordCount }
-                val updatedProject = tempProject.copy(
+    private suspend fun performImport(
+        fileName: String,
+        sourceLang: String,
+        targetLang: String,
+        style: String,
+        customRegex: String?,
+        txtBytes: ByteArray?,
+        saveRawFile: (Long) -> File
+    ) {
+        var createdProjectId: Long? = null
+        try {
+            require(txtBytes == null || txtBytes.size <= MAX_IMPORT_BYTES) { "File exceeds the 100 MB import limit" }
+            val isEpub = fileName.endsWith(".epub", ignoreCase = true) || fileName.endsWith(".equb", ignoreCase = true)
+            val fileType = if (isEpub) "EPUB" else "TXT"
+            val defaultTitle = fileName.substringBeforeLast(".").trim().take(300).ifBlank { "Imported novel" }
+            val tempProject = ProjectEntity(
+                title = defaultTitle,
+                author = "Unknown",
+                sourceFileName = fileName,
+                fileType = fileType,
+                projectDirPath = "",
+                sourceLanguage = sourceLang.trim().take(80).ifBlank { "Auto" },
+                targetLanguage = targetLang.trim().take(80).ifBlank { "Chinese" },
+                translationStyle = style.trim().take(120).ifBlank { "Literary Novel" }
+            )
+            val projectId = projectRepo.insertProject(tempProject)
+            createdProjectId = projectId
+            val rawFile = saveRawFile(projectId)
+            var parsedTitle = defaultTitle
+            var parsedAuthor = "Unknown"
+            val parsedChapters = if (isEpub) {
+                val epubBook = EpubParser.parseEpubFile(rawFile, fileManager.getImagesDir(projectId))
+                if (epubBook.title.isNotBlank()) parsedTitle = epubBook.title.trim().take(300)
+                if (epubBook.author.isNotBlank()) parsedAuthor = epubBook.author.trim().take(300)
+                epubBook.chapters
+            } else {
+                val bytes = txtBytes ?: rawFile.readBytes()
+                val (text, _) = TxtParser.detectCharsetAndRead(bytes)
+                TxtParser.splitIntoChapters(text, customRegex?.takeIf { it.isNotBlank() } ?: TxtParser.REGEX_CHINESE)
+            }
+            require(parsedChapters.isNotEmpty()) { "No readable chapters were found in this file" }
+            val chapterEntities = parsedChapters.map { parsed ->
+                ChapterEntity(
+                    projectId = projectId,
+                    chapterIndex = parsed.index,
+                    title = parsed.title,
+                    originalFileName = fileManager.saveOriginalChapter(projectId, parsed.index, parsed.content, parsed.title),
+                    translatedFileName = fileManager.sanitizeChapterFileName(parsed.index, parsed.title, isTranslated = true),
+                    originalWordCount = parsed.wordCount,
+                    status = ChapterStatus.PENDING
+                )
+            }
+            chapterRepo.insertChapters(chapterEntities)
+            projectRepo.updateProject(
+                tempProject.copy(
                     id = projectId,
                     title = parsedTitle,
                     author = parsedAuthor,
-                    projectDirPath = dirPath,
+                    projectDirPath = fileManager.getProjectDir(projectId).absolutePath,
                     totalChapters = chapterEntities.size,
-                    totalOriginalWords = totalWords
+                    totalOriginalWords = chapterEntities.sumOf { it.originalWordCount }
                 )
-                projectRepo.updateProject(updatedProject)
-
-                withContext(Dispatchers.Main) {
-                    setActiveProject(projectId)
-                    showMessage("Successfully imported \"$parsedTitle\" with ${chapterEntities.size} chapters!")
-                }
-            } catch (e: Exception) {
-                createdProjectId?.let { projectId ->
-                    projectRepo.deleteProjectById(projectId)
-                    fileManager.deleteProjectFiles(projectId)
-                }
-                withContext(Dispatchers.Main) {
-                    showMessage("Import failed: ${e.localizedMessage}")
-                }
+            )
+            withContext(Dispatchers.Main) {
+                setActiveProject(projectId)
+                showMessage("Successfully imported \"$parsedTitle\" with ${chapterEntities.size} chapters!")
+            }
+        } catch (error: Exception) {
+            createdProjectId?.let { projectId ->
+                projectRepo.deleteProjectById(projectId)
+                fileManager.deleteProjectFiles(projectId)
+            }
+            withContext(Dispatchers.Main) {
+                showMessage("Import failed: ${error.localizedMessage}")
             }
         }
     }
@@ -660,6 +745,43 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         results: List<LlmResult>,
         operationSuccessful: Boolean = results.all { it.isSuccess }
     ) {
+        results.forEach { aggregate ->
+            val attempts = aggregate.attempts.ifEmpty { listOf(com.breakyuna.noveltranslator.core.llm.LlmAttempt(1, aggregate)) }
+            attempts.forEach { attempt ->
+                val item = attempt.result
+                val itemCost = TokenCalculator.calculateCost(
+                    item.promptTokens,
+                    item.completionTokens,
+                    provider.inputPricePerMillion,
+                    provider.outputPricePerMillion
+                )
+                llmRequestLogRepo.insert(
+                    LlmRequestLogEntity(
+                        projectId = projectId,
+                        attemptNumber = attempt.attemptNumber,
+                        operation = title.take(120),
+                        providerId = provider.id,
+                        providerName = provider.name,
+                        modelName = provider.selectedModel,
+                        inputPricePerMillion = provider.inputPricePerMillion,
+                        outputPricePerMillion = provider.outputPricePerMillion,
+                        currency = provider.currency,
+                        promptTokens = item.promptTokens,
+                        completionTokens = item.completionTokens,
+                        totalTokens = item.promptTokens + item.completionTokens,
+                        usageSource = item.usageSource.name,
+                        estimatedCost = itemCost,
+                        durationMs = item.durationMs,
+                        httpStatus = item.httpStatus,
+                        errorCategory = item.errorCategory?.name,
+                        errorMessage = item.errorMessage?.take(500),
+                        finishReason = item.finishReason,
+                        requestId = item.requestId,
+                        isSuccess = item.isSuccess
+                    )
+                )
+            }
+        }
         val promptTokens = results.sumOf { it.promptTokens }
         val completionTokens = results.sumOf { it.completionTokens }
         val cost = TokenCalculator.calculateCost(
@@ -824,6 +946,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     updatedAt = System.currentTimeMillis()
                 )
             )
+            syncChapterSegments(chapter.id, chapter.projectId, newTranslatedContent)
 
             val updatedChapters = chapterRepo.getChaptersListByProject(chapter.projectId)
             val totalDone = updatedChapters.count { it.status == ChapterStatus.COMPLETED }
@@ -844,6 +967,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         originalParagraph: String,
         customInstruction: String,
         provider: ApiProviderEntity,
+        segmentId: String? = null,
         onResult: (String) -> Unit
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -851,15 +975,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val chapter = chapterRepo.getChapterById(chapterId) ?: return@launch
                 val project = projectRepo.getProjectById(chapter.projectId) ?: return@launch
                 requireCompatibleCurrency(project, provider)
-                require(originalParagraph.isNotBlank()) { "Original paragraph is empty" }
+                val stableSource = if (!segmentId.isNullOrBlank()) {
+                    val rows = chapterSegmentRepo.getByChapter(chapterId)
+                    val selected = rows.firstOrNull { it.sourceSegmentId == segmentId }
+                    val related = when (selected?.relation) {
+                        "MANY_TO_ONE" -> rows.filter { it.translatedSegmentId == selected.translatedSegmentId }
+                        "ONE_TO_MANY" -> rows.filter { it.sourceSegmentId == selected.sourceSegmentId }
+                        else -> listOfNotNull(selected)
+                    }
+                    related.sortedBy { it.sourceOrdinal ?: Int.MAX_VALUE }
+                        .map { it.sourceText }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                        .joinToString("\n\n")
+                        .takeIf { it.isNotBlank() }
+                        ?: run {
+                            val sourceText = fileManager.readOriginalChapter(chapter.projectId, chapter.originalFileName)
+                            com.breakyuna.noveltranslator.core.translator.StableSegmentParser
+                                .parse(chapterId, sourceText)
+                                .firstOrNull { it.segmentId == segmentId }
+                                ?.sourceText
+                        }
+                } else null
+                val resolvedOriginalParagraph = stableSource ?: originalParagraph
+                require(resolvedOriginalParagraph.isNotBlank()) { "Original paragraph is empty" }
                 val paragraphBudget = TokenCalculator.calculateChunkBudget(provider.maxContextTokens, 1_200L)
-                require(TokenCalculator.estimateTokens(originalParagraph) <= paragraphBudget) {
+                require(TokenCalculator.estimateTokens(resolvedOriginalParagraph) <= paragraphBudget) {
                     "Paragraph is too long for this provider's context window"
                 }
                 val glossary = glossaryRepo.getGlossaryListByProject(chapter.projectId)
                     .asSequence()
                     .filter { !it.isAutoExtracted && it.originalTerm.length in 1..200 }
-                    .filter { originalParagraph.contains(it.originalTerm, ignoreCase = true) }
+                    .filter { resolvedOriginalParagraph.contains(it.originalTerm, ignoreCase = true) }
                     .distinctBy { it.originalTerm.trim().lowercase() }
                     .take(12)
                     .toList()
@@ -870,7 +1017,7 @@ Maintain consistency with glossary:
 ${glossary.joinToString("\n") { "• ${it.originalTerm.take(120)} -> ${it.translatedTerm.take(120)}" }}
 
 Original Paragraph:
-$originalParagraph
+                    $resolvedOriginalParagraph
 
 Output ONLY the new translated paragraph text.
                 """.trimIndent()
@@ -882,13 +1029,13 @@ Output ONLY the new translated paragraph text.
                     maxTokens = minOf(16_384, maxOf(1_024, provider.maxContextTokens / 2))
                 )
                 val validation = if (result.isSuccess && !result.isTruncated && result.text.isNotBlank()) {
-                    com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator.validate(originalParagraph, result.text)
+                    com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator.validate(resolvedOriginalParagraph, result.text)
                 } else {
                     com.breakyuna.noveltranslator.core.translator.TranslationValidation(false, listOf(result.errorMessage ?: "empty or truncated response"))
                 }
                 recordAgentUsage(
                     chapter.projectId,
-                    "Chapter ${chapter.chapterIndex} paragraph ${paragraphIndex + 1} re-translation",
+                    "Chapter ${chapter.chapterIndex} segment ${segmentId ?: "ordinal_${paragraphIndex}"} re-translation",
                     provider,
                     listOf(result),
                     operationSuccessful = validation.isAcceptable
@@ -1010,8 +1157,10 @@ Output ONLY the new translated paragraph text.
                 provider = provider,
                 systemPrompt = "You are a test ping responder.",
                 userPrompt = "Say 'Connection OK' and nothing else.",
-                temperature = 0.1f
+                temperature = 0.1f,
+                operation = "TEST_CONNECTION"
             )
+            recordStandaloneRequest(provider, result)
             withContext(Dispatchers.Main) {
                 if (result.isSuccess) {
                     onComplete(true, "Success: ${result.text.trim()} (${result.durationMs}ms)")
@@ -1020,6 +1169,44 @@ Output ONLY the new translated paragraph text.
                 }
             }
         }
+    }
+
+    private suspend fun recordStandaloneRequest(provider: ApiProviderEntity, aggregate: LlmResult) {
+        val attempts = aggregate.attempts.ifEmpty {
+            listOf(com.breakyuna.noveltranslator.core.llm.LlmAttempt(1, aggregate))
+        }
+        val logs = attempts.map { attempt ->
+            val item = attempt.result
+            LlmRequestLogEntity(
+                projectId = null,
+                attemptNumber = attempt.attemptNumber,
+                operation = item.operation,
+                providerId = provider.id,
+                providerName = provider.name,
+                modelName = provider.selectedModel,
+                inputPricePerMillion = provider.inputPricePerMillion,
+                outputPricePerMillion = provider.outputPricePerMillion,
+                currency = provider.currency,
+                promptTokens = item.promptTokens,
+                completionTokens = item.completionTokens,
+                totalTokens = item.promptTokens + item.completionTokens,
+                usageSource = item.usageSource.name,
+                estimatedCost = TokenCalculator.calculateCost(
+                    item.promptTokens,
+                    item.completionTokens,
+                    provider.inputPricePerMillion,
+                    provider.outputPricePerMillion
+                ),
+                durationMs = item.durationMs,
+                httpStatus = item.httpStatus,
+                errorCategory = item.errorCategory?.name,
+                errorMessage = item.errorMessage?.take(500),
+                finishReason = item.finishReason,
+                requestId = item.requestId,
+                isSuccess = item.isSuccess
+            )
+        }
+        translationAuditRepo.record(null, null, logs)
     }
 
     fun fetchModelsFromEndpoint(provider: ApiProviderEntity, onComplete: (Result<List<String>>) -> Unit) {
@@ -1033,5 +1220,30 @@ Output ONLY the new translated paragraph text.
 
     private fun normalizeTerm(value: String): String =
         java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFKC).lowercase()
+
+    private suspend fun syncProjectSegments(projectId: Long) {
+        chapterRepo.getChaptersListByProject(projectId).forEach { chapter ->
+            val original = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+            val translated = fileManager.readTranslatedChapter(projectId, chapter.translatedFileName)
+            syncChapterSegments(chapter.id, projectId, translated, originalOverride = original)
+        }
+    }
+
+    private suspend fun syncChapterSegments(
+        chapterId: Long,
+        projectId: Long,
+        translatedText: String,
+        originalOverride: String? = null
+    ) {
+        val chapter = chapterRepo.getChapterById(chapterId) ?: return
+        val original = originalOverride
+            ?: fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+        val rows = com.breakyuna.noveltranslator.core.translator.StableSegmentParser.toPersistedRelations(
+            chapterId = chapterId,
+            sourceText = original,
+            translatedText = translatedText
+        )
+        chapterSegmentRepo.replaceForChapter(chapterId, rows)
+    }
 
 }

@@ -39,8 +39,6 @@ import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -233,15 +231,12 @@ fun ProjectListScreen(
     if (showImportDialog) {
         ImportNovelDialog(
             onDismiss = { showImportDialog = false },
-            onImport = { name, bytes, srcLang, tgtLang, style, regex ->
-                viewModel.importFile(
-                    fileName = name,
-                    fileBytes = bytes,
-                    sourceLang = srcLang,
-                    targetLang = tgtLang,
-                    style = style,
-                    customRegex = regex
-                )
+            onImport = { name, uri, bytes, srcLang, tgtLang, style, regex ->
+                if (uri != null) {
+                    viewModel.importFileFromUri(uri, name, srcLang, tgtLang, style, regex)
+                } else if (bytes != null) {
+                    viewModel.importFile(name, bytes, srcLang, tgtLang, style, regex)
+                }
                 showImportDialog = false
             }
         )
@@ -416,11 +411,11 @@ fun ProjectCard(
 @Composable
 fun ImportNovelDialog(
     onDismiss: () -> Unit,
-    onImport: (name: String, bytes: ByteArray, srcLang: String, tgtLang: String, style: String, regex: String?) -> Unit
+    onImport: (name: String, uri: Uri?, bytes: ByteArray?, srcLang: String, tgtLang: String, style: String, regex: String?) -> Unit
 ) {
     val strings = LocalAppStrings.current
     var fileName by remember { mutableStateOf("") }
-    var fileBytes by remember { mutableStateOf<ByteArray?>(null) }
+    var fileUri by remember { mutableStateOf<Uri?>(null) }
     var pastedText by remember { mutableStateOf("") }
     var isPasteMode by remember { mutableStateOf(false) }
     var importError by remember { mutableStateOf<String?>(null) }
@@ -463,15 +458,13 @@ fun ImportNovelDialog(
                         require(declaredSize == null || declaredSize!! <= MAX_IMPORT_BYTES) {
                             "File exceeds the 100 MB import limit"
                         }
-                        val bytes = context.contentResolver.openInputStream(uri)?.use(::readLimited)
-                            ?: error("Unable to open the selected file")
-                        displayName to bytes
+                        displayName
                     }
-                }.onSuccess { (name, bytes) ->
-                    fileBytes = bytes
+                }.onSuccess { name ->
+                    fileUri = uri
                     fileName = name
                 }.onFailure { error ->
-                    fileBytes = null
+                    fileUri = null
                     fileName = ""
                     importError = error.localizedMessage ?: "Unable to read the selected file"
                 }
@@ -620,14 +613,14 @@ fun ImportNovelDialog(
                 onClick = {
                     val finalBytes = if (isPasteMode) {
                         pastedText.toByteArray(Charsets.UTF_8)
-                    } else {
-                        fileBytes
-                    }
+                    } else null
+                    val finalUri = if (isPasteMode) null else fileUri
                     val finalName = if (isPasteMode) "pasted_novel.txt" else fileName.ifBlank { "novel.txt" }
 
-                    if (finalBytes != null && finalBytes.isNotEmpty()) {
+                    if ((finalBytes != null && finalBytes.isNotEmpty()) || finalUri != null) {
                         onImport(
                             finalName,
+                            finalUri,
                             finalBytes,
                             sourceLang,
                             targetLang,
@@ -636,7 +629,7 @@ fun ImportNovelDialog(
                         )
                     }
                 },
-                enabled = (isPasteMode && pastedText.isNotBlank()) || (!isPasteMode && fileBytes != null)
+                enabled = (isPasteMode && pastedText.isNotBlank()) || (!isPasteMode && fileUri != null)
             ) {
                 Text(strings.createProject)
             }
@@ -650,17 +643,3 @@ fun ImportNovelDialog(
 }
 
 private const val MAX_IMPORT_BYTES = 100L * 1024 * 1024
-
-private fun readLimited(input: InputStream): ByteArray {
-    val output = ByteArrayOutputStream()
-    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-    var total = 0L
-    while (true) {
-        val count = input.read(buffer)
-        if (count < 0) break
-        total += count
-        require(total <= MAX_IMPORT_BYTES) { "File exceeds the 100 MB import limit" }
-        output.write(buffer, 0, count)
-    }
-    return output.toByteArray()
-}

@@ -45,6 +45,9 @@ interface ChapterDao {
     @Query("UPDATE chapters SET status = :status WHERE id = :id")
     suspend fun updateStatus(id: Long, status: ChapterStatus)
 
+    @Query("UPDATE chapters SET status = 'PENDING', updatedAt = :updatedAt WHERE status = 'TRANSLATING'")
+    suspend fun resetTranslatingStatuses(updatedAt: Long = System.currentTimeMillis())
+
     @Query("UPDATE chapters SET summary = :summary WHERE id = :id")
     suspend fun updateSummary(id: Long, summary: String)
 

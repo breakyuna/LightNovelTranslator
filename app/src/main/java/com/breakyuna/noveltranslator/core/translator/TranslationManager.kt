@@ -1,8 +1,16 @@
 package com.breakyuna.noveltranslator.core.translator
 
-import com.breakyuna.noveltranslator.core.llm.LlmClient
+import com.breakyuna.noveltranslator.core.llm.LlmGateway
+import com.breakyuna.noveltranslator.core.llm.LlmAttempt
+import com.breakyuna.noveltranslator.core.llm.LlmResult
+import com.breakyuna.noveltranslator.core.llm.LlmErrorCategory
+import com.breakyuna.noveltranslator.core.llm.UsageSource
+import com.breakyuna.noveltranslator.core.llm.executeCompletion
+import com.breakyuna.noveltranslator.core.llm.DelayProvider
+import com.breakyuna.noveltranslator.core.llm.CoroutineDelayProvider
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
+import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
@@ -13,7 +21,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedDeque
-import java.util.concurrent.atomic.AtomicBoolean
+import java.security.MessageDigest
+import java.io.IOException
 
 sealed class TranslationJobState {
     object Idle : TranslationJobState()
@@ -48,8 +57,14 @@ class TranslationManager(
     private val chapterRepository: ChapterRepository,
     private val glossaryRepository: GlossaryRepository,
     private val translationLogRepository: TranslationLogRepository,
+    private val translationRunRepository: TranslationRunRepository,
+    private val translationChunkRepository: TranslationChunkRepository,
+    private val llmRequestLogRepository: LlmRequestLogRepository,
+    private val translationAuditRepository: TranslationAuditRepository,
     private val fileManager: ProjectFileManager,
-    private val llmClient: LlmClient
+    private val llmClient: LlmGateway,
+    private val delayProvider: DelayProvider = CoroutineDelayProvider,
+    private val controlSignal: TranslationControlSignal = TranslationControlSignal()
 ) {
     private val _jobState = MutableStateFlow<TranslationJobState>(TranslationJobState.Idle)
     val jobState: StateFlow<TranslationJobState> = _jobState.asStateFlow()
@@ -59,8 +74,9 @@ class TranslationManager(
     val liveLogs: StateFlow<List<LiveLogMessage>> = _liveLogs.asStateFlow()
 
     private var activeJob: Job? = null
-    private val isPaused = AtomicBoolean(false)
-    private val isCancelled = AtomicBoolean(false)
+    private var controlScope: CoroutineScope? = null
+    private var activeRunId: Long? = null
+    private var activeProjectId: Long? = null
 
     private fun emitLiveLog(
         type: LiveLogType,
@@ -102,25 +118,39 @@ class TranslationManager(
     }
 
     fun pause() {
-        isPaused.set(true)
+        controlSignal.requestPause()
         val current = _jobState.value
         if (current is TranslationJobState.Running) {
             _jobState.value = current.copy(isPaused = true)
+        }
+        controlScope?.launch(Dispatchers.IO) {
+            activeRunId?.let { translationRunRepository.updateState(it, TranslationRunState.PAUSE_REQUESTED.name) }
         }
         emitLiveLog(LiveLogType.WARNING, "Translation execution paused by user.")
     }
 
     fun resume() {
-        isPaused.set(false)
+        controlSignal.resume()
         val current = _jobState.value
         if (current is TranslationJobState.Running) {
             _jobState.value = current.copy(isPaused = false)
+        }
+        controlScope?.launch(Dispatchers.IO) {
+            activeRunId?.let { translationRunRepository.updateState(it, TranslationRunState.RUNNING.name) }
         }
         emitLiveLog(LiveLogType.INFO, "Translation execution resumed.")
     }
 
     fun stop() {
-        isCancelled.set(true)
+        controlSignal.cancel()
+        controlScope?.launch(Dispatchers.IO) {
+            activeRunId?.let { translationRunRepository.updateState(it, TranslationRunState.CANCELLED.name) }
+            activeProjectId?.let { projectId ->
+                chapterRepository.getChaptersListByProject(projectId)
+                    .filter { it.status == ChapterStatus.TRANSLATING }
+                    .forEach { chapterRepository.updateStatus(it.id, ChapterStatus.PENDING) }
+            }
+        }
         activeJob?.cancel()
         _jobState.value = TranslationJobState.Idle
         emitLiveLog(LiveLogType.WARNING, "Translation pipeline stopped.")
@@ -138,8 +168,10 @@ class TranslationManager(
     ) {
         if (activeJob?.isActive == true) return
 
-        isPaused.set(false)
-        isCancelled.set(false)
+        controlScope = scope
+        activeProjectId = projectId
+
+        controlSignal.reset()
 
         emitLiveLog(
             type = LiveLogType.STEP,
@@ -152,6 +184,16 @@ class TranslationManager(
                 val errMsg = throwable.localizedMessage ?: "Unexpected translation pipeline failure"
                 _jobState.value = TranslationJobState.Error(errMsg)
                 emitLiveLog(LiveLogType.ERROR, "Fatal pipeline error: $errMsg", detail = throwable.stackTraceToString(), projectId = projectId)
+                activeRunId?.let { runId ->
+                    CoroutineScope(Dispatchers.IO).launch {
+                        translationRunRepository.updateState(
+                            runId,
+                            TranslationRunState.FAILED.name,
+                            LlmErrorCategory.UNKNOWN.name,
+                            errMsg.take(500)
+                        )
+                    }
+                }
             }
         }
         activeJob = scope.launch(Dispatchers.IO + failureHandler) {
@@ -193,6 +235,26 @@ class TranslationManager(
                 return@launch
             }
 
+            val existingRun = translationRunRepository.findResumable(projectId, provider.id)
+            val runId = if (existingRun != null) {
+                translationRunRepository.updateState(existingRun.id, TranslationRunState.RUNNING.name)
+                existingRun.id
+            } else {
+                translationRunRepository.insert(
+                    TranslationRunEntity(
+                        projectId = projectId,
+                        providerId = provider.id,
+                        providerName = provider.name,
+                        modelName = provider.selectedModel,
+                        inputPricePerMillion = provider.inputPricePerMillion,
+                        outputPricePerMillion = provider.outputPricePerMillion,
+                        currency = provider.currency,
+                        state = TranslationRunState.RUNNING.name
+                    )
+                )
+            }
+            activeRunId = runId
+
             emitLiveLog(
                 type = LiveLogType.INFO,
                 message = "Selected ${targets.size} chapter(s) to translate (Range: ${targets.first().chapterIndex} -> ${targets.last().chapterIndex})",
@@ -206,15 +268,15 @@ class TranslationManager(
             var runningPromptTokens = 0L
             var runningCompTokens = 0L
             var runningCost = 0.0
+            var batchSystemFailure = false
+            var batchFailureCategory: LlmErrorCategory? = null
+            var consecutiveTransientFailures = 0
 
             for ((_, chapter) in targets.withIndex()) {
-                if (isCancelled.get()) break
+                try {
+                if (controlSignal.isCancelled || batchSystemFailure) break
 
-                while (isPaused.get()) {
-                    delay(500)
-                    if (isCancelled.get()) break
-                }
-                if (isCancelled.get()) break
+                awaitRequestBoundary(runId)
 
                 emitLiveLog(
                     type = LiveLogType.STEP,
@@ -294,13 +356,16 @@ class TranslationManager(
                             chapterIndex = immediatePrevious.chapterIndex,
                             projectId = projectId
                         )
+                        awaitRequestBoundary(runId)
                         val sResult = llmClient.executeCompletion(
                             provider = provider,
                             systemPrompt = "You maintain concise, factual continuity notes for a novel translator.",
                             userPrompt = TranslationPrompts.buildChapterSummaryPrompt(prevTransText),
                             temperature = 0.2f,
-                            maxTokens = 800
+                            maxTokens = 800,
+                            operation = "SUMMARY"
                         )
+                        recordLlmAttempts(runId, projectId, immediatePrevious.id, immediatePrevious.chapterIndex, null, provider, sResult)
                         val sCost = TokenCalculator.calculateCost(
                             sResult.promptTokens,
                             sResult.completionTokens,
@@ -387,6 +452,51 @@ class TranslationManager(
                 )
 
                 val chunks = splitIntoParagraphChunks(originalText, maxChunkTokens)
+                val sourceHash = sha256(originalText)
+                var persistedChunks = translationChunkRepository.getByChapter(runId, chapter.id)
+                if (persistedChunks.isEmpty()) {
+                    translationChunkRepository.insertAll(
+                        chunks.mapIndexed { index, _ ->
+                            TranslationChunkEntity(
+                                runId = runId,
+                                chapterId = chapter.id,
+                                chapterIndex = chapter.chapterIndex,
+                                chunkIndex = index + 1,
+                                totalChunks = chunks.size,
+                                sourceHash = sourceHash
+                            )
+                        }
+                    )
+                    persistedChunks = translationChunkRepository.getByChapter(runId, chapter.id)
+                }
+                check(persistedChunks.all { it.sourceHash == sourceHash && it.totalChunks == chunks.size }) {
+                    "Persisted chunk boundaries no longer match the source chapter; task paused for review"
+                }
+                // Startup/file correction: a committed temp file is authoritative even if the
+                // process died between the file rename and the Room update.
+                val requestLogsForRun = llmRequestLogRepository.getByRun(runId)
+                persistedChunks = persistedChunks.map { chunk ->
+                    if (chunk.sourceHash == sourceHash && chunk.state != TranslationChunkState.COMPLETED.name) {
+                        val deterministicName = "chunk_${runId}_${chapter.id}_${chunk.chunkIndex}.txt"
+                        val recovered = fileManager.readTranslationChunk(projectId, deterministicName)
+                        if (recovered.isNotBlank()) {
+                            val logs = requestLogsForRun.filter {
+                                it.chapterId == chapter.id && it.chunkIndex == chunk.chunkIndex
+                            }
+                            val recoveredChunk = chunk.copy(
+                                state = TranslationChunkState.COMPLETED.name,
+                                translatedTempFileName = deterministicName,
+                                promptTokens = logs.sumOf { it.promptTokens },
+                                completionTokens = logs.sumOf { it.completionTokens },
+                                cost = logs.sumOf { it.estimatedCost },
+                                durationMs = logs.sumOf { it.durationMs },
+                                updatedAt = System.currentTimeMillis()
+                            )
+                            translationChunkRepository.update(recoveredChunk)
+                            recoveredChunk
+                        } else chunk
+                    } else chunk
+                }
                 val translatedChunks = mutableListOf<String>()
                 var chapterPromptTokens = 0L
                 var chapterCompTokens = 0L
@@ -394,6 +504,7 @@ class TranslationManager(
                 var chapterDurationMs = 0L
                 var chapterFailed = false
                 var chapterErrorReason = ""
+                var chapterFailureCategory: LlmErrorCategory? = null
 
                 emitLiveLog(
                     type = LiveLogType.INFO,
@@ -409,15 +520,38 @@ class TranslationManager(
                 )
 
                 for (chunkIdx in chunks.indices) {
-                    if (isCancelled.get()) break
-                    while (isPaused.get()) {
-                        delay(500)
-                        if (isCancelled.get()) break
-                    }
-                    if (isCancelled.get()) break
+                    if (controlSignal.isCancelled) break
+                    awaitRequestBoundary(runId)
 
                     val currentChunkText = chunks[chunkIdx]
                     val chunkDisplay = "${chunkIdx + 1}/${chunks.size}"
+                    val persistedChunk = persistedChunks.firstOrNull {
+                        it.chunkIndex == chunkIdx + 1 && it.parentChunkId == null
+                    }
+
+                    if (persistedChunk?.sourceHash == sourceHash &&
+                        persistedChunk.state == TranslationChunkState.COMPLETED.name &&
+                        !persistedChunk.translatedTempFileName.isNullOrBlank()
+                    ) {
+                        val savedText = fileManager.readTranslationChunk(projectId, persistedChunk.translatedTempFileName!!)
+                        if (savedText.isNotBlank()) {
+                            translatedChunks.add(savedText)
+                            chapterPromptTokens += persistedChunk.promptTokens
+                            chapterCompTokens += persistedChunk.completionTokens
+                            chapterCost += persistedChunk.cost
+                            chapterDurationMs += persistedChunk.durationMs
+                            continue
+                        }
+                    }
+
+                    persistedChunk?.let {
+                        translationChunkRepository.update(
+                            it.copy(
+                                state = TranslationChunkState.RUNNING.name,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
 
                     _jobState.value = TranslationJobState.Running(
                         projectId = projectId,
@@ -431,7 +565,7 @@ class TranslationManager(
                         currentCompletionTokens = runningCompTokens + chapterCompTokens,
                         currentCost = runningCost + chapterCost,
                         currency = provider.currency,
-                        isPaused = isPaused.get()
+                        isPaused = controlSignal.isPaused
                     )
 
                     emitLiveLog(
@@ -467,19 +601,41 @@ class TranslationManager(
                         )
                     }
 
+                    awaitRequestBoundary(runId)
                     var result = llmClient.executeCompletion(
                         provider = provider,
                         systemPrompt = systemPrompt,
                         userPrompt = userPrompt,
-                        maxTokens = effectiveMaxOutputTokens(provider)
+                        maxTokens = effectiveMaxOutputTokens(provider),
+                        operation = "TRANSLATION"
                     )
+                    recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, chunkIdx + 1, provider, result, persistedChunk?.id)
 
-                    // Continue at most three times and preserve the provider's final truncation state.
+                    if (!result.isSuccess && result.errorCategory == LlmErrorCategory.CONTEXT_OVERFLOW) {
+                        val smaller = translateContextFallback(
+                            runId = runId,
+                            projectId = projectId,
+                            chapterId = chapter.id,
+                            chapterIndex = chapter.chapterIndex,
+                            chunkIndex = chunkIdx + 1,
+                            provider = provider,
+                            systemPrompt = systemPrompt,
+                            originalPrompt = userPrompt,
+                            sourceText = currentChunkText,
+                            maxTokens = effectiveMaxOutputTokens(provider),
+                            maxChunkTokens = maxOf(512L, maxChunkTokens / 2),
+                            parentChunkId = persistedChunk?.id
+                        )
+                        if (smaller != null) result = smaller
+                    }
+
+                    // Continue at most twice and preserve the provider's final truncation state.
                     var continuationAttempts = 0
-                    while (result.isSuccess && result.isTruncated && result.text.isNotBlank() && continuationAttempts < 3) {
+                    while (result.isSuccess && result.isTruncated && result.text.isNotBlank() && continuationAttempts < 2) {
+                        awaitRequestBoundary(runId)
                         emitLiveLog(
                             type = LiveLogType.WARNING,
-                            message = "Output truncated on Chunk $chunkDisplay (attempt ${continuationAttempts + 1}/3), auto-continuing...",
+                            message = "Output truncated on Chunk $chunkDisplay (attempt ${continuationAttempts + 1}/2), auto-continuing...",
                             chapterIndex = chapter.chapterIndex,
                             chunkInfo = chunkDisplay,
                             projectId = projectId
@@ -488,8 +644,10 @@ class TranslationManager(
                             provider = provider,
                             systemPrompt = systemPrompt,
                             userPrompt = TranslationPrompts.buildContinuationPrompt(currentChunkText, result.text),
-                            maxTokens = effectiveMaxOutputTokens(provider)
+                            maxTokens = effectiveMaxOutputTokens(provider),
+                            operation = "CONTINUATION"
                         )
+                        recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, chunkIdx + 1, provider, contResult, persistedChunk?.id)
                         if (!contResult.isSuccess || contResult.text.isBlank()) {
                             result = result.copy(
                                 isSuccess = false,
@@ -510,10 +668,38 @@ class TranslationManager(
                         )
                         continuationAttempts++
                     }
-                    if (result.isSuccess && result.isTruncated) {
-                        result = result.copy(
+                    if (result.isTruncated) {
+                        val discarded = result
+                        var fallbackBudget = maxOf(256L, maxChunkTokens / 2)
+                        var rebuilt: LlmResult? = null
+                        repeat(2) {
+                            if (rebuilt?.isSuccess == true) return@repeat
+                            rebuilt = translateContextFallback(
+                                runId = runId,
+                                projectId = projectId,
+                                chapterId = chapter.id,
+                                chapterIndex = chapter.chapterIndex,
+                                chunkIndex = chunkIdx + 1,
+                                provider = provider,
+                                systemPrompt = systemPrompt,
+                                originalPrompt = userPrompt,
+                                sourceText = currentChunkText,
+                                maxTokens = effectiveMaxOutputTokens(provider),
+                                maxChunkTokens = fallbackBudget,
+                                parentChunkId = persistedChunk?.id
+                            )
+                            fallbackBudget = maxOf(128L, fallbackBudget / 2)
+                        }
+                        val rebuiltResult = rebuilt
+                        result = rebuiltResult?.copy(
+                            promptTokens = discarded.promptTokens + rebuiltResult.promptTokens,
+                            completionTokens = discarded.completionTokens + rebuiltResult.completionTokens,
+                            durationMs = discarded.durationMs + rebuiltResult.durationMs
+                        ) ?: discarded.copy(
                             isSuccess = false,
-                            errorMessage = "Translation remained truncated after $continuationAttempts continuation attempts"
+                            errorCategory = LlmErrorCategory.TRUNCATED_OUTPUT,
+                            retryable = false,
+                            errorMessage = "Translation remained truncated after $continuationAttempts continuation attempts and could not be safely re-chunked"
                         )
                     }
 
@@ -521,6 +707,7 @@ class TranslationManager(
                     if (result.isSuccess && result.text.isNotBlank()) {
                         val validation = TranslationQualityValidator.validate(currentChunkText, result.text)
                         if (!validation.isAcceptable) {
+                            awaitRequestBoundary(runId)
                             emitLiveLog(
                                 type = LiveLogType.WARNING,
                                 message = "Quality check flagged Chunk $chunkDisplay: ${validation.problems.joinToString()}, retrying...",
@@ -532,8 +719,10 @@ class TranslationManager(
                                 provider = provider,
                                 systemPrompt = systemPrompt,
                                 userPrompt = TranslationPrompts.buildValidationRetryPrompt(userPrompt, validation.problems),
-                                maxTokens = effectiveMaxOutputTokens(provider)
+                                maxTokens = effectiveMaxOutputTokens(provider),
+                                operation = "QUALITY_RETRY"
                             )
+                            recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, chunkIdx + 1, provider, retry, persistedChunk?.id)
                             val retryValidation = if (retry.isSuccess && !retry.isTruncated) {
                                 TranslationQualityValidator.validate(currentChunkText, retry.text)
                             } else {
@@ -555,6 +744,8 @@ class TranslationManager(
                             } else {
                                 result.copy(
                                     isSuccess = false,
+                                    errorCategory = LlmErrorCategory.QUALITY_REJECTED,
+                                    retryable = false,
                                     errorMessage = "Translation validation failed: ${retryValidation.problems.joinToString()}",
                                     promptTokens = result.promptTokens + retry.promptTokens,
                                     completionTokens = result.completionTokens + retry.completionTokens,
@@ -564,30 +755,76 @@ class TranslationManager(
                         }
                     }
 
-                    val chunkCost = TokenCalculator.calculateCost(
-                        promptTokens = result.promptTokens,
-                        completionTokens = result.completionTokens,
-                        inputPricePerMillion = provider.inputPricePerMillion,
-                        outputPricePerMillion = provider.outputPricePerMillion
-                    )
-                    chapterPromptTokens += result.promptTokens
-                    chapterCompTokens += result.completionTokens
+                    val auditedChunkLogs = llmRequestLogRepository.getByRun(runId).filter {
+                        it.chapterId == chapter.id && it.chunkIndex == chunkIdx + 1
+                    }
+                    val auditedPromptTokens = auditedChunkLogs.sumOf { it.promptTokens }
+                    val auditedCompletionTokens = auditedChunkLogs.sumOf { it.completionTokens }
+                    val auditedDurationMs = auditedChunkLogs.sumOf { it.durationMs }
+                    val chunkCost = auditedChunkLogs.sumOf { it.estimatedCost }
+                    chapterPromptTokens += auditedPromptTokens
+                    chapterCompTokens += auditedCompletionTokens
                     chapterCost += chunkCost
-                    chapterDurationMs += result.durationMs
+                    chapterDurationMs += auditedDurationMs
                     if (result.isSuccess && result.text.isNotBlank()) {
                         translatedChunks.add(result.text.trim())
+                        persistedChunk?.let {
+                            val tempFile = fileManager.saveTranslationChunkAtomically(
+                                projectId = projectId,
+                                runId = runId,
+                                chapterId = chapter.id,
+                                chunkIndex = chunkIdx + 1,
+                                content = result.text.trim()
+                            )
+                            val currentPersistedChunk = translationChunkRepository.getById(it.id) ?: it
+                            translationChunkRepository.update(
+                                currentPersistedChunk.copy(
+                                    state = TranslationChunkState.COMPLETED.name,
+                                    translatedTempFileName = tempFile,
+                                    promptTokens = auditedPromptTokens,
+                                    completionTokens = auditedCompletionTokens,
+                                    cost = chunkCost,
+                                    durationMs = auditedDurationMs,
+                                    lastErrorCategory = null,
+                                    lastErrorMessage = null,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
                         emitLiveLog(
                             type = LiveLogType.SUCCESS,
-                            message = "Chunk $chunkDisplay completed in ${result.durationMs}ms (${result.promptTokens + result.completionTokens} tok)",
+                            message = "Chunk $chunkDisplay completed in ${auditedDurationMs}ms (${auditedPromptTokens + auditedCompletionTokens} tok)",
                             chapterIndex = chapter.chapterIndex,
                             chunkInfo = chunkDisplay,
-                            tokensInfo = "${result.promptTokens + result.completionTokens} tok",
+                            tokensInfo = "${auditedPromptTokens + auditedCompletionTokens} tok",
                             costInfo = TokenCalculator.formatCost(chunkCost, provider.currency),
                             projectId = projectId
                         )
                     } else {
                         chapterFailed = true
                         chapterErrorReason = result.errorMessage ?: "Translation chunk $chunkDisplay failed"
+                        chapterFailureCategory = result.errorCategory
+                        if (result.errorCategory == LlmErrorCategory.AUTHENTICATION ||
+                            result.errorCategory == LlmErrorCategory.LOCAL_STORAGE
+                        ) {
+                            batchSystemFailure = true
+                            batchFailureCategory = result.errorCategory
+                        }
+                        persistedChunk?.let {
+                            val currentPersistedChunk = translationChunkRepository.getById(it.id) ?: it
+                            translationChunkRepository.update(
+                                currentPersistedChunk.copy(
+                                    state = TranslationChunkState.FAILED.name,
+                                    promptTokens = auditedPromptTokens,
+                                    completionTokens = auditedCompletionTokens,
+                                    cost = chunkCost,
+                                    durationMs = auditedDurationMs,
+                                    lastErrorCategory = result.errorCategory?.name,
+                                    lastErrorMessage = result.errorMessage?.take(500),
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
                         emitLiveLog(
                             type = LiveLogType.ERROR,
                             message = "Chunk $chunkDisplay failed: $chapterErrorReason",
@@ -614,13 +851,16 @@ class TranslationManager(
 
                     // 1. Generate summary for this completed chapter
                     val summaryPrompt = TranslationPrompts.buildChapterSummaryPrompt(fullTranslatedText)
+                    awaitRequestBoundary(runId)
                     val summaryResult = llmClient.executeCompletion(
                         provider = provider,
                         systemPrompt = "You are a concise narrative context summarizer. Be brief.",
                         userPrompt = summaryPrompt,
                         temperature = 0.2f,
-                        maxTokens = 800
+                        maxTokens = 800,
+                        operation = "SUMMARY"
                     )
+                    recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, null, provider, summaryResult)
                     chapterDurationMs += summaryResult.durationMs
                     chapterPromptTokens += summaryResult.promptTokens
                     chapterCompTokens += summaryResult.completionTokens
@@ -652,12 +892,15 @@ class TranslationManager(
                             Translation sample:
                             ${representativeExcerpt(fullTranslatedText, 6000)}
                         """.trimIndent()
+                        awaitRequestBoundary(runId)
                         val termResult = llmClient.executeCompletion(
                             provider = provider,
                             systemPrompt = "You are a terminology extraction assistant. Return only JSON array.",
                             userPrompt = termExtractPrompt,
-                            temperature = 0.2f
+                            temperature = 0.2f,
+                            operation = "TERM_EXTRACTION"
                         )
+                        recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, null, provider, termResult)
                         chapterPromptTokens += termResult.promptTokens
                         chapterCompTokens += termResult.completionTokens
                         chapterDurationMs += termResult.durationMs
@@ -804,13 +1047,102 @@ class TranslationManager(
                 // Update project cumulative stats in DB
                 refreshProjectStats(projectId, provider.currency)
 
-                delay(120) // Safe spacing between translation cycles
+                if (chapterFailureCategory == LlmErrorCategory.NETWORK_UNAVAILABLE ||
+                    chapterFailureCategory == LlmErrorCategory.TIMEOUT ||
+                    chapterFailureCategory == LlmErrorCategory.RATE_LIMIT ||
+                    chapterFailureCategory == LlmErrorCategory.SERVER_ERROR
+                ) {
+                    consecutiveTransientFailures++
+                } else {
+                    consecutiveTransientFailures = 0
+                }
+                if (consecutiveTransientFailures >= 2 && !controlSignal.isCancelled) {
+                    val waitMs = minOf(60_000L, 5_000L * consecutiveTransientFailures)
+                    translationRunRepository.updateState(
+                        runId,
+                        TranslationRunState.RETRY_WAIT.name,
+                        category = chapterFailureCategory?.name,
+                        message = "Several chapters hit the same transient provider failure",
+                        nextRetryAt = System.currentTimeMillis() + waitMs
+                    )
+                    emitLiveLog(
+                        LiveLogType.WARNING,
+                        "Repeated provider failures; waiting ${waitMs / 1000}s before the next chapter",
+                        projectId = projectId
+                    )
+                    delayProvider.delayFor(waitMs)
+                    translationRunRepository.updateState(runId, TranslationRunState.RUNNING.name)
+                } else {
+                    delayProvider.delayFor(120) // Safe spacing between translation cycles
+                }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    val errorMessage = error.localizedMessage ?: error.javaClass.simpleName
+                    val localStorageFailure = error is IOException ||
+                        error is SecurityException ||
+                        error is IllegalStateException ||
+                        error.javaClass.name.startsWith("android.database") ||
+                        error.javaClass.name.contains("SQLite")
+                    if (localStorageFailure) {
+                        batchSystemFailure = true
+                        batchFailureCategory = LlmErrorCategory.LOCAL_STORAGE
+                    }
+                    errorCount++
+                    chapterRepository.updateTranslationResult(
+                        id = chapter.id,
+                        status = ChapterStatus.ERROR,
+                        wordCount = 0,
+                        promptTokens = 0,
+                        completionTokens = 0,
+                        cost = 0.0,
+                        errorMsg = errorMessage
+                    )
+                    translationLogRepository.insertLog(
+                        TranslationLogEntity(
+                            projectId = projectId,
+                            chapterIndex = chapter.chapterIndex,
+                            chapterTitle = chapter.title,
+                            modelName = provider.selectedModel,
+                            providerName = provider.name,
+                            promptTokens = 0,
+                            completionTokens = 0,
+                            totalTokens = 0,
+                            estimatedCost = 0.0,
+                            currency = provider.currency,
+                            durationMs = 0,
+                            isSuccess = false,
+                            message = "Chapter ${chapter.chapterIndex} failed unexpectedly: $errorMessage"
+                        )
+                    )
+                    emitLiveLog(
+                        LiveLogType.ERROR,
+                        "Chapter ${chapter.chapterIndex} failed unexpectedly: $errorMessage",
+                        chapterIndex = chapter.chapterIndex,
+                        projectId = projectId
+                    )
+                }
             }
 
             emitLiveLog(
                 type = if (errorCount == 0) LiveLogType.SUCCESS else LiveLogType.WARNING,
                 message = "Batch complete! Translated: $completedCount, Errors: $errorCount, Total Cost: ${TokenCalculator.formatCost(runningCost, provider.currency)}",
                 projectId = projectId
+            )
+
+            translationRunRepository.updateState(
+                runId,
+                when {
+                    controlSignal.isCancelled -> TranslationRunState.CANCELLED.name
+                    batchSystemFailure -> TranslationRunState.PAUSED.name
+                    else -> TranslationRunState.COMPLETED.name
+                },
+                category = batchFailureCategory?.name,
+                message = when {
+                    batchSystemFailure -> "Systemic provider or storage error; task paused and can be resumed after correction"
+                    errorCount > 0 -> "$errorCount chapter(s) failed"
+                    else -> null
+                }
             )
 
             _jobState.value = TranslationJobState.Finished(
@@ -822,6 +1154,44 @@ class TranslationManager(
                 currency = provider.currency,
                 errorCount = errorCount
             )
+            activeRunId = null
+            activeProjectId = null
+        }
+        activeJob?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                val runId = activeRunId
+                val projectIdForAudit = activeProjectId
+                if (runId != null && projectIdForAudit != null) {
+                    controlScope?.launch(Dispatchers.IO) {
+                        val running = _jobState.value as? TranslationJobState.Running
+                        val runSnapshot = translationRunRepository.getById(runId)
+                        val cancellationLog = LlmRequestLogEntity(
+                                runId = runId,
+                                projectId = projectIdForAudit,
+                                chapterIndex = running?.currentChapterIndex,
+                                chunkIndex = running?.currentChunkIndex,
+                                attemptNumber = -1,
+                                operation = "CANCELLED",
+                                providerId = runSnapshot?.providerId ?: 0,
+                                providerName = runSnapshot?.providerName ?: "unknown",
+                                modelName = runSnapshot?.modelName ?: "unknown",
+                                inputPricePerMillion = runSnapshot?.inputPricePerMillion ?: 0.0,
+                                outputPricePerMillion = runSnapshot?.outputPricePerMillion ?: 0.0,
+                                currency = runSnapshot?.currency ?: "UNKNOWN",
+                                promptTokens = 0,
+                                completionTokens = 0,
+                                totalTokens = 0,
+                                usageSource = UsageSource.UNKNOWN.name,
+                                estimatedCost = 0.0,
+                                durationMs = 0,
+                                errorCategory = LlmErrorCategory.CANCELLED.name,
+                                errorMessage = "Request cancellation interrupted an in-flight call; provider usage is unknown",
+                                isSuccess = false
+                            )
+                        translationAuditRepository.record(runId, null, listOf(cancellationLog))
+                    }
+                }
+            }
         }
     }
 
@@ -849,6 +1219,69 @@ class TranslationManager(
             cost = logs.sumOf { it.estimatedCost },
             currency = currency
         )
+    }
+
+    private suspend fun awaitRequestBoundary(runId: Long) {
+        if (controlSignal.isCancelled) throw CancellationException("Translation cancelled")
+        if (!controlSignal.isPaused) return
+        translationRunRepository.updateState(runId, TranslationRunState.PAUSED.name)
+        while (controlSignal.isPaused) {
+            if (controlSignal.isCancelled) throw CancellationException("Translation cancelled")
+            delayProvider.delayFor(250)
+        }
+        if (controlSignal.isCancelled) throw CancellationException("Translation cancelled")
+        translationRunRepository.updateState(runId, TranslationRunState.RUNNING.name)
+    }
+
+    /** Persists every physical provider attempt immediately; no prompt or novel body is stored. */
+    private suspend fun recordLlmAttempts(
+        runId: Long,
+        projectId: Long,
+        chapterId: Long?,
+        chapterIndex: Int?,
+        chunkIndex: Int?,
+        provider: ApiProviderEntity,
+        result: LlmResult,
+        chunkId: Long? = null
+    ) {
+        val attempts = result.attempts.ifEmpty { listOf(LlmAttempt(1, result)) }
+        val logs = attempts.map { attempt ->
+            val item = attempt.result
+            val cost = TokenCalculator.calculateCost(
+                item.promptTokens,
+                item.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            LlmRequestLogEntity(
+                    runId = runId,
+                    projectId = projectId,
+                    chapterId = chapterId,
+                    chapterIndex = chapterIndex,
+                    chunkIndex = chunkIndex,
+                    attemptNumber = attempt.attemptNumber,
+                    operation = item.operation,
+                    providerId = provider.id,
+                    providerName = provider.name,
+                    modelName = provider.selectedModel,
+                    inputPricePerMillion = provider.inputPricePerMillion,
+                    outputPricePerMillion = provider.outputPricePerMillion,
+                    currency = provider.currency,
+                    promptTokens = item.promptTokens,
+                    completionTokens = item.completionTokens,
+                    totalTokens = item.promptTokens + item.completionTokens,
+                    usageSource = item.usageSource.name,
+                    estimatedCost = cost,
+                    durationMs = item.durationMs,
+                    httpStatus = item.httpStatus,
+                    errorCategory = item.errorCategory?.name,
+                    errorMessage = item.errorMessage?.take(500),
+                    finishReason = item.finishReason,
+                    requestId = item.requestId,
+                    isSuccess = item.isSuccess
+                )
+        }
+        translationAuditRepository.record(runId, chunkId, logs)
     }
 
     /**
@@ -997,4 +1430,150 @@ class TranslationManager(
 
     private fun effectiveMaxOutputTokens(provider: ApiProviderEntity): Int =
         minOf(16_384, maxOf(1_024, provider.maxContextTokens / 2))
+
+    private suspend fun translateContextFallback(
+        runId: Long,
+        projectId: Long,
+        chapterId: Long,
+        chapterIndex: Int,
+        chunkIndex: Int,
+        provider: ApiProviderEntity,
+        systemPrompt: String,
+        originalPrompt: String,
+        sourceText: String,
+        maxTokens: Int,
+        maxChunkTokens: Long,
+        parentChunkId: Long?
+    ): LlmResult? {
+        val pieces = splitLongParagraphBySentences(sourceText, maxChunkTokens)
+            .filter { it.isNotBlank() }
+        if (pieces.size <= 1) return null
+        val childRecords = if (parentChunkId != null) {
+            val existingChildren = translationChunkRepository.getChildren(runId, parentChunkId)
+            if (existingChildren.size == pieces.size && existingChildren.zip(pieces).all { (child, piece) ->
+                    child.sourceHash == sha256(piece)
+                }) {
+                existingChildren
+            } else {
+                translationChunkRepository.insertAll(
+                    pieces.mapIndexed { index, piece ->
+                        TranslationChunkEntity(
+                            runId = runId,
+                            chapterId = chapterId,
+                            chapterIndex = chapterIndex,
+                            chunkIndex = index + 1,
+                            totalChunks = pieces.size,
+                            sourceHash = sha256(piece),
+                            parentChunkId = parentChunkId,
+                            parentChunkKey = parentChunkId,
+                            state = TranslationChunkState.PENDING.name
+                        )
+                    }
+                )
+                translationChunkRepository.getChildren(runId, parentChunkId)
+            }
+        } else {
+            emptyList()
+        }
+
+        val results = pieces.mapIndexed { index, piece ->
+            val child = childRecords.firstOrNull { it.chunkIndex == index + 1 }
+            if (child?.state == TranslationChunkState.COMPLETED.name &&
+                !child.translatedTempFileName.isNullOrBlank()
+            ) {
+                val saved = fileManager.readTranslationChunk(projectId, child.translatedTempFileName!!)
+                if (saved.isNotBlank()) {
+                    return@mapIndexed LlmResult(
+                        text = saved,
+                        promptTokens = child.promptTokens,
+                        completionTokens = child.completionTokens,
+                        isSuccess = true,
+                        usageSource = UsageSource.ACTUAL,
+                        durationMs = child.durationMs,
+                        operation = "CONTEXT_RECHUNK_REUSED"
+                    )
+                }
+            }
+            child?.let {
+                val currentChild = translationChunkRepository.getById(it.id) ?: it
+                translationChunkRepository.update(
+                    currentChild.copy(
+                        state = TranslationChunkState.RUNNING.name,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            val prompt = originalPrompt.replace(sourceText, piece)
+            awaitRequestBoundary(runId)
+            val result = llmClient.executeCompletion(
+                provider = provider,
+                systemPrompt = systemPrompt,
+                userPrompt = prompt,
+                maxTokens = maxTokens,
+                operation = "CONTEXT_RECHUNK"
+            ).also { result ->
+                recordLlmAttempts(runId, projectId, chapterId, chapterIndex, chunkIndex, provider, result, child?.id)
+            }
+            val childCost = TokenCalculator.calculateCost(
+                result.promptTokens,
+                result.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            child?.let {
+                val tempFile = if (result.isSuccess && result.text.isNotBlank() && !result.isTruncated) {
+                    fileManager.saveTranslationChunkAtomically(
+                        projectId = projectId,
+                        runId = runId,
+                        chapterId = chapterId,
+                        chunkIndex = index + 1,
+                        content = result.text.trim(),
+                        chunkKey = "parent_${parentChunkId}_child_${index + 1}"
+                    )
+                } else null
+                val currentChild = translationChunkRepository.getById(it.id) ?: it
+                translationChunkRepository.update(
+                    currentChild.copy(
+                        state = if (result.isSuccess && result.text.isNotBlank() && !result.isTruncated) {
+                            TranslationChunkState.COMPLETED.name
+                        } else {
+                            TranslationChunkState.FAILED.name
+                        },
+                        translatedTempFileName = tempFile,
+                        promptTokens = result.promptTokens,
+                        completionTokens = result.completionTokens,
+                        cost = childCost,
+                        durationMs = result.durationMs,
+                        lastErrorCategory = result.errorCategory?.name,
+                        lastErrorMessage = result.errorMessage,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+            result
+        }
+        val successful = results.all { it.isSuccess && it.text.isNotBlank() && !it.isTruncated }
+        val truncated = results.any { it.isTruncated || it.errorCategory == LlmErrorCategory.TRUNCATED_OUTPUT }
+        return LlmResult(
+            text = results.joinToString("\n\n") { it.text.trim() },
+            promptTokens = results.sumOf { it.promptTokens },
+            completionTokens = results.sumOf { it.completionTokens },
+            isSuccess = successful,
+            errorCategory = when {
+                successful -> null
+                truncated -> LlmErrorCategory.TRUNCATED_OUTPUT
+                else -> results.firstOrNull { !it.isSuccess }?.errorCategory
+            },
+            retryable = false,
+            usageSource = if (results.any { it.usageSource == UsageSource.ACTUAL }) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            errorMessage = if (successful) null else results.firstOrNull { !it.isSuccess }?.errorMessage,
+            durationMs = results.sumOf { it.durationMs },
+            isTruncated = truncated,
+            operation = "CONTEXT_RECHUNK"
+        )
+    }
+
+    private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
 }

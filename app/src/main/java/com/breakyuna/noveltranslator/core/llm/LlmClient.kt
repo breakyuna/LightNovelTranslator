@@ -4,7 +4,6 @@ import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -30,11 +29,24 @@ data class LlmResult(
     val finishReason: String? = null,
     val isTruncated: Boolean = false,
     val errorMessage: String? = null,
-    val durationMs: Long = 0
+    val durationMs: Long = 0,
+    val httpStatus: Int? = null,
+    val errorCategory: LlmErrorCategory? = null,
+    val retryable: Boolean = false,
+    val retryAfterMs: Long? = null,
+    val requestId: String? = null,
+    val usageSource: UsageSource = UsageSource.UNKNOWN,
+    val operation: String = "TRANSLATION",
+    val attempts: List<LlmAttempt> = emptyList()
 )
 
-class LlmClient {
-    private data class HttpPayload(val code: Int, val body: String) {
+class LlmClient : LlmGateway {
+    private data class HttpPayload(
+        val code: Int,
+        val body: String,
+        val retryAfterMs: Long? = null,
+        val requestId: String? = null
+    ) {
         val isSuccessful: Boolean get() = code in 200..299
     }
 
@@ -45,7 +57,7 @@ class LlmClient {
         .build()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun fetchAvailableModels(provider: ApiProviderEntity): Result<List<String>> {
+    override suspend fun fetchAvailableModels(provider: ApiProviderEntity): Result<List<String>> {
         val startedAt = System.currentTimeMillis()
         SystemLogger.info("LLM_API", "Fetching model list from provider: ${provider.name} (${provider.providerType})")
         return try {
@@ -76,8 +88,10 @@ class LlmClient {
     private suspend fun fetchGeminiModels(provider: ApiProviderEntity): List<String> {
         val apiKey = provider.apiKey.trim()
         require(apiKey.isNotBlank()) { "Gemini API key is required to fetch models" }
-        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models?key=$apiKey"
-        val request = Request.Builder().url(endpoint).get().build()
+        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models"
+        val builder = Request.Builder().url(endpoint).get().header("x-goog-api-key", apiKey)
+        applyCustomHeaders(builder, provider)
+        val request = builder.build()
         val payload = performRequest(request)
         if (!payload.isSuccessful) {
             throw IOException("HTTP ${payload.code}: ${extractError(payload.body)}")
@@ -105,13 +119,13 @@ class LlmClient {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = if (base.endsWith("/v1")) "$base/models" else "$base/v1/models"
         validateEndpoint(endpoint, provider.providerType)
-        val request = Request.Builder()
+        val requestBuilder = Request.Builder()
             .url(endpoint)
             .header("x-api-key", apiKey)
             .header("anthropic-version", "2023-06-01")
             .get()
-            .build()
-        val payload = performRequest(request)
+        applyCustomHeaders(requestBuilder, provider)
+        val payload = performRequest(requestBuilder.build())
         if (!payload.isSuccessful) {
             throw IOException("HTTP ${payload.code}: ${extractError(payload.body)}")
         }
@@ -129,8 +143,9 @@ class LlmClient {
     private suspend fun fetchOllamaModels(provider: ApiProviderEntity): List<String> {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = "$base/api/tags"
-        val request = Request.Builder().url(endpoint).get().build()
-        val payload = performRequest(request)
+        val requestBuilder = Request.Builder().url(endpoint).get()
+        applyCustomHeaders(requestBuilder, provider)
+        val payload = performRequest(requestBuilder.build())
         if (payload.isSuccessful) {
             val json = JSONObject(payload.body)
             val models = json.optJSONArray("models")
@@ -160,10 +175,7 @@ class LlmClient {
         provider.apiKey.trim().takeIf { it.isNotBlank() }?.let {
             builder.header("Authorization", "Bearer $it")
         }
-        runCatching {
-            val custom = JSONObject(provider.customHeadersJson)
-            custom.keys().forEach { key -> builder.header(key, custom.getString(key)) }
-        }
+        applyCustomHeaders(builder, provider)
         val payload = performRequest(builder.build())
         if (!payload.isSuccessful) {
             throw IOException("HTTP ${payload.code}: ${extractError(payload.body)}")
@@ -191,19 +203,26 @@ class LlmClient {
         return list.distinct().sorted()
     }
 
+    override suspend fun executeCompletion(request: LlmRequest): LlmResult = executeCompletion(
+        provider = request.provider,
+        systemPrompt = request.systemPrompt,
+        userPrompt = request.userPrompt,
+        temperature = request.temperature,
+        maxTokens = request.maxTokens,
+        operation = request.operation
+    ).copy(operation = request.operation)
+
+    /** Executes exactly one HTTP request. Retries belong to RetryingLlmGateway. */
     suspend fun executeCompletion(
         provider: ApiProviderEntity,
         systemPrompt: String,
         userPrompt: String,
         temperature: Float? = null,
-        maxTokens: Int? = null
+        maxTokens: Int? = null,
+        operation: String = "TRANSLATION"
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
-        var lastResult: LlmResult? = null
-        var previousPromptTokens = 0L
-        var previousCompletionTokens = 0L
-        repeat(MAX_ATTEMPTS) { attempt ->
-            val result = try {
+        return try {
                 when (provider.providerType) {
                     ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
                         provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
@@ -219,31 +238,48 @@ class LlmClient {
                 throw cancelled
             } catch (e: Exception) {
                 LlmResult(
-                    text = "", promptTokens = 0, completionTokens = 0, isSuccess = false,
-                    errorMessage = e.localizedMessage ?: "Network/LLM error: ${e.javaClass.simpleName}",
+                    text = "",
+                    promptTokens = 0,
+                    completionTokens = 0,
+                    isSuccess = false,
+                    errorCategory = classifyException(e),
+                    retryable = isRetryableCategory(classifyException(e)),
+                    errorMessage = safeErrorMessage(e),
+                    usageSource = UsageSource.UNKNOWN,
                     durationMs = System.currentTimeMillis() - startedAt
                 )
             }
-            if (result.isSuccess || !isRetryable(result) || attempt == MAX_ATTEMPTS - 1) {
-                return result.copy(
-                    promptTokens = previousPromptTokens + result.promptTokens,
-                    completionTokens = previousCompletionTokens + result.completionTokens
-                )
-            }
-            previousPromptTokens += result.promptTokens
-            previousCompletionTokens += result.completionTokens
-            lastResult = result
-            delay(600L * (1L shl attempt))
-        }
-        return lastResult ?: LlmResult("", 0, 0, false, errorMessage = "Request failed")
     }
 
-    private fun isRetryable(result: LlmResult): Boolean {
-        val message = result.errorMessage.orEmpty()
-        return message.contains("HTTP 408") || message.contains("HTTP 429") ||
-            Regex("HTTP 5\\d\\d").containsMatchIn(message) ||
-            message.contains("timeout", true) || message.contains("connection", true) ||
-            message.contains("stream", true)
+    private fun isRetryableCategory(category: LlmErrorCategory): Boolean = when (category) {
+        LlmErrorCategory.NETWORK_UNAVAILABLE,
+        LlmErrorCategory.TIMEOUT,
+        LlmErrorCategory.RATE_LIMIT,
+        LlmErrorCategory.SERVER_ERROR,
+        LlmErrorCategory.EMPTY_RESPONSE,
+        LlmErrorCategory.PARSE_ERROR,
+        LlmErrorCategory.CONTEXT_OVERFLOW -> true
+        else -> false
+    }
+
+    private fun safeErrorMessage(error: Throwable): String = when (error) {
+        is java.net.UnknownHostException -> "Unable to resolve provider host"
+        is java.net.SocketTimeoutException -> "Provider request timed out"
+        is java.io.IOException -> error.localizedMessage?.take(MAX_ERROR_CHARS) ?: "Network I/O failure"
+        else -> error.localizedMessage?.take(MAX_ERROR_CHARS) ?: error.javaClass.simpleName
+    }
+
+    private fun classifyException(error: Throwable): LlmErrorCategory = when (error) {
+        is kotlinx.coroutines.CancellationException -> LlmErrorCategory.CANCELLED
+        is java.net.SocketTimeoutException,
+        is java.io.InterruptedIOException -> LlmErrorCategory.TIMEOUT
+        is java.net.UnknownHostException,
+        is java.net.ConnectException,
+        is java.net.NoRouteToHostException,
+        is java.net.SocketException -> LlmErrorCategory.NETWORK_UNAVAILABLE
+        is org.json.JSONException -> LlmErrorCategory.PARSE_ERROR
+        is IllegalArgumentException -> LlmErrorCategory.INVALID_REQUEST
+        else -> LlmErrorCategory.UNKNOWN
     }
 
     private suspend fun callOpenAiCompatible(
@@ -299,6 +335,9 @@ class LlmClient {
             isSuccess = true,
             finishReason = finishReason,
             isTruncated = finishReason.equals("length", true),
+            errorCategory = if (finishReason.equals("length", true)) LlmErrorCategory.TRUNCATED_OUTPUT else null,
+            usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            requestId = payload.requestId ?: json.optString("id").ifBlank { null },
             durationMs = duration
         )
     }
@@ -326,11 +365,12 @@ class LlmClient {
             if (systemPrompt.isNotBlank()) put("system", systemPrompt)
             put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", userPrompt)))
         }
-        val request = Request.Builder().url(endpoint)
+        val requestBuilder = Request.Builder().url(endpoint)
             .header("x-api-key", provider.apiKey.trim())
             .header("anthropic-version", "2023-06-01")
-            .post(body.toString().toRequestBody(jsonMediaType)).build()
-        val payload = performRequest(request)
+            .post(body.toString().toRequestBody(jsonMediaType))
+        applyCustomHeaders(requestBuilder, provider)
+        val payload = performRequest(requestBuilder.build())
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)
@@ -353,6 +393,9 @@ class LlmClient {
             isSuccess = true,
             finishReason = finishReason,
             isTruncated = finishReason.equals("max_tokens", true),
+            errorCategory = if (finishReason.equals("max_tokens", true)) LlmErrorCategory.TRUNCATED_OUTPUT else null,
+            usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            requestId = payload.requestId ?: json.optString("id").ifBlank { null },
             durationMs = duration
         )
     }
@@ -379,13 +422,12 @@ class LlmClient {
                 if (maxTokens != null && maxTokens > 0) put("maxOutputTokens", maxTokens)
             })
         }
-        val payload = performRequest(
-            Request.Builder()
-                .url(endpoint)
-                .header("x-goog-api-key", apiKey)
-                .post(body.toString().toRequestBody(jsonMediaType))
-                .build()
-        )
+        val requestBuilder = Request.Builder()
+            .url(endpoint)
+            .header("x-goog-api-key", apiKey)
+            .post(body.toString().toRequestBody(jsonMediaType))
+        applyCustomHeaders(requestBuilder, provider)
+        val payload = performRequest(requestBuilder.build())
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)
@@ -406,6 +448,9 @@ class LlmClient {
             isSuccess = true,
             finishReason = finishReason,
             isTruncated = finishReason.equals("MAX_TOKENS", true),
+            errorCategory = if (finishReason.equals("MAX_TOKENS", true)) LlmErrorCategory.TRUNCATED_OUTPUT else null,
+            usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            requestId = payload.requestId,
             durationMs = duration
         )
     }
@@ -421,7 +466,14 @@ class LlmClient {
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     val responseBody = readResponseBodyLimited(it)
-                    if (continuation.isActive) continuation.resume(HttpPayload(it.code, responseBody))
+                    if (continuation.isActive) continuation.resume(
+                        HttpPayload(
+                            code = it.code,
+                            body = responseBody,
+                            retryAfterMs = parseRetryAfter(it.header("Retry-After")),
+                            requestId = it.header("x-request-id") ?: it.header("request-id")
+                        )
+                    )
                 }
             }
         })
@@ -454,6 +506,12 @@ class LlmClient {
 
     private fun httpFailure(payload: HttpPayload, duration: Long) = LlmResult(
         text = "", promptTokens = 0, completionTokens = 0, isSuccess = false,
+        httpStatus = payload.code,
+        errorCategory = classifyHttpStatus(payload.code, payload.body),
+        retryable = isRetryableCategory(classifyHttpStatus(payload.code, payload.body)),
+        retryAfterMs = payload.retryAfterMs,
+        requestId = payload.requestId,
+        usageSource = UsageSource.UNKNOWN,
         errorMessage = "HTTP ${payload.code}: ${extractError(payload.body)}", durationMs = duration
     )
 
@@ -466,9 +524,46 @@ class LlmClient {
     ) = LlmResult(
         text = "", promptTokens = promptTokens, completionTokens = completionTokens, isSuccess = false,
         finishReason = finishReason,
+        errorCategory = when {
+            finishReason.equals("MAX_TOKENS", true) || finishReason.equals("length", true) -> LlmErrorCategory.TRUNCATED_OUTPUT
+            finishReason.equals("SAFETY", true) || finishReason.equals("content_filter", true) -> LlmErrorCategory.CONTENT_FILTER
+            else -> LlmErrorCategory.EMPTY_RESPONSE
+        },
+        retryable = !finishReason.equals("SAFETY", true) && !finishReason.equals("content_filter", true),
+        usageSource = if (promptTokens > 0 || completionTokens > 0) UsageSource.ESTIMATED else UsageSource.UNKNOWN,
         errorMessage = "$provider returned no text${finishReason?.let { " (finish reason: $it)" }.orEmpty()}",
         durationMs = duration
     )
+
+    private fun classifyHttpStatus(code: Int, body: String): LlmErrorCategory = when {
+        code == 401 || code == 403 -> LlmErrorCategory.AUTHENTICATION
+        body.contains("safety", ignoreCase = true) || body.contains("content_filter", ignoreCase = true) -> LlmErrorCategory.CONTENT_FILTER
+        code == 408 -> LlmErrorCategory.TIMEOUT
+        code == 429 -> LlmErrorCategory.RATE_LIMIT
+        code in 500..599 -> LlmErrorCategory.SERVER_ERROR
+        code == 413 || (code in 400..499 && body.contains("context", ignoreCase = true)) -> LlmErrorCategory.CONTEXT_OVERFLOW
+        code in 400..499 -> LlmErrorCategory.INVALID_REQUEST
+        else -> LlmErrorCategory.UNKNOWN
+    }
+
+    private fun parseRetryAfter(value: String?): Long? = value?.trim()?.let {
+        it.toLongOrNull()?.times(1_000L)
+            ?: runCatching {
+                val date = java.text.SimpleDateFormat(
+                    "EEE, dd MMM yyyy HH:mm:ss z",
+                    java.util.Locale.US
+                ).parse(it)
+                ((date?.time ?: System.currentTimeMillis()) - System.currentTimeMillis()).coerceAtLeast(0L)
+            }.getOrNull()
+    }
+
+    private fun applyCustomHeaders(builder: Request.Builder, provider: ApiProviderEntity) {
+        runCatching {
+            val custom = JSONObject(provider.customHeadersJson)
+            require(custom.keys().asSequence().all { key -> custom.opt(key) is String })
+            custom.keys().forEach { key -> builder.header(key, custom.getString(key)) }
+        }
+    }
 
     private fun extractError(body: String): String {
         val parsed = runCatching {
@@ -500,7 +595,6 @@ class LlmClient {
     }
 
     companion object {
-        private const val MAX_ATTEMPTS = 3
         private const val MAX_ERROR_CHARS = 4096
         private const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
     }

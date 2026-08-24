@@ -30,7 +30,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.parser.TxtParser
+import com.breakyuna.noveltranslator.core.translator.StableSegmentParser
 import com.breakyuna.noveltranslator.data.model.ChapterStatus
+import com.breakyuna.noveltranslator.data.model.ChapterSegmentEntity
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
@@ -108,12 +110,14 @@ fun BilingualReaderScreen(
 
     var rawOriginal by remember { mutableStateOf("") }
     var rawTranslated by remember { mutableStateOf("") }
+    var persistedSegments by remember { mutableStateOf<List<ChapterSegmentEntity>>(emptyList()) }
     LaunchedEffect(currentChapter?.id, currentChapter?.updatedAt, project?.id) {
         val activeProject = project
         val activeChapter = currentChapter
         if (activeProject == null || activeChapter == null) {
             rawOriginal = ""
             rawTranslated = ""
+            persistedSegments = emptyList()
         } else {
             val loaded = withContext(Dispatchers.IO) {
                 viewModel.fileManager.readOriginalChapter(activeProject.id, activeChapter.originalFileName) to
@@ -121,19 +125,21 @@ fun BilingualReaderScreen(
             }
             rawOriginal = loaded.first
             rawTranslated = loaded.second
+            persistedSegments = viewModel.getChapterSegments(activeChapter.id)
         }
     }
 
-    // Split strictly by paragraphs without sentence-level splitting
-    val origParagraphs = remember(rawOriginal) {
-        rawOriginal.split(Regex("\n{2,}|\r\n\r\n")).map { it.trim() }.filter { it.isNotBlank() }
+    // Stable alignment handles both blank-line and one-line TXT layouts and keeps images isolated.
+    val alignedSegments = remember(rawOriginal, rawTranslated, currentChapterId, persistedSegments) {
+        if (persistedSegments.isNotEmpty()) {
+            StableSegmentParser.alignPersisted(persistedSegments)
+        } else {
+            StableSegmentParser.align(currentChapterId, rawOriginal, rawTranslated)
+        }
     }
-
-    val transParagraphs = remember(rawTranslated) {
-        rawTranslated.split(Regex("\n{2,}|\r\n\r\n")).map { it.trim() }.filter { it.isNotBlank() }
-    }
-
-    val maxParagraphCount = maxOf(origParagraphs.size, transParagraphs.size)
+    val origParagraphs = alignedSegments.map { it.sourceText }
+    val transParagraphs = alignedSegments.map { it.translatedText }
+    val maxParagraphCount = alignedSegments.size
 
     val currentIdx = chapters.indexOfFirst { it.id == currentChapterId }
     val prevChapter = if (currentIdx > 0) chapters.getOrNull(currentIdx - 1) else null
@@ -746,7 +752,8 @@ fun BilingualReaderScreen(
                                 paragraphIndex = selectedParagraphIndex,
                                 originalParagraph = selectedOriginalParagraph,
                                 customInstruction = polishInstruction,
-                                provider = defaultProvider
+                                provider = defaultProvider,
+                                segmentId = alignedSegments.getOrNull(selectedParagraphIndex)?.segmentId
                             ) { newPara ->
                                 val newParagraphs = transParagraphs.toMutableList()
                                 if (selectedParagraphIndex in newParagraphs.indices) {

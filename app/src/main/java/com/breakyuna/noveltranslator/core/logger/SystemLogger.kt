@@ -46,6 +46,7 @@ object SystemLogger {
 
     private var logFile: File? = null
     private val scope = CoroutineScope(Dispatchers.IO)
+    private val fileLock = Any()
 
     fun init(context: Context) {
         try {
@@ -54,6 +55,7 @@ object SystemLogger {
             if (!logFile!!.exists()) {
                 logFile!!.createNewFile()
             }
+            loadRecentFileEntries(logFile!!)
             log(LogLevel.INFO, "SYSTEM", "System logger initialized successfully.")
         } catch (e: Exception) {
             log(LogLevel.WARN, "SYSTEM", "Failed to initialize log file: ${e.localizedMessage}")
@@ -68,12 +70,14 @@ object SystemLogger {
         projectId: Long? = null,
         chapterIndex: Int? = null
     ) {
+        val safeMessage = sanitize(message)
+        val safeDetails = details?.let(::sanitize)
         val entry = SystemLogEntry(
             timestamp = System.currentTimeMillis(),
             level = level,
             tag = tag,
-            message = message,
-            details = details,
+            message = safeMessage,
+            details = safeDetails,
             projectId = projectId,
             chapterIndex = chapterIndex
         )
@@ -99,10 +103,12 @@ object SystemLogger {
                         }
                         append("\n")
                     }
-                    file.appendText(line, Charsets.UTF_8)
-                    // If file exceeds 5MB, rotate or prune
-                    if (file.length() > 5 * 1024 * 1024) {
-                        pruneLogFile(file)
+                    synchronized(fileLock) {
+                        file.appendText(line, Charsets.UTF_8)
+                        // If file exceeds 5MB, rotate or prune
+                        if (file.length() > 5 * 1024 * 1024) {
+                            pruneLogFile(file)
+                        }
                     }
                 }
             } catch (_: Exception) {}
@@ -126,10 +132,12 @@ object SystemLogger {
         _logsFlow.value = emptyList()
         scope.launch {
             try {
-                logFile?.writeText("", Charsets.UTF_8)
+                synchronized(fileLock) {
+                    logFile?.writeText("", Charsets.UTF_8)
+                }
+                log(LogLevel.INFO, "SYSTEM", "System logs cleared by user.")
             } catch (_: Exception) {}
         }
-        log(LogLevel.INFO, "SYSTEM", "System logs cleared by user.")
     }
 
     fun getLogFile(): File? = logFile
@@ -162,5 +170,30 @@ object SystemLogger {
                 file.writeText(retained.joinToString("\n") + "\n", Charsets.UTF_8)
             }
         } catch (_: Exception) {}
+    }
+
+    private fun sanitize(value: String): String = value
+        .replace(Regex("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,}]+"), "\$1[REDACTED]")
+        .replace(Regex("(?i)(x-goog-api-key\\s*[:=]\\s*)[^\\s,}]+"), "\$1[REDACTED]")
+        .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*[^\\s,}]+"), "\$1=[REDACTED]")
+        .replace(Regex("(?s)\\b(?:Original|Translation|Prompt|Response)\\s*:\\s*.{0,4000}"), "[CONTENT REDACTED]")
+
+    private fun loadRecentFileEntries(file: File) {
+        runCatching {
+            file.readLines(Charsets.UTF_8).takeLast(MAX_MEMORY_LOGS).forEach { line ->
+                val match = Regex("^\\[(.+?)] \\[(INFO|WARN|ERROR|DEBUG)] \\[(.+?)] (.*)$").find(line) ?: return@forEach
+                val level = runCatching { LogLevel.valueOf(match.groupValues[2]) }.getOrDefault(LogLevel.INFO)
+                memoryLogs.addLast(
+                    SystemLogEntry(
+                        timestamp = file.lastModified(),
+                        level = level,
+                        tag = match.groupValues[3],
+                        message = sanitize(match.groupValues[4])
+                    )
+                )
+            }
+            while (memoryLogs.size > MAX_MEMORY_LOGS) memoryLogs.pollFirst()
+            _logsFlow.value = memoryLogs.toList()
+        }
     }
 }

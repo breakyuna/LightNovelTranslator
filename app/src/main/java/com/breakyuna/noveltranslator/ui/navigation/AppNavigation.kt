@@ -174,6 +174,32 @@ fun AppNavigation(
                                 navController = navController,
                                 startDestination = Screen.Translation.createRoute(activeProjectId!!)
                             ) {
+                                composable(Screen.Projects.route) {
+                                    ProjectListScreen(
+                                        viewModel = viewModel,
+                                        onSelectProject = { projectId ->
+                                            viewModel.setActiveProject(projectId)
+                                            navController.navigate(Screen.Workspace.createRoute(projectId))
+                                        },
+                                        onOpenSettings = { navController.navigate(Screen.Settings.createRoute(0)) },
+                                        onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                    )
+                                }
+                                composable(
+                                    route = Screen.Workspace.route,
+                                    arguments = listOf(navArgument("projectId") { type = NavType.LongType })
+                                ) { backStackEntry ->
+                                    val projectId = backStackEntry.arguments?.getLong("projectId") ?: 0L
+                                    LaunchedEffect(projectId) { viewModel.setActiveProject(projectId) }
+                                    ProjectWorkspaceScreen(
+                                        viewModel = viewModel,
+                                        onBack = { navController.popBackStack() },
+                                        onNavigateToTranslation = { navController.navigate(Screen.Translation.createRoute(projectId)) },
+                                        onNavigateToGlossary = { navController.navigate(Screen.Glossary.createRoute(projectId)) },
+                                        onNavigateToReader = { chapterId -> navController.navigate(Screen.Reader.createRoute(chapterId)) },
+                                        onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+                                    )
+                                }
                                 composable(
                                     route = Screen.Translation.route,
                                     arguments = listOf(navArgument("projectId") { type = NavType.LongType })
@@ -257,7 +283,9 @@ fun AppNavigation(
                             arguments = listOf(navArgument("projectId") { type = NavType.LongType })
                         ) { backStackEntry ->
                             val projId = backStackEntry.arguments?.getLong("projectId") ?: 0L
-                            viewModel.setActiveProject(projId)
+                            LaunchedEffect(projId) {
+                                viewModel.setActiveProject(projId)
+                            }
                             ProjectWorkspaceScreen(
                                 viewModel = viewModel,
                                 onBack = {
@@ -340,4 +368,3 @@ fun AppNavigation(
         }
     }
 }
-

@@ -157,6 +157,43 @@ class ProjectFileManager(private val context: Context) {
         return if (file.exists()) file.readText(Charsets.UTF_8) else ""
     }
 
+    /** Writes a completed chunk using a same-directory temp file and atomic rename. */
+    fun saveTranslationChunkAtomically(
+        projectId: Long,
+        runId: Long,
+        chapterId: Long,
+        chunkIndex: Int,
+        content: String,
+        chunkKey: String? = null
+    ): String {
+        val safeKey = (chunkKey ?: chunkIndex.toString()).replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val safeName = "chunk_${runId}_${chapterId}_$safeKey.txt"
+        val target = File(getTranslationsDir(projectId), safeName)
+        val temporary = File(target.parentFile, "$safeName.tmp")
+        temporary.outputStream().use { stream ->
+            stream.write(content.toByteArray(Charsets.UTF_8))
+            stream.flush()
+            runCatching { (stream as? java.io.FileOutputStream)?.fd?.sync() }
+        }
+        val backup = File(target.parentFile, "$safeName.previous")
+        backup.delete()
+        val movedOldTarget = !target.exists() || target.renameTo(backup)
+        val committed = movedOldTarget && temporary.renameTo(target)
+        if (committed) {
+            backup.delete()
+        } else {
+            temporary.delete()
+            if (movedOldTarget && backup.exists() && !target.exists()) backup.renameTo(target)
+        }
+        check(committed && target.isFile) { "Unable to atomically commit translation chunk" }
+        return safeName
+    }
+
+    fun readTranslationChunk(projectId: Long, fileName: String): String {
+        val safeFile = File(getTranslationsDir(projectId), File(fileName).name)
+        return if (safeFile.isFile) safeFile.readText(Charsets.UTF_8) else ""
+    }
+
     fun saveRawFile(projectId: Long, originalFileName: String, bytes: ByteArray): File {
         val safeName = File(originalFileName).name
             .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
@@ -165,6 +202,36 @@ class ProjectFileManager(private val context: Context) {
         val file = File(getRawDir(projectId), safeName)
         file.writeBytes(bytes)
         return file
+    }
+
+    fun saveRawFile(
+        projectId: Long,
+        originalFileName: String,
+        input: java.io.InputStream,
+        maxBytes: Long
+    ): File {
+        val safeName = File(originalFileName).name
+            .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
+            .take(100)
+            .ifBlank { "imported_novel.txt" }
+        val file = File(getRawDir(projectId), safeName)
+        try {
+            file.outputStream().use { output ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var total = 0L
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= maxBytes) { "File exceeds the 100 MB import limit" }
+                    output.write(buffer, 0, count)
+                }
+            }
+            return file
+        } catch (error: Exception) {
+            file.delete()
+            throw error
+        }
     }
 
     fun deleteProjectFiles(projectId: Long) {

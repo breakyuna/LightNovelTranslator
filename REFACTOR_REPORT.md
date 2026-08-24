@@ -16,7 +16,7 @@
 | 手动保存译文文件名与数据库不一致 | 编辑后阅读器可能仍读取旧文件 | 保存方法返回真实文件名并同步写入章节记录 |
 | 重新分章先删除旧文件再写新文件 | 中途失败会造成译文丢失 | 先写临时章节目录，文件交换与 Room 章节/项目更新失败时自动回滚 |
 | AI 分章失败窗口被静默忽略、首段可能丢失 | 章节边界错误或前言丢失 | 使用 22,000 字符重叠滑窗，窗口失败直接终止，首个章节从全文开头保留 |
-| AI 输出二次截断仍被视为成功 | 产生残缺章节 | 最多续写三次；最终仍截断则明确失败 |
+| AI 输出二次截断仍被视为成功 | 产生残缺章节 | 最多续写两次；最终仍截断则明确失败 |
 | 无译文完整性检查 | 模型省略、总结、拒答也会落盘 | 校验空输出、拒答、代码围栏、篇幅、段落和图片标记；失败自动重试一次 |
 | 失败、空响应或 JSON 解析失败请求未计费 | 实际消耗小于界面记录 | 可取得用量的成功、失败、空响应和解析失败调用均累计 token、费用和耗时 |
 | 单次费用先四舍五入 | 大量小请求累计费用失真 | 内部保留完整 Double 精度，仅展示时格式化 |
@@ -54,7 +54,7 @@
 - 启动时迁移旧版明文凭据；Gemini 不再从 BuildConfig 或 `.env` 打包密钥。
 - Gemini Key 改放 `x-goog-api-key` 请求头，不出现在 URL。
 - OkHttp 改为可取消的异步请求；协程取消会取消底层 Call。
-- 408、429、5xx、超时和连接错误最多重试三次，采用退避间隔。
+- 408、429、5xx、超时和连接错误由结构化错误策略分别限制次数，并采用可取消退避；每次物理尝试独立记账。
 - 云端 API 只允许 HTTPS；HTTP 仅允许 Ollama 的回环、`.local` 或 RFC1918 私网地址。
 - 数据库、SharedPreferences 和项目文件全部排除云备份与设备迁移。
 - FileProvider 只暴露 `files/exports/`，不再暴露全部应用私有文件。
@@ -80,10 +80,13 @@
 
 ## 数据库与兼容性
 
-Room 数据库由版本 1 升至版本 3，迁移新增：
+Room 数据库由版本 1 升至版本 6，迁移新增：
 
 - `projects.costCurrency`
 - `translation_logs.currency`
+- `translation_runs`、`translation_chunks`、`llm_request_logs`，用于恢复任务、固定分块边界和逐请求审计。
+- `chapter_segments`，用于持久化稳定 Segment ID、段落关系、顺序和原文哈希。
+- 版本 6 使用非空父分块唯一键避免 SQLite `NULL` 重复，并允许全局 Provider 连接测试写入无项目请求记录。
 
 旧项目币种无法可靠反推，因此迁移后保持 UNKNOWN，并在翻译前阻止混入新币种；日志统计现在覆盖翻译、摘要、术语提取和 AI 分章等所有模型调用。新项目默认使用 USD，但首次实际翻译会按所选供应商更新。
 
@@ -99,7 +102,20 @@ Room 数据库由版本 1 升至版本 3，迁移新增：
 - 新增译文完整性、图片标记、术语目标语言和微小费用精度测试。
 - 增加 Apache-2.0 `LICENSE`，README 已按真实实现重写。
 
-本地最终检查已通过 XML、YAML、TOML、Gradle Wrapper JAR、数据库迁移 SQL、Kotlin/Kotlin DSL 分隔符和 `git diff --check`。当前执行环境不允许访问 Gradle/Maven 分发与依赖域名，因此无法在本机完成 Android 编译；仓库 CI 已配置为在正常网络环境执行完整测试、lint 和 APK 构建。
+本地已执行 XML、YAML、TOML、数据库迁移 SQL、Kotlin/Kotlin DSL 分隔符和 `git diff --check` 检查。当前执行环境无法访问 Gradle 分发网络，因而不能把 Android 编译结果写成已通过；仓库 CI 仍配置为执行完整测试、lint 和 APK 构建。
+
+## 稳定性状态机补充（基准 d0e27ee 之后）
+
+- LLM 调用边界抽象为 `LlmGateway`；真实 OkHttp 适配器只执行单次请求，`RetryingLlmGateway` 依据结构化错误分类统一重试。
+- 429 遵循 `Retry-After`，网络/超时最多 5 次，服务端错误最多 4 次，空响应/解析错误最多 3 次；退避通过 `DelayProvider` 注入，测试不真实等待。
+- 新增 `translation_runs`、`translation_chunks` 和 `llm_request_logs`，保存 Provider/价格快照，不保存 API Key 或正文。
+- 每次物理请求单独保存实际/估算/未知用量、费用、耗时、HTTP 状态、finish reason、请求 ID、错误分类和尝试编号。
+- 分块成功后先写同目录临时文件再重命名，随后更新 Room；应用启动会把未结束运行标记为 `INTERRUPTED`，并把遗留 `TRANSLATING` 章节恢复为待处理状态。
+- 项目进入翻译控制台时会显示“继续任务/放弃任务”；继续只使用原任务的 Provider，放弃会把运行标记为 `CANCELLED`，不删除已完成分块。
+- 上下文溢出后的自然段子分块单独持久化，带父分块关系、独立临时文件和独立状态，父分块只有在合并校验后才算完成。
+- Gemini 模型列表请求使用 `x-goog-api-key` Header；自定义 Header 校验为字符串 JSON 对象，并用于翻译与拉取模型请求。
+- EPUB 增加文件路径解析入口，使用 `ZipFile` 按需读取 OPF、spine HTML 和图片；Android 导入时图片直接流式写入项目目录，不再构建完整 `Map<String, ByteArray>`。
+- EPUB 增加 `InputStream` 兼容入口；旧 ByteArray API 只作为包装层，不参与解析和 ZIP 条目缓存。
 
 ## 仍需真实模型验证的部分
 

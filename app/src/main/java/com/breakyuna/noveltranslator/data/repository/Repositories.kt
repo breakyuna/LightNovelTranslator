@@ -6,6 +6,7 @@ import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import androidx.room.withTransaction
 
 class ProjectRepository(private val projectDao: ProjectDao) {
     val allProjects: Flow<List<ProjectEntity>> = projectDao.getAllProjects()
@@ -38,6 +39,7 @@ class ChapterRepository(private val chapterDao: ChapterDao) {
         translatedFileName: String? = null
     ) = chapterDao.updateTranslationResult(id, status, wordCount, promptTokens, completionTokens, cost, errorMsg, translatedFileName)
     suspend fun updateStatus(id: Long, status: ChapterStatus) = chapterDao.updateStatus(id, status)
+    suspend fun resetTranslatingStatuses() = chapterDao.resetTranslatingStatuses()
     suspend fun updateSummary(id: Long, summary: String) = chapterDao.updateSummary(id, summary)
     suspend fun deleteChaptersByProject(projectId: Long) = chapterDao.deleteChaptersByProject(projectId)
     suspend fun deleteChapterById(id: Long) = chapterDao.deleteChapterById(id)
@@ -101,4 +103,66 @@ class TranslationLogRepository(private val translationLogDao: TranslationLogDao)
     suspend fun getLogsListByProject(projectId: Long): List<TranslationLogEntity> = translationLogDao.getLogsListByProject(projectId)
     suspend fun insertLog(log: TranslationLogEntity): Long = translationLogDao.insertLog(log)
     suspend fun deleteLogsByProject(projectId: Long) = translationLogDao.deleteLogsByProject(projectId)
+}
+
+class TranslationRunRepository(private val dao: TranslationRunDao) {
+    suspend fun insert(run: TranslationRunEntity): Long = dao.insert(run)
+    suspend fun update(run: TranslationRunEntity) = dao.update(run)
+    suspend fun getById(id: Long): TranslationRunEntity? = dao.getById(id)
+    suspend fun getByProject(projectId: Long): List<TranslationRunEntity> = dao.getByProject(projectId)
+    suspend fun findResumable(projectId: Long, providerId: Long): TranslationRunEntity? = dao.findResumable(projectId, providerId)
+    suspend fun findLatestResumable(projectId: Long): TranslationRunEntity? = dao.findLatestResumable(projectId)
+    suspend fun updateState(id: Long, state: String, category: String? = null, message: String? = null, nextRetryAt: Long? = null) =
+        dao.updateState(id, state, category, message, nextRetryAt)
+    suspend fun markInFlightInterrupted() = dao.markInFlightInterrupted()
+}
+
+class TranslationChunkRepository(private val dao: TranslationChunkDao) {
+    suspend fun insertAll(chunks: List<TranslationChunkEntity>) = dao.insertAll(chunks)
+    suspend fun update(chunk: TranslationChunkEntity) = dao.update(chunk)
+    suspend fun getByChapter(runId: Long, chapterId: Long): List<TranslationChunkEntity> = dao.getByChapter(runId, chapterId)
+    suspend fun getByRun(runId: Long): List<TranslationChunkEntity> = dao.getByRun(runId)
+    suspend fun getById(id: Long): TranslationChunkEntity? = dao.getById(id)
+    suspend fun getChildren(runId: Long, parentChunkId: Long): List<TranslationChunkEntity> = dao.getChildren(runId, parentChunkId)
+    suspend fun resetRunningChunks() = dao.resetRunningChunks()
+}
+
+class LlmRequestLogRepository(private val dao: LlmRequestLogDao) {
+    fun getFlowByProject(projectId: Long): Flow<List<LlmRequestLogEntity>> = dao.getFlowByProject(projectId)
+    suspend fun insert(log: LlmRequestLogEntity): Long = dao.insert(log)
+    suspend fun getByProject(projectId: Long): List<LlmRequestLogEntity> = dao.getByProject(projectId)
+    suspend fun getByRun(runId: Long): List<LlmRequestLogEntity> = dao.getByRun(runId)
+}
+
+/** Keeps request audit rows and their run/chunk counters consistent in one Room transaction. */
+class TranslationAuditRepository(private val database: AppDatabase) {
+    suspend fun record(runId: Long?, chunkId: Long?, logs: List<LlmRequestLogEntity>) {
+        if (logs.isEmpty()) return
+        database.withTransaction {
+            database.llmRequestLogDao().insertAll(logs)
+            val promptTokens = logs.sumOf { it.promptTokens }
+            val completionTokens = logs.sumOf { it.completionTokens }
+            val cost = logs.sumOf { it.estimatedCost }
+            runId?.let {
+                database.translationRunDao().addUsage(it, promptTokens, completionTokens, cost)
+            }
+            chunkId?.let {
+                database.translationChunkDao().addUsage(
+                    id = it,
+                    attempts = logs.size,
+                    promptTokens = promptTokens,
+                    completionTokens = completionTokens,
+                    cost = cost,
+                    durationMs = logs.sumOf { row -> row.durationMs }
+                )
+            }
+        }
+    }
+}
+
+class ChapterSegmentRepository(private val dao: ChapterSegmentDao) {
+    suspend fun replaceForChapter(chapterId: Long, segments: List<ChapterSegmentEntity>) =
+        dao.replaceForChapter(chapterId, segments)
+
+    suspend fun getByChapter(chapterId: Long): List<ChapterSegmentEntity> = dao.getByChapter(chapterId)
 }

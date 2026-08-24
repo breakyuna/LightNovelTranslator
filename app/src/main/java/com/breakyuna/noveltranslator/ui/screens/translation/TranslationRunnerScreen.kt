@@ -46,10 +46,13 @@ fun TranslationRunnerScreen(
     val strings = LocalAppStrings.current
     val project by viewModel.activeProject.collectAsState()
     val chapters by viewModel.activeChapters.collectAsState()
+    val glossary by viewModel.activeGlossary.collectAsState()
     val providers by viewModel.allProviders.collectAsState()
     val logs by viewModel.activeLogs.collectAsState()
+    val requestLogs by viewModel.activeRequestLogs.collectAsState()
     val liveLogs by viewModel.liveLogs.collectAsState()
     val jobState by viewModel.translationState.collectAsState()
+    val recoverableRun by viewModel.recoverableRun.collectAsState()
 
     var logTab by remember { mutableStateOf(0) } // 0: Live Pipeline Logs, 1: Chapter History Logs
 
@@ -66,6 +69,7 @@ fun TranslationRunnerScreen(
     val dontShowWarning by viewModel.dontShowContinuousWarning.collectAsState()
     var showContinuousConfirmDialog by remember { mutableStateOf(false) }
     var dontRemindChecked by remember { mutableStateOf(false) }
+    var showRecoveryDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(providers, project?.defaultProviderId) {
         if (providers.none { it.id == selectedProviderId }) selectedProviderId = defaultProvider?.id
@@ -76,10 +80,22 @@ fun TranslationRunnerScreen(
         }
     }
 
+    LaunchedEffect(recoverableRun?.id, jobState) {
+        if (recoverableRun != null && jobState !is TranslationJobState.Running) {
+            showRecoveryDialog = true
+        }
+    }
+
     val remainingChapters = chapters.filter { it.status != ChapterStatus.COMPLETED }
     val remainingWords = remainingChapters.sumOf { it.originalWordCount }
-    val estPromptTokens = (remainingWords * 1.35).toLong()
-    val estCompTokens = (remainingWords * 1.25).toLong()
+    val summaryOverhead = remainingChapters.sumOf { TokenCalculator.estimateTokens(it.summary.take(600)) }
+    val glossaryOverhead = glossary.filter { !it.isAutoExtracted }.sumOf {
+        TokenCalculator.estimateTokens(it.originalTerm + it.translatedTerm + it.notes) + 12L
+    }.coerceAtMost(10_000L)
+    val systemPromptOverhead = remainingChapters.size * 180L
+    val retrySafetyFactor = 1.15
+    val estPromptTokens = ((remainingWords * 1.35) + summaryOverhead + glossaryOverhead + systemPromptOverhead).times(retrySafetyFactor).toLong()
+    val estCompTokens = (remainingWords * 1.25 * retrySafetyFactor).toLong()
     val estTotalCost = if (activeProvider != null) {
         TokenCalculator.calculateCost(estPromptTokens, estCompTokens, activeProvider.inputPricePerMillion, activeProvider.outputPricePerMillion)
     } else 0.0
@@ -575,7 +591,7 @@ fun TranslationRunnerScreen(
                     }
                 } else {
                     // Chapter summary logs from DB
-                    if (logs.isEmpty()) {
+                    if (logs.isEmpty() && requestLogs.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = strings.logsEmptyState,
@@ -590,10 +606,12 @@ fun TranslationRunnerScreen(
                                 .padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            val totalPromptTokens = logs.sumOf { it.promptTokens }
-                            val totalCompletionTokens = logs.sumOf { it.completionTokens }
-                            val totalCost = logs.sumOf { it.estimatedCost }
-                            val historyCurrency = logs.map { it.currency.trim() }
+                            val requestHistory = requestLogs
+                            val totalPromptTokens = if (requestHistory.isNotEmpty()) requestHistory.sumOf { it.promptTokens } else logs.sumOf { it.promptTokens }
+                            val totalCompletionTokens = if (requestHistory.isNotEmpty()) requestHistory.sumOf { it.completionTokens } else logs.sumOf { it.completionTokens }
+                            val totalCost = if (requestHistory.isNotEmpty()) requestHistory.sumOf { it.estimatedCost } else logs.sumOf { it.estimatedCost }
+                            val historyCurrency = requestHistory.map { it.currency.trim() }.firstOrNull { it.isNotBlank() }
+                                ?: logs.map { it.currency.trim() }
                                 .firstOrNull { it.isNotBlank() }
                                 ?: activeProvider?.currency
                                 ?: "USD"
@@ -621,7 +639,7 @@ fun TranslationRunnerScreen(
                                                 style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                                             )
                                             Text(
-                                                text = "${logs.size} 次记录",
+                                                text = "${logs.size} 章级记录 · ${requestLogs.size} 次请求",
                                                 style = MaterialTheme.typography.labelSmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -718,6 +736,49 @@ fun TranslationRunnerScreen(
         }
     }
 
+    if (showRecoveryDialog && recoverableRun != null && jobState !is TranslationJobState.Running) {
+        val run = recoverableRun!!
+        val matchingProvider = providers.firstOrNull { it.id == run.providerId }
+        AlertDialog(
+            onDismissRequest = { showRecoveryDialog = false },
+            icon = { Icon(Icons.Default.Restore, contentDescription = null, tint = PrimaryIndigo) },
+            title = { Text("发现未完成的翻译任务") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("任务状态：${run.state}")
+                    Text("Provider：${run.providerName} / ${run.modelName}")
+                    Text("已记录费用：${TokenCalculator.formatCost(run.totalCost, run.currency)}")
+                    if (matchingProvider == null) {
+                        Text(
+                            "原 Provider 当前不可用，不能安全继续此任务。",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Text(
+                        "已完成分块会被复用；上次中断时正在进行的请求可能已被供应商计费。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = matchingProvider != null,
+                    onClick = {
+                        showRecoveryDialog = false
+                        viewModel.resumeRecoverableTranslation()
+                    }
+                ) { Text("继续任务") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showRecoveryDialog = false
+                    viewModel.abandonRecoverableTranslation()
+                }) { Text("放弃任务") }
+            }
+        )
+    }
+
     if (showContinuousConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showContinuousConfirmDialog = false },
@@ -751,8 +812,54 @@ fun TranslationRunnerScreen(
                                 text = "${strings.continuousEstCost}: ${TokenCalculator.formatCost(estTotalCost, activeProvider?.currency ?: "USD")}",
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold, color = TertiaryAmber)
                             )
+                            Text(
+                                text = "估算费用（含上下文、摘要、术语与安全系数，不等于供应商账单）",
+                                style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                )
+                            }
+
+                            if (requestLogs.isNotEmpty()) {
+                                item {
+                                    Text(
+                                        text = "请求级明细（包含重试、失败和未知用量）",
+                                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                }
+                                items(requestLogs.take(200), key = { "request_${it.id}" }) { request ->
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                                    ) {
+                                        Column(modifier = Modifier.padding(9.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text(
+                                                text = "${request.operation} · ${request.providerName}/${request.modelName}",
+                                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                                            )
+                                            Text(
+                                                text = "尝试 #${request.attemptNumber} · ${if (request.isSuccess) "成功" else "失败"} · ${request.usageSource}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = if (request.isSuccess) EmeraldAccent else RoseAccent
+                                            )
+                                            Text(
+                                                text = "Prompt ${request.promptTokens} · Completion ${request.completionTokens} · ${TokenCalculator.formatCost(request.estimatedCost, request.currency)} · ${request.durationMs}ms",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            request.errorCategory?.let { category ->
+                                                Text(
+                                                    text = "$category${request.errorMessage?.let { ": $it" }.orEmpty()}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = RoseAccent,
+                                                    maxLines = 2
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
-                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -798,4 +905,3 @@ fun TranslationRunnerScreen(
 
 private fun formatHistoryTimestamp(timestamp: Long): String =
     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
-

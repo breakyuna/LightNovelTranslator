@@ -1,14 +1,15 @@
 package com.breakyuna.noveltranslator.core.agent
 
-import com.breakyuna.noveltranslator.core.llm.LlmClient
+import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
+import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.TermCategory
 import org.json.JSONArray
 
-class TermExtractionAgent(private val llmClient: LlmClient) {
+class TermExtractionAgent(private val llmClient: LlmGateway) {
 
     data class ExtractionResult(
         val terms: List<GlossaryEntity>,

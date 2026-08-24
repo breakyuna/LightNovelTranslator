@@ -1,14 +1,15 @@
 package com.breakyuna.noveltranslator.core.agent
 
-import com.breakyuna.noveltranslator.core.llm.LlmClient
+import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
+import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import org.json.JSONArray
 
-class ChapterSplitAgent(private val llmClient: LlmClient) {
+class ChapterSplitAgent(private val llmClient: LlmGateway) {
 
     suspend fun analyzeAndSplit(
         fullText: String,
