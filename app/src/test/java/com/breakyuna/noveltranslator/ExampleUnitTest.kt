@@ -253,8 +253,7 @@ class ExampleUnitTest {
         assertEquals("Bilingual Reader", enStrings.navReader)
         assertEquals("系统设置", zhStrings.navSettings)
         assertEquals("System Settings", enStrings.navSettings)
-        assertEquals("运行与报错日志", zhStrings.navLogs)
-        assertEquals("System & Error Logs", enStrings.navLogs)
+        assertEquals("系统日志", zhStrings.navLogs)
+        assertEquals("System Logs", enStrings.navLogs)
     }
 }
-
