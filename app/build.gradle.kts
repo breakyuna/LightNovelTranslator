@@ -6,15 +6,15 @@ plugins {
 }
 
 val ciVersionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
-val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
-val keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
-val keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-val keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val signingKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val signingKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val signingKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val signingKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
 val hasReleaseSigning = listOf(
-  keystorePath,
-  keystorePassword,
-  keyAlias,
-  keyPassword,
+  signingKeystorePath,
+  signingKeystorePassword,
+  signingKeyAlias,
+  signingKeyPassword,
 ).all { !it.isNullOrBlank() }
 
 android {
@@ -34,10 +34,10 @@ android {
   signingConfigs {
     if (hasReleaseSigning) {
       create("release") {
-        storeFile = file(keystorePath!!)
-        storePassword = keystorePassword
-        keyAlias = keyAlias
-        keyPassword = keyPassword
+        storeFile = file(signingKeystorePath!!)
+        storePassword = signingKeystorePassword
+        keyAlias = signingKeyAlias
+        keyPassword = signingKeyPassword
       }
     }
   }
