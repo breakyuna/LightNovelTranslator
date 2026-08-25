@@ -5,6 +5,18 @@ plugins {
   alias(libs.plugins.roborazzi)
 }
 
+val ciVersionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val keystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+  keystorePath,
+  keystorePassword,
+  keyAlias,
+  keyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
   namespace = "com.breakyuna.noveltranslator"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
@@ -13,10 +25,21 @@ android {
     applicationId = "com.breakyuna.noveltranslator"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
+    versionCode = ciVersionCode ?: 1
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+  }
+
+  signingConfigs {
+    if (hasReleaseSigning) {
+      create("release") {
+        storeFile = file(keystorePath!!)
+        storePassword = keystorePassword
+        keyAlias = keyAlias
+        keyPassword = keyPassword
+      }
+    }
   }
 
   buildTypes {
@@ -24,6 +47,9 @@ android {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+      if (hasReleaseSigning) {
+        signingConfig = signingConfigs.getByName("release")
+      }
     }
     debug { }
   }
