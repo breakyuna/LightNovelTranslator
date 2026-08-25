@@ -1,6 +1,9 @@
 name: Build Android APK
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -46,10 +49,11 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
           test -s "$RUNNER_TEMP/release.jks"
 
-      - name: Validate signing keystore
+      - name: Validate and pin signing certificate
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          EXPECTED_SIGNING_CERT_SHA256: a59e9fb8281cfcf48e2daf42ea55d9339ba7f049f536e6772996e8ddc5951946
         run: |
           set -euo pipefail
           keytool -list \
@@ -57,6 +61,22 @@ jobs:
             -storepass "$ANDROID_KEYSTORE_PASSWORD" \
             -alias "$ANDROID_KEY_ALIAS" \
             >/dev/null
+
+          keytool -exportcert \
+            -keystore "$RUNNER_TEMP/release.jks" \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -alias "$ANDROID_KEY_ALIAS" \
+            -file "$RUNNER_TEMP/signing-cert.der" \
+            >/dev/null
+
+          ACTUAL_SIGNING_CERT_SHA256="$(sha256sum "$RUNNER_TEMP/signing-cert.der" | awk '{print $1}')"
+          if [ "$ACTUAL_SIGNING_CERT_SHA256" != "$EXPECTED_SIGNING_CERT_SHA256" ]; then
+            echo "::error::Signing certificate changed unexpectedly"
+            echo "Expected: $EXPECTED_SIGNING_CERT_SHA256"
+            echo "Actual:   $ACTUAL_SIGNING_CERT_SHA256"
+            exit 1
+          fi
+          echo "Pinned signing certificate SHA-256: $ACTUAL_SIGNING_CERT_SHA256"
 
       - name: Test, lint and build signed Release APK
         env:
