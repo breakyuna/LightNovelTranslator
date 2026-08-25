@@ -18,6 +18,12 @@ interface LlmRequestLogDao {
     @Query("SELECT * FROM llm_request_logs WHERE projectId = :projectId ORDER BY timestamp DESC")
     fun getFlowByProject(projectId: Long): Flow<List<LlmRequestLogEntity>>
 
+    @Query("SELECT * FROM llm_request_logs ORDER BY timestamp DESC")
+    fun getAllFlow(): Flow<List<LlmRequestLogEntity>>
+
     @Query("SELECT * FROM llm_request_logs WHERE runId = :runId ORDER BY timestamp ASC")
     suspend fun getByRun(runId: Long): List<LlmRequestLogEntity>
+
+    @Query("DELETE FROM llm_request_logs")
+    suspend fun deleteAll()
 }

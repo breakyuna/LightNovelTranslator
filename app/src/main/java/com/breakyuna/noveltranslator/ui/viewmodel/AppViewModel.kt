@@ -188,6 +188,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         else llmRequestLogRepo.getFlowByProject(id)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val allTranslationLogs: StateFlow<List<TranslationLogEntity>> = logRepo.allLogs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val allRequestLogs: StateFlow<List<LlmRequestLogEntity>> = llmRequestLogRepo.allLogs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun clearAllHistoryLogs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            logRepo.deleteAllLogs()
+            llmRequestLogRepo.deleteAll()
+            withContext(Dispatchers.Main) {
+                showMessage("已清空所有翻译历史记录")
+            }
+        }
+    }
+
     private val _selectedChapterId = MutableStateFlow<Long?>(null)
     val selectedChapterId: StateFlow<Long?> = _selectedChapterId.asStateFlow()
 
@@ -1441,6 +1457,40 @@ Output ONLY the new translated paragraph text.
     fun enqueueBatchChapters(project: ProjectEntity, chapters: List<ChapterEntity>, provider: ApiProviderEntity) {
         taskManager.enqueueChapters(project, chapters, provider)
         showMessage("已将 ${chapters.size} 个章节加入并发翻译队列")
+    }
+
+    fun extractGlossaryWithAi(projectId: Long, provider: ApiProviderEntity, sampleChapterCount: Int, onComplete: () -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val chapters = chapterRepo.getChaptersListByProject(projectId).take(sampleChapterCount)
+            for (chapter in chapters) {
+                val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
+                if (origText.isNotBlank()) {
+                    val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
+                    val extraction = termExtractionAgent.extractTermsWithUsage(
+                        projectId = projectId,
+                        sampleText = origText,
+                        provider = provider,
+                        sourceLanguage = "auto",
+                        targetLanguage = "zh",
+                        existingTerms = currentTerms.map { it.originalTerm }
+                    )
+                    val existing = currentTerms.map { normalizeTerm(it.originalTerm) }.toSet()
+                    val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
+                        .filter { normalizeTerm(it.originalTerm) !in existing }
+                    if (newTerms.isNotEmpty()) {
+                        glossaryRepo.insertTerms(newTerms.map { it.copy(projectId = projectId, isAutoExtracted = true) })
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                showMessage("AI 专有名词提取已完成")
+                onComplete()
+            }
+        }
+    }
+
+    fun testProvider(provider: ApiProviderEntity, onComplete: (Boolean, String) -> Unit) {
+        testProviderConnection(provider, onComplete)
     }
 
 }

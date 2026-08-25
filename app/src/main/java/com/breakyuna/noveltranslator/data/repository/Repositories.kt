@@ -99,10 +99,12 @@ class ApiProviderRepository(
 }
 
 class TranslationLogRepository(private val translationLogDao: TranslationLogDao) {
+    val allLogs: Flow<List<TranslationLogEntity>> = translationLogDao.getAllLogs()
     fun getLogsByProject(projectId: Long): Flow<List<TranslationLogEntity>> = translationLogDao.getLogsByProject(projectId)
     suspend fun getLogsListByProject(projectId: Long): List<TranslationLogEntity> = translationLogDao.getLogsListByProject(projectId)
     suspend fun insertLog(log: TranslationLogEntity): Long = translationLogDao.insertLog(log)
     suspend fun deleteLogsByProject(projectId: Long) = translationLogDao.deleteLogsByProject(projectId)
+    suspend fun deleteAllLogs() = translationLogDao.deleteAllLogs()
 }
 
 class TranslationRunRepository(private val dao: TranslationRunDao) {
@@ -128,10 +130,12 @@ class TranslationChunkRepository(private val dao: TranslationChunkDao) {
 }
 
 class LlmRequestLogRepository(private val dao: LlmRequestLogDao) {
+    val allLogs: Flow<List<LlmRequestLogEntity>> = dao.getAllFlow()
     fun getFlowByProject(projectId: Long): Flow<List<LlmRequestLogEntity>> = dao.getFlowByProject(projectId)
     suspend fun insert(log: LlmRequestLogEntity): Long = dao.insert(log)
     suspend fun getByProject(projectId: Long): List<LlmRequestLogEntity> = dao.getByProject(projectId)
     suspend fun getByRun(runId: Long): List<LlmRequestLogEntity> = dao.getByRun(runId)
+    suspend fun deleteAll() = dao.deleteAll()
 }
 
 /** Keeps request audit rows and their run/chunk counters consistent in one Room transaction. */

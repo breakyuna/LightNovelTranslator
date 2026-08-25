@@ -2,53 +2,79 @@ package com.breakyuna.noveltranslator.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Light Scheme Colors
-val PrimaryIndigo = Color(0xFF4338CA)
-val OnPrimary = Color(0xFFFFFFFF)
-val PrimaryContainer = Color(0xFFE0E7FF)
-val OnPrimaryContainer = Color(0xFF1E1B4B)
+// Accent Colors (Apple-style Blue)
+val AccentBlue = Color(0xFF007AFF)
+val AccentBlueDark = Color(0xFF0A84FF)
+val AccentBlueContainerLight = Color(0xFFE8F2FF)
+val AccentBlueContainerDark = Color(0xFF14345B)
 
-val SecondaryCyan = Color(0xFF0284C7)
-val OnSecondary = Color(0xFFFFFFFF)
-val SecondaryContainer = Color(0xFFE0F2FE)
-val OnSecondaryContainer = Color(0xFF082F49)
+// Status Colors
+val StatusSuccess = Color(0xFF34C759)
+val StatusSuccessContainer = Color(0xFFE8F8ED)
+val StatusWarning = Color(0xFFFF9500)
+val StatusWarningContainer = Color(0xFFFFF4E5)
+val StatusError = Color(0xFFFF3B30)
+val StatusErrorContainer = Color(0xFFFFECEB)
 
-val TertiaryAmber = Color(0xFFD97706)
-val OnTertiary = Color(0xFFFFFFFF)
-val TertiaryContainer = Color(0xFFFEF3C7)
-val OnTertiaryContainer = Color(0xFF78350F)
-
-val BackgroundLight = Color(0xFFF8FAFC)
-val OnBackgroundLight = Color(0xFF0F172A)
+// Neutral & Background Colors (Light)
+val BackgroundLight = Color(0xFFF5F5F7)
+val OnBackgroundLight = Color(0xFF1C1C1E)
 val SurfaceLight = Color(0xFFFFFFFF)
-val OnSurfaceLight = Color(0xFF0F172A)
-val SurfaceVariantLight = Color(0xFFF1F5F9)
-val OnSurfaceVariantLight = Color(0xFF475569)
-val OutlineLight = Color(0xFFCBD5E1)
+val OnSurfaceLight = Color(0xFF1C1C1E)
+val SurfaceGroupedLight = Color(0xFFEFEFF4)
+val SurfaceVariantLight = Color(0xFFF2F2F7)
+val OnSurfaceVariantLight = Color(0xFF6E6E73)
+val OutlineLight = Color(0xFFE5E5EA)
+val OutlineSubtleLight = Color(0xFFF0F0F2)
 
-// Dark Scheme Colors
-val PrimaryIndigoDark = Color(0xFF818CF8)
-val OnPrimaryDark = Color(0xFF1E1B4B)
-val PrimaryContainerDark = Color(0xFF312E81)
-val OnPrimaryContainerDark = Color(0xFFE0E7FF)
+// Neutral & Background Colors (Dark)
+val BackgroundDark = Color(0xFF000000)
+val OnBackgroundDark = Color(0xFFF5F5F7)
+val SurfaceDark = Color(0xFF1C1C1E)
+val OnSurfaceDark = Color(0xFFF5F5F7)
+val SurfaceGroupedDark = Color(0xFF2C2C2E)
+val SurfaceVariantDark = Color(0xFF2C2C2E)
+val OnSurfaceVariantDark = Color(0xFF8E8E93)
+val OutlineDark = Color(0xFF38383A)
+val OutlineSubtleDark = Color(0xFF242426)
 
-val SecondaryCyanDark = Color(0xFF38BDF8)
-val OnSecondaryDark = Color(0xFF082F49)
-val SecondaryContainerDark = Color(0xFF0369A1)
-val OnSecondaryContainerDark = Color(0xFFE0F2FE)
+// Compatibility aliases for existing references
+val PrimaryIndigo = AccentBlue
+val OnPrimary = Color(0xFFFFFFFF)
+val PrimaryContainer = AccentBlueContainerLight
+val OnPrimaryContainer = Color(0xFF003D82)
 
-val TertiaryAmberDark = Color(0xFFFBBF24)
-val OnTertiaryDark = Color(0xFF78350F)
-val TertiaryContainerDark = Color(0xFF78350F)
-val OnTertiaryContainerDark = Color(0xFFFEF3C7)
+val SecondaryCyan = Color(0xFF5AC8FA)
+val OnSecondary = Color(0xFFFFFFFF)
+val SecondaryContainer = Color(0xFFEBF7FF)
+val OnSecondaryContainer = Color(0xFF004466)
 
-val BackgroundDark = Color(0xFF0B0F19)
-val OnBackgroundDark = Color(0xFFF1F5F9)
-val SurfaceDark = Color(0xFF111827)
-val OnSurfaceDark = Color(0xFFF1F5F9)
-val SurfaceVariantDark = Color(0xFF1F2937)
-val OnSurfaceVariantDark = Color(0xFF94A3B8)
-val OutlineDark = Color(0xFF334155)
+val TertiaryAmber = StatusWarning
+val OnTertiary = Color(0xFFFFFFFF)
+val TertiaryContainer = StatusWarningContainer
+val OnTertiaryContainer = Color(0xFF663B00)
+
+val PrimaryIndigoDark = AccentBlueDark
+val OnPrimaryDark = Color(0xFF002244)
+val PrimaryContainerDark = AccentBlueContainerDark
+val OnPrimaryContainerDark = Color(0xFFD0E4FF)
+
+val SecondaryCyanDark = Color(0xFF64D2FF)
+val OnSecondaryDark = Color(0xFF00344D)
+val SecondaryContainerDark = Color(0xFF004D73)
+val OnSecondaryContainerDark = Color(0xFFCBEBFF)
+
+val TertiaryAmberDark = Color(0xFFFF9F0A)
+val OnTertiaryDark = Color(0xFF4D2B00)
+val TertiaryContainerDark = Color(0xFF663900)
+val OnTertiaryContainerDark = Color(0xFFFFE0B2)
+
+val EmeraldAccent = StatusSuccess
+val RoseAccent = StatusError
+val AccentPurple = Color(0xFFAF52DE)
+val AccentTeal = Color(0xFF30B0C7)
+val AccentOrange = StatusWarning
+val AccentGreen = StatusSuccess
 
 // Reader Themes
 val SepiaBackground = Color(0xFFFBF0D9)
@@ -66,6 +92,3 @@ val MintSurface = Color(0xFFDFEEDD)
 val AmoledBackground = Color(0xFF000000)
 val AmoledOnBackground = Color(0xFFE2E8F0)
 val AmoledSurface = Color(0xFF141414)
-
-val EmeraldAccent = Color(0xFF10B981)
-val RoseAccent = Color(0xFFF43F5E)

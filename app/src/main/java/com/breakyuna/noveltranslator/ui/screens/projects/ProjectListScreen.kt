@@ -4,7 +4,6 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,8 +13,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.LibraryBooks
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,11 +32,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.data.model.ProjectEntity
+import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
-import com.breakyuna.noveltranslator.ui.theme.EmeraldAccent
-import com.breakyuna.noveltranslator.ui.theme.PrimaryIndigo
-import com.breakyuna.noveltranslator.ui.theme.SecondaryCyan
-import com.breakyuna.noveltranslator.ui.theme.TertiaryAmber
+import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,183 +46,117 @@ fun ProjectListScreen(
     viewModel: AppViewModel,
     onSelectProject: (Long) -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDrawer: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val strings = LocalAppStrings.current
     val projects by viewModel.allProjects.collectAsState()
     var showImportDialog by remember { mutableStateOf(false) }
+
     Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (onOpenDrawer != null) {
-                        IconButton(
-                            onClick = onOpenDrawer,
-                            modifier = Modifier.testTag("open_drawer_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = strings.navMenuDesc
-                            )
-                        }
-                    }
-                },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(PrimaryIndigo),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.AutoStories,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = strings.appTitle,
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = strings.appSubtitle,
-                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                },
-                actions = {
+            AppLargeTitle(
+                title = strings.projectsHeader,
+                subtitle = "管理小说与翻译工程",
+                trailingContent = {
+                    // Demo sample button
                     IconButton(
-                        onClick = onOpenSettings,
-                        modifier = Modifier.testTag("open_settings_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = strings.openSettings
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
-                )
-            )
-        },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { showImportDialog = true },
-                icon = { Icon(Icons.Default.Add, contentDescription = strings.importNovel) },
-                text = { Text(strings.importNovel) },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                modifier = Modifier.testTag("import_novel_fab")
-            )
-        },
-        modifier = modifier
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-        ) {
-            // Quick Action Card / Demo Banner
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 12.dp),
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = strings.getStartedTitle,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = strings.getStartedDesc,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Button(
                         onClick = { viewModel.createProjectFromSample() },
-                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.testTag("load_demo_button")
                     ) {
-                        Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.loadDemo)
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = strings.loadDemo,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    // Add / Import Novel button (+)
+                    IconButton(
+                        onClick = { showImportDialog = true },
+                        modifier = Modifier.testTag("import_novel_fab")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddCircleOutline,
+                            contentDescription = strings.importNovel,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 }
-            }
-
-            Text(
-                text = "${strings.projectsHeader} (${projects.size})",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                modifier = Modifier.padding(vertical = 8.dp)
             )
-
-            if (projects.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    contentAlignment = Alignment.Center
+        }
+    ) { paddingValues ->
+        if (projects.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .padding(horizontal = Spacing.compactHorizontalPadding),
+                contentAlignment = Alignment.Center
+            ) {
+                AppGroupedSurface(
+                    contentPadding = PaddingValues(32.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.LibraryBooks,
+                            imageVector = Icons.Outlined.LibraryBooks,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                            modifier = Modifier.size(64.dp)
+                            modifier = Modifier.size(56.dp)
                         )
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(14.dp))
                         Text(
                             text = strings.noProjectsTitle,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = strings.noProjectsDesc,
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                         )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            AppPrimaryButton(
+                                text = strings.importNovel,
+                                onClick = { showImportDialog = true },
+                                icon = Icons.Default.Add,
+                                modifier = Modifier.widthIn(max = 160.dp)
+                            )
+                            AppSecondaryButton(
+                                text = strings.loadDemo,
+                                onClick = { viewModel.createProjectFromSample() },
+                                icon = Icons.Default.Bolt,
+                                modifier = Modifier.widthIn(max = 160.dp)
+                            )
+                        }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    contentPadding = PaddingValues(bottom = 80.dp)
-                ) {
-                    items(projects, key = { it.id }) { project ->
-                        ProjectCard(
-                            project = project,
-                            onClick = { onSelectProject(project.id) },
-                            onDelete = { viewModel.deleteProject(project.id) }
-                        )
-                    }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues),
+                contentPadding = PaddingValues(
+                    horizontal = Spacing.compactHorizontalPadding,
+                    vertical = 8.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(projects, key = { it.id }) { project ->
+                    ProjectCardApple(
+                        project = project,
+                        onClick = { onSelectProject(project.id) },
+                        onDelete = { viewModel.deleteProject(project.id) }
+                    )
                 }
             }
         }
@@ -244,7 +178,7 @@ fun ProjectListScreen(
 }
 
 @Composable
-fun ProjectCard(
+fun ProjectCardApple(
     project: ProjectEntity,
     onClick: () -> Unit,
     onDelete: () -> Unit,
@@ -256,130 +190,127 @@ fun ProjectCard(
     val progress = if (project.totalChapters > 0) {
         project.translatedChapters.toFloat() / project.totalChapters.toFloat()
     } else 0f
+    val percentInt = (progress * 100).toInt()
 
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .testTag("project_card_${project.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+    AppGroupedSurface(
+        modifier = modifier.testTag("project_card_${project.id}"),
+        onClick = onClick,
+        contentPadding = PaddingValues(16.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+        // Header line: Format badge, Language pair, and Delete icon
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = if (project.fileType == "EPUB") AccentBlue.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant
             ) {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = if (project.fileType == "EPUB") SecondaryCyan.copy(alpha = 0.15f) else PrimaryIndigo.copy(alpha = 0.15f)
-                ) {
-                    Text(
-                        text = project.fileType,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = if (project.fileType == "EPUB") SecondaryCyan else PrimaryIndigo
-                        )
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
                 Text(
-                    text = "${project.sourceLanguage} ➔ ${project.targetLanguage}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                IconButton(
-                    onClick = { showDeleteConfirm = true },
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = strings.deleteProject,
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
+                    text = project.fileType,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = if (project.fileType == "EPUB") AccentBlue else MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                }
+                )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
             Text(
-                text = project.title,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Text(
-                text = "${strings.authorLabel}: ${project.author} • ${strings.styleLabel}: ${project.translationStyle}",
+                text = "${project.sourceLanguage} → ${project.targetLanguage}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.weight(1f))
 
-            // Word Count & Progress Stats
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            IconButton(
+                onClick = { showDeleteConfirm = true },
+                modifier = Modifier.size(28.dp)
             ) {
-                Text(
-                    text = "${strings.progressLabel}: ${project.translatedChapters} / ${project.totalChapters} ${strings.chaptersCount} • ${project.totalOriginalWords} ${strings.wordsUnit}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = EmeraldAccent
+                Icon(
+                    imageVector = Icons.Outlined.DeleteOutline,
+                    contentDescription = strings.deleteProject,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(17.dp)
                 )
             }
+        }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(CircleShape),
-                color = EmeraldAccent,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Novel Title
+        Text(
+            text = project.title,
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+
+        // Author & Style
+        Text(
+            text = "${project.author.ifBlank { "未知作者" }} · ${project.translationStyle}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Progress Stats Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${project.translatedChapters} / ${project.totalChapters} 章 (${project.totalOriginalWords} 字)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
             )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Token and Cost Stats
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "${strings.tokensLabel}: ${TokenCalculator.formatTokenCount(project.totalPromptTokens + project.totalCompletionTokens)}",
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+            Text(
+                text = "$percentInt%",
+                style = MaterialTheme.typography.labelLarge.copy(
+                    color = if (percentInt == 100) StatusSuccess else MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.SemiBold
                 )
-                Text(
-                    text = "${strings.totalCostLabel}: ${TokenCalculator.formatCost(project.totalCost, project.costCurrency)}",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TertiaryAmber
-                    )
-                )
-            }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Progress bar
+        LinearProgressIndicator(
+            progress = { progress },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(4.dp)
+                .clip(CircleShape),
+            color = if (percentInt == 100) StatusSuccess else MaterialTheme.colorScheme.primary,
+            trackColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Token & Cost row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = "${TokenCalculator.formatTokenCount(project.totalPromptTokens + project.totalCompletionTokens)} Tokens",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            )
+            Text(
+                text = TokenCalculator.formatCost(project.totalCost, project.costCurrency),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 
@@ -394,7 +325,7 @@ fun ProjectCard(
                         onDelete()
                         showDeleteConfirm = false
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    colors = ButtonDefaults.textButtonColors(contentColor = StatusError)
                 ) {
                     Text(strings.delete)
                 }
@@ -403,7 +334,8 @@ fun ProjectCard(
                 TextButton(onClick = { showDeleteConfirm = false }) {
                     Text(strings.cancel)
                 }
-            }
+            },
+            shape = DialogShape
         )
     }
 }
@@ -475,25 +407,35 @@ fun ImportNovelDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(strings.importDialogTitle) },
+        title = {
+            Text(
+                text = strings.importDialogTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Row(modifier = Modifier.fillMaxWidth()) {
+                // Segmented tab for File / Paste
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     FilterChip(
                         selected = !isPasteMode,
                         onClick = { isPasteMode = false },
-                        label = { Text(strings.fileUploadTab) }
+                        label = { Text(strings.fileUploadTab) },
+                        shape = SmallControlShape
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
                     FilterChip(
                         selected = isPasteMode,
                         onClick = { isPasteMode = true },
-                        label = { Text(strings.pasteTextTab) }
+                        label = { Text(strings.pasteTextTab) },
+                        shape = SmallControlShape
                     )
                 }
 
@@ -501,6 +443,7 @@ fun ImportNovelDialog(
                     OutlinedButton(
                         onClick = { launcher.launch(arrayOf("text/plain", "application/epub+zip", "application/octet-stream")) },
                         enabled = !isReadingFile,
+                        shape = ButtonShape,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.UploadFile, contentDescription = null)
@@ -518,33 +461,29 @@ fun ImportNovelDialog(
                         value = pastedText,
                         onValueChange = { pastedText = it },
                         label = { Text(strings.pastePlaceholder) },
+                        shape = SmallControlShape,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(120.dp),
-                        maxLines = 6
+                            .height(110.dp),
+                        maxLines = 5
                     )
                 }
 
                 importError?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    Text(it, color = StatusError, style = MaterialTheme.typography.bodySmall)
                 }
 
-                // Source Language Input & Quick Selection Scroll Window
+                // Source Language
                 Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = sourceLang,
                         onValueChange = { sourceLang = it },
                         label = { Text(strings.sourceLangLabel) },
+                        shape = SmallControlShape,
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "${strings.presetLanguagesLabel} (${strings.sourceLangLabel}):",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
                     val presetLangs = listOf("English", "中文", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "Auto")
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
@@ -554,28 +493,24 @@ fun ImportNovelDialog(
                             FilterChip(
                                 selected = sourceLang.equals(lang, ignoreCase = true),
                                 onClick = { sourceLang = lang },
-                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) }
+                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) },
+                                shape = SmallControlShape
                             )
                         }
                     }
                 }
 
-                // Target Language Input & Quick Selection Scroll Window
+                // Target Language
                 Column(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(
                         value = targetLang,
                         onValueChange = { targetLang = it },
                         label = { Text(strings.targetLangLabel) },
+                        shape = SmallControlShape,
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "${strings.presetLanguagesLabel} (${strings.targetLangLabel}):",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
                     val targetPresetLangs = listOf("中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "繁體中文")
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
@@ -585,7 +520,8 @@ fun ImportNovelDialog(
                             FilterChip(
                                 selected = targetLang.equals(lang, ignoreCase = true),
                                 onClick = { targetLang = lang },
-                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) }
+                                label = { Text(lang, style = MaterialTheme.typography.labelSmall) },
+                                shape = SmallControlShape
                             )
                         }
                     }
@@ -595,7 +531,7 @@ fun ImportNovelDialog(
                     value = translationStyle,
                     onValueChange = { translationStyle = it },
                     label = { Text(strings.translationStyleLabel) },
-                    placeholder = { Text(strings.translationStylePlaceholder) },
+                    shape = SmallControlShape,
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -604,6 +540,7 @@ fun ImportNovelDialog(
                     onValueChange = { customRegex = it },
                     label = { Text(strings.customRegexLabel) },
                     placeholder = { Text(strings.customRegexPlaceholder) },
+                    shape = SmallControlShape,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -629,7 +566,8 @@ fun ImportNovelDialog(
                         )
                     }
                 },
-                enabled = (isPasteMode && pastedText.isNotBlank()) || (!isPasteMode && fileUri != null)
+                enabled = (isPasteMode && pastedText.isNotBlank()) || (!isPasteMode && fileUri != null),
+                shape = ButtonShape
             ) {
                 Text(strings.createProject)
             }
@@ -638,7 +576,8 @@ fun ImportNovelDialog(
             TextButton(onClick = onDismiss) {
                 Text(strings.cancel)
             }
-        }
+        },
+        shape = DialogShape
     )
 }
 

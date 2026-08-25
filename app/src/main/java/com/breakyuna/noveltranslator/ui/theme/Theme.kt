@@ -13,9 +13,9 @@ enum class AppThemeMode {
 }
 
 private val DarkColorScheme = darkColorScheme(
-    primary = PrimaryIndigoDark,
+    primary = AccentBlueDark,
     onPrimary = OnPrimaryDark,
-    primaryContainer = PrimaryContainerDark,
+    primaryContainer = AccentBlueContainerDark,
     onPrimaryContainer = OnPrimaryContainerDark,
     secondary = SecondaryCyanDark,
     onSecondary = OnSecondaryDark,
@@ -31,13 +31,14 @@ private val DarkColorScheme = darkColorScheme(
     onSurface = OnSurfaceDark,
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = OnSurfaceVariantDark,
-    outline = OutlineDark
+    outline = OutlineDark,
+    outlineVariant = OutlineSubtleDark
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = PrimaryIndigo,
+    primary = AccentBlue,
     onPrimary = OnPrimary,
-    primaryContainer = PrimaryContainer,
+    primaryContainer = AccentBlueContainerLight,
     onPrimaryContainer = OnPrimaryContainer,
     secondary = SecondaryCyan,
     onSecondary = OnSecondary,
@@ -53,7 +54,8 @@ private val LightColorScheme = lightColorScheme(
     onSurface = OnSurfaceLight,
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = OnSurfaceVariantLight,
-    outline = OutlineLight
+    outline = OutlineLight,
+    outlineVariant = OutlineSubtleLight
 )
 
 @Composable
@@ -80,7 +82,7 @@ fun NovelTranslatorTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = AppShapes,
         content = content
     )
 }
-
