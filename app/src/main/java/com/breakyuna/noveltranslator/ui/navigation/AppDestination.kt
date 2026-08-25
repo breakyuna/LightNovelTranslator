@@ -4,7 +4,9 @@ sealed class AppDestination(val route: String) {
     // Top-Level Destinations
     object Bookshelf : AppDestination("bookshelf")
     object Projects : AppDestination("projects")
-    object Tasks : AppDestination("tasks")
+    object Tasks : AppDestination("tasks?bookId={bookId}") {
+        fun createRoute(bookId: Long? = null) = if (bookId != null && bookId > 0) "tasks?bookId=$bookId" else "tasks"
+    }
     object History : AppDestination("history")
     object Settings : AppDestination("settings?tab={tab}") {
         fun createRoute(tab: Int = -1) = "settings?tab=$tab"

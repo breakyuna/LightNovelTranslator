@@ -198,7 +198,7 @@ fun ApiSettingsScreen(
                             // 4. 系统信息 Entrance
                             AppSettingsRow(
                                 title = "系统信息",
-                                subtitle = "应用版本、项目数量与存储架构",
+                                subtitle = "应用版本与本地项目统计",
                                 leadingIcon = Icons.Outlined.Info,
                                 iconTint = AccentGreen,
                                 iconBackground = AccentGreen.copy(alpha = 0.12f),
@@ -346,35 +346,6 @@ fun ApiSettingsScreen(
                             ),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            item {
-                                AppGroupedSurface {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Calculate,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(24.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Column {
-                                            Text(
-                                                text = strings.calculatorEngineTitle,
-                                                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-                                                color = MaterialTheme.colorScheme.onSurface
-                                            )
-                                            Text(
-                                                text = strings.calculatorEngineDesc,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
                             item {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -526,25 +497,6 @@ fun ApiSettingsScreen(
                                         },
                                         onClick = { viewModel.setLanguage(AppLanguage.ENGLISH) }
                                     )
-                                }
-                            }
-
-                            item {
-                                AppGroupedSurface(contentPadding = PaddingValues(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Outlined.AutoAwesome,
-                                            contentDescription = null,
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text(
-                                            text = "双语阅读器支持在正文阅读时自由定制独立羊皮纸、薄荷绿、板岩灰或 AMOLED 极黑配色。",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
                                 }
                             }
                         }
@@ -707,18 +659,6 @@ fun ApiSettingsScreen(
                                     AppStatusRow(label = "当前版本", value = "v0.7.0 beta", modifier = Modifier.padding(16.dp))
                                     AppDivider(startIndent = 16.dp)
                                     AppStatusRow(label = "本地小说项目", value = "${projects.size} 个工程", modifier = Modifier.padding(16.dp))
-                                }
-                            }
-
-                            item {
-                                AppSection(title = "架构与存储") {
-                                    AppStatusRow(label = "数据持久化", value = "Room Database (SQLite ACID)", modifier = Modifier.padding(16.dp))
-                                    AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "分段对齐引擎", value = "StableSegmentParser (双向映射)", modifier = Modifier.padding(16.dp))
-                                    AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "并发处理", value = "Kotlin Coroutines Flow & Channel", modifier = Modifier.padding(16.dp))
-                                    AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "API 协议兼容", value = "OpenAI / Claude / DeepSeek / Gemini", modifier = Modifier.padding(16.dp))
                                 }
                             }
                         }

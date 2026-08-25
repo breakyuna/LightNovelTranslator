@@ -37,6 +37,7 @@ import com.breakyuna.noveltranslator.ui.i18n.AppStrings
 import com.breakyuna.noveltranslator.ui.i18n.getAppStrings
 import com.breakyuna.noveltranslator.ui.screens.glossary.ExtractionScope
 import android.content.Context
+import android.provider.OpenableColumns
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -419,6 +420,64 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun importBooksFromUris(
+        uris: List<android.net.Uri>,
+        originalLanguage: String = "Auto",
+        customRegex: String? = null
+    ) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            var successCount = 0
+            var failCount = 0
+            var skippedCount = 0
+            val errors = mutableListOf<String>()
+
+            for (uri in uris) {
+                val fileName = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) else null
+                } ?: uri.lastPathSegment ?: "imported_novel.txt"
+
+                val lowerName = fileName.lowercase()
+                if (!lowerName.endsWith(".txt") && !lowerName.endsWith(".epub")) {
+                    skippedCount++
+                    continue
+                }
+
+                val temp = File.createTempFile("book_import_", ".tmp", app.cacheDir)
+                try {
+                    app.contentResolver.openInputStream(uri)?.use { input ->
+                        temp.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("无法读取所选文件")
+                    bookImporter.import(fileName, temp, originalLanguage, customRegex)
+                    successCount++
+                } catch (error: Throwable) {
+                    failCount++
+                    errors.add("$fileName: ${error.localizedMessage}")
+                } finally {
+                    temp.delete()
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                if (skippedCount > 0 && successCount == 0 && failCount == 0) {
+                    showMessage("导入忽略：仅支持 .txt 与 .epub 格式文件")
+                } else if (failCount == 0) {
+                    val msg = if (successCount == 1) "已成功加入书架" else "成功批量导入 $successCount 本图书"
+                    if (skippedCount > 0) {
+                        showMessage("$msg (已自动过滤 $skippedCount 个非 txt/epub 文件)")
+                    } else {
+                        showMessage(msg)
+                    }
+                } else if (successCount > 0) {
+                    showMessage("成功导入 $successCount 本，失败 $failCount 本")
+                } else {
+                    showMessage("导入失败：${errors.firstOrNull() ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
     fun importBookFromUri(
         uri: android.net.Uri,
         fileName: String,
@@ -578,6 +637,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     ?: error("Unable to open cover image")
                 bookPlatformRepo.updateCover(bookId, cover.absolutePath)
             }.onFailure { showMessage("更换封面失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun updateShelfOrderList(orderedIds: List<Long>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            orderedIds.forEachIndexed { order, bookId ->
+                bookPlatformRepo.updateShelfOrder(bookId, order)
+            }
+        }
+    }
+
+    fun removeBooksFromShelf(bookIds: Set<Long>) {
+        if (bookIds.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            bookIds.forEach { bookPlatformRepo.removeFromShelf(it) }
+            withContext(Dispatchers.Main) {
+                showMessage("已清理 ${bookIds.size} 本图书至归档箱")
+            }
+        }
+    }
+
+    fun deleteBooksPermanently(bookIds: Set<Long>) {
+        if (bookIds.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            bookIds.forEach { bookPlatformRepo.deletePermanently(it) }
+            withContext(Dispatchers.Main) {
+                showMessage("已永久删除 ${bookIds.size} 本图书及相关文件")
+            }
         }
     }
 

@@ -50,11 +50,11 @@ fun AppNavigation(
     val windowSize = rememberWindowSize()
 
     // Determine if current route is a Top-Level Destination (to show bottom bar on phones)
-    val isTopLevelDestination = currentRoute in listOf(
-        AppDestination.Bookshelf.route,
-        AppDestination.Tasks.route,
-        AppDestination.Settings.route
-    ) || (currentRoute?.startsWith("settings") == true) || (currentRoute?.startsWith("tasks") == true) || (currentRoute?.startsWith("history") == true)
+    val isTopLevelDestination = (currentRoute?.startsWith("bookshelf") == true) ||
+        (currentRoute?.startsWith("tasks") == true) ||
+        (currentRoute?.startsWith("workbench") == true) ||
+        (currentRoute?.startsWith("history") == true) ||
+        (currentRoute?.startsWith("settings") == true)
 
     // Handle floating messages
     LaunchedEffect(userMessage) {
@@ -102,8 +102,7 @@ fun AppNavigation(
             if (windowSize.useNavRail && isTopLevelDestination) {
                 AppNavigationRail(
                     currentRoute = currentRoute,
-                    onNavigateToDestination = onNavigateToTopLevel,
-                    isExpanded = windowSize.isExpanded
+                    onNavigateToDestination = onNavigateToTopLevel
                 )
             }
 
@@ -150,10 +149,31 @@ fun AppNavigation(
                     // ==========================================
                     // 2. Tasks Queue & Audit History (Top-Level)
                     // ==========================================
-                    composable(AppDestination.Tasks.route) {
+                    composable(
+                        route = AppDestination.Tasks.route,
+                        arguments = listOf(
+                            navArgument("bookId") {
+                                type = NavType.LongType
+                                defaultValue = -1L
+                            }
+                        )
+                    ) { backStackEntry ->
+                        val bookId = backStackEntry.arguments?.getLong("bookId")?.takeIf { it > 0 }
                         PlatformTaskCenterScreen(
                             viewModel = viewModel,
-                            onOpenBookWorkbench = { navController.navigate(AppDestination.BookWorkbench.createRoute(it)) }
+                            initialBookId = bookId,
+                            onOpenBookDetail = { targetBookId ->
+                                navController.navigate(AppDestination.BookDetail.createRoute(targetBookId))
+                            },
+                            onOpenReader = { targetBookId, chapterId ->
+                                navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
+                            },
+                            onOpenEdition = { targetBookId, editionId ->
+                                navController.navigate(AppDestination.EditionDetail.createRoute(targetBookId, editionId))
+                            },
+                            onOpenBookWorkbench = { targetBookId ->
+                                navController.navigate(AppDestination.Tasks.createRoute(targetBookId))
+                            }
                         )
                     }
 
@@ -168,7 +188,7 @@ fun AppNavigation(
                     }
 
                     // ==========================================
-                    // 4. Settings (Top-Level)
+                    // 4. Book Detail & Workbench
                     // ==========================================
                     composable(
                         route = AppDestination.BookDetail.route,
@@ -180,7 +200,15 @@ fun AppNavigation(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() },
                             onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId)) },
-                            onOpenWorkbench = { navController.navigate(AppDestination.BookWorkbench.createRoute(bookId)) },
+                            onOpenWorkbench = {
+                                navController.navigate(AppDestination.Tasks.createRoute(bookId)) {
+                                    popUpTo(navController.graph.findStartDestination().id) {
+                                        saveState = true
+                                    }
+                                    launchSingleTop = true
+                                    restoreState = true
+                                }
+                            },
                             onReadChapter = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId, it)) },
                             onOpenEdition = { navController.navigate(AppDestination.EditionDetail.createRoute(bookId, it)) }
                         )
@@ -193,10 +221,19 @@ fun AppNavigation(
                         val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
                         PlatformTaskCenterScreen(
                             viewModel = viewModel,
-                            bookId = bookId,
+                            initialBookId = bookId,
                             onBack = { navController.popBackStack() },
+                            onOpenBookDetail = { targetBookId ->
+                                navController.navigate(AppDestination.BookDetail.createRoute(targetBookId))
+                            },
+                            onOpenReader = { targetBookId, chapterId ->
+                                navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
+                            },
+                            onOpenEdition = { targetBookId, editionId ->
+                                navController.navigate(AppDestination.EditionDetail.createRoute(targetBookId, editionId))
+                            },
                             onOpenBookWorkbench = { targetBookId ->
-                                navController.navigate(AppDestination.BookWorkbench.createRoute(targetBookId))
+                                navController.navigate(AppDestination.Tasks.createRoute(targetBookId))
                             }
                         )
                     }
