@@ -55,9 +55,27 @@ class Converters {
         TranslationRunEntity::class,
         TranslationChunkEntity::class,
         LlmRequestLogEntity::class,
-        ChapterSegmentEntity::class
+        ChapterSegmentEntity::class,
+        BookEntity::class,
+        EditionEntity::class,
+        LogicalChapterEntity::class,
+        LogicalSegmentEntity::class,
+        EditionChapterEntity::class,
+        EditionSegmentEntity::class,
+        EditionSegmentMappingEntity::class,
+        SegmentRevisionEntity::class,
+        TranslationProjectV2Entity::class,
+        LexiconEntryEntity::class,
+        StoryMemoryEntity::class,
+        ChapterMemoryEntity::class,
+        ContextSnapshotEntity::class,
+        ReaderProgressEntity::class,
+        ProviderCacheRecordEntity::class,
+        PlatformTranslationRunEntity::class,
+        PlatformTranslationBatchEntity::class,
+        PlatformRequestLogEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -71,6 +89,13 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun translationChunkDao(): TranslationChunkDao
     abstract fun llmRequestLogDao(): LlmRequestLogDao
     abstract fun chapterSegmentDao(): ChapterSegmentDao
+    abstract fun bookDao(): BookDao
+    abstract fun translationProjectV2Dao(): TranslationProjectV2Dao
+    abstract fun lexiconV2Dao(): LexiconV2Dao
+    abstract fun memoryDao(): MemoryDao
+    abstract fun readerProgressDao(): ReaderProgressDao
+    abstract fun providerCacheDao(): ProviderCacheDao
+    abstract fun platformTaskDao(): PlatformTaskDao
 
     companion object {
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -276,6 +301,8 @@ abstract class AppDatabase : RoomDatabase() {
                     "novel_translator_db"
                 )
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    // The reader-platform redesign intentionally has no legacy project migration.
+                    .fallbackToDestructiveMigration(dropAllTables = true)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
@@ -283,16 +310,17 @@ abstract class AppDatabase : RoomDatabase() {
                             CoroutineScope(Dispatchers.IO).launch {
                                 val dao = getDatabase(context).apiProviderDao()
                                 if (dao.getProviderCount() == 0) {
-                                    // Pre-populate standard providers
+                                    // Keep first-run configuration minimal; more vendors are available
+                                    // as selectable templates in the provider editor.
                                     dao.insertProvider(
                                         ApiProviderEntity(
-                                            name = "Google Gemini",
-                                            providerType = ProviderType.GEMINI_DIRECT,
-                                            baseUrl = "https://generativelanguage.googleapis.com",
+                                            name = "OpenAI (Official)",
+                                            providerType = ProviderType.OPENAI_COMPATIBLE,
+                                            baseUrl = "https://api.openai.com/v1",
                                             apiKey = "",
-                                            selectedModel = "gemini-2.5-flash",
-                                            inputPricePerMillion = 0.30,
-                                            outputPricePerMillion = 2.50,
+                                            selectedModel = "gpt-5.6-luna",
+                                            inputPricePerMillion = 0.25,
+                                            outputPricePerMillion = 2.00,
                                             currency = "USD",
                                             maxContextTokens = 32_768,
                                             isDefault = true
@@ -304,37 +332,9 @@ abstract class AppDatabase : RoomDatabase() {
                                             providerType = ProviderType.DEEPSEEK,
                                             baseUrl = "https://api.deepseek.com/v1",
                                             apiKey = "",
-                                            selectedModel = "deepseek-chat",
+                                            selectedModel = "deepseek-v4-flash",
                                             inputPricePerMillion = 0.14,
                                             outputPricePerMillion = 0.28,
-                                            currency = "USD",
-                                            maxContextTokens = 32_768,
-                                            isDefault = false
-                                        )
-                                    )
-                                    dao.insertProvider(
-                                        ApiProviderEntity(
-                                            name = "OpenAI (Official)",
-                                            providerType = ProviderType.OPENAI_COMPATIBLE,
-                                            baseUrl = "https://api.openai.com/v1",
-                                            apiKey = "",
-                                            selectedModel = "gpt-5-mini",
-                                            inputPricePerMillion = 0.25,
-                                            outputPricePerMillion = 2.00,
-                                            currency = "USD",
-                                            maxContextTokens = 32_768,
-                                            isDefault = false
-                                        )
-                                    )
-                                    dao.insertProvider(
-                                        ApiProviderEntity(
-                                            name = "Anthropic Claude",
-                                            providerType = ProviderType.ANTHROPIC_CLAUDE,
-                                            baseUrl = "https://api.anthropic.com/v1",
-                                            apiKey = "",
-                                            selectedModel = "claude-haiku-4-5-20251001",
-                                            inputPricePerMillion = 1.00,
-                                            outputPricePerMillion = 5.00,
                                             currency = "USD",
                                             maxContextTokens = 32_768,
                                             isDefault = false

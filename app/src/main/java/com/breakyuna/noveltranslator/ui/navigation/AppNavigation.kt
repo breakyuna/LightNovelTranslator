@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.ui.navigation
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -16,8 +17,13 @@ import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.glossary.GlossaryScreen
 import com.breakyuna.noveltranslator.ui.screens.preview.BilingualReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.projects.ProjectListScreen
+import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
+import com.breakyuna.noveltranslator.ui.screens.bookdetail.BookDetailScreen
+import com.breakyuna.noveltranslator.ui.screens.bookdetail.EditionDetailScreen
+import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
 import com.breakyuna.noveltranslator.ui.screens.tasks.TaskQueueScreen
+import com.breakyuna.noveltranslator.ui.screens.tasks.PlatformTaskCenterScreen
 import com.breakyuna.noveltranslator.ui.screens.translation.TranslationRunnerScreen
 import com.breakyuna.noveltranslator.ui.screens.workspace.ProjectWorkspaceScreen
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
@@ -45,7 +51,7 @@ fun AppNavigation(
 
     // Determine if current route is a Top-Level Destination (to show bottom bar on phones)
     val isTopLevelDestination = currentRoute in listOf(
-        AppDestination.Projects.route,
+        AppDestination.Bookshelf.route,
         AppDestination.Tasks.route,
         AppDestination.Settings.route
     ) || (currentRoute?.startsWith("settings") == true) || (currentRoute?.startsWith("tasks") == true) || (currentRoute?.startsWith("history") == true)
@@ -93,7 +99,7 @@ fun AppNavigation(
                 )
         ) {
             // Left Navigation Rail for Medium & Expanded (Tablets / Wide screens)
-            if (windowSize.useNavRail) {
+            if (windowSize.useNavRail && isTopLevelDestination) {
                 AppNavigationRail(
                     currentRoute = currentRoute,
                     onNavigateToDestination = onNavigateToTopLevel,
@@ -109,12 +115,25 @@ fun AppNavigation(
             ) {
                 NavHost(
                     navController = navController,
-                    startDestination = AppDestination.Projects.route,
-                    modifier = Modifier.fillMaxSize()
+                    startDestination = AppDestination.Bookshelf.route,
+                    modifier = Modifier.fillMaxSize(),
+                    enterTransition = { fadeIn(tween(90)) },
+                    exitTransition = { fadeOut(tween(70)) },
+                    popEnterTransition = { fadeIn(tween(90)) },
+                    popExitTransition = { fadeOut(tween(70)) }
                 ) {
                     // ==========================================
-                    // 1. Projects (Top-Level)
+                    // 1. Bookshelf (Top-Level)
                     // ==========================================
+                    composable(AppDestination.Bookshelf.route) {
+                        BookShelfScreen(
+                            viewModel = viewModel,
+                            onOpenDetail = { navController.navigate(AppDestination.BookDetail.createRoute(it)) },
+                            onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(it)) }
+                        )
+                    }
+
+                    // Legacy project route remains internal while lower-level translation utilities are reused.
                     composable(AppDestination.Projects.route) {
                         ProjectListScreen(
                             viewModel = viewModel,
@@ -132,12 +151,9 @@ fun AppNavigation(
                     // 2. Tasks Queue & Audit History (Top-Level)
                     // ==========================================
                     composable(AppDestination.Tasks.route) {
-                        TaskQueueScreen(
+                        PlatformTaskCenterScreen(
                             viewModel = viewModel,
-                            initialTab = 0,
-                            onBack = {
-                                navController.popBackStack()
-                            }
+                            onOpenBookWorkbench = { navController.navigate(AppDestination.BookWorkbench.createRoute(it)) }
                         )
                     }
 
@@ -154,6 +170,69 @@ fun AppNavigation(
                     // ==========================================
                     // 4. Settings (Top-Level)
                     // ==========================================
+                    composable(
+                        route = AppDestination.BookDetail.route,
+                        arguments = listOf(navArgument("bookId") { type = NavType.LongType })
+                    ) { backStackEntry ->
+                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
+                        BookDetailScreen(
+                            bookId = bookId,
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId)) },
+                            onOpenWorkbench = { navController.navigate(AppDestination.BookWorkbench.createRoute(bookId)) },
+                            onReadChapter = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId, it)) },
+                            onOpenEdition = { navController.navigate(AppDestination.EditionDetail.createRoute(bookId, it)) }
+                        )
+                    }
+
+                    composable(
+                        route = AppDestination.BookWorkbench.route,
+                        arguments = listOf(navArgument("bookId") { type = NavType.LongType })
+                    ) { backStackEntry ->
+                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
+                        PlatformTaskCenterScreen(
+                            viewModel = viewModel,
+                            bookId = bookId,
+                            onBack = { navController.popBackStack() },
+                            onOpenBookWorkbench = { targetBookId ->
+                                navController.navigate(AppDestination.BookWorkbench.createRoute(targetBookId))
+                            }
+                        )
+                    }
+
+                    composable(
+                        route = AppDestination.EditionDetail.route,
+                        arguments = listOf(
+                            navArgument("bookId") { type = NavType.LongType },
+                            navArgument("editionId") { type = NavType.LongType }
+                        )
+                    ) { backStackEntry ->
+                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
+                        val editionId = backStackEntry.arguments?.getLong("editionId") ?: 0L
+                        EditionDetailScreen(
+                            bookId = bookId,
+                            editionId = editionId,
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            onRead = { chapterId ->
+                                navController.navigate(AppDestination.PlatformReader.createRoute(bookId, chapterId))
+                            }
+                        )
+                    }
+
+                    composable(
+                        route = AppDestination.PlatformReader.route,
+                        arguments = listOf(
+                            navArgument("bookId") { type = NavType.LongType },
+                            navArgument("chapterId") { type = NavType.LongType; defaultValue = -1L }
+                        )
+                    ) { backStackEntry ->
+                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
+                        val chapterId = backStackEntry.arguments?.getLong("chapterId")?.takeIf { it > 0 }
+                        PlatformReaderScreen(bookId, chapterId, viewModel) { navController.popBackStack() }
+                    }
+
                     composable(
                         route = AppDestination.Settings.route,
                         arguments = listOf(navArgument("tab") {

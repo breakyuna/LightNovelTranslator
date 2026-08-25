@@ -73,6 +73,25 @@ class ApiProviderRepository(
     }
     suspend fun deleteProviderById(id: Long) = apiProviderDao.deleteProviderById(id)
 
+    suspend fun removeUnusedLegacyPresets() {
+        val providers = apiProviderDao.getAllProviders().first()
+        providers.filter {
+            it.providerType == ProviderType.DEEPSEEK && it.selectedModel == "deepseek-chat" &&
+                it.name in setOf("DeepSeek", "DeepSeek (Official)", "DeepSeek API")
+        }.forEach { apiProviderDao.updateProvider(it.copy(selectedModel = "deepseek-v4-flash")) }
+        providers.filter { provider ->
+            provider.apiKey.isBlank() && (
+                provider.name == "Google Gemini" && provider.providerType == ProviderType.GEMINI_DIRECT ||
+                    provider.name == "Anthropic Claude" && provider.providerType == ProviderType.ANTHROPIC_CLAUDE
+                )
+        }.forEach { apiProviderDao.deleteProviderById(it.id) }
+        val remaining = apiProviderDao.getAllProviders().first()
+        if (remaining.none { it.isDefault }) {
+            remaining.firstOrNull { it.providerType == ProviderType.OPENAI_COMPATIBLE }
+                ?.let { apiProviderDao.setDefaultProvider(it.id) }
+        }
+    }
+
     suspend fun encryptLegacyKeys() {
         apiProviderDao.getAllProviders().first().forEach { provider ->
             val hasPlainApiKey = provider.apiKey.isNotBlank() && !apiKeyCipher.isEncrypted(provider.apiKey)

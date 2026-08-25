@@ -619,7 +619,7 @@ object ChineseStrings : AppStrings {
     override val providerApiKeyLabel = "API Key"
     override val modelIdLabel = "Model 模型标识"
     override val providerModelLabel = "Model 模型标识"
-    override val modelPlaceholder = "例如：deepseek-chat, gpt-4o"
+    override val modelPlaceholder = "例如：deepseek-v4-flash, gpt-5.6-luna"
     override val inputPriceLabel = "输入单价 ($ / 百万 Tokens)"
     override val outputPriceLabel = "输出单价 ($ / 百万 Tokens)"
     override val setDefaultProviderCheck = "设为当前默认调用接口"
@@ -996,7 +996,7 @@ object EnglishStrings : AppStrings {
     override val providerApiKeyLabel = "API Key"
     override val modelIdLabel = "Model ID"
     override val providerModelLabel = "Model ID"
-    override val modelPlaceholder = "e.g. deepseek-chat, gpt-4o"
+    override val modelPlaceholder = "e.g. deepseek-v4-flash, gpt-5.6-luna"
     override val inputPriceLabel = "Input $/1M"
     override val outputPriceLabel = "Output $/1M"
     override val setDefaultProviderCheck = "Set as Default Provider"
@@ -1146,4 +1146,3 @@ fun getAppStrings(language: AppLanguage): AppStrings {
         AppLanguage.ENGLISH -> EnglishStrings
     }
 }
-

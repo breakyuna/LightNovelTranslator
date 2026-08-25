@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.ui.navigation
 
 sealed class AppDestination(val route: String) {
     // Top-Level Destinations
+    object Bookshelf : AppDestination("bookshelf")
     object Projects : AppDestination("projects")
     object Tasks : AppDestination("tasks")
     object History : AppDestination("history")
@@ -24,5 +25,21 @@ sealed class AppDestination(val route: String) {
 
     object Reader : AppDestination("reader/{chapterId}") {
         fun createRoute(chapterId: Long) = "reader/$chapterId"
+    }
+
+    object BookDetail : AppDestination("book/{bookId}") {
+        fun createRoute(bookId: Long) = "book/$bookId"
+    }
+
+    object BookWorkbench : AppDestination("workbench/{bookId}") {
+        fun createRoute(bookId: Long) = "workbench/$bookId"
+    }
+
+    object EditionDetail : AppDestination("book/{bookId}/edition/{editionId}") {
+        fun createRoute(bookId: Long, editionId: Long) = "book/$bookId/edition/$editionId"
+    }
+
+    object PlatformReader : AppDestination("platform_reader/{bookId}?chapterId={chapterId}") {
+        fun createRoute(bookId: Long, chapterId: Long? = null) = "platform_reader/$bookId?chapterId=${chapterId ?: -1L}"
     }
 }

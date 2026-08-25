@@ -11,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -35,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
+import com.breakyuna.noveltranslator.data.model.PresetModels
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
@@ -103,12 +105,12 @@ fun ApiSettingsScreen(
         targetState = activeSubPage,
         transitionSpec = {
             if (targetState != null) {
-                (slideInHorizontally { width -> width } + fadeIn()).togetherWith(
-                    slideOutHorizontally { width -> -width / 3 } + fadeOut()
+                (slideInHorizontally(tween(120)) { width -> width / 4 } + fadeIn(tween(90))).togetherWith(
+                    slideOutHorizontally(tween(90)) { width -> -width / 8 } + fadeOut(tween(70))
                 )
             } else {
-                (slideInHorizontally { width -> -width / 3 } + fadeIn()).togetherWith(
-                    slideOutHorizontally { width -> width } + fadeOut()
+                (slideInHorizontally(tween(120)) { width -> -width / 4 } + fadeIn(tween(90))).togetherWith(
+                    slideOutHorizontally(tween(90)) { width -> width / 8 } + fadeOut(tween(70))
                 )
             }
         },
@@ -200,7 +202,7 @@ fun ApiSettingsScreen(
                                 leadingIcon = Icons.Outlined.Info,
                                 iconTint = AccentGreen,
                                 iconBackground = AccentGreen.copy(alpha = 0.12f),
-                                valueText = "v2.5.0",
+                                valueText = "v0.7.0 beta",
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.SYSTEM_INFO }
                             )
@@ -702,7 +704,7 @@ fun ApiSettingsScreen(
                                 AppSection(title = "应用程序") {
                                     AppStatusRow(label = "应用名称", value = "AI Novel Translator", modifier = Modifier.padding(16.dp))
                                     AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "当前版本", value = "v2.5.0 (Build 2026.08)", modifier = Modifier.padding(16.dp))
+                                    AppStatusRow(label = "当前版本", value = "v0.7.0 beta", modifier = Modifier.padding(16.dp))
                                     AppDivider(startIndent = 16.dp)
                                     AppStatusRow(label = "本地小说项目", value = "${projects.size} 个工程", modifier = Modifier.padding(16.dp))
                                 }
@@ -730,6 +732,7 @@ fun ApiSettingsScreen(
     if (showAddDialog) {
         AddEditProviderDialog(
             provider = null,
+            onFetchModels = viewModel::fetchModelsFromEndpoint,
             onDismiss = { showAddDialog = false },
             onSave = { newProvider ->
                 viewModel.saveProvider(newProvider)
@@ -742,6 +745,7 @@ fun ApiSettingsScreen(
     editingProvider?.let { provider ->
         AddEditProviderDialog(
             provider = provider,
+            onFetchModels = viewModel::fetchModelsFromEndpoint,
             onDismiss = { editingProvider = null },
             onSave = { updatedProvider ->
                 viewModel.saveProvider(updatedProvider)
@@ -911,21 +915,54 @@ private fun ProviderCardApple(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddEditProviderDialog(
     provider: ApiProviderEntity?,
+    onFetchModels: (ApiProviderEntity, (Result<List<String>>) -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onSave: (ApiProviderEntity) -> Unit
 ) {
     val strings = LocalAppStrings.current
-    var name by remember { mutableStateOf(provider?.name ?: "") }
-    var providerType by remember { mutableStateOf(provider?.providerType ?: ProviderType.OPENAI_COMPATIBLE) }
-    var baseUrl by remember { mutableStateOf(provider?.baseUrl ?: "https://api.openai.com/v1") }
+    val initialPreset = remember(provider) {
+        provider?.let { configured ->
+            PresetModels.presets.firstOrNull {
+                it.providerType == configured.providerType && it.defaultBaseUrl.trimEnd('/') == configured.baseUrl.trimEnd('/')
+            }
+        } ?: PresetModels.presets.first {
+            it.id == if (provider?.providerType == ProviderType.ANTHROPIC_CLAUDE) "anthropic_compatible" else "openai_compatible"
+        }
+    }
+    var preset by remember { mutableStateOf(initialPreset) }
+    var presetMenu by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf(provider?.name ?: initialPreset.name) }
+    var providerType by remember { mutableStateOf(provider?.providerType ?: initialPreset.providerType) }
+    var baseUrl by remember { mutableStateOf(provider?.baseUrl ?: initialPreset.defaultBaseUrl) }
     var apiKey by remember { mutableStateOf(provider?.apiKey ?: "") }
-    var selectedModel by remember { mutableStateOf(provider?.selectedModel ?: "gpt-4o") }
-    var inputPrice by remember { mutableStateOf(provider?.inputPricePerMillion?.toString() ?: "2.5") }
-    var outputPrice by remember { mutableStateOf(provider?.outputPricePerMillion?.toString() ?: "10.0") }
+    var selectedModel by remember { mutableStateOf(provider?.selectedModel ?: initialPreset.defaultModel) }
+    var inputPrice by remember { mutableStateOf(provider?.inputPricePerMillion?.toString() ?: initialPreset.defaultInputPrice.toString()) }
+    var outputPrice by remember { mutableStateOf(provider?.outputPricePerMillion?.toString() ?: initialPreset.defaultOutputPrice.toString()) }
     var isDefault by remember { mutableStateOf(provider?.isDefault ?: false) }
+    var fetchedModels by remember { mutableStateOf(initialPreset.recommendedModels) }
+    var modelSearch by remember { mutableStateOf("") }
+    var fetchingModels by remember { mutableStateOf(false) }
+    var fetchMessage by remember { mutableStateOf<String?>(null) }
+
+    fun buildProvider(): ApiProviderEntity {
+        val inPrice = inputPrice.toDoubleOrNull() ?: 0.0
+        val outPrice = outputPrice.toDoubleOrNull() ?: 0.0
+        return provider?.copy(
+            name = name.trim(), providerType = providerType, baseUrl = baseUrl.trim(), apiKey = apiKey.trim(),
+            selectedModel = selectedModel.trim(), inputPricePerMillion = inPrice,
+            outputPricePerMillion = outPrice, currency = preset.currency,
+            maxContextTokens = preset.defaultMaxContextTokens, isDefault = isDefault
+        ) ?: ApiProviderEntity(
+            name = name.trim(), providerType = providerType, baseUrl = baseUrl.trim(), apiKey = apiKey.trim(),
+            selectedModel = selectedModel.trim(), inputPricePerMillion = inPrice,
+            outputPricePerMillion = outPrice, currency = preset.currency,
+            maxContextTokens = preset.defaultMaxContextTokens, isDefault = isDefault
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -942,6 +979,39 @@ fun AddEditProviderDialog(
                     .padding(vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                item {
+                    ExposedDropdownMenuBox(expanded = presetMenu, onExpandedChange = { presetMenu = it }) {
+                        OutlinedTextField(
+                            value = preset.name,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("模型厂家 / 协议预设") },
+                            supportingText = { Text(preset.description) },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(presetMenu) },
+                            modifier = Modifier.menuAnchor().fillMaxWidth()
+                        )
+                        ExposedDropdownMenu(expanded = presetMenu, onDismissRequest = { presetMenu = false }) {
+                            PresetModels.presets.forEach { candidate ->
+                                DropdownMenuItem(
+                                    text = { Text(candidate.name) },
+                                    onClick = {
+                                        preset = candidate
+                                        providerType = candidate.providerType
+                                        name = candidate.name
+                                        baseUrl = candidate.defaultBaseUrl
+                                        selectedModel = candidate.defaultModel
+                                        inputPrice = candidate.defaultInputPrice.toString()
+                                        outputPrice = candidate.defaultOutputPrice.toString()
+                                        fetchedModels = candidate.recommendedModels
+                                        modelSearch = ""
+                                        fetchMessage = null
+                                        presetMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 item {
                     OutlinedTextField(
                         value = name,
@@ -974,10 +1044,56 @@ fun AddEditProviderDialog(
                     OutlinedTextField(
                         value = selectedModel,
                         onValueChange = { selectedModel = it },
-                        label = { Text("模型名称 (如 gpt-4o, claude-3-5-sonnet)") },
+                        label = { Text("模型名称") },
                         shape = SmallControlShape,
                         modifier = Modifier.fillMaxWidth()
                     )
+                }
+                item {
+                    OutlinedButton(
+                        onClick = {
+                            fetchingModels = true
+                            fetchMessage = null
+                            onFetchModels(buildProvider()) { result ->
+                                fetchingModels = false
+                                result.onSuccess {
+                                    fetchedModels = it
+                                    fetchMessage = "已从端点获取 ${it.size} 个模型"
+                                }.onFailure { fetchMessage = it.localizedMessage ?: "拉取模型失败" }
+                            }
+                        },
+                        enabled = !fetchingModels && baseUrl.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        if (fetchingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Default.CloudDownload, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (fetchingModels) "正在拉取…" else "自动从端点拉取模型列表")
+                    }
+                    fetchMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
+                if (fetchedModels.isNotEmpty()) {
+                    item {
+                        OutlinedTextField(
+                            value = modelSearch,
+                            onValueChange = { modelSearch = it },
+                            label = { Text("搜索匹配模型") },
+                            leadingIcon = { Icon(Icons.Default.Search, null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        val matches = fetchedModels.filter { modelSearch.isBlank() || it.contains(modelSearch, true) }.take(8)
+                        Column {
+                            matches.forEach { model ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable { selectedModel = model },
+                                    color = if (selectedModel == model) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+                                ) {
+                                    Text(model, Modifier.padding(horizontal = 12.dp, vertical = 9.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+                    }
                 }
                 item {
                     Row(
@@ -1014,28 +1130,7 @@ fun AddEditProviderDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val inPrice = inputPrice.toDoubleOrNull() ?: 0.0
-                    val outPrice = outputPrice.toDoubleOrNull() ?: 0.0
-                    val entity = provider?.copy(
-                        name = name,
-                        providerType = providerType,
-                        baseUrl = baseUrl,
-                        apiKey = apiKey,
-                        selectedModel = selectedModel,
-                        inputPricePerMillion = inPrice,
-                        outputPricePerMillion = outPrice,
-                        isDefault = isDefault
-                    ) ?: ApiProviderEntity(
-                        name = name,
-                        providerType = providerType,
-                        baseUrl = baseUrl,
-                        apiKey = apiKey,
-                        selectedModel = selectedModel,
-                        inputPricePerMillion = inPrice,
-                        outputPricePerMillion = outPrice,
-                        isDefault = isDefault
-                    )
-                    onSave(entity)
+                    onSave(buildProvider())
                 },
                 enabled = name.isNotBlank() && baseUrl.isNotBlank() && selectedModel.isNotBlank(),
                 shape = ButtonShape

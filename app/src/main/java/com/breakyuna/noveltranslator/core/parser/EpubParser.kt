@@ -12,7 +12,8 @@ data class ParsedEpubBook(
     val title: String,
     val author: String,
     val chapters: List<ParsedChapter>,
-    val extractedImages: List<ExtractedImage>
+    val extractedImages: List<ExtractedImage>,
+    val coverFileName: String? = null
 )
 
 data class ExtractedImage(
@@ -83,6 +84,8 @@ object EpubParser {
             val spineItems = mutableListOf<String>()
             val extractedImages = mutableListOf<ExtractedImage>()
             val imageNamesByPath = mutableMapOf<String, String>()
+            val explicitCoverIds = mutableSetOf<String>()
+            var coverFileName: String? = null
 
             if (opfXml != null) {
                 val titleMatcher = Pattern.compile("<dc:title[^>]*>([^<]+)</dc:title>", Pattern.CASE_INSENSITIVE).matcher(opfXml)
@@ -91,18 +94,30 @@ object EpubParser {
                 val authorMatcher = Pattern.compile("<dc:creator[^>]*>([^<]+)</dc:creator>", Pattern.CASE_INSENSITIVE).matcher(opfXml)
                 if (authorMatcher.find()) author = authorMatcher.group(1)?.trim() ?: author
 
+                val metaMatcher = Pattern.compile("<meta\\s+([^>]+)>", Pattern.CASE_INSENSITIVE).matcher(opfXml)
+                while (metaMatcher.find()) {
+                    val attrs = metaMatcher.group(1) ?: continue
+                    val nameMatch = Pattern.compile("name\\s*=\\s*[\"']cover[\"']", Pattern.CASE_INSENSITIVE).matcher(attrs)
+                    val contentMatch = Pattern.compile("content\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(attrs)
+                    if (nameMatch.find() && contentMatch.find()) explicitCoverIds += contentMatch.group(1)!!
+                }
+
                 val itemMatcher = Pattern.compile("<item\\s+([^>]+)/>|<item\\s+([^>]+)>", Pattern.CASE_INSENSITIVE).matcher(opfXml)
                 while (itemMatcher.find()) {
                     val itemAttrs = itemMatcher.group(1) ?: itemMatcher.group(2) ?: ""
                     val idMatch = Pattern.compile("id\\s*=\\s*[\"']([^\"']+)[\"']").matcher(itemAttrs)
                     val hrefMatch = Pattern.compile("href\\s*=\\s*[\"']([^\"']+)[\"']").matcher(itemAttrs)
                     val typeMatch = Pattern.compile("media-type\\s*=\\s*[\"']([^\"']+)[\"']").matcher(itemAttrs)
+                    val propertiesMatch = Pattern.compile("properties\\s*=\\s*[\"']([^\"']+)[\"']", Pattern.CASE_INSENSITIVE).matcher(itemAttrs)
                     if (!idMatch.find() || !hrefMatch.find()) continue
 
                     val id = idMatch.group(1)!!
                     val href = hrefMatch.group(1)!!
                     val type = if (typeMatch.find()) typeMatch.group(1)!! else "text/html"
                     manifest[id] = href to type
+                    if (propertiesMatch.find() && propertiesMatch.group(1)!!.split(Regex("\\s+")).any { it.equals("cover-image", true) }) {
+                        explicitCoverIds += id
+                    }
 
                     if (type.startsWith("image/", ignoreCase = true)) {
                         val fullImagePath = resolvePath(opfDir, href)
@@ -114,6 +129,9 @@ object EpubParser {
                                 .ifBlank { "illustration" }
                             val fileName = "${Integer.toHexString(fullImagePath.hashCode())}_$baseName"
                             imageNamesByPath[fullImagePath] = fileName
+                            if (id in explicitCoverIds || (coverFileName == null && href.contains("cover", true))) {
+                                coverFileName = fileName
+                            }
                             val imageBytes = if (imagesOutputDirectory == null) {
                                 zipFile.getInputStream(imageEntry).use { input ->
                                     readEntryLimited(input, budget)
@@ -166,7 +184,16 @@ object EpubParser {
                 }.forEach(::parseHtml)
             }
 
-            return ParsedEpubBook(title, author, chapters, extractedImages)
+            val rasterCover = coverFileName?.takeIf { fileName ->
+                extractedImages.firstOrNull { it.fileName == fileName }?.mediaType != "image/svg+xml"
+            } ?: extractedImages.firstOrNull { it.mediaType != "image/svg+xml" }?.fileName
+            return ParsedEpubBook(
+                title = title,
+                author = author,
+                chapters = chapters,
+                extractedImages = extractedImages,
+                coverFileName = rasterCover
+            )
         }
     }
 

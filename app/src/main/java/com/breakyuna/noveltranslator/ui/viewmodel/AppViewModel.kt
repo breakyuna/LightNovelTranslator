@@ -7,6 +7,7 @@ import com.breakyuna.noveltranslator.core.agent.ChapterSplitAgent
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.exporter.EpubExporter
 import com.breakyuna.noveltranslator.core.exporter.TxtExporter
+import com.breakyuna.noveltranslator.core.exporter.EditionExporter
 import com.breakyuna.noveltranslator.core.llm.LlmClient
 import com.breakyuna.noveltranslator.core.llm.RetryingLlmGateway
 import com.breakyuna.noveltranslator.core.llm.executeCompletion
@@ -15,6 +16,13 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.parser.*
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
+import com.breakyuna.noveltranslator.core.book.BookFileManager
+import com.breakyuna.noveltranslator.core.book.BookImporter
+import com.breakyuna.noveltranslator.core.book.AcquiredBook
+import com.breakyuna.noveltranslator.core.book.AcquiredChapter
+import com.breakyuna.noveltranslator.core.translation.BookTranslationEngine
+import com.breakyuna.noveltranslator.core.translation.BookTranslationScheduler
+import com.breakyuna.noveltranslator.core.translation.ContextEngine
 import com.breakyuna.noveltranslator.core.sample.SampleNovelProvider
 import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
 import com.breakyuna.noveltranslator.core.task.TranslationTaskItem
@@ -39,6 +47,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AppViewModel(application: Application) : AndroidViewModel(application) {
@@ -107,6 +116,36 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val llmClient = RetryingLlmGateway(rawLlmClient, controlSignal = translationControlSignal)
     private val reliableLlmGateway = llmClient
 
+    private val bookFiles = BookFileManager(application)
+    private val bookImporter = BookImporter(db, bookFiles)
+    private val editionExporter = EditionExporter(db, bookFiles)
+    val bookPlatformRepo = BookPlatformRepository(db, bookFiles)
+    private val contextEngineV2 = ContextEngine(db.lexiconV2Dao(), db.memoryDao())
+    private val bookTranslationEngine = BookTranslationEngine(
+        db,
+        bookFiles,
+        reliableLlmGateway,
+        contextEngineV2,
+        providerRepo::getProviderById
+    )
+    private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
+    private val seamlessJobs = ConcurrentHashMap<Long, Job>()
+    private val lastSeamlessChapter = ConcurrentHashMap<Long, Long?>()
+
+    val shelfBooks: StateFlow<List<ShelfBook>> = bookPlatformRepo.shelf
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val hiddenBooks: StateFlow<List<BookEntity>> = bookPlatformRepo.hiddenBooks
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val allPlatformBooks: StateFlow<List<BookEntity>> = bookPlatformRepo.allBooks
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val platformTranslationProjects: StateFlow<List<TranslationProjectV2Entity>> = bookPlatformRepo.allTranslationProjects
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val platformTaskRuns: StateFlow<List<PlatformTranslationRunEntity>> = db.platformTaskDao().observeRuns()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun observePlatformTaskBatches(runId: Long) = db.platformTaskDao().observeBatches(runId)
+    fun observePlatformRequestLogs(runId: Long) = db.platformTaskDao().observeRequestLogs(runId)
+
     val translationManager = TranslationManager(
         projectRepository = projectRepo,
         chapterRepository = chapterRepo,
@@ -143,10 +182,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
+            providerRepo.removeUnusedLegacyPresets()
             providerRepo.encryptLegacyKeys()
             translationRunRepo.markInFlightInterrupted()
             translationChunkRepo.resetRunningChunks()
             chapterRepo.resetTranslatingStatuses()
+            db.translationProjectV2Dao().markInterrupted()
+            db.platformTaskDao().markInterrupted()
         }
     }
 
@@ -356,6 +398,221 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 setActiveProject(projectId)
                 showMessage("Demo project 《$title》 loaded successfully!")
             }
+        }
+    }
+
+    fun createSampleBook() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                bookImporter.importAcquired(
+                    AcquiredBook(
+                        title = SampleNovelProvider.sampleTitle,
+                        author = SampleNovelProvider.sampleAuthor,
+                        chapters = TxtParser.splitIntoChapters(SampleNovelProvider.sampleContent, TxtParser.REGEX_CHINESE)
+                            .map { AcquiredChapter(it.title, it.content) },
+                        acquisitionType = AcquisitionType.PASTED_TEXT
+                    ),
+                    language = SampleNovelProvider.sampleSourceLanguage
+                )
+            }.onSuccess { showMessage("示例小说已加入书架") }
+                .onFailure { showMessage("示例导入失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun importBookFromUri(
+        uri: android.net.Uri,
+        fileName: String,
+        originalLanguage: String = "Auto",
+        customRegex: String? = null
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val temp = File.createTempFile("book_import_", ".tmp", getApplication<Application>().cacheDir)
+            try {
+                getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
+                    temp.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("Unable to open the selected file")
+                val bookId = bookImporter.import(fileName, temp, originalLanguage, customRegex)
+                withContext(Dispatchers.Main) { showMessage("小说已加入书架（Book #$bookId）") }
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) { showMessage("导入失败：${error.localizedMessage}") }
+            } finally {
+                temp.delete()
+            }
+        }
+    }
+
+    fun importPastedBook(title: String, text: String, originalLanguage: String = "Auto") {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val chapters = TxtParser.splitIntoChapters(text, TxtParser.REGEX_CHINESE)
+                bookImporter.importAcquired(
+                    AcquiredBook(
+                        title = title.trim().ifBlank { "粘贴的小说" },
+                        chapters = chapters.map { AcquiredChapter(it.title, it.content) },
+                        acquisitionType = AcquisitionType.PASTED_TEXT
+                    ),
+                    originalLanguage
+                )
+            }.onSuccess { showMessage("小说已加入书架") }
+                .onFailure { showMessage("导入失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun createTranslationEdition(
+        bookId: Long,
+        sourceEditionId: Long,
+        targetLanguage: String,
+        editionName: String,
+        onCreated: (Long) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                bookPlatformRepo.createTranslationEdition(bookId, sourceEditionId, targetLanguage, editionName)
+            }.onSuccess { editionId ->
+                withContext(Dispatchers.Main) {
+                    showMessage("翻译 Edition 已创建，可在详情页配置翻译方式")
+                    onCreated(editionId)
+                }
+            }.onFailure { showMessage("创建 Edition 失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun configureEditionTranslation(
+        bookId: Long,
+        sourceEditionId: Long,
+        targetEditionId: Long,
+        providerId: Long?,
+        modelName: String,
+        mode: TranslationMode,
+        maxBatchChapters: Int,
+        rangeStart: Int? = null,
+        rangeEnd: Int? = null,
+        seamlessAheadChapters: Int = 5,
+        startImmediately: Boolean = true
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                bookPlatformRepo.createTranslationProject(
+                    bookId, sourceEditionId, targetEditionId, providerId, modelName, mode, maxBatchChapters,
+                    rangeStart, rangeEnd, seamlessAheadChapters
+                )
+            }.onSuccess { projectId ->
+                showMessage("Edition 翻译任务已配置")
+                if (startImmediately && providerId != null) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        runCatching { bookTranslationScheduler.run(projectId) }
+                            .onFailure { showMessage("翻译任务失败：${it.localizedMessage}") }
+                    }
+                }
+            }.onFailure { showMessage("配置翻译失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun selectReadingEdition(bookId: Long, editionId: Long, onSelected: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { bookPlatformRepo.selectReadingEdition(bookId, editionId) }
+                .onSuccess { withContext(Dispatchers.Main) { onSelected() } }
+                .onFailure { showMessage("切换阅读 Edition 失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun bookImagesDir(bookId: Long): File = bookFiles.sharedImagesDir(bookId)
+
+    fun runBookTranslation(projectId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { bookTranslationScheduler.run(projectId) }
+                .onFailure { showMessage("翻译任务失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun pauseBookTranslation(projectId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookTranslationScheduler.pause(projectId) }
+    }
+
+    fun resumeBookTranslation(projectId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookTranslationScheduler.resume(projectId) }
+    }
+
+    fun cancelBookTranslation(projectId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookTranslationScheduler.cancel(projectId) }
+    }
+
+    fun saveReaderProgress(progress: ReaderProgressEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.saveReaderProgress(progress)
+            val chapterId = progress.logicalChapterId ?: return@launch
+            if (lastSeamlessChapter.put(progress.bookId, chapterId) == chapterId) return@launch
+            platformTranslationProjects.value
+                .filter { it.bookId == progress.bookId && it.translationMode == TranslationMode.SEAMLESS.name }
+                .forEach { project ->
+                    if (seamlessJobs[project.id]?.isActive != true) {
+                        seamlessJobs[project.id] = viewModelScope.launch(Dispatchers.IO) {
+                            runCatching { bookTranslationScheduler.run(project.id) }
+                                .onFailure { showMessage("无感翻译缓冲失败：${it.localizedMessage}") }
+                        }
+                    }
+                }
+        }
+    }
+
+    fun saveManualRevision(editionSegmentId: Long, text: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.saveManualRevision(editionSegmentId, text)
+            showMessage("修改已保存，并保留修订历史")
+        }
+    }
+
+    fun renameBook(bookId: Long, title: String) {
+        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.renameBook(bookId, title) }
+    }
+
+    fun updateBookMetadata(bookId: Long, title: String, author: String, description: String, language: String) {
+        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.updateBookMetadata(bookId, title, author, description, language) }
+    }
+
+    fun setBookCover(bookId: Long, uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val name = uri.lastPathSegment ?: "cover.jpg"
+                val cover = getApplication<Application>().contentResolver.openInputStream(uri)?.use { bookFiles.saveCover(bookId, name, it) }
+                    ?: error("Unable to open cover image")
+                bookPlatformRepo.updateCover(bookId, cover.absolutePath)
+            }.onFailure { showMessage("更换封面失败：${it.localizedMessage}") }
+        }
+    }
+
+    fun moveBook(bookId: Long, direction: Int) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ordered = shelfBooks.value.toMutableList()
+            val index = ordered.indexOfFirst { it.id == bookId }
+            if (index < 0 || ordered.isEmpty()) return@launch
+            val target = (index + direction).coerceIn(0, ordered.lastIndex)
+            if (target != index) {
+                val item = ordered.removeAt(index)
+                ordered.add(target, item)
+                ordered.forEachIndexed { order, book -> bookPlatformRepo.updateShelfOrder(book.id, order) }
+            }
+        }
+    }
+
+    fun removeBookFromShelf(bookId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.removeFromShelf(bookId) }
+    }
+
+    fun restoreBookToShelf(bookId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.restoreToShelf(bookId) }
+    }
+
+    fun deleteBookPermanently(bookId: Long) {
+        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.deletePermanently(bookId) }
+    }
+
+    fun exportEdition(bookId: Long, editionId: Long, epub: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                if (epub) editionExporter.exportEpub(bookId, editionId) else editionExporter.exportTxt(bookId, editionId)
+            }.onSuccess { showMessage("已导出：${it.name}") }
+                .onFailure { showMessage("导出失败：${it.localizedMessage}") }
         }
     }
 
@@ -1494,4 +1751,3 @@ Output ONLY the new translated paragraph text.
     }
 
 }
-

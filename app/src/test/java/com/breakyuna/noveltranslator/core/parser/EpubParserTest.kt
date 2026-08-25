@@ -33,7 +33,7 @@ class EpubParserTest {
                     <manifest>
                       <item id="second" href="Text/second.xhtml" media-type="application/xhtml+xml"/>
                       <item id="first" href="Text/first.xhtml" media-type="application/xhtml+xml"/>
-                      <item id="image" href="Images/picture.png" media-type="image/png"/>
+                      <item id="image" href="Images/picture.png" media-type="image/png" properties="cover-image"/>
                     </manifest>
                     <spine><itemref idref="first"/><itemref idref="second"/></spine>
                     </package>
@@ -50,6 +50,7 @@ class EpubParserTest {
             assertEquals(listOf("First", "Second"), book.chapters.map { it.title })
             assertTrue(book.chapters.first().content.contains("[IMG:"))
             assertEquals(1, book.extractedImages.size)
+            assertEquals(book.extractedImages.first().fileName, book.coverFileName)
             assertTrue(File(images, book.extractedImages.first().fileName).isFile)
             assertEquals(0, book.extractedImages.first().bytes.size)
 

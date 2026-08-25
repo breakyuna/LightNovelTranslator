@@ -36,7 +36,15 @@ data class LlmRequest(
     val userPrompt: String,
     val temperature: Float? = null,
     val maxTokens: Int? = null,
-    val operation: String = "TRANSLATION"
+    val operation: String = "TRANSLATION",
+    val promptCacheHint: PromptCacheHint? = null
+)
+
+data class PromptCacheHint(
+    val fingerprint: String,
+    val remoteCacheId: String?,
+    val stablePrefixTokens: Long,
+    val expiresAt: Long?
 )
 
 data class LlmAttempt(

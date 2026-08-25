@@ -88,7 +88,7 @@ fun AppNavigationRail(
                 ) {
                     TopLevelDestination.values().forEach { destination ->
                         val isSelected = when (destination) {
-                            TopLevelDestination.PROJECTS -> currentRoute?.startsWith("projects") == true
+                            TopLevelDestination.PROJECTS -> currentRoute?.startsWith("bookshelf") == true
                             TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("history") == true
                             TopLevelDestination.SETTINGS -> currentRoute?.startsWith("settings") == true
                         }
@@ -161,7 +161,7 @@ fun AppNavigationRail(
                 // Footer Info (Expanded only)
                 if (isExpanded) {
                     Text(
-                        text = "v2.5.0 · Pro Studio",
+                        text = "v0.7.0 beta",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                         modifier = Modifier.padding(bottom = 8.dp)

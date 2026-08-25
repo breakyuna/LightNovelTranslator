@@ -13,7 +13,9 @@ enum class ProviderType(val displayName: String) {
     OLLAMA_LOCAL("Ollama / Local LLM"),
     ZHIPU_GLM("Zhipu AI (智谱GLM)"),
     QWEN_DASHSCOPE("Aliyun DashScope (通义千问)"),
-    MOONSHOT("Moonshot AI (Kimi)")
+    MOONSHOT("Moonshot AI (Kimi)"),
+    XAI("xAI (Grok)"),
+    MINIMAX("MiniMax")
 }
 
 @Entity(tableName = "api_providers")

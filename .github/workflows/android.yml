@@ -1,6 +1,9 @@
 name: Build Android APK
 
 on:
+  push:
+    branches:
+      - beta
   workflow_dispatch:
 
 jobs:
@@ -103,6 +106,6 @@ jobs:
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: LightNovelTranslator-release-signed
+          name: LightNovelTranslator-beta-signed
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error

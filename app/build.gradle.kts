@@ -25,8 +25,8 @@ android {
     applicationId = "com.breakyuna.noveltranslator"
     minSdk = 24
     targetSdk = 36
-    versionCode = ciVersionCode ?: 1
-    versionName = "1.0"
+    versionCode = ciVersionCode ?: 7
+    versionName = "0.7.0-beta"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -92,6 +92,7 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.okhttp)
+  implementation(libs.moshi.kotlin)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.room.testing)
   testImplementation(libs.androidx.core)

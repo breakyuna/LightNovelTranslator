@@ -27,6 +27,7 @@ import com.breakyuna.noveltranslator.core.task.TranslationTaskItem
 import com.breakyuna.noveltranslator.data.model.TranslationLogEntity
 import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
+import com.breakyuna.noveltranslator.ui.i18n.EnglishStrings
 import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import java.text.SimpleDateFormat
@@ -47,6 +48,7 @@ fun TaskQueueScreen(
     modifier: Modifier = Modifier
 ) {
     val strings = LocalAppStrings.current
+    val english = strings === EnglishStrings
     var currentTab by remember(initialTab) { mutableIntStateOf(initialTab.coerceIn(0, 1)) }
 
     // --- Task Queue Data ---
@@ -127,7 +129,7 @@ fun TaskQueueScreen(
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.DeleteOutline,
-                                    contentDescription = "清空审计历史",
+                                    contentDescription = if (english) "Clear audit history" else "清空审计历史",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
@@ -527,8 +529,8 @@ fun TaskQueueScreen(
     if (showClearHistoryConfirm) {
         AlertDialog(
             onDismissRequest = { showClearHistoryConfirm = false },
-            title = { Text("清空翻译历史") },
-            text = { Text("确定要清空所有翻译日志与请求审计记录吗？该操作不会删除已翻译的章节正文。") },
+            title = { Text(if (english) "Clear translation history" else "清空翻译历史") },
+            text = { Text(if (english) "Clear all translation logs and request audit records? Translated chapter text will not be deleted." else "确定要清空所有翻译日志与请求审计记录吗？该操作不会删除已翻译的章节正文。") },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -537,12 +539,12 @@ fun TaskQueueScreen(
                     },
                     colors = ButtonDefaults.textButtonColors(contentColor = StatusError)
                 ) {
-                    Text("清空")
+                    Text(if (english) "Clear" else "清空")
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showClearHistoryConfirm = false }) {
-                    Text("取消")
+                    Text(strings.cancel)
                 }
             },
             shape = DialogShape
@@ -607,13 +609,15 @@ private fun TaskRowItem(
     onCancel: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val strings = LocalAppStrings.current
+    val english = strings === EnglishStrings
     val (statusColor, statusLabel) = when (task.status) {
-        TaskStatus.QUEUED -> StatusWarning to "排队中"
-        TaskStatus.RUNNING -> AccentBlue to "执行中"
-        TaskStatus.PAUSED -> StatusWarning to "已暂停"
-        TaskStatus.COMPLETED -> StatusSuccess to "已完成"
-        TaskStatus.FAILED -> StatusError to "失败"
-        TaskStatus.CANCELLED -> MaterialTheme.colorScheme.onSurfaceVariant to "已取消"
+        TaskStatus.QUEUED -> StatusWarning to if (english) "Queued" else "排队中"
+        TaskStatus.RUNNING -> AccentBlue to if (english) "Running" else "执行中"
+        TaskStatus.PAUSED -> StatusWarning to if (english) "Paused" else "已暂停"
+        TaskStatus.COMPLETED -> StatusSuccess to if (english) "Completed" else "已完成"
+        TaskStatus.FAILED -> StatusError to if (english) "Failed" else "失败"
+        TaskStatus.CANCELLED -> MaterialTheme.colorScheme.onSurfaceVariant to if (english) "Cancelled" else "已取消"
     }
 
     Column(
@@ -648,14 +652,14 @@ private fun TaskRowItem(
             // Task title & project
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = task.chapterTitle.ifBlank { "第 ${task.chapterIndex} 章" },
+                    text = task.chapterTitle.ifBlank { if (english) "Chapter ${task.chapterIndex}" else "第 ${task.chapterIndex} 章" },
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "《${task.projectTitle}》 · ${task.providerName}",
+                    text = if (english) "${task.projectTitle} · ${task.providerName}" else "《${task.projectTitle}》 · ${task.providerName}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -701,7 +705,7 @@ private fun TaskRowItem(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "分块 ${task.currentChunk} / ${task.totalChunks}",
+                    text = if (english) "Chunk ${task.currentChunk} / ${task.totalChunks}" else "分块 ${task.currentChunk} / ${task.totalChunks}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -740,20 +744,20 @@ private fun TaskRowItem(
             when (task.status) {
                 TaskStatus.RUNNING -> {
                     TextButton(onClick = onPause) {
-                        Text("暂停", style = MaterialTheme.typography.labelMedium)
+                        Text(strings.pauseTaskBtn, style = MaterialTheme.typography.labelMedium)
                     }
                     TextButton(onClick = onCancel, colors = ButtonDefaults.textButtonColors(contentColor = StatusError)) {
-                        Text("取消", style = MaterialTheme.typography.labelMedium)
+                        Text(strings.cancelTaskBtn, style = MaterialTheme.typography.labelMedium)
                     }
                 }
                 TaskStatus.QUEUED -> {
                     TextButton(onClick = onCancel, colors = ButtonDefaults.textButtonColors(contentColor = StatusError)) {
-                        Text("取消", style = MaterialTheme.typography.labelMedium)
+                        Text(strings.cancelTaskBtn, style = MaterialTheme.typography.labelMedium)
                     }
                 }
                 TaskStatus.PAUSED -> {
                     TextButton(onClick = onResume) {
-                        Text("恢复", style = MaterialTheme.typography.labelMedium)
+                        Text(strings.resumeTaskBtn, style = MaterialTheme.typography.labelMedium)
                     }
                     IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -761,7 +765,7 @@ private fun TaskRowItem(
                 }
                 TaskStatus.FAILED -> {
                     TextButton(onClick = onRetry) {
-                        Text("重试", style = MaterialTheme.typography.labelMedium)
+                        Text(strings.retryTaskBtn, style = MaterialTheme.typography.labelMedium)
                     }
                     IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Outlined.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -870,6 +874,8 @@ fun HistoryDetailDialog(
     projectTitle: String,
     onDismiss: () -> Unit
 ) {
+    val strings = LocalAppStrings.current
+    val english = strings === EnglishStrings
     val dateFormat = remember { SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()) }
     val timeStr = remember(log.timestamp) { dateFormat.format(Date(log.timestamp)) }
 
@@ -877,7 +883,7 @@ fun HistoryDetailDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = "请求审计详情",
+                text = if (english) "Request audit details" else "请求审计详情",
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -888,31 +894,31 @@ fun HistoryDetailDialog(
                     .padding(vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                AppStatusRow(label = "所属项目", value = projectTitle)
-                AppStatusRow(label = "章节序号", value = "第 ${log.chapterIndex} 章")
-                AppStatusRow(label = "章节标题", value = log.chapterTitle.ifBlank { "无标题" })
-                AppStatusRow(label = "服务供应商", value = log.providerName)
-                AppStatusRow(label = "调用模型", value = log.modelName)
+                AppStatusRow(label = if (english) "Project" else "所属项目", value = projectTitle)
+                AppStatusRow(label = if (english) "Chapter" else "章节序号", value = if (english) "Chapter ${log.chapterIndex}" else "第 ${log.chapterIndex} 章")
+                AppStatusRow(label = if (english) "Chapter title" else "章节标题", value = log.chapterTitle.ifBlank { if (english) "Untitled" else "无标题" })
+                AppStatusRow(label = if (english) "Provider" else "服务供应商", value = log.providerName)
+                AppStatusRow(label = if (english) "Model" else "调用模型", value = log.modelName)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                 AppStatusRow(label = "Prompt Tokens", value = "${log.promptTokens}")
                 AppStatusRow(label = "Completion Tokens", value = "${log.completionTokens}")
                 AppStatusRow(label = "Total Tokens", value = "${log.totalTokens}")
                 AppStatusRow(
-                    label = "预估费用",
+                    label = if (english) "Estimated cost" else "预估费用",
                     value = "$${String.format(Locale.US, "%.5f", log.estimatedCost)} ${log.currency}",
                     valueColor = StatusSuccess
                 )
-                AppStatusRow(label = "耗时", value = "${log.durationMs} ms")
-                AppStatusRow(label = "请求时间", value = timeStr)
+                AppStatusRow(label = if (english) "Duration" else "耗时", value = "${log.durationMs} ms")
+                AppStatusRow(label = if (english) "Request time" else "请求时间", value = timeStr)
                 AppStatusRow(
-                    label = "状态",
-                    value = if (log.isSuccess) "成功" else "失败/异常",
+                    label = if (english) "Status" else "状态",
+                    value = if (log.isSuccess) { if (english) "Success" else "成功" } else { if (english) "Failed / error" else "失败/异常" },
                     valueColor = if (log.isSuccess) StatusSuccess else StatusError
                 )
                 if (log.message.isNotBlank()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "附注/错误信息:",
+                        text = if (english) "Notes / error:" else "附注/错误信息:",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -933,7 +939,7 @@ fun HistoryDetailDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭")
+                Text(strings.close)
             }
         },
         shape = DialogShape

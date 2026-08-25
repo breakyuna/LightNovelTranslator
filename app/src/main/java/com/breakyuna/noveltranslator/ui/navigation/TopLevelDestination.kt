@@ -2,13 +2,16 @@ package com.breakyuna.noveltranslator.ui.navigation
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.LibraryBooks
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.LibraryBooks
 import androidx.compose.material.icons.outlined.FormatListNumbered
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.breakyuna.noveltranslator.ui.i18n.AppStrings
+import com.breakyuna.noveltranslator.ui.i18n.EnglishStrings
 
 enum class TopLevelDestination(
     val route: String,
@@ -16,9 +19,9 @@ enum class TopLevelDestination(
     val unselectedIcon: ImageVector
 ) {
     PROJECTS(
-        route = "projects",
-        selectedIcon = Icons.Filled.Folder,
-        unselectedIcon = Icons.Outlined.Folder
+        route = "bookshelf",
+        selectedIcon = Icons.Filled.LibraryBooks,
+        unselectedIcon = Icons.Outlined.LibraryBooks
     ),
     TASKS(
         route = "tasks",
@@ -32,8 +35,8 @@ enum class TopLevelDestination(
     );
 
     fun getLabel(strings: AppStrings): String = when (this) {
-        PROJECTS -> strings.navHome
-        TASKS -> "后台任务"
+        PROJECTS -> if (strings === EnglishStrings) "Bookshelf" else "书架"
+        TASKS -> if (strings === EnglishStrings) "Workbench" else "工作台"
         SETTINGS -> strings.navSettings
     }
 }
