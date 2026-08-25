@@ -37,6 +37,7 @@ fun AppLargeTitle(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .statusBarsPadding()
             .padding(horizontal = Spacing.compactHorizontalPadding, vertical = Spacing.m),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically

@@ -14,7 +14,6 @@ import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.glossary.GlossaryScreen
-import com.breakyuna.noveltranslator.ui.screens.history.HistoryScreen
 import com.breakyuna.noveltranslator.ui.screens.preview.BilingualReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.projects.ProjectListScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
@@ -48,9 +47,8 @@ fun AppNavigation(
     val isTopLevelDestination = currentRoute in listOf(
         AppDestination.Projects.route,
         AppDestination.Tasks.route,
-        AppDestination.History.route,
         AppDestination.Settings.route
-    ) || (currentRoute?.startsWith("settings") == true)
+    ) || (currentRoute?.startsWith("settings") == true) || (currentRoute?.startsWith("tasks") == true) || (currentRoute?.startsWith("history") == true)
 
     // Handle floating messages
     LaunchedEffect(userMessage) {
@@ -131,23 +129,25 @@ fun AppNavigation(
                     }
 
                     // ==========================================
-                    // 2. Tasks Queue (Top-Level)
+                    // 2. Tasks Queue & Audit History (Top-Level)
                     // ==========================================
                     composable(AppDestination.Tasks.route) {
                         TaskQueueScreen(
                             viewModel = viewModel,
+                            initialTab = 0,
                             onBack = {
                                 navController.popBackStack()
                             }
                         )
                     }
 
-                    // ==========================================
-                    // 3. History (Top-Level)
-                    // ==========================================
                     composable(AppDestination.History.route) {
-                        HistoryScreen(
-                            viewModel = viewModel
+                        TaskQueueScreen(
+                            viewModel = viewModel,
+                            initialTab = 1,
+                            onBack = {
+                                navController.popBackStack()
+                            }
                         )
                     }
 

@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.ui.navigation
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
@@ -25,21 +24,19 @@ fun AppBottomBar(
         Column(modifier = Modifier.fillMaxWidth()) {
             HorizontalDivider(
                 thickness = 0.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
             )
             NavigationBar(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
+                modifier = Modifier.fillMaxWidth(),
                 containerColor = Color.Transparent,
-                tonalElevation = 0.dp
+                tonalElevation = 0.dp,
+                windowInsets = WindowInsets.navigationBars
             ) {
                 val strings = LocalAppStrings.current
                 TopLevelDestination.values().forEach { destination ->
                     val isSelected = when (destination) {
                         TopLevelDestination.PROJECTS -> currentRoute?.startsWith("projects") == true
-                        TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true
-                        TopLevelDestination.HISTORY -> currentRoute?.startsWith("history") == true
+                        TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("history") == true
                         TopLevelDestination.SETTINGS -> currentRoute?.startsWith("settings") == true
                     }
 
@@ -50,13 +47,13 @@ fun AppBottomBar(
                             Icon(
                                 imageVector = if (isSelected) destination.selectedIcon else destination.unselectedIcon,
                                 contentDescription = destination.getLabel(strings),
-                                modifier = Modifier.size(22.dp)
+                                modifier = Modifier.size(24.dp)
                             )
                         },
                         label = {
                             Text(
                                 text = destination.getLabel(strings),
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                                 maxLines = 1
                             )
                         },
@@ -65,7 +62,7 @@ fun AppBottomBar(
                             selectedTextColor = MaterialTheme.colorScheme.primary,
                             unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                             unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
+                            indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
                         )
                     )
                 }
