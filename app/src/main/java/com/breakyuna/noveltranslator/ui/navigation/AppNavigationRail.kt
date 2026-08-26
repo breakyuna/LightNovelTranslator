@@ -64,7 +64,8 @@ fun AppNavigationRail(
                     TopLevelDestination.values().forEach { destination ->
                         val isSelected = when (destination) {
                             TopLevelDestination.PROJECTS -> currentRoute?.startsWith("bookshelf") == true
-                            TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("workbench") == true || currentRoute?.startsWith("history") == true
+                            TopLevelDestination.HISTORY -> currentRoute?.startsWith("history") == true
+                            TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("workbench") == true
                             TopLevelDestination.SETTINGS -> currentRoute?.startsWith("settings") == true
                         }
 
@@ -101,4 +102,3 @@ fun AppNavigationRail(
         }
     }
 }
-

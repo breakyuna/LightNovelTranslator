@@ -370,8 +370,31 @@ data class PlatformRequestLogEntity(
     val finishReason: String? = null,
     val errorCategory: String? = null,
     val errorMessage: String? = null,
+    val systemPrompt: String? = null,
+    val userPrompt: String? = null,
+    val responseText: String? = null,
+    val attemptTrace: String? = null,
     val isSuccess: Boolean,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+/** Lightweight row for list screens; large debug payloads are loaded only after expansion. */
+data class PlatformRequestLogSummary(
+    val id: Long,
+    val runId: Long,
+    val batchId: Long?,
+    val operation: String,
+    val attemptCount: Int,
+    val promptTokens: Long,
+    val completionTokens: Long,
+    val cachedTokens: Long,
+    val estimatedCost: Double,
+    val durationMs: Long,
+    val finishReason: String?,
+    val errorCategory: String?,
+    val errorMessage: String?,
+    val isSuccess: Boolean,
+    val timestamp: Long
 )
 
 data class ShelfBook(
@@ -381,6 +404,17 @@ data class ShelfBook(
     val preferredReadingEditionId: Long?,
     val hasTranslationProject: Boolean,
     val shelfOrder: Int
+)
+
+data class ReadingHistoryItem(
+    val bookId: Long,
+    val title: String,
+    val author: String,
+    val coverPath: String?,
+    val logicalChapterId: Long?,
+    val chapterIndex: Int?,
+    val chapterTitle: String?,
+    val updatedAt: Long
 )
 
 data class ReaderSegmentRow(

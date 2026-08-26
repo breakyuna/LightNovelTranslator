@@ -150,8 +150,9 @@ object DeterministicTranslationQa {
         val problems = mutableListOf<String>()
         if (translated == null) return QaResult(false, listOf("missing chapter boundary"))
         val expected = source.segments.map { it.shortId }
-        val actual = translated.segments.keys.toList()
-        if (actual != expected) problems += "segment ids missing, duplicated or out of order"
+        val actual = translated.segments.keys
+        // Map iteration order is not a correctness property. Persistence always follows source order.
+        if (actual.size != expected.size || actual.toSet() != expected.toSet()) problems += "segment ids missing or duplicated"
         source.segments.forEach { segment ->
             val target = translated.segments[segment.shortId].orEmpty()
             if (target.isBlank()) problems += "empty segment ${segment.shortId}"
@@ -164,7 +165,9 @@ object DeterministicTranslationQa {
                 problems += "refusal or explanatory text in segment ${segment.shortId}"
             }
             mandatoryTerms.forEach { (sourceTerm, targetTerm) ->
-                if (segment.text.contains(sourceTerm, true) && !target.contains(targetTerm, true)) {
+                val meaningfulTerm = sourceTerm.any { it.code > 127 } && sourceTerm.length >= 2 ||
+                    sourceTerm.count(Char::isLetterOrDigit) >= 3
+                if (meaningfulTerm && targetTerm.isNotBlank() && segment.text.contains(sourceTerm, true) && !target.contains(targetTerm, true)) {
                     problems += "mandatory terminology violation: $sourceTerm"
                 }
             }

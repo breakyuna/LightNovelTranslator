@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.ui.screens.tasks
 
-import android.graphics.BitmapFactory
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,6 +36,7 @@ import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import java.text.DateFormat
@@ -514,9 +513,7 @@ private fun BookWorkspaceUnitCard(
     onViewGlossary: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val cover = remember(book.coverPath) {
-        book.coverPath?.let { runCatching { BitmapFactory.decodeFile(it)?.asImageBitmap() }.getOrNull() }
-    }
+    val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
 
     val isRunning = runs.any { it.state == "RUNNING" } || projects.any { it.state == "RUNNING" }
     val isPaused = runs.any { it.state == "PAUSED" } || projects.any { it.state == "PAUSED" }
@@ -560,7 +557,7 @@ private fun BookWorkspaceUnitCard(
                 ) {
                     if (cover != null) {
                         Image(
-                            cover,
+                            cover!!,
                             book.title,
                             Modifier.fillMaxSize(),
                             contentScale = ContentScale.Crop
@@ -1246,7 +1243,7 @@ private fun LiveLogDialog(
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(logs.take(40)) { log ->
+                            items(logs.take(40), key = { it.id }) { log ->
                                 RequestLogItem(log, strings)
                             }
                         }
@@ -1258,7 +1255,7 @@ private fun LiveLogDialog(
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(batches) { batch ->
+                            items(batches, key = { it.id }) { batch ->
                                 BatchItem(batch, strings)
                             }
                         }
@@ -1273,7 +1270,7 @@ private fun LiveLogDialog(
 }
 
 @Composable
-private fun RequestLogItem(log: PlatformRequestLogEntity, strings: PlatformUiStrings) {
+private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiStrings) {
     val formatter = remember { DateFormat.getTimeInstance(DateFormat.MEDIUM) }
     val errorText = listOfNotNull(log.errorCategory, log.errorMessage).filter { it.isNotBlank() }.joinToString(": ")
 
@@ -1403,7 +1400,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(lexicon) { item ->
+                                items(lexicon, key = { it.id }) { item ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1427,7 +1424,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(chapterMemory) { mem ->
+                                items(chapterMemory, key = { it.id }) { mem ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1449,7 +1446,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(storyMemory) { fact ->
+                                items(storyMemory, key = { it.id }) { fact ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),

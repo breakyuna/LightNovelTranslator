@@ -16,6 +16,38 @@ import org.robolectric.annotation.Config
 @Config(sdk = [34])
 class AppDatabaseMigrationTest {
     @Test
+    fun migration7To8AddsOptionalDebugPayloadColumns() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val helper = FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name("debug_migration_test_${System.nanoTime()}.db")
+                .callback(object : SupportSQLiteOpenHelper.Callback(7) {
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        db.execSQL("CREATE TABLE platform_request_logs (id INTEGER PRIMARY KEY NOT NULL)")
+                    }
+
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                })
+                .build()
+        )
+        try {
+            val db = helper.writableDatabase
+            AppDatabase.MIGRATION_7_8.migrate(db)
+            val columns = mutableSetOf<String>()
+            db.query("PRAGMA table_info(platform_request_logs)").use { cursor ->
+                val nameIndex = cursor.getColumnIndexOrThrow("name")
+                while (cursor.moveToNext()) columns += cursor.getString(nameIndex)
+            }
+            assertTrue("systemPrompt" in columns)
+            assertTrue("userPrompt" in columns)
+            assertTrue("responseText" in columns)
+            assertTrue("attemptTrace" in columns)
+        } finally {
+            helper.close()
+        }
+    }
+
+    @Test
     fun migration3To4CreatesRecoveryTablesWithoutDroppingOldProjectData() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val helper = FrameworkSQLiteOpenHelperFactory().create(

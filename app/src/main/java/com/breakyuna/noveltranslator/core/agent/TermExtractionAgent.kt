@@ -8,6 +8,7 @@ import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.TermCategory
 import org.json.JSONArray
+import org.json.JSONObject
 
 class TermExtractionAgent(private val llmClient: LlmGateway) {
 
@@ -78,20 +79,32 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         fun parseTermsJson(projectId: Long, rawText: String): List<GlossaryEntity> {
             val terms = mutableListOf<GlossaryEntity>()
             try {
-                var jsonStr = rawText.trim()
-                if (jsonStr.contains("```json")) {
-                    jsonStr = jsonStr.substringAfter("```json").substringBeforeLast("```").trim()
-                } else if (jsonStr.contains("```")) {
-                    jsonStr = jsonStr.substringAfter("```").substringBeforeLast("```").trim()
+                val jsonStr = rawText.trim()
+                    .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("\\s*```$"), "")
+                    .trim()
+                val jsonArray = when {
+                    jsonStr.startsWith("[") -> JSONArray(jsonStr.substring(0, jsonStr.lastIndexOf(']') + 1))
+                    jsonStr.startsWith("{") -> {
+                        val root = JSONObject(jsonStr.substring(0, jsonStr.lastIndexOf('}') + 1))
+                        root.optJSONArray("terms")
+                            ?: root.optJSONArray("glossary")
+                            ?: root.optJSONArray("items")
+                            ?: throw IllegalArgumentException("Terminology response object has no terms array")
+                    }
+                    else -> {
+                        val start = jsonStr.indexOf('[')
+                        val end = jsonStr.lastIndexOf(']')
+                        if (start < 0 || end <= start) throw IllegalArgumentException("Terminology response has no JSON array")
+                        JSONArray(jsonStr.substring(start, end + 1))
+                    }
                 }
-
-                val jsonArray = JSONArray(jsonStr)
                 for (i in 0 until jsonArray.length()) {
-                    val obj = jsonArray.getJSONObject(i)
-                    val orig = (if (obj.has("original")) obj.optString("original") else obj.optString("originalTerm", "")).trim()
-                    val sugg = (if (obj.has("suggested")) obj.optString("suggested") else obj.optString("translatedTerm", "")).trim()
-                    val catStr = obj.optString("category", "CHARACTER").trim().uppercase()
-                    val notes = obj.optString("notes", "").trim()
+                    val obj = jsonArray.optJSONObject(i) ?: continue
+                    val orig = firstString(obj, "original", "originalTerm", "source", "sourceTerm").trim()
+                    val sugg = firstString(obj, "suggested", "translatedTerm", "target", "targetTerm", "translation").trim()
+                    val catStr = firstString(obj, "category", "type").ifBlank { "CUSTOM" }.trim().uppercase()
+                    val notes = firstString(obj, "notes", "description", "context").trim()
 
                     if (orig.isNotBlank() && sugg.isNotBlank()) {
                         val category = when (catStr) {
@@ -113,9 +126,14 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
                     }
                 }
             } catch (error: Exception) {
-                throw IllegalArgumentException("Invalid terminology JSON", error)
+                throw IllegalArgumentException("Invalid terminology JSON: ${error.message}", error)
             }
-            return terms
+            return terms.distinctBy { it.originalTerm.lowercase() }
         }
+
+        private fun firstString(obj: JSONObject, vararg keys: String): String = keys.asSequence()
+            .map { obj.optString(it, "") }
+            .firstOrNull { it.isNotBlank() && !it.equals("null", true) }
+            .orEmpty()
     }
 }

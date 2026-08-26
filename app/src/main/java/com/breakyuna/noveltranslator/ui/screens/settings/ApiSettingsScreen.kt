@@ -66,6 +66,7 @@ fun ApiSettingsScreen(
     val systemLogs by viewModel.systemLogs.collectAsState()
     val projects by viewModel.allProjects.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
+    val debugModeEnabled by viewModel.debugModeEnabled.collectAsState()
 
     var activeSubPage by remember {
         mutableStateOf(
@@ -191,6 +192,28 @@ fun ApiSettingsScreen(
                                 valueText = "${systemLogs.size} 条",
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.LOGS }
+                            )
+
+                            AppDivider(startIndent = 58.dp)
+
+                            AppSettingsRow(
+                                title = "Debug 模式",
+                                subtitle = if (debugModeEnabled) {
+                                    "记录后续翻译任务的完整提示词、模型响应、重试与失败原因"
+                                } else {
+                                    "默认关闭；开启后可在工作台查看完整 API 交互内容"
+                                },
+                                leadingIcon = Icons.Outlined.BugReport,
+                                iconTint = MaterialTheme.colorScheme.error,
+                                iconBackground = MaterialTheme.colorScheme.errorContainer,
+                                showChevron = false,
+                                trailingContent = {
+                                    Switch(
+                                        checked = debugModeEnabled,
+                                        onCheckedChange = viewModel::setDebugModeEnabled
+                                    )
+                                },
+                                onClick = { viewModel.setDebugModeEnabled(!debugModeEnabled) }
                             )
 
                             AppDivider(startIndent = 58.dp)
@@ -570,67 +593,62 @@ fun ApiSettingsScreen(
                                     }
                                 }
                             } else {
-                                item {
+                                items(filteredLogs.take(120), key = { it.id }) { log ->
                                     AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
-                                        filteredLogs.take(120).forEachIndexed { index, log ->
-                                            val isExpanded = expandedLogId == log.id
-                                            val levelColor = when (log.level) {
-                                                LogLevel.ERROR -> StatusError
-                                                LogLevel.WARN -> StatusWarning
-                                                LogLevel.INFO -> AccentBlue
-                                                LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
+                                        val isExpanded = expandedLogId == log.id
+                                        val levelColor = when (log.level) {
+                                            LogLevel.ERROR -> StatusError
+                                            LogLevel.WARN -> StatusWarning
+                                            LogLevel.INFO -> AccentBlue
+                                            LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
 
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .clickable { expandedLogId = if (isExpanded) null else log.id }
-                                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { expandedLogId = if (isExpanded) null else log.id }
+                                                .padding(horizontal = 14.dp, vertical = 10.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                verticalAlignment = Alignment.CenterVertically
                                             ) {
-                                                Row(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    verticalAlignment = Alignment.CenterVertically
+                                                Surface(
+                                                    shape = RoundedCornerShape(4.dp),
+                                                    color = levelColor.copy(alpha = 0.12f)
                                                 ) {
-                                                    Surface(
-                                                        shape = RoundedCornerShape(4.dp),
-                                                        color = levelColor.copy(alpha = 0.12f)
-                                                    ) {
-                                                        Text(
-                                                            text = log.level.name,
-                                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                                fontWeight = FontWeight.Bold,
-                                                                fontSize = 9.sp,
-                                                                color = levelColor
-                                                            )
+                                                    Text(
+                                                        text = log.level.name,
+                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                        style = MaterialTheme.typography.labelSmall.copy(
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 9.sp,
+                                                            color = levelColor
                                                         )
-                                                    }
-                                                    Spacer(modifier = Modifier.width(8.dp))
-                                                    Text(
-                                                        text = log.tag,
-                                                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                                        color = MaterialTheme.colorScheme.onSurface,
-                                                        maxLines = 1
-                                                    )
-                                                    Spacer(modifier = Modifier.weight(1f))
-                                                    Text(
-                                                        text = log.formattedTime,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                                     )
                                                 }
-                                                Spacer(modifier = Modifier.height(4.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
                                                 Text(
-                                                    text = log.message,
-                                                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.5.sp),
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    maxLines = if (isExpanded) Int.MAX_VALUE else 2,
-                                                    overflow = TextOverflow.Ellipsis
+                                                    text = log.tag,
+                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = MaterialTheme.colorScheme.onSurface,
+                                                    maxLines = 1
+                                                )
+                                                Spacer(modifier = Modifier.weight(1f))
+                                                Text(
+                                                    text = log.formattedTime,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                                 )
                                             }
-                                            if (index < filteredLogs.take(120).lastIndex) {
-                                                AppDivider(startIndent = 14.dp)
-                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                text = log.message,
+                                                style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.5.sp),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = if (isExpanded) Int.MAX_VALUE else 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                         }
                                     }
                                 }

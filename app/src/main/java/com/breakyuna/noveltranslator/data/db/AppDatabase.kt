@@ -75,7 +75,7 @@ class Converters {
         PlatformTranslationBatchEntity::class,
         PlatformRequestLogEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -290,6 +290,15 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN systemPrompt TEXT")
+                db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN userPrompt TEXT")
+                db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN responseText TEXT")
+                db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN attemptTrace TEXT")
+            }
+        }
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -300,7 +309,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "novel_translator_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_7_8)
                     // The reader-platform redesign intentionally has no legacy project migration.
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .addCallback(object : Callback() {

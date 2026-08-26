@@ -1,7 +1,6 @@
 package com.breakyuna.noveltranslator.ui.screens.bookshelf
 
 import android.net.Uri
-import android.graphics.BitmapFactory
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -36,7 +35,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -48,6 +46,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.breakyuna.noveltranslator.data.model.ShelfBook
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 
@@ -295,19 +294,21 @@ fun BookShelfScreen(
                                 Modifier.pointerInput(book.id) {
                                     var totalDistance = 0f
                                     var didReorder = false
+                                    var pendingOrder = currentDisplayedBooks
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
                                             draggingBookId = book.id
                                             dragOffset = Offset.Zero
                                             totalDistance = 0f
                                             didReorder = false
+                                            pendingOrder = currentDisplayedBooks
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragOffset += amount
                                             totalDistance += amount.getDistance()
 
-                                            val currentList = currentDisplayedBooks
+                                            val currentList = pendingOrder
                                             val currentIdx = currentList.indexOfFirst { it.id == book.id }
                                             if (currentIdx < 0) return@detectDragGesturesAfterLongPress
 
@@ -331,6 +332,7 @@ fun BookShelfScreen(
                                                     val mutableList = currentList.toMutableList()
                                                     val item = mutableList.removeAt(currentIdx)
                                                     mutableList.add(targetIdx, item)
+                                                    pendingOrder = mutableList
                                                     displayedBooks = mutableList
                                                     didReorder = true
 
@@ -343,7 +345,7 @@ fun BookShelfScreen(
                                         },
                                         onDragEnd = {
                                             if (didReorder) {
-                                                val orderedIds = currentDisplayedBooks.map { it.id }
+                                                val orderedIds = pendingOrder.map { it.id }
                                                 viewModel.updateShelfOrderList(orderedIds)
                                             } else if (totalDistance < 15f) {
                                                 selectedBookIds = setOf(book.id)
@@ -353,7 +355,7 @@ fun BookShelfScreen(
                                         },
                                         onDragCancel = {
                                             if (didReorder) {
-                                                val orderedIds = currentDisplayedBooks.map { it.id }
+                                                val orderedIds = pendingOrder.map { it.id }
                                                 viewModel.updateShelfOrderList(orderedIds)
                                             }
                                             draggingBookId = null
@@ -612,16 +614,14 @@ private fun BookCoverCard(
     onLongClick: () -> Unit,
     onDoubleClick: () -> Unit
 ) {
-    val cover = remember(book.coverPath) {
-        book.coverPath?.let { runCatching { BitmapFactory.decodeFile(it)?.asImageBitmap() }.getOrNull() }
-    }
+    val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 480)
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = onLongClick,
+                onLongClick = if (inSelectionMode) onLongClick else null,
                 onDoubleClick = onDoubleClick
             )
     ) {
@@ -642,7 +642,7 @@ private fun BookCoverCard(
         ) {
             if (cover != null) {
                 androidx.compose.foundation.Image(
-                    cover,
+                    cover!!,
                     book.title,
                     Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop

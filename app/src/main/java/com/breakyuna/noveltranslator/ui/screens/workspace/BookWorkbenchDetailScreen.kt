@@ -1,8 +1,8 @@
 package com.breakyuna.noveltranslator.ui.screens.workspace
 
-import android.graphics.BitmapFactory
 import android.widget.Toast
 import androidx.compose.animation.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -28,7 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +38,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.breakyuna.noveltranslator.core.llm.LlmErrorCategory
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
@@ -48,6 +48,7 @@ import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import java.io.File
@@ -86,7 +87,12 @@ fun BookWorkbenchDetailScreen(
     val allRuns by remember(bookId) { viewModel.observeRunsByBook(bookId) }
         .collectAsState(initial = emptyList())
     val allProviders by viewModel.allProviders.collectAsState()
-    val systemLogs by viewModel.systemLogs.collectAsState()
+    val debugModeEnabled by viewModel.debugModeEnabled.collectAsState()
+    var selectedTab by rememberSaveable { mutableStateOf(WorkbenchTab.TASKS) }
+    val systemLogs by remember(selectedTab) {
+        if (selectedTab == WorkbenchTab.TASKS || selectedTab == WorkbenchTab.LOGS) viewModel.systemLogs
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
 
     // Active target edition selection (defaults to preferred reading edition or first translation edition)
     var selectedTargetEditionId by rememberSaveable(bookId) { mutableStateOf<Long?>(null) }
@@ -107,27 +113,20 @@ fun BookWorkbenchDetailScreen(
     }.collectAsState(initial = emptyList())
     val latestRun = activeRuns.firstOrNull() ?: allRuns.firstOrNull { it.translationProjectId == currentProject?.id }
 
-    val projectLexicon by remember(currentProject?.id) {
-        if (currentProject != null) viewModel.observeLexicon(currentProject.id)
+    val projectLexicon by remember(currentProject?.id, selectedTab) {
+        if (currentProject != null && selectedTab == WorkbenchTab.GLOSSARY) viewModel.observeLexicon(currentProject.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
-    val projectStoryMemory by remember(currentProject?.id) {
-        if (currentProject != null) viewModel.observeStoryMemory(currentProject.id)
+    val projectStoryMemory by remember(currentProject?.id, selectedTab) {
+        if (currentProject != null && selectedTab == WorkbenchTab.GLOSSARY) viewModel.observeStoryMemory(currentProject.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
-    val latestBatches by remember(latestRun?.id) {
-        if (latestRun != null) viewModel.observeBatches(latestRun.id)
+    val latestBatches by remember(latestRun?.id, selectedTab) {
+        if (latestRun != null && selectedTab == WorkbenchTab.TASKS) viewModel.observeBatches(latestRun.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
-
-    val latestRequestLogs by remember(latestRun?.id) {
-        if (latestRun != null) viewModel.observeRequestLogs(latestRun.id)
-        else flowOf(emptyList())
-    }.collectAsState(initial = emptyList())
-
-    var selectedTab by rememberSaveable { mutableStateOf(WorkbenchTab.TASKS) }
     var showCreateEditionDialog by rememberSaveable { mutableStateOf(false) }
     var showTermScannerDialog by rememberSaveable { mutableStateOf(false) }
     var showAddTermDialog by rememberSaveable { mutableStateOf(false) }
@@ -279,9 +278,9 @@ fun BookWorkbenchDetailScreen(
                             book = currentBook,
                             project = currentProject,
                             allRuns = allRuns,
-                            requestLogs = latestRequestLogs,
                             systemLogs = systemLogs,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            debugModeEnabled = debugModeEnabled
                         )
                     }
                 }
@@ -418,19 +417,14 @@ private fun WorkbenchHeroCard(
                     color = MaterialTheme.colorScheme.surfaceVariant,
                     shadowElevation = 2.dp
                 ) {
-                    if (!book.coverPath.isNullOrBlank()) {
-                        val file = File(book.coverPath)
-                        if (file.exists()) {
-                            val bitmap = remember(book.coverPath) { BitmapFactory.decodeFile(file.absolutePath) }
-                            if (bitmap != null) {
-                                Image(
-                                    bitmap = bitmap.asImageBitmap(),
-                                    contentDescription = book.title,
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentScale = ContentScale.Crop
-                                )
-                            }
-                        }
+                    val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
+                    if (cover != null) {
+                        Image(
+                            bitmap = cover!!,
+                            contentDescription = book.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
                     } else {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -778,7 +772,7 @@ private fun TasksAndControlTab(
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            items(sampleDisplayChapters) { chapter ->
+                            items(sampleDisplayChapters, key = { it.id }) { chapter ->
                                 val isDone = chapter.chapterIndex <= completedChapters
                                 Surface(
                                     modifier = Modifier
@@ -969,7 +963,7 @@ private fun LiveProcessLogCard(
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(filteredLogs) { log ->
+                        items(filteredLogs, key = { it.id }) { log ->
                             val color = when (log.level) {
                                 LogLevel.ERROR -> Color(0xFFFF5252)
                                 LogLevel.WARN -> Color(0xFFFFD740)
@@ -1563,17 +1557,32 @@ private fun LogsAndHistoryTab(
     book: BookEntity,
     project: TranslationProjectV2Entity?,
     allRuns: List<PlatformTranslationRunEntity>,
-    requestLogs: List<PlatformRequestLogEntity>,
     systemLogs: List<SystemLogEntry>,
-    viewModel: AppViewModel
+    viewModel: AppViewModel,
+    debugModeEnabled: Boolean
 ) {
     var selectedSubTab by rememberSaveable { mutableStateOf(0) }
+    var selectedRunId by rememberSaveable(book.id) { mutableStateOf<Long?>(null) }
+    LaunchedEffect(allRuns) {
+        if (selectedRunId == null || allRuns.none { it.id == selectedRunId }) selectedRunId = allRuns.firstOrNull()?.id
+    }
+    val selectedRun = allRuns.firstOrNull { it.id == selectedRunId }
+    val requestLogs by remember(selectedRunId) {
+        selectedRunId?.let(viewModel::observeRequestLogs) ?: flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val systemTabIndex = if (debugModeEnabled) 3 else 2
+    LaunchedEffect(debugModeEnabled) {
+        if (!debugModeEnabled && selectedSubTab > 2) selectedSubTab = 2
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        SecondaryTabRow(selectedTabIndex = selectedSubTab) {
+        ScrollableTabRow(selectedTabIndex = selectedSubTab, edgePadding = 8.dp) {
             Tab(selected = selectedSubTab == 0, onClick = { selectedSubTab = 0 }, text = { Text("任务执行历史 (${allRuns.size})") })
             Tab(selected = selectedSubTab == 1, onClick = { selectedSubTab = 1 }, text = { Text("模型调用明细 (${requestLogs.size})") })
-            Tab(selected = selectedSubTab == 2, onClick = { selectedSubTab = 2 }, text = { Text("系统全局日志") })
+            if (debugModeEnabled) {
+                Tab(selected = selectedSubTab == 2, onClick = { selectedSubTab = 2 }, text = { Text("Debug 诊断") })
+            }
+            Tab(selected = selectedSubTab == systemTabIndex, onClick = { selectedSubTab = systemTabIndex }, text = { Text("系统全局日志") })
         }
 
         when (selectedSubTab) {
@@ -1590,8 +1599,14 @@ private fun LogsAndHistoryTab(
                             }
                         }
                     } else {
-                        items(allRuns) { run ->
-                            Card(modifier = Modifier.fillMaxWidth()) {
+                        items(allRuns, key = { it.id }) { run ->
+                            Card(
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    selectedRunId = run.id
+                                    selectedSubTab = if (debugModeEnabled) 2 else 1
+                                },
+                                border = if (run.id == selectedRunId) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                            ) {
                                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -1646,7 +1661,7 @@ private fun LogsAndHistoryTab(
                             }
                         }
                     } else {
-                        items(requestLogs) { log ->
+                        items(requestLogs, key = { it.id }) { log ->
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp),
@@ -1678,13 +1693,125 @@ private fun LogsAndHistoryTab(
                     }
                 }
             }
-            2 -> {
+            2 -> if (debugModeEnabled) {
+                DebugDiagnosticsTab(
+                    run = selectedRun,
+                    requestLogs = requestLogs,
+                    systemLogs = systemLogs.filter { it.projectId == project?.id },
+                    viewModel = viewModel
+                )
+            } else {
+                Box(Modifier.fillMaxSize().padding(16.dp)) {
+                    LiveProcessLogCard(projectId = project?.id, systemLogs = systemLogs)
+                }
+            }
+            3 -> {
                 Box(Modifier.fillMaxSize().padding(16.dp)) {
                     LiveProcessLogCard(projectId = project?.id, systemLogs = systemLogs)
                 }
             }
         }
     }
+}
+
+@Composable
+private fun DebugDiagnosticsTab(
+    run: PlatformTranslationRunEntity?,
+    requestLogs: List<PlatformRequestLogSummary>,
+    systemLogs: List<SystemLogEntry>,
+    viewModel: AppViewModel
+) {
+    var expandedLogId by rememberSaveable(run?.id) { mutableStateOf<Long?>(null) }
+    val runFlow = remember(run?.id, systemLogs) {
+        if (run == null) emptyList() else systemLogs
+            .filter { it.timestamp >= run.createdAt && it.timestamp <= run.updatedAt + 60_000 }
+            .sortedBy { it.timestamp }
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text("Debug 仅记录开启后的任务", fontWeight = FontWeight.Bold)
+                    Text("内容可能包含小说正文、提示词和模型完整输出，请勿在公开场合直接分享。", style = MaterialTheme.typography.bodySmall)
+                    if (run != null) {
+                        Text("当前任务 #${run.id} · ${run.state} · ${run.providerName}/${run.modelName}", style = MaterialTheme.typography.bodySmall)
+                        if (!run.lastError.isNullOrBlank()) Text("任务失败原因：${run.lastError}", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+        if (runFlow.isNotEmpty()) {
+            item { Text("完整执行流程", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+            items(runFlow, key = { it.id }) { entry ->
+                Text(
+                    "${entry.formattedTime}  [${entry.tag}] ${entry.message}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (entry.level == LogLevel.ERROR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+        item { Text("API 交互与校验", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+        if (requestLogs.isEmpty()) {
+            item { Text("此任务没有 Debug API 内容；可能是在开启 Debug 模式之前执行的。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+            items(requestLogs, key = { it.id }) { log ->
+                val expanded = expandedLogId == log.id
+                val detail by produceState<PlatformRequestLogEntity?>(initialValue = null, log.id, expanded) {
+                    if (expanded) value = viewModel.getRequestLogDetail(log.id)
+                }
+                ElevatedCard(Modifier.fillMaxWidth().clickable { expandedLogId = if (expanded) null else log.id }) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(log.operation, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                            Text(if (log.isSuccess) "成功" else "失败", color = if (log.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
+                        }
+                        Text("耗时 ${log.durationMs}ms · 尝试 ${log.attemptCount} 次 · ${log.promptTokens + log.completionTokens} Tokens", style = MaterialTheme.typography.bodySmall)
+                        if (!log.isSuccess) {
+                            Text("失败原因：${debugFailureExplanation(log)}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (expanded) {
+                            DebugTextBlock("重试轨迹", detail?.attemptTrace)
+                            DebugTextBlock("System Prompt", detail?.systemPrompt)
+                            DebugTextBlock("User Prompt", detail?.userPrompt)
+                            DebugTextBlock("模型响应", detail?.responseText)
+                            DebugTextBlock("错误原文", log.errorMessage)
+                        } else {
+                            Text("点击展开完整请求与响应", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DebugTextBlock(title: String, value: String?) {
+    if (value.isNullOrBlank()) return
+    Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+        Text(
+            value,
+            Modifier.fillMaxWidth().padding(10.dp),
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+private fun debugFailureExplanation(log: PlatformRequestLogSummary): String = when (log.errorCategory) {
+    LlmErrorCategory.AUTHENTICATION.name -> "API 身份认证失败，请检查 Key、端点和请求协议。${log.errorMessage.orEmpty()}"
+    LlmErrorCategory.RATE_LIMIT.name -> "供应商限流或额度不足，重试次数已耗尽。${log.errorMessage.orEmpty()}"
+    LlmErrorCategory.CONTEXT_OVERFLOW.name -> "输入上下文超过模型限制，需要缩小章节批次。${log.errorMessage.orEmpty()}"
+    LlmErrorCategory.TRUNCATED_OUTPUT.name -> "模型输出达到 Token 上限，续写或重分块未能恢复完整结果。${log.errorMessage.orEmpty()}"
+    LlmErrorCategory.QUALITY_REJECTED.name -> "QA 校验发现缺段、图片标记变化、术语不一致或异常内容：${log.errorMessage.orEmpty()}"
+    LlmErrorCategory.NETWORK_UNAVAILABLE.name, LlmErrorCategory.TIMEOUT.name -> "网络连接或请求超时，自动重试后仍未成功。${log.errorMessage.orEmpty()}"
+    else -> log.errorMessage ?: log.errorCategory ?: "未返回更具体的失败信息"
 }
 
 // Dialogs
@@ -1828,6 +1955,13 @@ private fun TermScannerDialog(
                         )
                     }
                 } else {
+                    if (targetProjectId == null) {
+                        Text(
+                            "请先创建并选择一个翻译版本，扫描结果需要写入对应工程的术语库。",
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                     Text(
                         "AI 将分析指定章节正文，提取小说中的角色人名、地名、功法与专有名词。",
                         style = MaterialTheme.typography.bodySmall,
@@ -1909,7 +2043,7 @@ private fun TermScannerDialog(
                             )
                         }
                     },
-                    enabled = activeProvider != null
+                    enabled = activeProvider != null && targetProjectId != null && totalChapters > 0
                 ) {
                     Text("开始扫描")
                 }

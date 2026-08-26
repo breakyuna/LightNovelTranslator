@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.ui.screens.bookdetail
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,7 +17,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,6 +30,7 @@ import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 
 data class TargetLanguageOption(
     val code: String,
@@ -251,7 +250,7 @@ fun BookDetailScreen(
 
 @Composable
 private fun BookHero(book: BookEntity?, strings: PlatformUiStrings, compact: Boolean) {
-    val cover = remember(book?.coverPath) { book?.coverPath?.let { runCatching { BitmapFactory.decodeFile(it)?.asImageBitmap() }.getOrNull() } }
+    val cover by rememberAsyncBookImage(book?.coverPath, maxDimension = 640)
     ElevatedCard(Modifier.fillMaxWidth()) {
         Row(
             Modifier.fillMaxWidth().padding(if (compact) 14.dp else 20.dp),
@@ -263,7 +262,7 @@ private fun BookHero(book: BookEntity?, strings: PlatformUiStrings, compact: Boo
                     .background(Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.tertiaryContainer))),
                 contentAlignment = Alignment.Center
             ) {
-                if (cover != null) Image(cover, book?.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                if (cover != null) Image(cover!!, book?.title, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Text(book?.title?.take(2).orEmpty(), style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -598,4 +597,3 @@ private fun CreateEditionDialog(
         }
     )
 }
-

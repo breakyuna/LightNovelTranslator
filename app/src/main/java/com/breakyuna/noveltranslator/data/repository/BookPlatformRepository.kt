@@ -37,6 +37,7 @@ class BookPlatformRepository(
     val allTranslationProjects: Flow<List<TranslationProjectV2Entity>> = projects.observeAll()
 
     fun observeBook(bookId: Long) = books.observeBook(bookId)
+    suspend fun getBook(bookId: Long) = books.getBook(bookId)
     fun observeEditions(bookId: Long) = books.observeEditions(bookId)
     fun observeEdition(editionId: Long) = books.observeEdition(editionId)
     fun observeChapters(bookId: Long) = books.observeChapters(bookId)

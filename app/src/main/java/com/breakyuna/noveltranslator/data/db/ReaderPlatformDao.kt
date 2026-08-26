@@ -192,6 +192,17 @@ interface ReaderProgressDao {
     @Query("SELECT * FROM reader_progress WHERE bookId = :bookId")
     suspend fun get(bookId: Long): ReaderProgressEntity?
 
+    @Query("""
+        SELECT p.bookId, b.title, b.author, b.coverPath, p.logicalChapterId,
+               c.chapterIndex, c.canonicalTitle AS chapterTitle, p.updatedAt
+        FROM reader_progress p
+        JOIN books b ON b.id = p.bookId
+        LEFT JOIN logical_chapters c ON c.id = p.logicalChapterId
+        WHERE p.logicalChapterId IS NOT NULL
+        ORDER BY p.updatedAt DESC
+    """)
+    fun observeHistory(): Flow<List<ReadingHistoryItem>>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(progress: ReaderProgressEntity)
 }
@@ -222,11 +233,24 @@ interface PlatformTaskDao {
     @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId ORDER BY batchIndex")
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>>
 
-    @Query("SELECT * FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC")
-    fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogEntity>>
+    @Query("""
+        SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
+               cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,
+               isSuccess, timestamp
+        FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC
+    """)
+    fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>>
 
-    @Query("SELECT * FROM platform_request_logs ORDER BY timestamp DESC LIMIT 500")
-    fun observeAllRequestLogs(): Flow<List<PlatformRequestLogEntity>>
+    @Query("""
+        SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
+               cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,
+               isSuccess, timestamp
+        FROM platform_request_logs ORDER BY timestamp DESC LIMIT 500
+    """)
+    fun observeAllRequestLogs(): Flow<List<PlatformRequestLogSummary>>
+
+    @Query("SELECT * FROM platform_request_logs WHERE id = :id")
+    suspend fun getRequestLog(id: Long): PlatformRequestLogEntity?
 
     @Query("SELECT * FROM platform_translation_batches WHERE id = :id")
     suspend fun getBatch(id: Long): PlatformTranslationBatchEntity?

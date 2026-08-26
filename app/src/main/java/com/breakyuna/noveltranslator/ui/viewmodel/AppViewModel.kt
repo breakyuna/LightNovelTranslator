@@ -55,6 +55,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("novel_translator_prefs", Context.MODE_PRIVATE)
 
+    private val _debugModeEnabled = MutableStateFlow(prefs.getBoolean("debug_mode_enabled", false))
+    val debugModeEnabled: StateFlow<Boolean> = _debugModeEnabled.asStateFlow()
+
+    fun setDebugModeEnabled(enabled: Boolean) {
+        _debugModeEnabled.value = enabled
+        prefs.edit().putBoolean("debug_mode_enabled", enabled).apply()
+    }
+
     private val _themeMode = MutableStateFlow(
         try {
             val modeStr = prefs.getString("app_theme_mode", com.breakyuna.noveltranslator.ui.theme.AppThemeMode.SYSTEM.name)
@@ -127,13 +135,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         bookFiles,
         reliableLlmGateway,
         contextEngineV2,
-        providerRepo::getProviderById
+        providerRepo::getProviderById,
+        debugEnabled = { _debugModeEnabled.value }
     )
     private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
     private val seamlessJobs = ConcurrentHashMap<Long, Job>()
     private val lastSeamlessChapter = ConcurrentHashMap<Long, Long?>()
 
     val shelfBooks: StateFlow<List<ShelfBook>> = bookPlatformRepo.shelf
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val readingHistory: StateFlow<List<ReadingHistoryItem>> = db.readerProgressDao().observeHistory()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val hiddenBooks: StateFlow<List<BookEntity>> = bookPlatformRepo.hiddenBooks
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -642,8 +653,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateShelfOrderList(orderedIds: List<Long>) {
         viewModelScope.launch(Dispatchers.IO) {
-            orderedIds.forEachIndexed { order, bookId ->
-                bookPlatformRepo.updateShelfOrder(bookId, order)
+            db.withTransaction {
+                orderedIds.forEachIndexed { order, bookId ->
+                    bookPlatformRepo.updateShelfOrder(bookId, order)
+                }
             }
         }
     }
@@ -657,8 +670,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>> =
         bookPlatformRepo.observeBatches(runId)
 
-    fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogEntity>> =
+    fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>> =
         bookPlatformRepo.observeRequestLogs(runId)
+
+    suspend fun getRequestLogDetail(id: Long): PlatformRequestLogEntity? =
+        db.platformTaskDao().getRequestLog(id)
 
     fun observeLexicon(projectId: Long): Flow<List<LexiconEntryEntity>> =
         bookPlatformRepo.observeLexicon(projectId)
@@ -740,8 +756,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                requireNotNull(targetProjectId) { "请先创建并选择一个翻译版本，再扫描术语" }
+                val book = bookPlatformRepo.getBook(bookId) ?: error("找不到目标书籍")
+                val normalizedStart = minOf(startChapter, endChapter).coerceAtLeast(1)
+                val normalizedEnd = maxOf(startChapter, endChapter).coerceAtLeast(normalizedStart)
                 val allChapters = bookPlatformRepo.getChapters(bookId)
-                    .filter { it.chapterIndex in startChapter..endChapter }
+                    .filter { it.chapterIndex in normalizedStart..normalizedEnd }
                 if (allChapters.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         showMessage("所选范围内未找到章节")
@@ -757,49 +777,49 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     "🔍 启动专有术语扫描: Book#$bookId, 范围第 $startChapter ~ $endChapter 章 (${allChapters.size}章)，使用模型: ${provider.name}/${provider.selectedModel}",
                     projectId = targetProjectId
                 )
-                val combinedText = buildString {
-                    for (ch in allChapters.take(15)) {
-                        val segments = db.bookDao().getLogicalSegments(ch.id)
-                        val editionCh = db.bookDao().getEditionChapter(sourceEditionId, ch.id)
-                        if (editionCh != null) {
-                            val edSegments = db.bookDao().getEditionSegments(editionCh.id).associateBy { it.id }
-                            val mappings = db.bookDao().getMappings(segments.map { it.id }).groupBy { it.logicalSegmentId }
-                            val text = segments.joinToString("\n") { s ->
-                                mappings[s.id].orEmpty().sortedBy { it.mappingOrder }
-                                    .mapNotNull { edSegments[it.editionSegmentId]?.baseText }
-                                    .joinToString("\n")
+                val existingTerms = db.lexiconV2Dao().getConfirmed(targetProjectId)
+                    .mapTo(linkedSetOf()) { it.sourceTerm.lowercase() }
+                val pendingEntries = mutableListOf<LexiconEntryEntity>()
+                var count = 0
+                var readableChapters = 0
+                val scanBatches = allChapters.chunked(3)
+                scanBatches.forEachIndexed { batchIndex, chapterBatch ->
+                    val combinedText = buildString {
+                        for (ch in chapterBatch) {
+                            val segments = db.bookDao().getLogicalSegments(ch.id)
+                            val editionCh = db.bookDao().getEditionChapter(sourceEditionId, ch.id)
+                            if (editionCh != null) {
+                                val edSegments = db.bookDao().getEditionSegments(editionCh.id).associateBy { it.id }
+                                val mappings = db.bookDao().getMappings(segments.map { it.id }).groupBy { it.logicalSegmentId }
+                                val text = segments.joinToString("\n") { s ->
+                                    mappings[s.id].orEmpty().sortedBy { it.mappingOrder }
+                                        .mapNotNull { edSegments[it.editionSegmentId]?.baseText }
+                                        .joinToString("\n")
+                                }
+                                append("【${ch.canonicalTitle}】\n")
+                                append(text)
+                                append("\n\n")
+                                if (text.isNotBlank()) readableChapters++
                             }
-                            append("【${ch.canonicalTitle}】\n")
-                            append(text)
-                            append("\n\n")
                         }
                     }
-                }
-                if (combinedText.isBlank()) {
+                    if (combinedText.isBlank()) return@forEachIndexed
                     withContext(Dispatchers.Main) {
-                        showMessage("未读取到章节文本，无法扫描")
-                        onComplete(0)
+                        onProgress("AI 正在扫描第 ${batchIndex + 1}/${scanBatches.size} 批（累计 $count 条）...")
                     }
-                    return@launch
-                }
-                withContext(Dispatchers.Main) {
-                    onProgress("AI 正在分析人名、地名、功法与专有术语...")
-                }
-                val existingTerms = if (targetProjectId != null) {
-                    db.lexiconV2Dao().getConfirmed(targetProjectId).map { it.sourceTerm }
-                } else emptyList()
-                val extraction = termExtractionAgent.extractTermsWithUsage(
-                    projectId = targetProjectId ?: 0L,
-                    sampleText = combinedText,
-                    provider = provider,
-                    sourceLanguage = "auto",
-                    targetLanguage = targetLanguage,
-                    existingTerms = existingTerms
-                )
-                var count = 0
-                if (extraction.terms.isNotEmpty()) {
-                    if (targetProjectId != null) {
-                        val entries = extraction.terms.map { term ->
+                    val extraction = termExtractionAgent.extractTermsWithUsage(
+                        projectId = targetProjectId,
+                        sampleText = combinedText,
+                        provider = provider,
+                        sourceLanguage = book.originalLanguage,
+                        targetLanguage = targetLanguage,
+                        existingTerms = existingTerms
+                    )
+                    if (!extraction.usage.isSuccess) error(extraction.usage.errorMessage ?: "第 ${batchIndex + 1} 批模型调用失败")
+                    if (extraction.parseError != null) error("第 ${batchIndex + 1} 批：${extraction.parseError}")
+                    val entries = extraction.terms
+                        .filterNot { it.originalTerm.lowercase() in existingTerms }
+                        .map { term ->
                             LexiconEntryEntity(
                                 translationProjectId = targetProjectId,
                                 sourceTerm = term.originalTerm,
@@ -810,15 +830,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 reviewStatus = ReviewStatus.CONFIRMED.name
                             )
                         }
-                        db.lexiconV2Dao().upsertAll(entries)
-                        count = entries.size
+                    if (entries.isNotEmpty()) {
+                        entries.forEach { existingTerms += it.sourceTerm.lowercase() }
+                        pendingEntries += entries
+                        count += entries.size
                     }
-                    com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
-                        "GLOSSARY_SCAN",
-                        "✅ 扫描完成！共提取并入库 $count 个专有术语",
-                        projectId = targetProjectId
-                    )
                 }
+                if (readableChapters == 0) {
+                    withContext(Dispatchers.Main) {
+                        showMessage("未读取到章节文本，无法扫描")
+                        onComplete(0)
+                    }
+                    return@launch
+                }
+                if (pendingEntries.isNotEmpty()) db.lexiconV2Dao().upsertAll(pendingEntries)
+                com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                    "GLOSSARY_SCAN",
+                    "✅ 扫描完成！已处理 $readableChapters 章，共提取并入库 $count 个专有术语",
+                    projectId = targetProjectId
+                )
                 withContext(Dispatchers.Main) {
                     showMessage("专有术语扫描完成，共录入 $count 个术语")
                     onComplete(count)

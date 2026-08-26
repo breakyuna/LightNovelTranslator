@@ -46,7 +46,8 @@ class BookTranslationEngine(
     private val gateway: LlmGateway,
     private val contextEngine: ContextEngine,
     private val providerResolver: suspend (Long) -> ApiProviderEntity?,
-    private val promptCacheCapability: ProviderPromptCacheCapability = NoPromptCacheCapability
+    private val promptCacheCapability: ProviderPromptCacheCapability = NoPromptCacheCapability,
+    private val debugEnabled: () -> Boolean = { false }
 ) {
     private val books = database.bookDao()
     private val projects = database.translationProjectV2Dao()
@@ -277,8 +278,7 @@ class BookTranslationEngine(
             projectId = project.id,
             chapterIndex = firstIndex
         )
-        val result = gateway.executeCompletion(
-            LlmRequest(
+        val request = LlmRequest(
                 provider = provider,
                 systemPrompt = TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
                 userPrompt = TranslationProtocol.userPrompt(context, sources),
@@ -287,8 +287,8 @@ class BookTranslationEngine(
                 operation = "BOOK_TRANSLATION",
                 promptCacheHint = cacheHint
             )
-        )
-        recordUsage(runId, batchId, provider, result)
+        val result = gateway.executeCompletion(request)
+        recordUsage(runId, batchId, provider, request, result)
         check(result.isSuccess) {
             SystemLogger.error("LLM_API", "❌ 模型调用失败: ${result.errorMessage}", projectId = project.id, chapterIndex = firstIndex)
             result.errorMessage ?: "Translation request failed"
@@ -308,6 +308,7 @@ class BookTranslationEngine(
             var qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             if (!qa.accepted) {
                 SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 (${qa.problems.joinToString()})，启动自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_TRIGGERED", qa.problems)
                 translated = repairChapter(project, provider, runId, batchId, context, source, translated)
                 qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             }
@@ -316,6 +317,7 @@ class BookTranslationEngine(
                 SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
             } else {
                 failed++
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_VALIDATION_FAILED", qa.problems)
                 SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
             }
         }
@@ -348,8 +350,7 @@ class BookTranslationEngine(
     ): ParsedTranslationChapter? {
         val missing = source.segments.filter { partial?.segments?.containsKey(it.shortId) != true }
         val retrySource = if (missing.isNotEmpty() && partial != null) source.copy(segments = missing) else source
-        val retry = gateway.executeCompletion(
-            LlmRequest(
+        val request = LlmRequest(
                 provider,
                 TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
                 TranslationProtocol.userPrompt(context, listOf(retrySource)),
@@ -358,11 +359,15 @@ class BookTranslationEngine(
                 "CHAPTER_REPAIR",
                 prepareCache(project, provider, context)
             )
-        )
-        recordUsage(runId, batchId, provider, retry)
+        val retry = gateway.executeCompletion(request)
+        recordUsage(runId, batchId, provider, request, retry)
         if (!retry.isSuccess) return partial
         val repaired = TranslationProtocol.parse(retry.text).chapters.firstOrNull() ?: return partial
-        return if (partial == null) repaired else partial.copy(segments = partial.segments + repaired.segments)
+        if (partial == null) return repaired
+        val merged = source.segments.mapNotNull { segment ->
+            (repaired.segments[segment.shortId] ?: partial.segments[segment.shortId])?.let { segment.shortId to it }
+        }.toMap(LinkedHashMap())
+        return partial.copy(segments = merged)
     }
 
     private suspend fun translateOversizedChapter(
@@ -402,15 +407,24 @@ class BookTranslationEngine(
         var completion = 0L
         groups.forEach { group ->
             val chunkSource = source.copy(segments = group)
-            val result = gateway.executeCompletion(
-                LlmRequest(provider, TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage), TranslationProtocol.userPrompt(context, listOf(chunkSource)), provider.temperature, outputLimit(provider.maxContextTokens), "OVERSIZED_CHAPTER_CHUNK", prepareCache(project, provider, context))
-            )
-            recordUsage(runId, batchId, provider, result)
+            val request = LlmRequest(provider, TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage), TranslationProtocol.userPrompt(context, listOf(chunkSource)), provider.temperature, outputLimit(provider.maxContextTokens), "OVERSIZED_CHAPTER_CHUNK", prepareCache(project, provider, context))
+            val result = gateway.executeCompletion(request)
+            recordUsage(runId, batchId, provider, request, result)
             check(result.isSuccess) { result.errorMessage ?: "Oversized chapter chunk failed" }
-            val parsed = TranslationProtocol.parse(result.text).chapters.firstOrNull()
-            val qa = DeterministicTranslationQa.validate(chunkSource, parsed, context.matchedLexicon.map { it.sourceTerm to it.targetTerm })
-            check(qa.accepted && parsed != null) { qa.problems.joinToString() }
-            parsed.segments.forEach { (id, text) ->
+            val mandatoryTerms = context.matchedLexicon.map { it.sourceTerm to it.targetTerm }
+            var parsed = TranslationProtocol.parse(result.text).chapters.firstOrNull()
+            var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
+            if (!qa.accepted) {
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
+                parsed = repairChapter(project, provider, runId, batchId, context, chunkSource, parsed)
+                qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
+            }
+            if (!qa.accepted || parsed == null) {
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems)
+                error(qa.problems.joinToString())
+            }
+            val validated = parsed ?: error("QA accepted a missing parsed chunk")
+            validated.segments.forEach { (id, text) ->
                 translated[id] = translated[id].orEmpty() + text
             }
             prompt += result.promptTokens
@@ -552,20 +566,61 @@ class BookTranslationEngine(
         }
     }
 
-    private suspend fun recordUsage(runId: Long, batchId: Long, provider: ApiProviderEntity, result: LlmResult) {
+    private suspend fun recordUsage(runId: Long, batchId: Long, provider: ApiProviderEntity, request: LlmRequest, result: LlmResult) {
         val cost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
+        val captureDebug = debugEnabled()
+        val attemptTrace = if (captureDebug) result.attempts.joinToString("\n") { attempt ->
+            buildString {
+                append("Attempt ").append(attempt.attemptNumber)
+                append(": success=").append(attempt.result.isSuccess)
+                append(", durationMs=").append(attempt.result.durationMs)
+                attempt.result.httpStatus?.let { append(", http=").append(it) }
+                attempt.result.finishReason?.let { append(", finish=").append(it) }
+                attempt.result.errorCategory?.let { append(", category=").append(it.name) }
+                attempt.result.errorMessage?.let { append(", error=").append(it) }
+            }
+        }.ifBlank { null } else null
         tasks.insertRequestLog(
             PlatformRequestLogEntity(
                 runId = runId, batchId = batchId, operation = result.operation,
                 attemptCount = result.attempts.size.coerceAtLeast(1), promptTokens = result.promptTokens,
                 completionTokens = result.completionTokens, estimatedCost = cost, durationMs = result.durationMs,
                 finishReason = result.finishReason, errorCategory = result.errorCategory?.name,
-                errorMessage = result.errorMessage, isSuccess = result.isSuccess
+                errorMessage = result.errorMessage,
+                systemPrompt = request.systemPrompt.takeIf { captureDebug },
+                userPrompt = request.userPrompt.takeIf { captureDebug },
+                responseText = result.text.takeIf { captureDebug },
+                attemptTrace = attemptTrace,
+                isSuccess = result.isSuccess
             )
         )
         tasks.getRun(runId)?.let { run ->
             tasks.updateRun(run.copy(promptTokens = run.promptTokens + result.promptTokens, completionTokens = run.completionTokens + result.completionTokens, totalCost = run.totalCost + cost, updatedAt = System.currentTimeMillis()))
         }
+    }
+
+    private suspend fun recordQaDiagnostic(
+        runId: Long,
+        batchId: Long,
+        chapterIndex: Int,
+        operation: String,
+        problems: List<String>
+    ) {
+        tasks.insertRequestLog(
+            PlatformRequestLogEntity(
+                runId = runId,
+                batchId = batchId,
+                operation = "$operation · Chapter $chapterIndex",
+                attemptCount = 1,
+                promptTokens = 0,
+                completionTokens = 0,
+                estimatedCost = 0.0,
+                durationMs = 0,
+                errorCategory = LlmErrorCategory.QUALITY_REJECTED.name,
+                errorMessage = problems.distinct().joinToString("; "),
+                isSuccess = false
+            )
+        )
     }
 
     private suspend fun updateRunCounters(runId: Long, completed: Int, failed: Int) {

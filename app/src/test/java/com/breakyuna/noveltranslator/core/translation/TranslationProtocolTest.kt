@@ -56,6 +56,23 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun deterministicQa_accepts_complete_segments_regardlessOfMapIterationOrder() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "first paragraph"),
+                ProtocolSegment(2, 101, "second paragraph")
+            )
+        )
+        val translated = ParsedTranslationChapter(1, linkedMapOf(2 to "第二段", 1 to "第一段"))
+
+        assertTrue(DeterministicTranslationQa.validate(source, translated).accepted)
+    }
+
+    @Test
     fun budget_never_exceeds_user_batch_limit_and_only_chunks_oversized_single_chapter() {
         val ordinary = TokenBudgetPlanner.plan(
             maxContextTokens = 32_768,

@@ -15,6 +15,7 @@ import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.glossary.GlossaryScreen
+import com.breakyuna.noveltranslator.ui.screens.history.ReadingHistoryScreen
 import com.breakyuna.noveltranslator.ui.screens.preview.BilingualReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.projects.ProjectListScreen
 import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
@@ -179,12 +180,12 @@ fun AppNavigation(
                     }
 
                     composable(AppDestination.History.route) {
-                        TaskQueueScreen(
+                        ReadingHistoryScreen(
                             viewModel = viewModel,
-                            initialTab = 1,
-                            onBack = {
-                                navController.popBackStack()
-                            }
+                            onContinueReading = { bookId, chapterId ->
+                                navController.navigate(AppDestination.PlatformReader.createRoute(bookId, chapterId))
+                            },
+                            onOpenBook = { navController.navigate(AppDestination.BookDetail.createRoute(it)) }
                         )
                     }
 

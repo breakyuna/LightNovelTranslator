@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.ui.components
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -10,9 +9,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -63,12 +62,10 @@ fun ReaderRichContent(text: String, imageDirectory: File, modifier: Modifier = M
                             modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 720.dp)
                         )
                     } else {
-                        val bitmap = remember(file.absolutePath, file.lastModified()) {
-                            file.takeIf(File::isFile)?.let { BitmapFactory.decodeFile(it.absolutePath) }?.asImageBitmap()
-                        }
+                        val bitmap by rememberAsyncBookImage(file.absolutePath, maxDimension = 1600)
                         if (bitmap != null) {
                         Image(
-                            bitmap = bitmap,
+                            bitmap = bitmap!!,
                             contentDescription = "小说插图",
                             modifier = Modifier.fillMaxWidth().heightIn(max = 720.dp),
                             contentScale = ContentScale.Fit
