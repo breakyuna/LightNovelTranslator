@@ -131,37 +131,55 @@ class BookImporter(
                     isComplete = true
                 )
             )
-            chapters.forEachIndexed { position, chapter ->
-                val chapterIndex = position + 1
-                val logicalChapterId = dao.insertLogicalChapter(
-                    LogicalChapterEntity(bookId = bookId, chapterIndex = chapterIndex, canonicalTitle = chapter.title)
-                )
-                val parts = splitSegments(chapter.renderedText)
-                val logicalIds = dao.insertLogicalSegments(parts.mapIndexed { index, _ ->
-                    LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = index)
-                })
-                val fileName = files.saveEditionChapter(bookId, editionId, chapterIndex, chapter.title, chapter.renderedText)
-                val editionChapterId = dao.insertEditionChapter(
-                    EditionChapterEntity(
-                        editionId = editionId,
-                        logicalChapterId = logicalChapterId,
-                        title = chapter.title,
-                        contentFileName = fileName,
-                        wordCount = chapter.renderedText.length
-                    )
-                )
-                val editionSegmentIds = dao.insertEditionSegments(parts.mapIndexed { index, text ->
-                    EditionSegmentEntity(
-                        editionChapterId = editionChapterId,
-                        segmentIndex = index,
-                        baseText = text,
-                        sourceHash = sha256(text)
-                    )
-                })
-                dao.insertMappings(logicalIds.zip(editionSegmentIds).map { (logicalId, editionSegmentId) ->
-                    EditionSegmentMappingEntity(logicalId, editionSegmentId)
-                })
+            val logicalChaptersToInsert = chapters.mapIndexed { position, chapter ->
+                LogicalChapterEntity(bookId = bookId, chapterIndex = position + 1, canonicalTitle = chapter.title)
             }
+            val logicalChapterIds = dao.insertLogicalChapters(logicalChaptersToInsert)
+
+            val allLogicalSegments = mutableListOf<LogicalSegmentEntity>()
+            val chapterParts = chapters.map { splitSegments(it.renderedText) }
+            chapterParts.forEachIndexed { chapterIndex, parts ->
+                val logicalChapterId = logicalChapterIds[chapterIndex]
+                parts.forEachIndexed { segmentIndex, _ ->
+                    allLogicalSegments.add(LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = segmentIndex))
+                }
+            }
+            val logicalSegmentIds = dao.insertLogicalSegments(allLogicalSegments)
+
+            val editionChaptersToInsert = chapters.mapIndexed { chapterIndex, chapter ->
+                val logicalChapterId = logicalChapterIds[chapterIndex]
+                val fileName = files.saveEditionChapter(bookId, editionId, chapterIndex + 1, chapter.title, chapter.renderedText)
+                EditionChapterEntity(
+                    editionId = editionId,
+                    logicalChapterId = logicalChapterId,
+                    title = chapter.title,
+                    contentFileName = fileName,
+                    wordCount = chapter.renderedText.length
+                )
+            }
+            val editionChapterIds = dao.insertEditionChapters(editionChaptersToInsert)
+
+            val allEditionSegments = mutableListOf<EditionSegmentEntity>()
+            chapterParts.forEachIndexed { chapterIndex, parts ->
+                val editionChapterId = editionChapterIds[chapterIndex]
+                parts.forEachIndexed { segmentIndex, text ->
+                    allEditionSegments.add(
+                        EditionSegmentEntity(
+                            editionChapterId = editionChapterId,
+                            segmentIndex = segmentIndex,
+                            baseText = text,
+                            sourceHash = sha256(text)
+                        )
+                    )
+                }
+            }
+            val editionSegmentIds = dao.insertEditionSegments(allEditionSegments)
+
+            val allMappings = logicalSegmentIds.zip(editionSegmentIds).map { (logicalId, editionSegmentId) ->
+                EditionSegmentMappingEntity(logicalId, editionSegmentId)
+            }
+            dao.insertMappings(allMappings)
+
             dao.update(
                 dao.getBook(bookId)!!.copy(
                     title = title,
