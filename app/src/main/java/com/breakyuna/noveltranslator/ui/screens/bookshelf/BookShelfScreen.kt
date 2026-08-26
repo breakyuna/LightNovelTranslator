@@ -10,6 +10,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -98,6 +99,7 @@ fun BookShelfScreen(
     val inSelectionMode = selectedBookIds.isNotEmpty()
     val isAllSelected = books.isNotEmpty() && selectedBookIds.size == books.size
     val gridState = rememberLazyGridState()
+    val currentDisplayedBooks by rememberUpdatedState(displayedBooks)
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -108,10 +110,10 @@ fun BookShelfScreen(
                 label = "topBarTransition"
             ) { selecting ->
                 if (selecting) {
-                    TopAppBar(
+                    CenterAlignedTopAppBar(
                         title = {
                             Text(
-                                "已选择${selectedBookIds.size}本图书",
+                                "已选择 ${selectedBookIds.size} 本图书",
                                 fontWeight = FontWeight.SemiBold,
                                 style = MaterialTheme.typography.titleMedium
                             )
@@ -134,7 +136,7 @@ fun BookShelfScreen(
                                 )
                             }
                         },
-                        colors = TopAppBarDefaults.topAppBarColors(
+                        colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                             containerColor = MaterialTheme.colorScheme.surface
                         )
                     )
@@ -290,22 +292,27 @@ fun BookShelfScreen(
                             }
 
                             val dragGestureModifier = if (!inSelectionMode) {
-                                Modifier.pointerInput(book.id, displayedBooks) {
+                                Modifier.pointerInput(book.id) {
+                                    var totalDistance = 0f
+                                    var didReorder = false
                                     detectDragGesturesAfterLongPress(
                                         onDragStart = {
                                             draggingBookId = book.id
                                             dragOffset = Offset.Zero
+                                            totalDistance = 0f
+                                            didReorder = false
                                         },
                                         onDrag = { change, amount ->
                                             change.consume()
                                             dragOffset += amount
+                                            totalDistance += amount.getDistance()
 
-                                            val currentId = draggingBookId ?: return@detectDragGesturesAfterLongPress
-                                            val currentIdx = displayedBooks.indexOfFirst { it.id == currentId }
+                                            val currentList = currentDisplayedBooks
+                                            val currentIdx = currentList.indexOfFirst { it.id == book.id }
                                             if (currentIdx < 0) return@detectDragGesturesAfterLongPress
 
                                             val visibleItems = gridState.layoutInfo.visibleItemsInfo
-                                            val currentItemInfo = visibleItems.firstOrNull { it.key == currentId }
+                                            val currentItemInfo = visibleItems.firstOrNull { it.key == book.id }
                                                 ?: return@detectDragGesturesAfterLongPress
                                             val currentCenter = Offset(
                                                 x = currentItemInfo.offset.x + currentItemInfo.size.width / 2f + dragOffset.x,
@@ -313,18 +320,19 @@ fun BookShelfScreen(
                                             )
 
                                             val targetItem = visibleItems.firstOrNull { item ->
-                                                item.key != currentId &&
+                                                item.key != book.id &&
                                                 currentCenter.x.toInt() in item.offset.x..(item.offset.x + item.size.width) &&
                                                 currentCenter.y.toInt() in item.offset.y..(item.offset.y + item.size.height)
                                             }
 
                                             if (targetItem != null) {
-                                                val targetIdx = displayedBooks.indexOfFirst { it.id == targetItem.key }
+                                                val targetIdx = currentList.indexOfFirst { it.id == targetItem.key }
                                                 if (targetIdx >= 0 && targetIdx != currentIdx) {
-                                                    val mutableList = displayedBooks.toMutableList()
+                                                    val mutableList = currentList.toMutableList()
                                                     val item = mutableList.removeAt(currentIdx)
                                                     mutableList.add(targetIdx, item)
                                                     displayedBooks = mutableList
+                                                    didReorder = true
 
                                                     dragOffset += Offset(
                                                         (currentItemInfo.offset.x - targetItem.offset.x).toFloat(),
@@ -334,12 +342,20 @@ fun BookShelfScreen(
                                             }
                                         },
                                         onDragEnd = {
-                                            val orderedIds = displayedBooks.map { it.id }
-                                            viewModel.updateShelfOrderList(orderedIds)
+                                            if (didReorder) {
+                                                val orderedIds = currentDisplayedBooks.map { it.id }
+                                                viewModel.updateShelfOrderList(orderedIds)
+                                            } else if (totalDistance < 15f) {
+                                                selectedBookIds = setOf(book.id)
+                                            }
                                             draggingBookId = null
                                             dragOffset = Offset.Zero
                                         },
                                         onDragCancel = {
+                                            if (didReorder) {
+                                                val orderedIds = currentDisplayedBooks.map { it.id }
+                                                viewModel.updateShelfOrderList(orderedIds)
+                                            }
                                             draggingBookId = null
                                             dragOffset = Offset.Zero
                                         }
@@ -366,6 +382,17 @@ fun BookShelfScreen(
                                             }
                                         } else {
                                             onOpenDetail(book.id)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        if (inSelectionMode) {
+                                            selectedBookIds = if (isSelected) {
+                                                selectedBookIds - book.id
+                                            } else {
+                                                selectedBookIds + book.id
+                                            }
+                                        } else {
+                                            selectedBookIds = setOf(book.id)
                                         }
                                     },
                                     onDoubleClick = {
@@ -582,6 +609,7 @@ private fun BookCoverCard(
     selected: Boolean,
     strings: PlatformUiStrings,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     onDoubleClick: () -> Unit
 ) {
     val cover = remember(book.coverPath) {
@@ -591,7 +619,11 @@ private fun BookCoverCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                onDoubleClick = onDoubleClick
+            )
     ) {
         Box(
             modifier = Modifier

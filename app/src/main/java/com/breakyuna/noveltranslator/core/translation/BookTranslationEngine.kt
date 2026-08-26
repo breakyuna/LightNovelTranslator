@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.core.translation
 import androidx.room.withTransaction
 import com.breakyuna.noveltranslator.core.book.BookFileManager
 import com.breakyuna.noveltranslator.core.llm.*
+import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.data.db.AppDatabase
 import com.breakyuna.noveltranslator.data.model.*
 import com.squareup.moshi.Moshi
@@ -82,7 +83,10 @@ class BookTranslationEngine(
         }
             ?: error("Translation project has no available provider")
         val targets = selectTargets(project)
-        if (targets.isEmpty()) return
+        if (targets.isEmpty()) {
+            SystemLogger.info("TRANSLATION", "项目 #${project.id} 所有章节已全部翻译完成，无需新批次。", projectId = project.id)
+            return
+        }
         val control = controls.getOrPut(projectId) { ProjectControl() }.apply { paused.set(false); cancelled.set(false) }
         val runId = tasks.insertRun(
             PlatformTranslationRunEntity(
@@ -97,6 +101,11 @@ class BookTranslationEngine(
         )
         activeRuns[projectId] = runId
         projects.updateState(project.id, "RUNNING")
+        SystemLogger.info(
+            "TRANSLATION",
+            "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，共待翻译 ${targets.size} 个章节",
+            projectId = project.id
+        )
         try {
             var cursor = 0
             var batchIndex = 0
@@ -125,6 +134,12 @@ class BookTranslationEngine(
                         state = "RUNNING"
                     )
                 )
+                SystemLogger.info(
+                    "BATCH",
+                    "📦 开始处理批次 #$batchIndex (章节: ${batchSources.map { "第${it.chapterIndex}章" }.joinToString(", ")})，预估Token: ${sourceTokens.take(actual).sum()}",
+                    projectId = project.id,
+                    chapterIndex = batchSources.first().chapterIndex
+                )
                 if (budget.requiresSingleChapterChunking) {
                     translateOversizedChapter(project, provider, runId, batchId, context, batchSources.first())
                 } else {
@@ -141,9 +156,15 @@ class BookTranslationEngine(
             val finalState = if ((run?.failedChapters ?: 0) > 0) "COMPLETED_WITH_ERRORS" else "COMPLETED"
             projects.updateState(project.id, finalState)
             run?.let { tasks.updateRun(it.copy(state = finalState, updatedAt = System.currentTimeMillis())) }
+            SystemLogger.info(
+                "TRANSLATION",
+                "✅ 翻译任务执行完毕！最终状态: $finalState，已成功翻译 ${run?.completedChapters ?: 0} 章，失败 ${run?.failedChapters ?: 0} 章",
+                projectId = project.id
+            )
         } catch (cancelled: CancellationException) {
             projects.updateState(project.id, "CANCELLED")
             tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
+            SystemLogger.warn("TRANSLATION", "🛑 翻译任务已被用户取消", projectId = project.id)
         } catch (error: Throwable) {
             val failureReport = buildFailureReport(error)
             projects.updateState(project.id, "FAILED")
@@ -165,6 +186,7 @@ class BookTranslationEngine(
                     isSuccess = false
                 )
             )
+            SystemLogger.error("TRANSLATION", "❌ 翻译任务异常终止: ${error.message}", details = failureReport, projectId = project.id)
             throw error
         } finally {
             activeRuns.remove(projectId)
@@ -241,6 +263,20 @@ class BookTranslationEngine(
         sources: List<ProtocolChapter>
     ) {
         val cacheHint = prepareCache(project, provider, context)
+        val firstIndex = sources.first().chapterIndex
+        val lastIndex = sources.last().chapterIndex
+        SystemLogger.info(
+            "PROMPT",
+            "🧩 正在组装提示词: 匹配到 ${context.matchedLexicon.size} 个专有术语，注入上下文历史 (包含章节 $firstIndex-$lastIndex)",
+            projectId = project.id,
+            chapterIndex = firstIndex
+        )
+        SystemLogger.info(
+            "LLM_API",
+            "📡 发起模型调用 -> ${provider.name} (${provider.selectedModel})，章节: $firstIndex-$lastIndex，Temp: ${provider.temperature}",
+            projectId = project.id,
+            chapterIndex = firstIndex
+        )
         val result = gateway.executeCompletion(
             LlmRequest(
                 provider = provider,
@@ -253,7 +289,17 @@ class BookTranslationEngine(
             )
         )
         recordUsage(runId, batchId, provider, result)
-        check(result.isSuccess) { result.errorMessage ?: "Translation request failed" }
+        check(result.isSuccess) {
+            SystemLogger.error("LLM_API", "❌ 模型调用失败: ${result.errorMessage}", projectId = project.id, chapterIndex = firstIndex)
+            result.errorMessage ?: "Translation request failed"
+        }
+        val cost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
+        SystemLogger.info(
+            "LLM_API",
+            "📥 收到模型响应 (耗时 ${result.durationMs}ms): 消耗输入 ${result.promptTokens} Tokens, 输出 ${result.completionTokens} Tokens, 预估费用 $${String.format(java.util.Locale.US, "%.5f", cost)}",
+            projectId = project.id,
+            chapterIndex = firstIndex
+        )
         val parsed = TranslationProtocol.parse(result.text)
         val mandatoryTerms = context.matchedLexicon.map { it.sourceTerm to it.targetTerm }
         var failed = 0
@@ -261,22 +307,34 @@ class BookTranslationEngine(
             var translated = parsed.chapters.firstOrNull { it.shortId == source.shortId }
             var qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             if (!qa.accepted) {
+                SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 (${qa.problems.joinToString()})，启动自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
                 translated = repairChapter(project, provider, runId, batchId, context, source, translated)
                 qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             }
-            if (qa.accepted && translated != null) commitChapter(project, source, translated)
-            else failed++
+            if (qa.accepted && translated != null) {
+                commitChapter(project, source, translated)
+                SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
+            } else {
+                failed++
+                SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
+            }
         }
         applyMetadata(project, sources, parsed.metaJson)
         val batch = (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
             state = if (failed == 0) "COMPLETED" else "PARTIAL",
             promptTokens = result.promptTokens,
             completionTokens = result.completionTokens,
-            cost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion),
+            cost = cost,
             errorMessage = if (failed > 0) "$failed chapter(s) failed deterministic QA" else null
         )
         tasks.updateBatch(batch)
         updateRunCounters(runId, sources.size - failed, failed)
+        SystemLogger.info(
+            "BATCH",
+            "✨ 批次处理完毕: 章节 $firstIndex-$lastIndex, 成功 ${sources.size - failed} 章, 失败 $failed 章",
+            projectId = project.id,
+            chapterIndex = firstIndex
+        )
     }
 
     private suspend fun repairChapter(
@@ -474,13 +532,22 @@ class BookTranslationEngine(
                         lastUpdatedChapterIndex = sources.last().chapterIndex
                     )
                 )
+                SystemLogger.info("MEMORY", "🧠 随进度更新故事记忆: [${delta.key}] = ${delta.value}", projectId = project.id, chapterIndex = sources.first().chapterIndex)
             }
         }
         parsed.lexiconCandidates.forEach { candidate ->
             if (candidate.source.isNotBlank() && candidate.target.isNotBlank()) {
                 database.lexiconV2Dao().upsert(
-                    LexiconEntryEntity(translationProjectId = project.id, sourceTerm = candidate.source, targetTerm = candidate.target, notes = candidate.notes, source = LexiconSource.AI.name, reviewStatus = ReviewStatus.CANDIDATE.name)
+                    LexiconEntryEntity(
+                        translationProjectId = project.id,
+                        sourceTerm = candidate.source,
+                        targetTerm = candidate.target,
+                        notes = candidate.notes,
+                        source = LexiconSource.AI.name,
+                        reviewStatus = ReviewStatus.CONFIRMED.name
+                    )
                 )
+                SystemLogger.info("GLOSSARY", "✨ 随翻译进度自动入库术语: '${candidate.source}' -> '${candidate.target}' (${candidate.notes})", projectId = project.id, chapterIndex = sources.first().chapterIndex)
             }
         }
     }

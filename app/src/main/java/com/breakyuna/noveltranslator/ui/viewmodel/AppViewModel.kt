@@ -648,6 +648,195 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun observeRunsByBook(bookId: Long): Flow<List<PlatformTranslationRunEntity>> =
+        bookPlatformRepo.observeRunsByBook(bookId)
+
+    fun observeRunsByProject(projectId: Long): Flow<List<PlatformTranslationRunEntity>> =
+        bookPlatformRepo.observeRunsByProject(projectId)
+
+    fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>> =
+        bookPlatformRepo.observeBatches(runId)
+
+    fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogEntity>> =
+        bookPlatformRepo.observeRequestLogs(runId)
+
+    fun observeLexicon(projectId: Long): Flow<List<LexiconEntryEntity>> =
+        bookPlatformRepo.observeLexicon(projectId)
+
+    fun observeStoryMemory(projectId: Long): Flow<List<StoryMemoryEntity>> =
+        bookPlatformRepo.observeStoryMemory(projectId)
+
+    fun updateTranslationProjectConfig(
+        projectId: Long,
+        providerId: Long?,
+        modelName: String,
+        mode: TranslationMode,
+        maxBatchChapters: Int,
+        rangeStart: Int?,
+        rangeEnd: Int?,
+        styleGuide: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = bookPlatformRepo.getTranslationProject(projectId) ?: return@launch
+            val updated = existing.copy(
+                providerId = providerId,
+                modelName = modelName,
+                translationMode = mode.name,
+                maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                rangeStart = rangeStart,
+                rangeEnd = rangeEnd,
+                styleGuide = styleGuide.take(2000),
+                updatedAt = System.currentTimeMillis()
+            )
+            bookPlatformRepo.updateTranslationProject(updated)
+            withContext(Dispatchers.Main) {
+                showMessage("翻译配置已保存")
+                onSuccess()
+            }
+        }
+    }
+
+    fun upsertLexiconEntry(entry: LexiconEntryEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.upsertLexiconEntry(entry)
+            withContext(Dispatchers.Main) {
+                showMessage("专有术语已保存")
+            }
+        }
+    }
+
+    fun deleteLexiconEntry(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.deleteLexiconEntry(id)
+            withContext(Dispatchers.Main) {
+                showMessage("专有术语已删除")
+            }
+        }
+    }
+
+    fun retranslateChapter(bookId: Long, editionId: Long, logicalChapterId: Long, projectId: Long?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.retranslateChapter(editionId, logicalChapterId)
+            withContext(Dispatchers.Main) {
+                showMessage("已重置该章节译文，将重新翻译")
+            }
+            if (projectId != null) {
+                runBookTranslation(projectId)
+            }
+        }
+    }
+
+    fun scanGlossaryForBook(
+        bookId: Long,
+        sourceEditionId: Long,
+        targetProjectId: Long?,
+        startChapter: Int,
+        endChapter: Int,
+        provider: ApiProviderEntity,
+        targetLanguage: String = "zh",
+        onProgress: (String) -> Unit = {},
+        onComplete: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val allChapters = bookPlatformRepo.getChapters(bookId)
+                    .filter { it.chapterIndex in startChapter..endChapter }
+                if (allChapters.isEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        showMessage("所选范围内未找到章节")
+                        onComplete(0)
+                    }
+                    return@launch
+                }
+                withContext(Dispatchers.Main) {
+                    onProgress("正在读取待扫描章节内容 (共 ${allChapters.size} 章)...")
+                }
+                com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                    "GLOSSARY_SCAN",
+                    "🔍 启动专有术语扫描: Book#$bookId, 范围第 $startChapter ~ $endChapter 章 (${allChapters.size}章)，使用模型: ${provider.name}/${provider.selectedModel}",
+                    projectId = targetProjectId
+                )
+                val combinedText = buildString {
+                    for (ch in allChapters.take(15)) {
+                        val segments = db.bookDao().getLogicalSegments(ch.id)
+                        val editionCh = db.bookDao().getEditionChapter(sourceEditionId, ch.id)
+                        if (editionCh != null) {
+                            val edSegments = db.bookDao().getEditionSegments(editionCh.id).associateBy { it.id }
+                            val mappings = db.bookDao().getMappings(segments.map { it.id }).groupBy { it.logicalSegmentId }
+                            val text = segments.joinToString("\n") { s ->
+                                mappings[s.id].orEmpty().sortedBy { it.mappingOrder }
+                                    .mapNotNull { edSegments[it.editionSegmentId]?.baseText }
+                                    .joinToString("\n")
+                            }
+                            append("【${ch.canonicalTitle}】\n")
+                            append(text)
+                            append("\n\n")
+                        }
+                    }
+                }
+                if (combinedText.isBlank()) {
+                    withContext(Dispatchers.Main) {
+                        showMessage("未读取到章节文本，无法扫描")
+                        onComplete(0)
+                    }
+                    return@launch
+                }
+                withContext(Dispatchers.Main) {
+                    onProgress("AI 正在分析人名、地名、功法与专有术语...")
+                }
+                val existingTerms = if (targetProjectId != null) {
+                    db.lexiconV2Dao().getConfirmed(targetProjectId).map { it.sourceTerm }
+                } else emptyList()
+                val extraction = termExtractionAgent.extractTermsWithUsage(
+                    projectId = targetProjectId ?: 0L,
+                    sampleText = combinedText,
+                    provider = provider,
+                    sourceLanguage = "auto",
+                    targetLanguage = targetLanguage,
+                    existingTerms = existingTerms
+                )
+                var count = 0
+                if (extraction.terms.isNotEmpty()) {
+                    if (targetProjectId != null) {
+                        val entries = extraction.terms.map { term ->
+                            LexiconEntryEntity(
+                                translationProjectId = targetProjectId,
+                                sourceTerm = term.originalTerm,
+                                targetTerm = term.translatedTerm,
+                                category = term.category.name,
+                                notes = term.notes,
+                                source = LexiconSource.AI.name,
+                                reviewStatus = ReviewStatus.CONFIRMED.name
+                            )
+                        }
+                        db.lexiconV2Dao().upsertAll(entries)
+                        count = entries.size
+                    }
+                    com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                        "GLOSSARY_SCAN",
+                        "✅ 扫描完成！共提取并入库 $count 个专有术语",
+                        projectId = targetProjectId
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    showMessage("专有术语扫描完成，共录入 $count 个术语")
+                    onComplete(count)
+                }
+            } catch (e: Exception) {
+                com.breakyuna.noveltranslator.core.logger.SystemLogger.error(
+                    "GLOSSARY_SCAN",
+                    "❌ 专有术语扫描失败: ${e.message}",
+                    projectId = targetProjectId
+                )
+                withContext(Dispatchers.Main) {
+                    showMessage("术语扫描失败: ${e.localizedMessage}")
+                    onComplete(0)
+                }
+            }
+        }
+    }
+
     fun removeBooksFromShelf(bookIds: Set<Long>) {
         if (bookIds.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {

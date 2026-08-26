@@ -36,6 +36,7 @@ import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
+import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
@@ -314,6 +315,7 @@ fun PlatformTaskCenterScreen(
                         onToggleExpand = {
                             expandedBookIds[book.id] = !isExpanded
                         },
+                        onOpenWorkbench = { onOpenBookWorkbench(book.id) },
                         onOpenDetail = { onOpenBookDetail(book.id) },
                         onCreateTranslation = { createEditionForBook = book },
                         onOpenReader = { chapterId -> onOpenReader(book.id, chapterId) },
@@ -503,6 +505,7 @@ private fun BookWorkspaceUnitCard(
     strings: PlatformUiStrings,
     viewModel: AppViewModel,
     onToggleExpand: () -> Unit,
+    onOpenWorkbench: () -> Unit,
     onOpenDetail: () -> Unit,
     onCreateTranslation: () -> Unit,
     onOpenReader: (Long?) -> Unit,
@@ -718,6 +721,15 @@ private fun BookWorkspaceUnitCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(
+                        onClick = onOpenWorkbench,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Icon(Icons.Default.Dashboard, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("工作台", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
                     TextButton(
                         onClick = onOpenDetail,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
@@ -1477,6 +1489,7 @@ private fun CreateTranslationEditionDialog(
     var language by remember { mutableStateOf("Chinese") }
     var name by remember { mutableStateOf(if (strings.bookshelf == "Bookshelf") "English translation" else "中文译本") }
     var sourceMenu by remember { mutableStateOf(false) }
+    var langMenu by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1488,7 +1501,11 @@ private fun CreateTranslationEditionDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                ExposedDropdownMenuBox(sourceMenu, { sourceMenu = it }) {
+                // 1. Source edition selector
+                ExposedDropdownMenuBox(
+                    expanded = sourceMenu,
+                    onExpandedChange = { sourceMenu = it }
+                ) {
                     OutlinedTextField(
                         value = source.name,
                         onValueChange = {},
@@ -1499,7 +1516,10 @@ private fun CreateTranslationEditionDialog(
                             .menuAnchor()
                             .fillMaxWidth()
                     )
-                    ExposedDropdownMenu(sourceMenu, { sourceMenu = false }) {
+                    ExposedDropdownMenu(
+                        expanded = sourceMenu,
+                        onDismissRequest = { sourceMenu = false }
+                    ) {
                         editions.forEach {
                             DropdownMenuItem(
                                 text = { Text(it.name) },
@@ -1508,6 +1528,8 @@ private fun CreateTranslationEditionDialog(
                         }
                     }
                 }
+
+                // 2. Edition Name
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -1515,13 +1537,45 @@ private fun CreateTranslationEditionDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = language,
-                    onValueChange = { language = it },
-                    label = { Text(strings.targetLanguage) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+
+                // 3. Target Language with scrollable dropdown
+                ExposedDropdownMenuBox(
+                    expanded = langMenu,
+                    onExpandedChange = { langMenu = it }
+                ) {
+                    OutlinedTextField(
+                        value = language,
+                        onValueChange = { language = it },
+                        label = { Text(strings.targetLanguage) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(langMenu) },
+                        modifier = Modifier
+                            .menuAnchor()
+                            .fillMaxWidth(),
+                        singleLine = true
+                    )
+                    ExposedDropdownMenu(
+                        expanded = langMenu,
+                        onDismissRequest = { langMenu = false },
+                        modifier = Modifier.heightIn(max = 280.dp)
+                    ) {
+                        TARGET_LANGUAGE_OPTIONS.forEach { opt ->
+                            DropdownMenuItem(
+                                text = {
+                                    Column {
+                                        Text(opt.displayName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                                        Text(opt.code, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                },
+                                onClick = {
+                                    language = opt.code
+                                    val isZh = strings.bookshelf != "Bookshelf"
+                                    name = if (isZh) opt.defaultNameZh else opt.defaultNameEn
+                                    langMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {

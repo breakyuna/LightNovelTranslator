@@ -84,6 +84,9 @@ interface BookDao {
     @Query("SELECT * FROM edition_chapters WHERE editionId = :editionId AND logicalChapterId = :logicalChapterId LIMIT 1")
     suspend fun getEditionChapter(editionId: Long, logicalChapterId: Long): EditionChapterEntity?
 
+    @Query("DELETE FROM edition_chapters WHERE editionId = :editionId AND logicalChapterId = :logicalChapterId")
+    suspend fun deleteEditionChapter(editionId: Long, logicalChapterId: Long)
+
     @Query("SELECT * FROM edition_segments WHERE editionChapterId = :editionChapterId ORDER BY segmentIndex")
     suspend fun getEditionSegments(editionChapterId: Long): List<EditionSegmentEntity>
 
@@ -149,7 +152,10 @@ interface LexiconV2Dao {
     suspend fun getConfirmed(projectId: Long): List<LexiconEntryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(entry: LexiconEntryEntity): Long
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertAll(entries: List<LexiconEntryEntity>): List<Long>
     @Update suspend fun update(entry: LexiconEntryEntity)
+    @Query("DELETE FROM lexicon_entries WHERE id = :id") suspend fun delete(id: Long)
+    @Query("DELETE FROM lexicon_entries WHERE translationProjectId = :projectId") suspend fun deleteByProject(projectId: Long)
 }
 
 @Dao
@@ -204,6 +210,12 @@ interface PlatformTaskDao {
     @Query("SELECT * FROM platform_translation_runs ORDER BY updatedAt DESC")
     fun observeRuns(): Flow<List<PlatformTranslationRunEntity>>
 
+    @Query("SELECT * FROM platform_translation_runs WHERE bookId = :bookId ORDER BY createdAt DESC")
+    fun observeRunsByBook(bookId: Long): Flow<List<PlatformTranslationRunEntity>>
+
+    @Query("SELECT * FROM platform_translation_runs WHERE translationProjectId = :projectId ORDER BY createdAt DESC")
+    fun observeRunsByProject(projectId: Long): Flow<List<PlatformTranslationRunEntity>>
+
     @Query("SELECT * FROM platform_translation_runs WHERE id = :id")
     suspend fun getRun(id: Long): PlatformTranslationRunEntity?
 
@@ -212,6 +224,9 @@ interface PlatformTaskDao {
 
     @Query("SELECT * FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC")
     fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogEntity>>
+
+    @Query("SELECT * FROM platform_request_logs ORDER BY timestamp DESC LIMIT 500")
+    fun observeAllRequestLogs(): Flow<List<PlatformRequestLogEntity>>
 
     @Query("SELECT * FROM platform_translation_batches WHERE id = :id")
     suspend fun getBatch(id: Long): PlatformTranslationBatchEntity?

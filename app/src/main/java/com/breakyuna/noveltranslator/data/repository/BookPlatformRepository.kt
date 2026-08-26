@@ -46,6 +46,26 @@ class BookPlatformRepository(
     fun observeLexicon(projectId: Long) = database.lexiconV2Dao().observe(projectId)
     fun observeStoryMemory(projectId: Long) = database.memoryDao().observeStoryMemory(projectId)
     fun observeChapterMemory(projectId: Long) = database.memoryDao().observeChapterMemory(projectId)
+    fun observeRunsByBook(bookId: Long) = database.platformTaskDao().observeRunsByBook(bookId)
+    fun observeRunsByProject(projectId: Long) = database.platformTaskDao().observeRunsByProject(projectId)
+    fun observeBatches(runId: Long) = database.platformTaskDao().observeBatches(runId)
+    fun observeRequestLogs(runId: Long) = database.platformTaskDao().observeRequestLogs(runId)
+    fun observeAllPlatformRequestLogs() = database.platformTaskDao().observeAllRequestLogs()
+
+    suspend fun getTranslationProject(projectId: Long) = projects.get(projectId)
+    suspend fun updateTranslationProject(project: TranslationProjectV2Entity) = projects.update(project)
+    suspend fun getChapters(bookId: Long) = books.getChapters(bookId)
+    suspend fun getEditionChapters(bookId: Long, editionId: Long): Set<Long> {
+        val all = books.getChapters(bookId)
+        return all.filter { books.getEditionChapter(editionId, it.id) != null }.map { it.id }.toSet()
+    }
+    suspend fun retranslateChapter(editionId: Long, logicalChapterId: Long) {
+        books.deleteEditionChapter(editionId, logicalChapterId)
+    }
+    suspend fun upsertLexiconEntry(entry: LexiconEntryEntity) = database.lexiconV2Dao().upsert(entry)
+    suspend fun upsertLexiconEntries(entries: List<LexiconEntryEntity>) = database.lexiconV2Dao().upsertAll(entries)
+    suspend fun updateLexiconEntry(entry: LexiconEntryEntity) = database.lexiconV2Dao().update(entry)
+    suspend fun deleteLexiconEntry(id: Long) = database.lexiconV2Dao().delete(id)
 
     fun observeReader(bookId: Long): Flow<List<ResolvedReaderSegment>> = combine(
         books.observeBook(bookId),
