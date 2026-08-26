@@ -99,13 +99,50 @@ class BookPlatformRepository(
             ?: return emptyList()
         val preferredId = inputs.progress?.preferredEditionId ?: book.preferredReadingEditionId ?: original.id
         val preferred = inputs.editions.firstOrNull { it.id == preferredId } ?: original
+
+        val editionsToFetch = if (original.id == preferred.id) listOf(original.id) else listOf(original.id, preferred.id)
+
+        // Fetch all required data in bulk to avoid O(N) queries
+        val allLogicalSegments = books.getLogicalSegmentsByBook(book.id).groupBy { it.logicalChapterId }
+        val allEditionSegments = books.getEditionSegmentsByEditions(editionsToFetch).associateBy { it.id }
+        val allMappings = books.getMappingsByEditions(editionsToFetch).groupBy { it.logicalSegmentId }
+        val allRevisions = books.getActiveRevisionsByEditions(editionsToFetch)
+            .groupBy { it.editionSegmentId }
+            .mapValues { (_, rows) -> rows.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt }) }
+
+        val allEditionChapters = editionsToFetch.associateWith { books.getEditionChapters(it) }
+
+        fun resolveContentForEdition(editionId: Long, logicalSegments: List<LogicalSegmentEntity>): Map<Long, EffectiveSegment> {
+            if (logicalSegments.isEmpty()) return emptyMap()
+            val editionContentMap = mutableMapOf<Long, EffectiveSegment>()
+            val editionChapters = allEditionChapters[editionId] ?: emptyList()
+            for (logicalSegment in logicalSegments) {
+                val mappingsForLogical = allMappings[logicalSegment.id] ?: continue
+                val mappingsForThisEdition = mappingsForLogical.filter { mapping ->
+                    val segment = allEditionSegments[mapping.editionSegmentId]
+                    segment != null && editionChapters.any { it.id == segment.editionChapterId }
+                }
+                if (mappingsForThisEdition.isEmpty()) continue
+
+                val orderedSegments = mappingsForThisEdition.sortedBy { it.mappingOrder }.mapNotNull { allEditionSegments[it.editionSegmentId] }
+                if (orderedSegments.isEmpty()) continue
+
+                val text = orderedSegments.joinToString("\n\n") { segment ->
+                    allRevisions[segment.id]?.text ?: segment.baseText
+                }
+                editionContentMap[logicalSegment.id] = EffectiveSegment(orderedSegments.map { it.id }, text)
+            }
+            return editionContentMap
+        }
+
         val seenRenderedSegments = mutableSetOf<Long>()
         return buildList {
             inputs.chapters.forEach { logicalChapter ->
-                val logicalSegments = books.getLogicalSegments(logicalChapter.id)
-                val originalContent = resolveEditionChapter(original.id, logicalChapter, logicalSegments)
+                val logicalSegments = allLogicalSegments[logicalChapter.id] ?: emptyList()
+                val originalContent = resolveContentForEdition(original.id, logicalSegments)
                 val preferredContent = if (preferred.id == original.id) originalContent
-                else resolveEditionChapter(preferred.id, logicalChapter, logicalSegments)
+                else resolveContentForEdition(preferred.id, logicalSegments)
+
                 logicalSegments.forEach { logical ->
                     val originalPart = originalContent[logical.id]
                     val preferredPart = preferredContent[logical.id]
@@ -129,29 +166,6 @@ class BookPlatformRepository(
                     )
                 }
             }
-        }
-    }
-
-    private suspend fun resolveEditionChapter(
-        editionId: Long,
-        logicalChapter: LogicalChapterEntity,
-        logicalSegments: List<LogicalSegmentEntity>
-    ): Map<Long, EffectiveSegment> {
-        val chapter = books.getEditionChapter(editionId, logicalChapter.id) ?: return emptyMap()
-        if (!chapter.isAvailable) return emptyMap()
-        val editionSegments = books.getEditionSegments(chapter.id)
-        if (editionSegments.isEmpty() || logicalSegments.isEmpty()) return emptyMap()
-        val byId = editionSegments.associateBy { it.id }
-        val mappings = books.getMappings(logicalSegments.map { it.id })
-            .filter { it.editionSegmentId in byId }
-            .groupBy { it.logicalSegmentId }
-        val revisions = books.getActiveRevisions(editionSegments.map { it.id })
-            .groupBy { it.editionSegmentId }
-            .mapValues { (_, rows) -> rows.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt }) }
-        return mappings.mapValues { (_, rows) ->
-            val ordered = rows.sortedBy { it.mappingOrder }.mapNotNull { byId[it.editionSegmentId] }
-            val text = ordered.joinToString("\n\n") { segment -> revisions[segment.id]?.text ?: segment.baseText }
-            EffectiveSegment(ordered.map { it.id }, text)
         }
     }
 

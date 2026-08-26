@@ -170,12 +170,12 @@ object TxtParser {
     }
 
     private fun isCjk(c: Char): Boolean {
-        val ub = Character.UnicodeBlock.of(c)
-        return ub == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS ||
-                ub == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A ||
-                ub == Character.UnicodeBlock.CJK_COMPATIBILITY_IDEOGRAPHS ||
-                ub == Character.UnicodeBlock.HIRAGANA ||
-                ub == Character.UnicodeBlock.KATAKANA ||
-                ub == Character.UnicodeBlock.HANGUL_SYLLABLES
+        val code = c.code
+        return (code in 0x4E00..0x9FFF) || // CJK Unified Ideographs
+                (code in 0x3400..0x4DBF) || // CJK Unified Ideographs Extension A
+                (code in 0xF900..0xFAFF) || // CJK Compatibility Ideographs
+                (code in 0x3040..0x309F) || // Hiragana
+                (code in 0x30A0..0x30FF) || // Katakana
+                (code in 0xAC00..0xD7AF)    // Hangul Syllables
     }
 }

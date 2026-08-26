@@ -72,8 +72,10 @@ interface BookDao {
     suspend fun getChapters(bookId: Long): List<LogicalChapterEntity>
 
     @Insert suspend fun insertLogicalChapter(chapter: LogicalChapterEntity): Long
+    @Insert suspend fun insertLogicalChapters(chapters: List<LogicalChapterEntity>): List<Long>
     @Insert suspend fun insertLogicalSegments(segments: List<LogicalSegmentEntity>): List<Long>
     @Insert suspend fun insertEditionChapter(chapter: EditionChapterEntity): Long
+    @Insert suspend fun insertEditionChapters(chapters: List<EditionChapterEntity>): List<Long>
     @Update suspend fun updateEditionChapter(chapter: EditionChapterEntity)
     @Insert suspend fun insertEditionSegments(segments: List<EditionSegmentEntity>): List<Long>
     @Insert suspend fun insertMappings(mappings: List<EditionSegmentMappingEntity>)
@@ -81,8 +83,19 @@ interface BookDao {
     @Query("SELECT * FROM logical_segments WHERE logicalChapterId = :chapterId ORDER BY segmentIndex")
     suspend fun getLogicalSegments(chapterId: Long): List<LogicalSegmentEntity>
 
+    @Query("""
+        SELECT ls.* FROM logical_segments ls
+        JOIN logical_chapters lc ON lc.id = ls.logicalChapterId
+        WHERE lc.bookId = :bookId
+        ORDER BY lc.chapterIndex, ls.segmentIndex
+    """)
+    suspend fun getLogicalSegmentsByBook(bookId: Long): List<LogicalSegmentEntity>
+
     @Query("SELECT * FROM edition_chapters WHERE editionId = :editionId AND logicalChapterId = :logicalChapterId LIMIT 1")
     suspend fun getEditionChapter(editionId: Long, logicalChapterId: Long): EditionChapterEntity?
+
+    @Query("SELECT * FROM edition_chapters WHERE editionId = :editionId")
+    suspend fun getEditionChapters(editionId: Long): List<EditionChapterEntity>
 
     @Query("DELETE FROM edition_chapters WHERE editionId = :editionId AND logicalChapterId = :logicalChapterId")
     suspend fun deleteEditionChapter(editionId: Long, logicalChapterId: Long)
@@ -101,8 +114,26 @@ interface BookDao {
     @Query("SELECT * FROM edition_segment_mappings WHERE logicalSegmentId IN (:logicalSegmentIds) ORDER BY mappingOrder")
     suspend fun getMappings(logicalSegmentIds: List<Long>): List<EditionSegmentMappingEntity>
 
+    @Query("""
+        SELECT m.* FROM edition_segment_mappings m
+        JOIN edition_segments es ON es.id = m.editionSegmentId
+        JOIN edition_chapters ec ON ec.id = es.editionChapterId
+        WHERE ec.editionId IN (:editionIds)
+        ORDER BY m.mappingOrder
+    """)
+    suspend fun getMappingsByEditions(editionIds: List<Long>): List<EditionSegmentMappingEntity>
+
     @Query("SELECT * FROM segment_revisions WHERE editionSegmentId IN (:editionSegmentIds) AND isActive = 1 ORDER BY priority DESC, createdAt DESC")
     suspend fun getActiveRevisions(editionSegmentIds: List<Long>): List<SegmentRevisionEntity>
+
+    @Query("""
+        SELECT r.* FROM segment_revisions r
+        JOIN edition_segments es ON es.id = r.editionSegmentId
+        JOIN edition_chapters ec ON ec.id = es.editionChapterId
+        WHERE ec.editionId IN (:editionIds) AND r.isActive = 1
+        ORDER BY r.priority DESC, r.createdAt DESC
+    """)
+    suspend fun getActiveRevisionsByEditions(editionIds: List<Long>): List<SegmentRevisionEntity>
 
     @Query("""
         SELECT r.id FROM segment_revisions r
