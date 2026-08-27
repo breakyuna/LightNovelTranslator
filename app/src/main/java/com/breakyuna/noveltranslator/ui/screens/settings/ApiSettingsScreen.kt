@@ -91,7 +91,7 @@ fun ApiSettingsScreen(
     var testResultMessage by remember { mutableStateOf<Pair<Long, String>?>(null) }
 
     var logFilter by remember { mutableStateOf("ALL") }
-    var expandedLogId by remember { mutableStateOf<Long?>(null) }
+    var expandedLogId by remember { mutableStateOf<String?>(null) }
 
     val filteredLogs = remember(systemLogs, logFilter) {
         when (logFilter) {

@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -151,8 +152,7 @@ private fun EditionPreview(
         contentPadding = PaddingValues(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        items(rows.size, key = { rows[it].logicalSegmentId }) { index ->
-            val row = rows[index]
+        itemsIndexed(rows, key = { _, row -> row.logicalSegmentId }) { index, row ->
             val previous = rows.getOrNull(index - 1)
             Column(Modifier.widthIn(max = 760.dp).fillMaxWidth().padding(vertical = 8.dp)) {
                 if (previous?.logicalChapterId != row.logicalChapterId) {

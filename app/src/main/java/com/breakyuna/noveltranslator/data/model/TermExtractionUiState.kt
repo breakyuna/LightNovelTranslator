@@ -1,5 +1,12 @@
 package com.breakyuna.noveltranslator.data.model
 
+import java.util.UUID
+
+data class TermExtractionCandidate(
+    val id: String = UUID.randomUUID().toString(),
+    val term: GlossaryEntity
+)
+
 sealed class TermExtractionUiState {
     object Idle : TermExtractionUiState()
 
@@ -9,7 +16,7 @@ sealed class TermExtractionUiState {
         val currentChapterTitle: String,
         val currentWindowIndex: Int,
         val totalWindows: Int,
-        val discoveredTerms: List<GlossaryEntity>,
+        val discoveredTerms: List<TermExtractionCandidate>,
         val promptTokens: Long,
         val completionTokens: Long,
         val estimatedCost: Double,
@@ -19,7 +26,7 @@ sealed class TermExtractionUiState {
 
     data class Review(
         val projectId: Long,
-        val candidates: List<GlossaryEntity>,
+        val candidates: List<TermExtractionCandidate>,
         val promptTokens: Long,
         val completionTokens: Long,
         val estimatedCost: Double,

@@ -189,7 +189,7 @@ fun GlossaryScreen(
                         onClick = { selectedCategory = null }
                     )
                 }
-                items(TermCategory.values()) { category ->
+                items(TermCategory.values(), key = { it.name }) { category ->
                     val count = glossary.count { it.category == category }
                     val catLabel = when (category) {
                         TermCategory.CHARACTER -> strings.catCharacter
@@ -462,7 +462,7 @@ fun TermEditDialog(
                 // Category selector
                 Text(strings.categoryLabel, style = MaterialTheme.typography.labelMedium)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(TermCategory.values()) { cat ->
+                    items(TermCategory.values(), key = { it.name }) { cat ->
                         FilterChip(
                             selected = category == cat,
                             onClick = { category = cat },

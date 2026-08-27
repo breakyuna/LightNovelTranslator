@@ -24,6 +24,7 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.ProjectEntity
+import com.breakyuna.noveltranslator.data.model.TermExtractionCandidate
 import com.breakyuna.noveltranslator.data.model.TermExtractionUiState
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.*
@@ -50,7 +51,7 @@ fun TermExtractionDialog(
     var customStartText by remember { mutableStateOf("1") }
     var customEndText by remember { mutableStateOf("${minOf(project.totalChapters, 10)}") }
 
-    val selectedCandidates = remember { mutableStateListOf<GlossaryEntity>() }
+    val selectedCandidates = remember { mutableStateListOf<TermExtractionCandidate>() }
 
     // Sync selected candidates when entering Review state
     LaunchedEffect(extractionState) {
@@ -300,16 +301,16 @@ fun TermExtractionDialog(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                items(state.candidates, key = { it.originalTerm }) { term ->
-                                    val isChecked = selectedCandidates.any { it.originalTerm == term.originalTerm }
+                                items(state.candidates, key = TermExtractionCandidate::id) { candidate ->
+                                    val isChecked = selectedCandidates.any { it.id == candidate.id }
                                     CandidateTermCard(
-                                        term = term,
+                                        term = candidate.term,
                                         isSelected = isChecked,
                                         onToggle = {
                                             if (isChecked) {
-                                                selectedCandidates.removeAll { it.originalTerm == term.originalTerm }
+                                                selectedCandidates.removeAll { it.id == candidate.id }
                                             } else {
-                                                selectedCandidates.add(term)
+                                                selectedCandidates.add(candidate)
                                             }
                                         }
                                     )
@@ -404,7 +405,7 @@ fun TermExtractionDialog(
                 is TermExtractionUiState.Review -> {
                     Button(
                         onClick = {
-                            viewModel.saveExtractedTerms(project.id, selectedCandidates.toList())
+                            viewModel.saveExtractedTerms(project.id, selectedCandidates.map { it.term })
                             viewModel.dismissTermExtraction()
                             onDismiss()
                         },

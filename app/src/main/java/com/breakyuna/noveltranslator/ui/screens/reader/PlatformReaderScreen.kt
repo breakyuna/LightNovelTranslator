@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
@@ -138,11 +139,11 @@ fun PlatformReaderScreen(
                 contentPadding = PaddingValues(top = if (controlsVisible) 72.dp else 28.dp, bottom = 80.dp, start = 18.dp, end = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                items(content.size, key = { content[it].logicalSegmentId }) { index ->
+                itemsIndexed(content, key = { _, row -> row.logicalSegmentId }) { index, row ->
                     val previous = content.getOrNull(index - 1)
                     ReaderUnit(
-                        row = content[index],
-                        showChapterTitle = previous?.logicalChapterId != content[index].logicalChapterId,
+                        row = row,
+                        showChapterTitle = previous?.logicalChapterId != row.logicalChapterId,
                         displayMode = displayMode,
                         expanded = window.isExpanded,
                         workbench = layoutMode == ReaderLayoutMode.WORKBENCH,

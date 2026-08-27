@@ -20,9 +20,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.util.concurrent.ConcurrentLinkedDeque
 import java.security.MessageDigest
 import java.io.IOException
+import java.util.ArrayDeque
 
 sealed class TranslationJobState {
     object Idle : TranslationJobState()
@@ -69,7 +69,8 @@ class TranslationManager(
     private val _jobState = MutableStateFlow<TranslationJobState>(TranslationJobState.Idle)
     val jobState: StateFlow<TranslationJobState> = _jobState.asStateFlow()
 
-    private val liveLogQueue = ConcurrentLinkedDeque<LiveLogMessage>()
+    private val liveLogLock = Any()
+    private val liveLogQueue = ArrayDeque<LiveLogMessage>()
     private val _liveLogs = MutableStateFlow<List<LiveLogMessage>>(emptyList())
     val liveLogs: StateFlow<List<LiveLogMessage>> = _liveLogs.asStateFlow()
 
@@ -98,11 +99,13 @@ class TranslationManager(
             tokensInfo = tokensInfo,
             costInfo = costInfo
         )
-        liveLogQueue.addFirst(entry)
-        while (liveLogQueue.size > 200) {
-            liveLogQueue.pollLast()
+        synchronized(liveLogLock) {
+            liveLogQueue.addFirst(entry)
+            while (liveLogQueue.size > 200) {
+                liveLogQueue.removeLast()
+            }
+            _liveLogs.value = liveLogQueue.toList()
         }
-        _liveLogs.value = liveLogQueue.toList()
 
         // Also record to system-wide logger
         when (type) {
@@ -113,8 +116,10 @@ class TranslationManager(
     }
 
     fun clearLiveLogs() {
-        liveLogQueue.clear()
-        _liveLogs.value = emptyList()
+        synchronized(liveLogLock) {
+            liveLogQueue.clear()
+            _liveLogs.value = emptyList()
+        }
     }
 
     fun pause() {

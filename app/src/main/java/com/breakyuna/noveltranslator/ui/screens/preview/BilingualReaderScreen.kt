@@ -143,8 +143,6 @@ fun BilingualReaderScreen(
     }
     val origParagraphs = alignedSegments.map { it.sourceText }
     val transParagraphs = alignedSegments.map { it.translatedText }
-    val maxParagraphCount = alignedSegments.size
-
     val currentIdx = chapters.indexOfFirst { it.id == currentChapterId }
     val prevChapter = if (currentIdx > 0) chapters.getOrNull(currentIdx - 1) else null
     val nextChapter = if (currentIdx != -1 && currentIdx < chapters.size - 1) chapters.getOrNull(currentIdx + 1) else null
@@ -350,7 +348,11 @@ fun BilingualReaderScreen(
                                     }
                                 }
                             } else {
-                                itemsIndexed(transParagraphs) { index, para ->
+                                itemsIndexed(
+                                    items = alignedSegments,
+                                    key = { _, segment -> segment.segmentId }
+                                ) { index, segment ->
+                                    val para = segment.translatedText
                                     val formattedPara = if (enableIndent) "　　$para" else para
                                     Text(
                                         text = formattedPara,
@@ -386,7 +388,11 @@ fun BilingualReaderScreen(
                                     )
                                 }
                             } else {
-                                itemsIndexed(transParagraphs) { index, para ->
+                                itemsIndexed(
+                                    items = alignedSegments,
+                                    key = { _, segment -> segment.segmentId }
+                                ) { index, segment ->
+                                    val para = segment.translatedText
                                     AppGroupedSurface(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -415,9 +421,12 @@ fun BilingualReaderScreen(
 
                         ViewMode.BILINGUAL_PARALLEL -> {
                             // Bilingual Parallel Comparison Mode (Apple Style Rows)
-                            items(maxParagraphCount) { index ->
-                                val origP = origParagraphs.getOrElse(index) { "" }
-                                val transP = transParagraphs.getOrElse(index) { "" }
+                            itemsIndexed(
+                                items = alignedSegments,
+                                key = { _, segment -> segment.segmentId }
+                            ) { index, segment ->
+                                val origP = segment.sourceText
+                                val transP = segment.translatedText
 
                                 AppGroupedSurface(
                                     modifier = Modifier

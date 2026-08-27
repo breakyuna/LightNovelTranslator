@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -374,23 +375,16 @@ fun TaskQueueScreen(
                         }
                     }
                 } else {
-                    item {
-                        AppGroupedSurface(
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            filteredTasks.forEachIndexed { index, task ->
-                                TaskRowItem(
-                                    task = task,
-                                    onPause = { viewModel.taskManager.pauseTask(task.id) },
-                                    onResume = { viewModel.taskManager.resumeTask(task.id) },
-                                    onRetry = { viewModel.taskManager.retryTask(task.id) },
-                                    onCancel = { viewModel.taskManager.cancelTask(task.id) },
-                                    onDelete = { viewModel.taskManager.removeTask(task.id) }
-                                )
-                                if (index < filteredTasks.lastIndex) {
-                                    AppDivider(startIndent = 52.dp)
-                                }
-                            }
+                    items(filteredTasks, key = { it.id }) { task ->
+                        AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
+                            TaskRowItem(
+                                task = task,
+                                onPause = { viewModel.taskManager.pauseTask(task.id) },
+                                onResume = { viewModel.taskManager.resumeTask(task.id) },
+                                onRetry = { viewModel.taskManager.retryTask(task.id) },
+                                onCancel = { viewModel.taskManager.cancelTask(task.id) },
+                                onDelete = { viewModel.taskManager.removeTask(task.id) }
+                            )
                         }
                     }
                 }
@@ -493,21 +487,14 @@ fun TaskQueueScreen(
                         )
                     }
 
-                    item {
-                        AppGroupedSurface(
-                            contentPadding = PaddingValues(0.dp)
-                        ) {
-                            filteredHistoryLogs.forEachIndexed { index, log ->
-                                val projTitle = projectTitleMap[log.projectId] ?: "项目 #${log.projectId}"
-                                HistoryLogRowItem(
-                                    log = log,
-                                    projectTitle = projTitle,
-                                    onClick = { selectedLogForDetail = log }
-                                )
-                                if (index < filteredHistoryLogs.lastIndex) {
-                                    AppDivider(startIndent = 52.dp)
-                                }
-                            }
+                    items(filteredHistoryLogs, key = { it.id }) { log ->
+                        AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
+                            val projTitle = projectTitleMap[log.projectId] ?: "项目 #${log.projectId}"
+                            HistoryLogRowItem(
+                                log = log,
+                                projectTitle = projTitle,
+                                onClick = { selectedLogForDetail = log }
+                            )
                         }
                     }
                 }

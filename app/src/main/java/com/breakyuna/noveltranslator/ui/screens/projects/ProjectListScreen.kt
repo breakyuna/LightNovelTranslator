@@ -484,12 +484,16 @@ fun ImportNovelDialog(
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    val presetLangs = listOf("English", "中文", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "Auto")
+                    val presetLangs = listOf(
+                        "source-en" to "English", "source-zh" to "中文", "source-ja" to "日本語",
+                        "source-ko" to "한국어", "source-fr" to "Français", "source-de" to "Deutsch",
+                        "source-es" to "Español", "source-ru" to "Русский", "source-auto" to "Auto"
+                    )
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(presetLangs) { lang ->
+                        items(presetLangs, key = { it.first }) { (_, lang) ->
                             FilterChip(
                                 selected = sourceLang.equals(lang, ignoreCase = true),
                                 onClick = { sourceLang = lang },
@@ -511,12 +515,16 @@ fun ImportNovelDialog(
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    val targetPresetLangs = listOf("中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский", "繁體中文")
+                    val targetPresetLangs = listOf(
+                        "target-zh-cn" to "中文", "target-en" to "English", "target-ja" to "日本語",
+                        "target-ko" to "한국어", "target-fr" to "Français", "target-de" to "Deutsch",
+                        "target-es" to "Español", "target-ru" to "Русский", "target-zh-tw" to "繁體中文"
+                    )
                     LazyRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        items(targetPresetLangs) { lang ->
+                        items(targetPresetLangs, key = { it.first }) { (_, lang) ->
                             FilterChip(
                                 selected = targetLang.equals(lang, ignoreCase = true),
                                 onClick = { targetLang = lang },

@@ -1306,7 +1306,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 val knownTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
                 val knownKeys = knownTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
-                val discoveredCandidates = mutableListOf<GlossaryEntity>()
+                val discoveredCandidates = mutableListOf<TermExtractionCandidate>()
 
                 // Window samples with chapter metadata
                 data class ScanWindow(val chapter: ChapterEntity, val text: String, val index: Int)
@@ -1370,12 +1370,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         provider = provider,
                         sourceLanguage = project.sourceLanguage,
                         targetLanguage = project.targetLanguage,
-                        existingTerms = knownTerms.map { it.originalTerm } + discoveredCandidates.map { it.originalTerm }
+                        existingTerms = knownTerms.map { it.originalTerm } + discoveredCandidates.map { it.term.originalTerm }
                     )
 
                     extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
                         if (knownKeys.add(normalizeTerm(term.originalTerm))) {
-                            discoveredCandidates += term.copy(projectId = projectId)
+                            discoveredCandidates += TermExtractionCandidate(term = term.copy(projectId = projectId))
                         }
                     }
 

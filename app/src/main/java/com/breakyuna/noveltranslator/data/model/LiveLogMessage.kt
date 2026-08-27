@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.data.model
 
+import com.breakyuna.noveltranslator.core.logger.StableLogId
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -12,7 +13,7 @@ enum class LiveLogType {
 }
 
 data class LiveLogMessage(
-    val id: Long = System.currentTimeMillis() + (0..999).random(),
+    val id: String = StableLogId.create(),
     val timestamp: Long = System.currentTimeMillis(),
     val chapterIndex: Int? = null,
     val chunkInfo: String? = null,
