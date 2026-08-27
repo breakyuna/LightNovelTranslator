@@ -1,5 +1,7 @@
 package com.breakyuna.noveltranslator.core.translation
 
+import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
+import com.breakyuna.noveltranslator.data.model.LexiconKind
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -70,6 +72,48 @@ class TranslationProtocolTest {
         val translated = ParsedTranslationChapter(1, linkedMapOf(2 to "第二段", 1 to "第一段"))
 
         assertTrue(DeterministicTranslationQa.validate(source, translated).accepted)
+    }
+
+    @Test
+    fun deterministicQa_doesNotMatchShortAsciiTermInsideLongerWord() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "The annual festival began."))
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "庆典开始了。"))
+        val term = LexiconEntryEntity(
+            translationProjectId = 1,
+            sourceTerm = "Ann",
+            targetTerm = "安"
+        )
+
+        assertTrue(DeterministicTranslationQa.validate(source, translated, listOf(term)).accepted)
+    }
+
+    @Test
+    fun deterministicQa_checksTermAcrossChapterAndAllowsPunctuationVariation() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "The Holy Sword shone."),
+                ProtocolSegment(2, 101, "The weapon answered its bearer.")
+            )
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "那把剑闪耀起来。", 2 to "圣·剑回应了持有者。"))
+        val term = LexiconEntryEntity(
+            translationProjectId = 1,
+            sourceTerm = "Holy Sword",
+            targetTerm = "圣剑",
+            kind = LexiconKind.TERMINOLOGY.name
+        )
+
+        assertTrue(DeterministicTranslationQa.validate(source, translated, listOf(term)).accepted)
     }
 
     @Test

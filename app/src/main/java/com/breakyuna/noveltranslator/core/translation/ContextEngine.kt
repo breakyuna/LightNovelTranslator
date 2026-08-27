@@ -31,7 +31,19 @@ class ContextEngine(
             .sortedBy { it.chapterIndex }
             .joinToString("\n") { "Chapter ${it.chapterIndex}: ${it.summary.take(700)}" }
 
-        val snapshot = memoryDao.latestSnapshot(project.id) ?: createSnapshot(project, confirmed)
+        val expectedSnapshot = buildSnapshot(project, confirmed)
+        val latestSnapshot = memoryDao.latestSnapshot(project.id)
+        val snapshot = if (
+            latestSnapshot != null &&
+            latestSnapshot.protocolVersion == expectedSnapshot.protocolVersion &&
+            latestSnapshot.styleGuideVersion == expectedSnapshot.styleGuideVersion &&
+            latestSnapshot.coreLexiconVersion == expectedSnapshot.coreLexiconVersion &&
+            latestSnapshot.fingerprint == expectedSnapshot.fingerprint
+        ) {
+            latestSnapshot
+        } else {
+            expectedSnapshot.copy(id = memoryDao.insertSnapshot(expectedSnapshot))
+        }
         return ContextPackage(
             stablePrefix = snapshot.stablePrefix,
             matchedLexicon = matched.take(120),
@@ -41,11 +53,19 @@ class ContextEngine(
         )
     }
 
-    private suspend fun createSnapshot(
+    private fun buildSnapshot(
         project: TranslationProjectV2Entity,
         confirmed: List<LexiconEntryEntity>
     ): ContextSnapshotEntity {
-        val coreTerms = confirmed.filter { it.priority >= CORE_PRIORITY }.take(80)
+        val coreTerms = confirmed.asSequence()
+            .filter { it.priority >= CORE_PRIORITY }
+            .sortedWith(
+                compareByDescending<LexiconEntryEntity> { it.priority }
+                    .thenByDescending { it.sourceTerm.length }
+                    .thenBy { it.sourceTerm.lowercase() }
+            )
+            .take(80)
+            .toList()
         val prefix = buildString {
             append("Protocol version: ").append(project.promptProtocolVersion).append('\n')
             append("Style guide: ").append(project.styleGuide.trim()).append('\n')
@@ -57,27 +77,28 @@ class ContextEngine(
         val snapshot = ContextSnapshotEntity(
             translationProjectId = project.id,
             protocolVersion = project.promptProtocolVersion,
-            styleGuideVersion = 1,
-            coreLexiconVersion = confirmed.maxOfOrNull { it.updatedAt }?.hashCode() ?: 0,
+            styleGuideVersion = versionOf(project.styleGuide.trim()),
+            coreLexiconVersion = versionOf(
+                coreTerms.joinToString("\n") {
+                    listOf(it.sourceTerm, it.targetTerm, it.aliases, it.caseSensitive, it.exactMatch, it.priority, it.enabled)
+                        .joinToString("\u001f")
+                }
+            ),
             storyMemoryVersion = 1,
             stablePrefix = prefix,
             fingerprint = sha256(prefix)
         )
-        return snapshot.copy(id = memoryDao.insertSnapshot(snapshot))
+        return snapshot
     }
 
     private fun matches(entry: LexiconEntryEntity, text: String): Boolean {
-        val options = if (entry.caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)
-        val terms = listOf(entry.sourceTerm) + entry.aliases.split(',', ';', '|')
-        return terms.map(String::trim).filter(String::isNotBlank).any { term ->
-            if (entry.exactMatch && term.all { it.code < 128 && (it.isLetterOrDigit() || it == '_') }) {
-                Regex("(?<![\\p{L}\\p{N}_])${Regex.escape(term)}(?![\\p{L}\\p{N}_])", options).containsMatchIn(text)
-            } else if (entry.caseSensitive) text.contains(term) else text.contains(term, ignoreCase = true)
-        }
+        return LexiconTermMatcher.matchesSource(entry, text)
     }
 
     private fun sha256(value: String): String = MessageDigest.getInstance("SHA-256")
         .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    private fun versionOf(value: String): Int = sha256(value).take(8).toLong(16).toInt()
 
     companion object { private const val CORE_PRIORITY = 100 }
 }

@@ -45,12 +45,10 @@ import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
-import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.launch
 import java.io.File
 import java.text.DateFormat
 import java.util.Date
@@ -71,10 +69,9 @@ fun BookWorkbenchDetailScreen(
     onOpenReader: (Long, Long?) -> Unit,
     onOpenBookDetail: (Long) -> Unit
 ) {
-    val context = LocalContext.current
-    val strings = platformUiStrings()
     val windowSize = rememberWindowSize()
-    val scope = rememberCoroutineScope()
+    val useWideWorkbench = windowSize.isExpanded &&
+        windowSize.screenWidthDp > windowSize.screenHeightDp
 
     val book by remember(bookId) { viewModel.bookPlatformRepo.observeBook(bookId) }
         .collectAsState(initial = null)
@@ -88,7 +85,7 @@ fun BookWorkbenchDetailScreen(
         .collectAsState(initial = emptyList())
     val allProviders by viewModel.allProviders.collectAsState()
     val debugModeEnabled by viewModel.debugModeEnabled.collectAsState()
-    var selectedTab by rememberSaveable { mutableStateOf(WorkbenchTab.TASKS) }
+    var selectedTab by rememberSaveable(bookId) { mutableStateOf(WorkbenchTab.TASKS) }
     val systemLogs by remember(selectedTab) {
         if (selectedTab == WorkbenchTab.TASKS || selectedTab == WorkbenchTab.LOGS) viewModel.systemLogs
         else flowOf(emptyList())
@@ -113,8 +110,8 @@ fun BookWorkbenchDetailScreen(
     }.collectAsState(initial = emptyList())
     val latestRun = activeRuns.firstOrNull() ?: allRuns.firstOrNull { it.translationProjectId == currentProject?.id }
 
-    val projectLexicon by remember(currentProject?.id, selectedTab) {
-        if (currentProject != null && selectedTab == WorkbenchTab.GLOSSARY) viewModel.observeLexicon(currentProject.id)
+    val projectLexicon by remember(currentProject?.id, selectedTab, useWideWorkbench) {
+        if (currentProject != null && (selectedTab == WorkbenchTab.GLOSSARY || useWideWorkbench)) viewModel.observeLexicon(currentProject.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
@@ -191,99 +188,142 @@ fun BookWorkbenchDetailScreen(
             )
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-        ) {
-            // Book & Edition Header Banner
-            WorkbenchHeroCard(
-                book = currentBook,
-                editions = editions,
-                selectedEdition = currentTargetEdition,
-                onSelectEdition = { selectedTargetEditionId = it },
-                onCreateEdition = { showCreateEditionDialog = true },
-                onOpenReader = { onOpenReader(currentBook.id, currentTargetEdition?.id) },
-                onScanTerms = { showTermScannerDialog = true }
-            )
-
-            // Tabs Selector Row
-            PrimaryTabRow(
-                selectedTabIndex = selectedTab.ordinal,
-                containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-                modifier = Modifier.fillMaxWidth()
+        val tabContent: @Composable (Modifier) -> Unit = { modifier ->
+            Box(
+                modifier = modifier,
+                contentAlignment = Alignment.TopCenter
             ) {
-                WorkbenchTab.values().forEach { tab ->
-                    Tab(
-                        selected = selectedTab == tab,
-                        onClick = { selectedTab = tab },
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Icon(tab.icon, null, modifier = Modifier.size(16.dp))
-                                Text(tab.title, maxLines = 1, style = MaterialTheme.typography.labelMedium)
-                            }
+                Box(
+                    modifier = Modifier
+                        .widthIn(max = if (selectedTab == WorkbenchTab.LOGS) 1440.dp else 1180.dp)
+                        .fillMaxSize()
+                ) {
+                    when (selectedTab) {
+                        WorkbenchTab.TASKS -> {
+                            TasksAndControlTab(
+                                book = currentBook,
+                                editions = editions,
+                                chapters = chapters,
+                                targetEdition = currentTargetEdition,
+                                project = currentProject,
+                                run = latestRun,
+                                batches = latestBatches,
+                                providers = allProviders,
+                                systemLogs = systemLogs,
+                                viewModel = viewModel,
+                                onConfigureProject = { selectedTab = WorkbenchTab.CONFIG },
+                                onScanTerms = { showTermScannerDialog = true },
+                                onSelectChapterAction = { chapterActionTarget = it }
+                            )
                         }
-                    )
+                        WorkbenchTab.CONFIG -> {
+                            ConfigurationTab(
+                                book = currentBook,
+                                editions = editions,
+                                targetEdition = currentTargetEdition,
+                                project = currentProject,
+                                providers = allProviders,
+                                viewModel = viewModel,
+                                onCreateEdition = { showCreateEditionDialog = true }
+                            )
+                        }
+                        WorkbenchTab.GLOSSARY -> {
+                            GlossaryManagementTab(
+                                book = currentBook,
+                                project = currentProject,
+                                lexicon = projectLexicon,
+                                storyMemory = projectStoryMemory,
+                                onScanTerms = { showTermScannerDialog = true },
+                                onAddTerm = { showAddTermDialog = true },
+                                viewModel = viewModel
+                            )
+                        }
+                        WorkbenchTab.LOGS -> {
+                            LogsAndHistoryTab(
+                                book = currentBook,
+                                project = currentProject,
+                                allRuns = allRuns,
+                                systemLogs = systemLogs,
+                                viewModel = viewModel,
+                                debugModeEnabled = debugModeEnabled
+                            )
+                        }
+                    }
                 }
             }
+        }
 
-            // Tab Content
-            Box(
+        if (useWideWorkbench) {
+            Row(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
+                    .fillMaxSize()
+                    .padding(padding)
+                    .background(MaterialTheme.colorScheme.surfaceContainerLowest)
             ) {
-                when (selectedTab) {
-                    WorkbenchTab.TASKS -> {
-                        TasksAndControlTab(
-                            book = currentBook,
-                            editions = editions,
-                            chapters = chapters,
-                            targetEdition = currentTargetEdition,
-                            project = currentProject,
-                            run = latestRun,
-                            batches = latestBatches,
-                            providers = allProviders,
-                            systemLogs = systemLogs,
-                            viewModel = viewModel,
-                            onConfigureProject = { selectedTab = WorkbenchTab.CONFIG },
-                            onScanTerms = { showTermScannerDialog = true },
-                            onSelectChapterAction = { chapterActionTarget = it }
-                        )
-                    }
-                    WorkbenchTab.CONFIG -> {
-                        ConfigurationTab(
-                            book = currentBook,
-                            editions = editions,
-                            targetEdition = currentTargetEdition,
-                            project = currentProject,
-                            providers = allProviders,
-                            viewModel = viewModel,
-                            onCreateEdition = { showCreateEditionDialog = true }
-                        )
-                    }
-                    WorkbenchTab.GLOSSARY -> {
-                        GlossaryManagementTab(
-                            book = currentBook,
-                            project = currentProject,
-                            lexicon = projectLexicon,
-                            storyMemory = projectStoryMemory,
-                            onScanTerms = { showTermScannerDialog = true },
-                            onAddTerm = { showAddTermDialog = true },
-                            viewModel = viewModel
-                        )
-                    }
-                    WorkbenchTab.LOGS -> {
-                        LogsAndHistoryTab(
-                            book = currentBook,
-                            project = currentProject,
-                            allRuns = allRuns,
-                            systemLogs = systemLogs,
-                            viewModel = viewModel,
-                            debugModeEnabled = debugModeEnabled
+                WorkbenchSidebar(
+                    modifier = Modifier
+                        .width(if (windowSize.screenWidthDp >= 1100.dp) 304.dp else 264.dp)
+                        .fillMaxHeight(),
+                    book = currentBook,
+                    editions = editions,
+                    selectedEdition = currentTargetEdition,
+                    project = currentProject,
+                    run = latestRun,
+                    providers = allProviders,
+                    selectedTab = selectedTab,
+                    chapterCount = chapters.size,
+                    lexiconCount = projectLexicon.size,
+                    onSelectTab = { selectedTab = it },
+                    onSelectEdition = { selectedTargetEditionId = it },
+                    onCreateEdition = { showCreateEditionDialog = true },
+                    onScanTerms = { showTermScannerDialog = true },
+                    onOpenReader = { onOpenReader(currentBook.id, currentTargetEdition?.id) },
+                    viewModel = viewModel
+                )
+                VerticalDivider()
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    WideWorkspaceHeader(
+                        tab = selectedTab,
+                        edition = currentTargetEdition,
+                        project = currentProject
+                    )
+                    tabContent(Modifier.fillMaxWidth().weight(1f))
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+            ) {
+                WorkbenchHeroCard(
+                    book = currentBook,
+                    editions = editions,
+                    selectedEdition = currentTargetEdition,
+                    onSelectEdition = { selectedTargetEditionId = it },
+                    onCreateEdition = { showCreateEditionDialog = true }
+                )
+
+                PrimaryTabRow(
+                    selectedTabIndex = selectedTab.ordinal,
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    WorkbenchTab.values().forEach { tab ->
+                        Tab(
+                            selected = selectedTab == tab,
+                            onClick = { selectedTab = tab },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Icon(tab.icon, null, modifier = Modifier.size(16.dp))
+                                    Text(tab.title, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
                         )
                     }
                 }
+
+                tabContent(Modifier.fillMaxWidth().weight(1f))
             }
         }
     }
@@ -386,14 +426,362 @@ fun BookWorkbenchDetailScreen(
 }
 
 @Composable
+private fun WorkbenchSidebar(
+    modifier: Modifier,
+    book: BookEntity,
+    editions: List<EditionEntity>,
+    selectedEdition: EditionEntity?,
+    project: TranslationProjectV2Entity?,
+    run: PlatformTranslationRunEntity?,
+    providers: List<ApiProviderEntity>,
+    selectedTab: WorkbenchTab,
+    chapterCount: Int,
+    lexiconCount: Int,
+    onSelectTab: (WorkbenchTab) -> Unit,
+    onSelectEdition: (Long) -> Unit,
+    onCreateEdition: () -> Unit,
+    onScanTerms: () -> Unit,
+    onOpenReader: () -> Unit,
+    viewModel: AppViewModel
+) {
+    var editionMenuExpanded by remember { mutableStateOf(false) }
+    val provider = providers.firstOrNull { it.id == project?.providerId }
+    val currentState = project?.state ?: run?.state ?: "IDLE"
+    val completedChapters = run?.completedChapters ?: 0
+    val progress = if (chapterCount > 0) {
+        (completedChapters.toFloat() / chapterCount).coerceIn(0f, 1f)
+    } else 0f
+
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        tonalElevation = 1.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.size(54.dp, 76.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shadowElevation = 2.dp
+                    ) {
+                        val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
+                        if (cover != null) {
+                            Image(
+                                bitmap = cover!!,
+                                contentDescription = book.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(
+                            book.title,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            book.author.ifBlank { "未知作者" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "$chapterCount 章 · ${editions.size} 个版本",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Box {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { editionMenuExpanded = true },
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Layers, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("当前版本", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    selectedEdition?.name ?: "选择目标译本",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Icon(Icons.Default.ArrowDropDown, null)
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = editionMenuExpanded,
+                        onDismissRequest = { editionMenuExpanded = false }
+                    ) {
+                        editions.forEach { edition ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        edition.name,
+                                        fontWeight = if (edition.id == selectedEdition?.id) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (edition.id == selectedEdition?.id) Icons.Default.CheckCircle else Icons.Outlined.Circle,
+                                        null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                onClick = {
+                                    onSelectEdition(edition.id)
+                                    editionMenuExpanded = false
+                                }
+                            )
+                        }
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("新建翻译版本") },
+                            leadingIcon = { Icon(Icons.Default.AddCircleOutline, null) },
+                            onClick = {
+                                editionMenuExpanded = false
+                                onCreateEdition()
+                            }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+                Text(
+                    "工作区",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    WorkbenchTab.values().forEach { tab ->
+                        NavigationDrawerItem(
+                            selected = selectedTab == tab,
+                            onClick = { onSelectTab(tab) },
+                            icon = { Icon(tab.icon, null, modifier = Modifier.size(20.dp)) },
+                            label = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(tab.title, modifier = Modifier.weight(1f), maxLines = 1)
+                                    when (tab) {
+                                        WorkbenchTab.GLOSSARY -> if (lexiconCount > 0) Text(
+                                            lexiconCount.toString(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        WorkbenchTab.TASKS -> if (currentState == "RUNNING") Icon(
+                                            Icons.Default.Circle,
+                                            null,
+                                            modifier = Modifier.size(8.dp),
+                                            tint = MaterialTheme.colorScheme.primary
+                                        )
+                                        else -> Unit
+                                    }
+                                }
+                            },
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                    }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelectTab(WorkbenchTab.CONFIG) },
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Memory, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(7.dp))
+                            Text("模型配置", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                            Spacer(Modifier.weight(1f))
+                            Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp))
+                        }
+                        Text(
+                            provider?.name ?: "尚未选择供应商",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            project?.modelName?.ifBlank { provider?.selectedModel ?: "默认模型" } ?: "点击配置翻译模型",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider()
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (project != null) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text("任务进度", style = MaterialTheme.typography.labelMedium)
+                        Text("$completedChapters / $chapterCount", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                    }
+                    LinearProgressIndicator(
+                        progress = { progress },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(
+                        onClick = {
+                            when {
+                                project == null -> onSelectTab(WorkbenchTab.CONFIG)
+                                currentState == "RUNNING" -> viewModel.pauseBookTranslation(project.id)
+                                currentState == "PAUSED" -> viewModel.resumeBookTranslation(project.id)
+                                else -> viewModel.runBookTranslation(project.id)
+                            }
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            when (currentState) {
+                                "RUNNING" -> Icons.Default.Pause
+                                "PAUSED" -> Icons.Default.PlayArrow
+                                else -> Icons.Default.PlayArrow
+                            },
+                            null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            when {
+                                project == null -> "配置任务"
+                                currentState == "RUNNING" -> "暂停"
+                                currentState == "PAUSED" -> "继续"
+                                else -> "开始翻译"
+                            },
+                            maxLines = 1
+                        )
+                    }
+                    if (project != null && currentState in listOf("RUNNING", "PAUSED")) {
+                        IconButton(onClick = { viewModel.cancelBookTranslation(project.id) }) {
+                            Icon(Icons.Default.StopCircle, "终止任务", tint = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onScanTerms, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.Spellcheck, null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("扫描术语", maxLines = 1)
+                    }
+                    OutlinedButton(onClick = onOpenReader, modifier = Modifier.weight(1f)) {
+                        Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("阅读", maxLines = 1)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WideWorkspaceHeader(
+    tab: WorkbenchTab,
+    edition: EditionEntity?,
+    project: TranslationProjectV2Entity?
+) {
+    val description = when (tab) {
+        WorkbenchTab.TASKS -> "监控进度、控制翻译并处理单章任务"
+        WorkbenchTab.CONFIG -> "选择模型、翻译范围与文学风格"
+        WorkbenchTab.GLOSSARY -> "审核候选术语并维护 Story Memory"
+        WorkbenchTab.LOGS -> "查看任务历史、模型调用和诊断日志"
+    }
+    Surface(color = MaterialTheme.colorScheme.surface) {
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(tab.icon, null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(21.dp))
+                    }
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(tab.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (edition != null) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
+                        Text(
+                            edition.name,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Surface(
+                    shape = CircleShape,
+                    color = when (project?.state) {
+                        "RUNNING" -> MaterialTheme.colorScheme.primary
+                        "PAUSED" -> MaterialTheme.colorScheme.tertiary
+                        "FAILED" -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    modifier = Modifier.size(9.dp)
+                ) {}
+            }
+            HorizontalDivider()
+        }
+    }
+}
+
+@Composable
 private fun WorkbenchHeroCard(
     book: BookEntity,
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
     onSelectEdition: (Long) -> Unit,
-    onCreateEdition: () -> Unit,
-    onOpenReader: () -> Unit,
-    onScanTerms: () -> Unit
+    onCreateEdition: () -> Unit
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1387,7 +1775,7 @@ private fun GlossaryManagementTab(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "利用 AI 预先扫描小说章节，快速提取全书角色人名、势力宗门、地名与法宝术语，翻译时将严格遵循统一定义。",
+                            "AI 会完整扫描所选章节并生成待确认候选；只有人工确认后，术语才会进入翻译与 QA。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
@@ -1469,6 +1857,7 @@ private fun GlossaryManagementTab(
             items(filteredLexicon, key = { it.id }) { entry ->
                 LexiconEntryCard(
                     entry = entry,
+                    onConfirm = { viewModel.confirmLexiconEntry(entry) },
                     onDelete = { viewModel.deleteLexiconEntry(entry.id) }
                 )
             }
@@ -1479,6 +1868,7 @@ private fun GlossaryManagementTab(
 @Composable
 private fun LexiconEntryCard(
     entry: LexiconEntryEntity,
+    onConfirm: () -> Unit,
     onDelete: () -> Unit
 ) {
     Card(
@@ -1525,7 +1915,7 @@ private fun LexiconEntryCard(
                             color = MaterialTheme.colorScheme.tertiaryContainer
                         ) {
                             Text(
-                                "🤖 自动学习",
+                                if (entry.reviewStatus == ReviewStatus.CANDIDATE.name) "🤖 待确认" else "🤖 AI 术语",
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 10.sp
@@ -1541,6 +1931,14 @@ private fun LexiconEntryCard(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                }
+            }
+
+            if (entry.reviewStatus == ReviewStatus.CANDIDATE.name) {
+                TextButton(onClick = onConfirm) {
+                    Icon(Icons.Default.Check, "确认术语", modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("确认")
                 }
             }
 

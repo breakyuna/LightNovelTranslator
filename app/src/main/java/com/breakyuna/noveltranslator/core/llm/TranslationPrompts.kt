@@ -181,17 +181,8 @@ Output format: Return valid JSON array of objects:
 ]
 
 Text Excerpt:
-${representativeExcerpt(textSample, 12000)}
+${textSample}
         """.trimIndent()
-    }
-
-    private fun representativeExcerpt(text: String, maxChars: Int): String {
-        if (text.length <= maxChars) return text
-        val part = maxChars / 3
-        val middleStart = (text.length / 2 - part / 2).coerceAtLeast(0)
-        return text.take(part) + "\n[…]\n" +
-            text.substring(middleStart, (middleStart + part).coerceAtMost(text.length)) +
-            "\n[…]\n" + text.takeLast(part)
     }
 
     fun buildAgentChapterSplitPrompt(rawTextSample: String): String {

@@ -731,6 +731,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun confirmLexiconEntry(entry: LexiconEntryEntity) {
+        viewModelScope.launch(Dispatchers.IO) {
+            bookPlatformRepo.updateLexiconEntry(
+                entry.copy(
+                    reviewStatus = ReviewStatus.CONFIRMED.name,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            withContext(Dispatchers.Main) {
+                showMessage("术语已确认，将在后续翻译中生效")
+            }
+        }
+    }
+
     fun retranslateChapter(bookId: Long, editionId: Long, logicalChapterId: Long, projectId: Long?) {
         viewModelScope.launch(Dispatchers.IO) {
             bookPlatformRepo.retranslateChapter(editionId, logicalChapterId)
@@ -777,63 +791,63 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     "🔍 启动专有术语扫描: Book#$bookId, 范围第 $startChapter ~ $endChapter 章 (${allChapters.size}章)，使用模型: ${provider.name}/${provider.selectedModel}",
                     projectId = targetProjectId
                 )
-                val existingTerms = db.lexiconV2Dao().getConfirmed(targetProjectId)
+                val existingTerms = db.lexiconV2Dao().getAll(targetProjectId)
                     .mapTo(linkedSetOf()) { it.sourceTerm.lowercase() }
-                val pendingEntries = mutableListOf<LexiconEntryEntity>()
                 var count = 0
                 var readableChapters = 0
-                val scanBatches = allChapters.chunked(3)
-                scanBatches.forEachIndexed { batchIndex, chapterBatch ->
-                    val combinedText = buildString {
-                        for (ch in chapterBatch) {
-                            val segments = db.bookDao().getLogicalSegments(ch.id)
-                            val editionCh = db.bookDao().getEditionChapter(sourceEditionId, ch.id)
-                            if (editionCh != null) {
-                                val edSegments = db.bookDao().getEditionSegments(editionCh.id).associateBy { it.id }
-                                val mappings = db.bookDao().getMappings(segments.map { it.id }).groupBy { it.logicalSegmentId }
-                                val text = segments.joinToString("\n") { s ->
-                                    mappings[s.id].orEmpty().sortedBy { it.mappingOrder }
-                                        .mapNotNull { edSegments[it.editionSegmentId]?.baseText }
-                                        .joinToString("\n")
+                allChapters.forEach { chapter ->
+                    val segments = db.bookDao().getLogicalSegments(chapter.id)
+                    val editionChapter = db.bookDao().getEditionChapter(sourceEditionId, chapter.id)
+                    if (editionChapter != null) {
+                        val editionSegments = db.bookDao().getEditionSegments(editionChapter.id).associateBy { it.id }
+                        val mappings = db.bookDao().getMappings(segments.map { it.id }).groupBy { it.logicalSegmentId }
+                        val chapterText = segments.joinToString("\n") { segment ->
+                            mappings[segment.id].orEmpty().sortedBy { it.mappingOrder }
+                                .mapNotNull { editionSegments[it.editionSegmentId]?.baseText }
+                                .joinToString("\n")
+                        }
+                        if (chapterText.isNotBlank()) {
+                            readableChapters++
+                            val windows = splitTermScanWindows(chapterText)
+                            windows.forEachIndexed { windowIndex, window ->
+                                val label = if (chapterText.length <= TERM_SCAN_WINDOW_CHARS) {
+                                    "第 ${chapter.chapterIndex} 章"
+                                } else {
+                                    "第 ${chapter.chapterIndex} 章片段 ${windowIndex + 1}/${windows.size}"
                                 }
-                                append("【${ch.canonicalTitle}】\n")
-                                append(text)
-                                append("\n\n")
-                                if (text.isNotBlank()) readableChapters++
+                                withContext(Dispatchers.Main) {
+                                    onProgress("AI 正在扫描 $label（累计 $count 条候选）...")
+                                }
+                                val extraction = termExtractionAgent.extractTermsWithUsage(
+                                    projectId = targetProjectId,
+                                    sampleText = "【${chapter.canonicalTitle}】\n$window",
+                                    provider = provider,
+                                    sourceLanguage = book.originalLanguage,
+                                    targetLanguage = targetLanguage,
+                                    existingTerms = existingTerms
+                                )
+                                if (!extraction.usage.isSuccess) error(extraction.usage.errorMessage ?: "$label 模型调用失败")
+                                if (extraction.parseError != null) error("$label：${extraction.parseError}")
+                                val entries = extraction.terms
+                                    .filterNot { it.originalTerm.lowercase() in existingTerms }
+                                    .map { term ->
+                                        LexiconEntryEntity(
+                                            translationProjectId = targetProjectId,
+                                            sourceTerm = term.originalTerm,
+                                            targetTerm = term.translatedTerm,
+                                            category = term.category.name,
+                                            notes = term.notes,
+                                            source = LexiconSource.AI.name,
+                                            reviewStatus = ReviewStatus.CANDIDATE.name
+                                        )
+                                    }
+                                if (entries.isNotEmpty()) {
+                                    entries.forEach { existingTerms += it.sourceTerm.lowercase() }
+                                    db.lexiconV2Dao().upsertAll(entries)
+                                    count += entries.size
+                                }
                             }
                         }
-                    }
-                    if (combinedText.isBlank()) return@forEachIndexed
-                    withContext(Dispatchers.Main) {
-                        onProgress("AI 正在扫描第 ${batchIndex + 1}/${scanBatches.size} 批（累计 $count 条）...")
-                    }
-                    val extraction = termExtractionAgent.extractTermsWithUsage(
-                        projectId = targetProjectId,
-                        sampleText = combinedText,
-                        provider = provider,
-                        sourceLanguage = book.originalLanguage,
-                        targetLanguage = targetLanguage,
-                        existingTerms = existingTerms
-                    )
-                    if (!extraction.usage.isSuccess) error(extraction.usage.errorMessage ?: "第 ${batchIndex + 1} 批模型调用失败")
-                    if (extraction.parseError != null) error("第 ${batchIndex + 1} 批：${extraction.parseError}")
-                    val entries = extraction.terms
-                        .filterNot { it.originalTerm.lowercase() in existingTerms }
-                        .map { term ->
-                            LexiconEntryEntity(
-                                translationProjectId = targetProjectId,
-                                sourceTerm = term.originalTerm,
-                                targetTerm = term.translatedTerm,
-                                category = term.category.name,
-                                notes = term.notes,
-                                source = LexiconSource.AI.name,
-                                reviewStatus = ReviewStatus.CONFIRMED.name
-                            )
-                        }
-                    if (entries.isNotEmpty()) {
-                        entries.forEach { existingTerms += it.sourceTerm.lowercase() }
-                        pendingEntries += entries
-                        count += entries.size
                     }
                 }
                 if (readableChapters == 0) {
@@ -843,14 +857,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     return@launch
                 }
-                if (pendingEntries.isNotEmpty()) db.lexiconV2Dao().upsertAll(pendingEntries)
                 com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
                     "GLOSSARY_SCAN",
-                    "✅ 扫描完成！已处理 $readableChapters 章，共提取并入库 $count 个专有术语",
+                    "✅ 扫描完成！已完整处理 $readableChapters 章，共生成 $count 个待确认术语",
                     projectId = targetProjectId
                 )
                 withContext(Dispatchers.Main) {
-                    showMessage("专有术语扫描完成，共录入 $count 个术语")
+                    showMessage("专有术语扫描完成，共生成 $count 个待确认术语")
                     onComplete(count)
                 }
             } catch (e: Exception) {
@@ -1182,28 +1195,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 showMessage("Extracting terms from chapter ${chapter.chapterIndex}...")
                 val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
-                val extraction = termExtractionAgent.extractTermsWithUsage(
-                    projectId = projectId,
-                    sampleText = sample,
-                    provider = provider,
-                    sourceLanguage = project.sourceLanguage,
-                    targetLanguage = project.targetLanguage,
-                    existingTerms = currentTerms.map { it.originalTerm }
-                )
-                val existing = currentTerms.map { normalizeTerm(it.originalTerm) }.toSet()
-                val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
-                    .filter { normalizeTerm(it.originalTerm) !in existing }
-                recordAgentUsage(
-                    projectId,
-                    "Chapter ${chapter.chapterIndex} terminology extraction",
-                    provider,
-                    listOf(extraction.usage),
-                    operationSuccessful = extraction.parseError == null && extraction.usage.isSuccess
-                )
-                check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
-                    extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+                val knownKeys = currentTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
+                val newTerms = mutableListOf<GlossaryEntity>()
+                splitTermScanWindows(sample).forEachIndexed { windowIndex, window ->
+                    val extraction = termExtractionAgent.extractTermsWithUsage(
+                        projectId = projectId,
+                        sampleText = "[Chapter ${chapter.chapterIndex}, part ${windowIndex + 1}]\n$window",
+                        provider = provider,
+                        sourceLanguage = project.sourceLanguage,
+                        targetLanguage = project.targetLanguage,
+                        existingTerms = currentTerms.map { it.originalTerm } + newTerms.map { it.originalTerm }
+                    )
+                    recordAgentUsage(
+                        projectId,
+                        "Chapter ${chapter.chapterIndex} terminology extraction part ${windowIndex + 1}",
+                        provider,
+                        listOf(extraction.usage),
+                        operationSuccessful = extraction.parseError == null && extraction.usage.isSuccess
+                    )
+                    check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
+                        extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+                    }
+                    check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
+                    extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
+                        if (knownKeys.add(normalizeTerm(term.originalTerm))) newTerms += term
+                    }
                 }
-                check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
 
                 if (newTerms.isNotEmpty()) {
                     glossaryRepo.insertTerms(newTerms)
@@ -2028,20 +2045,28 @@ Output ONLY the new translated paragraph text.
             for (chapter in chapters) {
                 val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
                 if (origText.isNotBlank()) {
-                    val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
-                    val extraction = termExtractionAgent.extractTermsWithUsage(
-                        projectId = projectId,
-                        sampleText = origText,
-                        provider = provider,
-                        sourceLanguage = "auto",
-                        targetLanguage = "zh",
-                        existingTerms = currentTerms.map { it.originalTerm }
-                    )
-                    val existing = currentTerms.map { normalizeTerm(it.originalTerm) }.toSet()
-                    val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
-                        .filter { normalizeTerm(it.originalTerm) !in existing }
-                    if (newTerms.isNotEmpty()) {
-                        glossaryRepo.insertTerms(newTerms.map { it.copy(projectId = projectId, isAutoExtracted = true) })
+                    val currentTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
+                    val knownKeys = currentTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
+                    splitTermScanWindows(origText).forEachIndexed { windowIndex, window ->
+                        val extraction = termExtractionAgent.extractTermsWithUsage(
+                            projectId = projectId,
+                            sampleText = "[Chapter ${chapter.chapterIndex}, part ${windowIndex + 1}]\n$window",
+                            provider = provider,
+                            sourceLanguage = "auto",
+                            targetLanguage = "zh",
+                            existingTerms = currentTerms.map { it.originalTerm }
+                        )
+                        check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
+                            extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
+                        }
+                        check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
+                        val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
+                            .filter { knownKeys.add(normalizeTerm(it.originalTerm)) }
+                            .map { it.copy(projectId = projectId, isAutoExtracted = true) }
+                        if (newTerms.isNotEmpty()) {
+                            glossaryRepo.insertTerms(newTerms)
+                            currentTerms += newTerms
+                        }
                     }
                 }
             }

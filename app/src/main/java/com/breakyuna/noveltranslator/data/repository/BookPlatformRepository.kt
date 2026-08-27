@@ -110,17 +110,19 @@ class BookPlatformRepository(
             .groupBy { it.editionSegmentId }
             .mapValues { (_, rows) -> rows.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt }) }
 
-        val allEditionChapters = editionsToFetch.associateWith { books.getEditionChapters(it) }
+        val editionChapterIds = editionsToFetch.associateWith { editionId ->
+            books.getEditionChapters(editionId).mapTo(HashSet()) { it.id }
+        }
 
         fun resolveContentForEdition(editionId: Long, logicalSegments: List<LogicalSegmentEntity>): Map<Long, EffectiveSegment> {
             if (logicalSegments.isEmpty()) return emptyMap()
             val editionContentMap = mutableMapOf<Long, EffectiveSegment>()
-            val editionChapters = allEditionChapters[editionId] ?: emptyList()
+            val validChapterIds = editionChapterIds[editionId].orEmpty()
             for (logicalSegment in logicalSegments) {
                 val mappingsForLogical = allMappings[logicalSegment.id] ?: continue
                 val mappingsForThisEdition = mappingsForLogical.filter { mapping ->
                     val segment = allEditionSegments[mapping.editionSegmentId]
-                    segment != null && editionChapters.any { it.id == segment.editionChapterId }
+                    segment != null && segment.editionChapterId in validChapterIds
                 }
                 if (mappingsForThisEdition.isEmpty()) continue
 

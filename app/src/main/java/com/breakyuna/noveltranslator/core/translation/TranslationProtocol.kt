@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.core.translation
 
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
+import com.breakyuna.noveltranslator.data.model.LexiconKind
 import com.breakyuna.noveltranslator.data.model.StoryMemoryEntity
 
 data class ProtocolSegment(val shortId: Int, val logicalSegmentId: Long, val text: String)
@@ -145,7 +146,7 @@ object DeterministicTranslationQa {
     fun validate(
         source: ProtocolChapter,
         translated: ParsedTranslationChapter?,
-        mandatoryTerms: List<Pair<String, String>> = emptyList()
+        mandatoryTerms: List<LexiconEntryEntity> = emptyList()
     ): QaResult {
         val problems = mutableListOf<String>()
         if (translated == null) return QaResult(false, listOf("missing chapter boundary"))
@@ -164,16 +165,73 @@ object DeterministicTranslationQa {
             if (listOf("I can't translate", "I cannot translate", "as an AI", "以下是翻译", "翻译如下").any { target.contains(it, true) }) {
                 problems += "refusal or explanatory text in segment ${segment.shortId}"
             }
-            mandatoryTerms.forEach { (sourceTerm, targetTerm) ->
-                val meaningfulTerm = sourceTerm.any { it.code > 127 } && sourceTerm.length >= 2 ||
-                    sourceTerm.count(Char::isLetterOrDigit) >= 3
-                if (meaningfulTerm && targetTerm.isNotBlank() && segment.text.contains(sourceTerm, true) && !target.contains(targetTerm, true)) {
-                    problems += "mandatory terminology violation: $sourceTerm"
-                }
+        }
+        val translatedChapterText = source.segments.joinToString("\n") { translated.segments[it.shortId].orEmpty() }
+        mandatoryTerms.distinctBy { it.sourceTerm.lowercase() }.forEach { entry ->
+            val sourceTerm = entry.sourceTerm.trim()
+            val meaningfulTerm = sourceTerm.any { it.code > 127 } && sourceTerm.length >= 2 ||
+                sourceTerm.count(Char::isLetterOrDigit) >= 3
+            val appearsInSource = meaningfulTerm && source.segments.any { LexiconTermMatcher.matchesSource(entry, it.text) }
+            if (appearsInSource && entry.targetTerm.isNotBlank() &&
+                !LexiconTermMatcher.matchesTarget(entry, translatedChapterText)
+            ) {
+                problems += "mandatory terminology violation: $sourceTerm"
             }
         }
         val duplicates = translated.segments.values.map { it.trim() }.filter { it.length >= 30 }.groupingBy { it }.eachCount().filterValues { it > 1 }
         if (duplicates.isNotEmpty()) problems += "repeated translated segments"
         return QaResult(problems.isEmpty(), problems.distinct())
     }
+}
+
+internal object LexiconTermMatcher {
+    fun matchesSource(entry: LexiconEntryEntity, text: String): Boolean {
+        val terms = sequenceOf(entry.sourceTerm) + entry.aliases.split(',', ';', '|').asSequence()
+        return terms.map(String::trim).filter(String::isNotBlank)
+            .any { containsSourceTerm(text, it, entry.caseSensitive, entry.exactMatch) }
+    }
+
+    fun matchesTarget(entry: LexiconEntryEntity, text: String): Boolean {
+        val target = entry.targetTerm.trim()
+        if (target.isBlank()) return true
+        val chunks = Regex("[\\p{L}\\p{N}_]+").findAll(target).map { Regex.escape(it.value) }.toList()
+        if (chunks.isEmpty()) return contains(text, target, entry.caseSensitive)
+
+        val isAsciiWordTerm = target.all { it.code < 128 && (it.isLetterOrDigit() || it == '_' || it.isWhitespace() || isPunctuation(it)) }
+        if (!isAsciiWordTerm) {
+            val normalizedTarget = normalizeSurface(target, entry.caseSensitive)
+            val normalizedText = normalizeSurface(text, entry.caseSensitive)
+            return normalizedTarget.isNotBlank() && normalizedText.contains(normalizedTarget)
+        }
+        val prefix = if (isAsciiWordTerm) "(?<![\\p{L}\\p{N}_])" else ""
+        val suffix = if (isAsciiWordTerm) {
+            if (entry.kind == LexiconKind.TERMINOLOGY.name) "(?:s|es|ed|ing)?(?![\\p{L}\\p{N}_])"
+            else "(?![\\p{L}\\p{N}_])"
+        } else ""
+        val options = if (entry.caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)
+        return Regex(prefix + chunks.joinToString("[\\p{P}\\p{Z}\\s]*") + suffix, options).containsMatchIn(text)
+    }
+
+    private fun containsSourceTerm(text: String, term: String, caseSensitive: Boolean, exactMatch: Boolean): Boolean {
+        val isAsciiPhrase = term.all {
+            it.code < 128 && (it.isLetterOrDigit() || it == '_' || it.isWhitespace() || isPunctuation(it))
+        }
+        if (exactMatch && isAsciiPhrase) {
+            val options = if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE)
+            return Regex("(?<![\\p{L}\\p{N}_])${Regex.escape(term)}(?![\\p{L}\\p{N}_])", options)
+                .containsMatchIn(text)
+        }
+        return contains(text, term, caseSensitive)
+    }
+
+    private fun contains(text: String, term: String, caseSensitive: Boolean): Boolean =
+        if (caseSensitive) text.contains(term) else text.contains(term, ignoreCase = true)
+
+    private fun normalizeSurface(value: String, caseSensitive: Boolean): String = buildString(value.length) {
+        value.forEach { char ->
+            if (char.isLetterOrDigit() || char == '_') append(if (caseSensitive) char else char.lowercaseChar())
+        }
+    }
+
+    private fun isPunctuation(char: Char): Boolean = !char.isLetterOrDigit() && !char.isWhitespace() && char != '_'
 }

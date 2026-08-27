@@ -301,7 +301,7 @@ class BookTranslationEngine(
             chapterIndex = firstIndex
         )
         val parsed = TranslationProtocol.parse(result.text)
-        val mandatoryTerms = context.matchedLexicon.map { it.sourceTerm to it.targetTerm }
+        val mandatoryTerms = context.matchedLexicon
         var failed = 0
         sources.forEach { source ->
             var translated = parsed.chapters.firstOrNull { it.shortId == source.shortId }
@@ -411,7 +411,7 @@ class BookTranslationEngine(
             val result = gateway.executeCompletion(request)
             recordUsage(runId, batchId, provider, request, result)
             check(result.isSuccess) { result.errorMessage ?: "Oversized chapter chunk failed" }
-            val mandatoryTerms = context.matchedLexicon.map { it.sourceTerm to it.targetTerm }
+            val mandatoryTerms = context.matchedLexicon
             var parsed = TranslationProtocol.parse(result.text).chapters.firstOrNull()
             var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
             if (!qa.accepted) {
@@ -551,17 +551,20 @@ class BookTranslationEngine(
         }
         parsed.lexiconCandidates.forEach { candidate ->
             if (candidate.source.isNotBlank() && candidate.target.isNotBlank()) {
-                database.lexiconV2Dao().upsert(
-                    LexiconEntryEntity(
-                        translationProjectId = project.id,
-                        sourceTerm = candidate.source,
-                        targetTerm = candidate.target,
-                        notes = candidate.notes,
-                        source = LexiconSource.AI.name,
-                        reviewStatus = ReviewStatus.CONFIRMED.name
+                val existing = database.lexiconV2Dao().getBySourceTerm(project.id, candidate.source)
+                if (existing == null) {
+                    database.lexiconV2Dao().upsert(
+                        LexiconEntryEntity(
+                            translationProjectId = project.id,
+                            sourceTerm = candidate.source,
+                            targetTerm = candidate.target,
+                            notes = candidate.notes,
+                            source = LexiconSource.AI.name,
+                            reviewStatus = ReviewStatus.CANDIDATE.name
+                        )
                     )
-                )
-                SystemLogger.info("GLOSSARY", "✨ 随翻译进度自动入库术语: '${candidate.source}' -> '${candidate.target}' (${candidate.notes})", projectId = project.id, chapterIndex = sources.first().chapterIndex)
+                    SystemLogger.info("GLOSSARY", "✨ 随翻译进度生成待确认术语: '${candidate.source}' -> '${candidate.target}' (${candidate.notes})", projectId = project.id, chapterIndex = sources.first().chapterIndex)
+                }
             }
         }
     }

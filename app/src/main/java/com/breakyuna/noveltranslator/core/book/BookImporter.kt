@@ -45,7 +45,18 @@ class BookImporter(
             val preservedSource = sourceFile.inputStream().use {
                 files.saveImportedSource(bookId, fileName, it, 100L * 1024L * 1024L)
             }
-            val parsed: List<ParsedChapter> = if (isEpub) {
+            if (!isEpub) {
+                persistTxtStreaming(
+                    bookId = bookId,
+                    title = title,
+                    author = author,
+                    originalLanguage = originalLanguage,
+                    sourceFile = preservedSource,
+                    customRegex = customRegex
+                )
+                return bookId
+            }
+            val parsed: List<ParsedChapter> = run {
                 val epub = EpubParser.parseEpubFile(preservedSource, files.sharedImagesDir(bookId))
                 title = epub.title.ifBlank { title }
                 author = epub.author.ifBlank { author }
@@ -58,9 +69,6 @@ class BookImporter(
                         }
                     }
                 epub.chapters
-            } else {
-                val (text, _) = TxtParser.detectCharsetAndRead(preservedSource.readBytes())
-                TxtParser.splitIntoChapters(text, customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE)
             }
             require(parsed.isNotEmpty()) { "No readable chapters were found" }
             persistNormalized(
@@ -69,7 +77,7 @@ class BookImporter(
                 author = author,
                 coverPath = coverPath,
                 originalLanguage = originalLanguage,
-                editionName = if (isEpub) "Imported EPUB" else "Imported TXT",
+                editionName = "Imported EPUB",
                 chapters = parsed.map { AcquiredChapter(it.title, it.content) }
             )
             return bookId
@@ -120,35 +128,72 @@ class BookImporter(
         editionName: String,
         chapters: List<AcquiredChapter>
     ) {
-        database.withTransaction {
-            val dao = database.bookDao()
-            val editionId = dao.insertEdition(
+        val editionId = database.withTransaction {
+            database.bookDao().insertEdition(
                 EditionEntity(
                     bookId = bookId,
                     name = editionName,
                     type = EditionType.IMPORTED.name,
                     language = originalLanguage,
-                    isComplete = true
+                    isComplete = false
                 )
             )
-            val logicalChaptersToInsert = chapters.mapIndexed { position, chapter ->
-                LogicalChapterEntity(bookId = bookId, chapterIndex = position + 1, canonicalTitle = chapter.title)
-            }
-            val logicalChapterIds = dao.insertLogicalChapters(logicalChaptersToInsert)
+        }
+        chapters.forEachIndexed { index, chapter ->
+            persistChapter(bookId, editionId, index + 1, chapter)
+        }
+        finalizeImport(bookId, editionId, title, author, coverPath)
+    }
 
-            val allLogicalSegments = mutableListOf<LogicalSegmentEntity>()
-            val chapterParts = chapters.map { splitSegments(it.renderedText) }
-            chapterParts.forEachIndexed { chapterIndex, parts ->
-                val logicalChapterId = logicalChapterIds[chapterIndex]
-                parts.forEachIndexed { segmentIndex, _ ->
-                    allLogicalSegments.add(LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = segmentIndex))
-                }
+    private suspend fun persistTxtStreaming(
+        bookId: Long,
+        title: String,
+        author: String,
+        originalLanguage: String,
+        sourceFile: File,
+        customRegex: String?
+    ) {
+        val editionId = database.withTransaction {
+            database.bookDao().insertEdition(
+                EditionEntity(
+                    bookId = bookId,
+                    name = "Imported TXT",
+                    type = EditionType.IMPORTED.name,
+                    language = originalLanguage,
+                    isComplete = false
+                )
+            )
+        }
+        var chapterCount = 0
+        TxtParser.openDetectedReader(sourceFile).use { reader ->
+            val chapters = TxtParser.chapterSequence(
+                reader,
+                customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE
+            ).iterator()
+            while (chapters.hasNext()) {
+                val parsed = chapters.next()
+                chapterCount++
+                persistChapter(bookId, editionId, chapterCount, AcquiredChapter(parsed.title, parsed.content))
             }
-            val logicalSegmentIds = dao.insertLogicalSegments(allLogicalSegments)
+        }
+        require(chapterCount > 0) { "No readable chapters were found" }
+        finalizeImport(bookId, editionId, title, author, null)
+    }
 
-            val editionChaptersToInsert = chapters.mapIndexed { chapterIndex, chapter ->
-                val logicalChapterId = logicalChapterIds[chapterIndex]
-                val fileName = files.saveEditionChapter(bookId, editionId, chapterIndex + 1, chapter.title, chapter.renderedText)
+    private suspend fun persistChapter(
+        bookId: Long,
+        editionId: Long,
+        chapterIndex: Int,
+        chapter: AcquiredChapter
+    ) {
+        val parts = splitSegments(chapter.renderedText)
+        val fileName = files.saveEditionChapter(bookId, editionId, chapterIndex, chapter.title, chapter.renderedText)
+        database.withTransaction {
+            val dao = database.bookDao()
+            val logicalChapterId = dao.insertLogicalChapter(
+                LogicalChapterEntity(bookId = bookId, chapterIndex = chapterIndex, canonicalTitle = chapter.title)
+            )
+            val editionChapterId = dao.insertEditionChapter(
                 EditionChapterEntity(
                     editionId = editionId,
                     logicalChapterId = logicalChapterId,
@@ -156,52 +201,67 @@ class BookImporter(
                     contentFileName = fileName,
                     wordCount = chapter.renderedText.length
                 )
-            }
-            val editionChapterIds = dao.insertEditionChapters(editionChaptersToInsert)
-
-            val allEditionSegments = mutableListOf<EditionSegmentEntity>()
-            chapterParts.forEachIndexed { chapterIndex, parts ->
-                val editionChapterId = editionChapterIds[chapterIndex]
-                parts.forEachIndexed { segmentIndex, text ->
-                    allEditionSegments.add(
+            )
+            var offset = 0
+            while (offset < parts.size) {
+                val end = minOf(offset + SEGMENT_BATCH_SIZE, parts.size)
+                val batch = parts.subList(offset, end)
+                val logicalIds = dao.insertLogicalSegments(
+                    batch.indices.map { index ->
+                        LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = offset + index)
+                    }
+                )
+                val editionIds = dao.insertEditionSegments(
+                    batch.mapIndexed { index, text ->
                         EditionSegmentEntity(
                             editionChapterId = editionChapterId,
-                            segmentIndex = segmentIndex,
+                            segmentIndex = offset + index,
                             baseText = text,
                             sourceHash = sha256(text)
                         )
-                    )
-                }
-            }
-            val editionSegmentIds = dao.insertEditionSegments(allEditionSegments)
-
-            val allMappings = logicalSegmentIds.zip(editionSegmentIds).map { (logicalId, editionSegmentId) ->
-                EditionSegmentMappingEntity(logicalId, editionSegmentId)
-            }
-            dao.insertMappings(allMappings)
-
-            dao.update(
-                dao.getBook(bookId)!!.copy(
-                    title = title,
-                    author = author,
-                    coverPath = coverPath,
-                    primaryEditionId = editionId,
-                    preferredReadingEditionId = editionId,
-                    updatedAt = System.currentTimeMillis()
+                    }
                 )
-            )
-            database.readerProgressDao().upsert(
-                ReaderProgressEntity(
-                    bookId = bookId,
-                    preferredEditionId = editionId,
-                    logicalChapterId = null,
-                    logicalSegmentId = null
-                )
-            )
+                dao.insertMappings(logicalIds.zip(editionIds) { logicalId, editionSegmentId ->
+                    EditionSegmentMappingEntity(logicalId, editionSegmentId)
+                })
+                offset = end
+            }
         }
     }
 
+    private suspend fun finalizeImport(
+        bookId: Long,
+        editionId: Long,
+        title: String,
+        author: String,
+        coverPath: String?
+    ) = database.withTransaction {
+        val dao = database.bookDao()
+        val edition = dao.getEdition(editionId) ?: error("Imported edition not found")
+        dao.updateEdition(edition.copy(isComplete = true, updatedAt = System.currentTimeMillis()))
+        dao.update(
+            dao.getBook(bookId)!!.copy(
+                title = title,
+                author = author,
+                coverPath = coverPath,
+                primaryEditionId = editionId,
+                preferredReadingEditionId = editionId,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+        database.readerProgressDao().upsert(
+            ReaderProgressEntity(
+                bookId = bookId,
+                preferredEditionId = editionId,
+                logicalChapterId = null,
+                logicalSegmentId = null
+            )
+        )
+    }
+
     companion object {
+        private const val SEGMENT_BATCH_SIZE = 500
+
         fun splitSegments(text: String): List<String> = text
             .replace("\r\n", "\n")
             .split(Regex("\\n\\s*\\n"))

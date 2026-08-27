@@ -182,6 +182,12 @@ interface LexiconV2Dao {
     @Query("SELECT * FROM lexicon_entries WHERE translationProjectId = :projectId AND enabled = 1 AND reviewStatus = 'CONFIRMED'")
     suspend fun getConfirmed(projectId: Long): List<LexiconEntryEntity>
 
+    @Query("SELECT * FROM lexicon_entries WHERE translationProjectId = :projectId")
+    suspend fun getAll(projectId: Long): List<LexiconEntryEntity>
+
+    @Query("SELECT * FROM lexicon_entries WHERE translationProjectId = :projectId AND sourceTerm = :sourceTerm COLLATE NOCASE LIMIT 1")
+    suspend fun getBySourceTerm(projectId: Long, sourceTerm: String): LexiconEntryEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(entry: LexiconEntryEntity): Long
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsertAll(entries: List<LexiconEntryEntity>): List<Long>
     @Update suspend fun update(entry: LexiconEntryEntity)
