@@ -359,11 +359,28 @@ fun ProjectWorkspaceScreen(
                     }
                 }
             } else {
-                item {
-                    AppGroupedSurface(
-                        contentPadding = PaddingValues(0.dp)
+                items(
+                    count = filteredChapters.size,
+                    key = { index -> filteredChapters[index].id }
+                ) { index ->
+                    val chapter = filteredChapters[index]
+                    val isFirst = index == 0
+                    val isLast = index == filteredChapters.lastIndex
+
+                    val shape = when {
+                        isFirst && isLast -> GroupedCardShape
+                        isFirst -> RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)
+                        isLast -> RoundedCornerShape(bottomStart = 12.dp, bottomEnd = 12.dp)
+                        else -> RoundedCornerShape(0.dp)
+                    }
+
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = shape,
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 1.dp
                     ) {
-                        filteredChapters.forEachIndexed { index, chapter ->
+                        Column {
                             WorkspaceChapterRow(
                                 chapter = chapter,
                                 onPreview = { onNavigateToReader(chapter.id) },
@@ -376,7 +393,7 @@ fun ProjectWorkspaceScreen(
                                     }
                                 }
                             )
-                            if (index < filteredChapters.lastIndex) {
+                            if (!isLast) {
                                 AppDivider(startIndent = 16.dp)
                             }
                         }
