@@ -357,7 +357,7 @@ private fun WideDirectoryPanel(
             trailingIcon = {
                 if (searchQuery.isNotEmpty()) {
                     IconButton(onClick = { searchQuery = "" }) {
-                        Icon(Icons.Default.Clear, null)
+                        Icon(Icons.Default.Clear, strings.clearSearch)
                     }
                 }
             },

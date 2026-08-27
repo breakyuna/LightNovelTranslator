@@ -221,7 +221,7 @@ fun PlatformTaskCenterScreen(
                         trailingIcon = {
                             if (searchQuery.isNotEmpty()) {
                                 IconButton(onClick = { searchQuery = "" }) {
-                                    Icon(Icons.Default.Clear, "清空")
+                                    Icon(Icons.Default.Clear, strings.clearSearch)
                                 }
                             }
                         },

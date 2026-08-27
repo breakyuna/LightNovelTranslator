@@ -379,6 +379,7 @@ interface AppStrings {
 
     // Model Search
     val searchModelPlaceholder: String
+    val clearSearch: String
     val matchingModelsCount: String
     val noMatchingModels: String
     val allEndpointModels: String
@@ -756,6 +757,7 @@ object ChineseStrings : AppStrings {
 
     // Model Search
     override val searchModelPlaceholder = "搜索端点模型名称 (如 deepseek, gpt-4o, claude, qwen)..."
+    override val clearSearch = "清空搜索"
     override val matchingModelsCount = "已匹配到 %d 个端点模型"
     override val noMatchingModels = "未找到与关键词匹配的模型"
     override val allEndpointModels = "端点拉取的全部模型 (%d 个)"
@@ -1133,6 +1135,7 @@ object EnglishStrings : AppStrings {
 
     // Model Search
     override val searchModelPlaceholder = "Search endpoint models (e.g. deepseek, gpt-4o, claude, qwen)..."
+    override val clearSearch = "Clear search"
     override val matchingModelsCount = "Matched %d endpoint models"
     override val noMatchingModels = "No models matched the search query"
     override val allEndpointModels = "All Endpoint Models (%d)"
