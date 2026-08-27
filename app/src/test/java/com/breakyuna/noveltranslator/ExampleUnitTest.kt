@@ -53,14 +53,14 @@ class ExampleUnitTest {
     @Test
     fun streamingTxtParserKeepsAllChapterContent() {
         val middle = "中间内容".repeat(4000)
-        val text = "第1章 开始\n开头\n$middle\n结尾\n第2章 后续\n第二章正文"
+        val text = "第1章 开始\n开头\n$middle\n结尾\n第2章 后续\n这是第二章正文"
         val chapters = TxtParser.chapterSequence(text.reader().buffered()).toList()
 
         assertEquals(2, chapters.size)
         assertTrue(chapters.first().content.startsWith("开头"))
         assertTrue(chapters.first().content.contains(middle))
         assertTrue(chapters.first().content.endsWith("结尾"))
-        assertEquals("第二章正文", chapters.last().content)
+        assertEquals("这是第二章正文", chapters.last().content)
     }
 
     @Test
