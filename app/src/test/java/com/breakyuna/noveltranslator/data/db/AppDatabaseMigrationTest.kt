@@ -2,14 +2,11 @@ package com.breakyuna.noveltranslator.data.db
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.platform.app.InstrumentationRegistry
-import androidx.room.testing.MigrationTestHelper
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.sqlite.db.SupportSQLiteOpenHelper
 import androidx.sqlite.db.framework.FrameworkSQLiteOpenHelperFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -18,12 +15,6 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class AppDatabaseMigrationTest {
-    @get:Rule
-    val migrationHelper = MigrationTestHelper(
-        InstrumentationRegistry.getInstrumentation(),
-        AppDatabase::class.java
-    )
-
     @Test
     fun migration7To8AddsOptionalDebugPayloadColumns() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -59,7 +50,8 @@ class AppDatabaseMigrationTest {
     @Test
     fun migration8To9AddsCandidateAggregatesWithoutDroppingLexiconEntries() {
         val name = "candidate_room_migration_${System.nanoTime()}.db"
-        migrationHelper.createDatabase(name, 8).use { db ->
+        val helper = openLegacyDatabase(name, 8) { db ->
+            createLegacyTablesRequiredByMigration8To9(db)
             db.execSQL("INSERT INTO projects(id, title, author, sourceFileName, fileType, projectDirPath, sourceLanguage, targetLanguage, translationStyle, totalChapters, translatedChapters, totalOriginalWords, totalPromptTokens, totalCompletionTokens, totalCost, costCurrency, createdAt, updatedAt) VALUES (42, 'Legacy', '', 'book.txt', 'TXT', '/project', 'en', 'zh', '', 0, 0, 0, 0, 0, 0, '', 1, 1)")
             db.execSQL("INSERT INTO glossary(projectId, originalTerm, translatedTerm, category, notes, isAutoExtracted, createdAt) VALUES (42, 'Irene', '艾琳', 'CHARACTER', '', 1, 1)")
             db.execSQL("INSERT INTO books(id, title, author, description, originalLanguage, hiddenFromShelf, shelfOrder, createdAt, updatedAt) VALUES (1, 'Book', '', '', 'en', 0, 0, 1, 1)")
@@ -68,7 +60,9 @@ class AppDatabaseMigrationTest {
             db.execSQL("INSERT INTO translation_projects_v2(id, bookId, sourceEditionId, targetEditionId, sourceLanguage, targetLanguage, modelName, styleGuide, promptProtocolVersion, translationMode, maxBatchChapters, seamlessAheadChapters, highQualityReview, state, createdAt, updatedAt) VALUES (7, 1, 2, 3, 'en', 'zh', 'model', '', 1, 'FULL_BOOK', 1, 0, 0, 'IDLE', 1, 1)")
             db.execSQL("INSERT INTO lexicon_entries(translationProjectId, sourceTerm, targetTerm, kind, category, aliases, notes, caseSensitive, exactMatch, priority, enabled, source, reviewStatus, createdAt, updatedAt) VALUES (7, 'Alice', '爱丽丝', 'PROPER_NOUN', 'CHARACTER', '', '', 0, 1, 0, 1, 'AI', 'CANDIDATE', 100, 200)")
         }
-        migrationHelper.runMigrationsAndValidate(name, 9, true, AppDatabase.MIGRATION_8_9).use { db ->
+        try {
+            val db = helper.writableDatabase
+            AppDatabase.MIGRATION_8_9.migrate(db)
             val lexiconCount = db.query("SELECT COUNT(*) FROM lexicon_entries").use { cursor ->
                 cursor.moveToFirst()
                 cursor.getInt(0)
@@ -97,29 +91,61 @@ class AppDatabaseMigrationTest {
             }
             assertTrue("source" in glossaryColumns)
             assertTrue("reviewStatus" in glossaryColumns)
+        } finally {
+            helper.close()
+            ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
         }
     }
 
     @Test
     fun migration6To9PreservesLegacyProjectsAndValidatesAllNewTables() {
         val name = "full_room_migration_${System.nanoTime()}.db"
-        migrationHelper.createDatabase(name, 6).use { db ->
-            db.execSQL("INSERT INTO projects(id, title, author, sourceFileName, fileType, projectDirPath, sourceLanguage, targetLanguage, translationStyle, totalChapters, translatedChapters, totalOriginalWords, totalPromptTokens, totalCompletionTokens, totalCost, costCurrency, createdAt, updatedAt) VALUES (42, 'Legacy', '', 'book.txt', 'TXT', '/project', 'en', 'zh', '', 0, 0, 0, 0, 0, 0, '', 1, 1)")
+        val helper = openLegacyDatabase(name, 6) { db ->
+            db.execSQL("CREATE TABLE projects (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL)")
+            db.execSQL("CREATE TABLE glossary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, projectId INTEGER NOT NULL, originalTerm TEXT NOT NULL, translatedTerm TEXT NOT NULL, category TEXT NOT NULL, notes TEXT NOT NULL, isAutoExtracted INTEGER NOT NULL, createdAt INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO projects(id, title) VALUES (42, 'Legacy')")
         }
-        migrationHelper.runMigrationsAndValidate(
-            name,
-            9,
-            true,
-            AppDatabase.MIGRATION_6_7,
-            AppDatabase.MIGRATION_7_8,
-            AppDatabase.MIGRATION_8_9
-        ).use { db ->
+        try {
+            val db = helper.writableDatabase
+            AppDatabase.MIGRATION_6_7.migrate(db)
+            AppDatabase.MIGRATION_7_8.migrate(db)
+            AppDatabase.MIGRATION_8_9.migrate(db)
             val count = db.query("SELECT COUNT(*) FROM projects WHERE id = 42").use { cursor ->
                 cursor.moveToFirst()
                 cursor.getInt(0)
             }
             assertEquals(1, count)
+        } finally {
+            helper.close()
+            ApplicationProvider.getApplicationContext<Context>().deleteDatabase(name)
         }
+    }
+
+    private fun openLegacyDatabase(
+        name: String,
+        version: Int,
+        createSchema: (SupportSQLiteDatabase) -> Unit
+    ): SupportSQLiteOpenHelper {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        return FrameworkSQLiteOpenHelperFactory().create(
+            SupportSQLiteOpenHelper.Configuration.builder(context)
+                .name(name)
+                .callback(object : SupportSQLiteOpenHelper.Callback(version) {
+                    override fun onCreate(db: SupportSQLiteDatabase) = createSchema(db)
+                    override fun onUpgrade(db: SupportSQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+                })
+                .build()
+        )
+    }
+
+    private fun createLegacyTablesRequiredByMigration8To9(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE projects (id INTEGER PRIMARY KEY NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL, sourceFileName TEXT NOT NULL, fileType TEXT NOT NULL, projectDirPath TEXT NOT NULL, sourceLanguage TEXT NOT NULL, targetLanguage TEXT NOT NULL, translationStyle TEXT NOT NULL, totalChapters INTEGER NOT NULL, translatedChapters INTEGER NOT NULL, totalOriginalWords INTEGER NOT NULL, totalPromptTokens INTEGER NOT NULL, totalCompletionTokens INTEGER NOT NULL, totalCost REAL NOT NULL, costCurrency TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE glossary (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, projectId INTEGER NOT NULL, originalTerm TEXT NOT NULL, translatedTerm TEXT NOT NULL, category TEXT NOT NULL, notes TEXT NOT NULL, isAutoExtracted INTEGER NOT NULL, createdAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE books (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, title TEXT NOT NULL, author TEXT NOT NULL, description TEXT NOT NULL, originalLanguage TEXT NOT NULL, hiddenFromShelf INTEGER NOT NULL, shelfOrder INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE editions (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, bookId INTEGER NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, language TEXT NOT NULL, sourceEditionId INTEGER, isComplete INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE translation_projects_v2 (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, bookId INTEGER NOT NULL, sourceEditionId INTEGER NOT NULL, targetEditionId INTEGER NOT NULL, sourceLanguage TEXT NOT NULL, targetLanguage TEXT NOT NULL, providerId INTEGER, modelName TEXT NOT NULL, styleGuide TEXT NOT NULL, promptProtocolVersion INTEGER NOT NULL, translationMode TEXT NOT NULL, maxBatchChapters INTEGER NOT NULL, seamlessAheadChapters INTEGER NOT NULL, rangeStart INTEGER, rangeEnd INTEGER, highQualityReview INTEGER NOT NULL, state TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE lexicon_entries (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, translationProjectId INTEGER NOT NULL, sourceTerm TEXT NOT NULL, targetTerm TEXT NOT NULL, kind TEXT NOT NULL, category TEXT NOT NULL, aliases TEXT NOT NULL, notes TEXT NOT NULL, caseSensitive INTEGER NOT NULL, exactMatch INTEGER NOT NULL, priority INTEGER NOT NULL, enabled INTEGER NOT NULL, source TEXT NOT NULL, reviewStatus TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("CREATE TABLE platform_request_logs (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, runId INTEGER NOT NULL, batchId INTEGER, operation TEXT NOT NULL, attemptCount INTEGER NOT NULL, promptTokens INTEGER NOT NULL, completionTokens INTEGER NOT NULL, cachedTokens INTEGER NOT NULL, estimatedCost REAL NOT NULL, durationMs INTEGER NOT NULL, finishReason TEXT, errorCategory TEXT, errorMessage TEXT, isSuccess INTEGER NOT NULL, timestamp INTEGER NOT NULL)")
     }
 
     @Test
