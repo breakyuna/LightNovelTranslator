@@ -269,7 +269,7 @@ class TranslationTaskManager(
         suspend fun persistFailedUsage(message: String) {
             chapterRepository.updateChapter(
                 chapter.copy(
-                    status = ChapterStatus.FAILED,
+                    status = ChapterStatus.ERROR,
                     promptTokens = totalPromptTok,
                     completionTokens = totalCompTok,
                     estimatedCost = totalCost,
