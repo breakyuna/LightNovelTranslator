@@ -3,6 +3,8 @@ package com.breakyuna.noveltranslator.core.task
 import android.content.Context
 import com.breakyuna.noveltranslator.core.llm.*
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
+import com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator
+import com.breakyuna.noveltranslator.core.translator.TranslationValidation
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.data.repository.*
 import kotlinx.coroutines.*
@@ -212,6 +214,98 @@ class TranslationTaskManager(
             style = project.translationStyle
         )
 
+        suspend fun recordRequestLog(result: LlmResult, attemptNumber: Int, operation: String) {
+            val requestCost = TokenCalculator.calculateCost(
+                result.promptTokens,
+                result.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            llmRequestLogRepository.insert(
+                LlmRequestLogEntity(
+                    projectId = project.id,
+                    attemptNumber = attemptNumber,
+                    operation = operation,
+                    providerId = provider.id,
+                    providerName = provider.name,
+                    modelName = provider.selectedModel,
+                    inputPricePerMillion = provider.inputPricePerMillion,
+                    outputPricePerMillion = provider.outputPricePerMillion,
+                    currency = provider.currency,
+                    promptTokens = result.promptTokens,
+                    completionTokens = result.completionTokens,
+                    totalTokens = result.promptTokens + result.completionTokens,
+                    usageSource = result.usageSource.name,
+                    estimatedCost = requestCost,
+                    durationMs = result.durationMs,
+                    httpStatus = result.httpStatus,
+                    errorCategory = result.errorCategory?.name,
+                    errorMessage = result.errorMessage,
+                    finishReason = result.finishReason,
+                    requestId = result.requestId,
+                    isSuccess = result.isSuccess
+                )
+            )
+        }
+
+        fun accountUsage(result: LlmResult) {
+            totalPromptTok += result.promptTokens
+            totalCompTok += result.completionTokens
+            totalCost += TokenCalculator.calculateCost(
+                result.promptTokens,
+                result.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            updateTask(task.id) {
+                it.copy(
+                    promptTokens = totalPromptTok,
+                    completionTokens = totalCompTok,
+                    cost = totalCost
+                )
+            }
+        }
+
+        suspend fun persistFailedUsage(message: String) {
+            chapterRepository.updateChapter(
+                chapter.copy(
+                    status = ChapterStatus.FAILED,
+                    promptTokens = totalPromptTok,
+                    completionTokens = totalCompTok,
+                    estimatedCost = totalCost,
+                    errorMessage = message.take(500),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+            translationLogRepository.insertLog(
+                TranslationLogEntity(
+                    projectId = task.projectId,
+                    chapterIndex = chapter.chapterIndex,
+                    chapterTitle = chapter.title,
+                    modelName = provider.selectedModel,
+                    providerName = provider.name,
+                    promptTokens = totalPromptTok,
+                    completionTokens = totalCompTok,
+                    totalTokens = totalPromptTok + totalCompTok,
+                    estimatedCost = totalCost,
+                    currency = provider.currency,
+                    durationMs = 0L,
+                    isSuccess = false,
+                    message = message.take(500)
+                )
+            )
+            val allChapters = chapterRepository.getChaptersListByProject(task.projectId)
+            val allLogs = translationLogRepository.getLogsListByProject(task.projectId)
+            projectRepository.updateProjectStats(
+                projectId = task.projectId,
+                translatedCount = allChapters.count { it.status == ChapterStatus.COMPLETED },
+                promptTokens = allLogs.sumOf { it.promptTokens },
+                compTokens = allLogs.sumOf { it.completionTokens },
+                cost = allLogs.sumOf { it.estimatedCost },
+                currency = provider.currency
+            )
+        }
+
         for ((idx, chunk) in chunks.withIndex()) {
             yield() // Check cancellation
 
@@ -223,11 +317,12 @@ class TranslationTaskManager(
                 )
             }
 
+            val activeChunkGlossary = TranslationPrompts.selectConfirmedGlossaryForText(glossary, chunk)
             val userPrompt = if (totalChunks == 1) {
                 TranslationPrompts.buildUserPrompt(
                     chapterTitle = chapter.title,
                     chapterText = chunk,
-                    glossary = glossary
+                    glossary = activeChunkGlossary
                 )
             } else {
                 TranslationPrompts.buildChunkUserPrompt(
@@ -235,68 +330,72 @@ class TranslationTaskManager(
                     chunkIndex = idx + 1,
                     totalChunks = totalChunks,
                     chunkText = chunk,
-                    glossary = glossary,
+                    glossary = activeChunkGlossary,
                     previousChunkTranslationReference = translatedChunks.lastOrNull()?.takeLast(300)
                 )
             }
 
-            val result = llmClient.executeCompletion(
+            var result = llmClient.executeCompletion(
                 provider = provider,
                 systemPrompt = systemPrompt,
                 userPrompt = userPrompt,
                 temperature = provider.temperature
             )
+            recordRequestLog(result, 1, "Queue Task: Ch ${chapter.chapterIndex} [${idx + 1}/$totalChunks]")
 
             if (!result.isSuccess || result.text.isBlank()) {
-                throw IllegalStateException(result.errorMessage ?: "LLM returned empty translation")
+                accountUsage(result)
+                val message = result.errorMessage ?: "LLM returned empty translation"
+                persistFailedUsage(message)
+                throw IllegalStateException(message)
+            }
+
+            val validation = if (result.isTruncated) {
+                TranslationValidation(false, listOf("translation output was truncated"))
+            } else {
+                TranslationQualityValidator.validate(chunk, result.text, activeChunkGlossary)
+            }
+            if (!validation.isAcceptable) {
+                val retry = llmClient.executeCompletion(
+                    provider = provider,
+                    systemPrompt = systemPrompt,
+                    userPrompt = TranslationPrompts.buildValidationRetryPrompt(userPrompt, validation.problems),
+                    temperature = provider.temperature
+                )
+                recordRequestLog(retry, 2, "Queue Task: Ch ${chapter.chapterIndex} [${idx + 1}/$totalChunks] QUALITY_RETRY")
+                val retryValidation = if (retry.isSuccess && retry.text.isNotBlank() && !retry.isTruncated) {
+                    TranslationQualityValidator.validate(chunk, retry.text, activeChunkGlossary)
+                } else {
+                    TranslationValidation(false, listOf(retry.errorMessage ?: "quality retry was empty or truncated"))
+                }
+                result = if (retryValidation.isAcceptable) {
+                    retry.copy(
+                        promptTokens = result.promptTokens + retry.promptTokens,
+                        completionTokens = result.completionTokens + retry.completionTokens,
+                        durationMs = result.durationMs + retry.durationMs
+                    )
+                } else {
+                    result.copy(
+                        isSuccess = false,
+                        errorCategory = LlmErrorCategory.QUALITY_REJECTED,
+                        retryable = false,
+                        errorMessage = "Translation validation failed [glossary=${retryValidation.glossaryStatus}]: ${retryValidation.problems.joinToString()}",
+                        promptTokens = result.promptTokens + retry.promptTokens,
+                        completionTokens = result.completionTokens + retry.completionTokens,
+                        durationMs = result.durationMs + retry.durationMs
+                    )
+                }
+            }
+
+            accountUsage(result)
+
+            if (!result.isSuccess || result.text.isBlank()) {
+                val message = result.errorMessage ?: "Translation failed deterministic quality validation"
+                persistFailedUsage(message)
+                throw IllegalStateException(message)
             }
 
             translatedChunks.add(result.text.trim())
-            totalPromptTok += result.promptTokens
-            totalCompTok += result.completionTokens
-
-            val chunkCost = TokenCalculator.calculateCost(
-                result.promptTokens,
-                result.completionTokens,
-                provider.inputPricePerMillion,
-                provider.outputPricePerMillion
-            )
-            totalCost += chunkCost
-
-            // Insert LLM Request Log
-            llmRequestLogRepository.insert(
-                LlmRequestLogEntity(
-                    projectId = project.id,
-                    attemptNumber = 1,
-                    operation = "Queue Task: Ch ${chapter.chapterIndex} [${idx + 1}/$totalChunks]",
-                    providerId = provider.id,
-                    providerName = provider.name,
-                    modelName = provider.selectedModel,
-                    inputPricePerMillion = provider.inputPricePerMillion,
-                    outputPricePerMillion = provider.outputPricePerMillion,
-                    currency = provider.currency,
-                    promptTokens = result.promptTokens,
-                    completionTokens = result.completionTokens,
-                    totalTokens = result.promptTokens + result.completionTokens,
-                    usageSource = result.usageSource.name,
-                    estimatedCost = chunkCost,
-                    durationMs = result.durationMs,
-                    httpStatus = result.httpStatus,
-                    errorCategory = result.errorCategory?.name,
-                    errorMessage = result.errorMessage,
-                    finishReason = result.finishReason,
-                    requestId = result.requestId,
-                    isSuccess = result.isSuccess
-                )
-            )
-
-            updateTask(task.id) {
-                it.copy(
-                    promptTokens = totalPromptTok,
-                    completionTokens = totalCompTok,
-                    cost = totalCost
-                )
-            }
         }
 
         val fullTranslatedText = translatedChunks.joinToString("\n\n")

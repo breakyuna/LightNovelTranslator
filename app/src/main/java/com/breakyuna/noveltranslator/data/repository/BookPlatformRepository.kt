@@ -45,6 +45,7 @@ class BookPlatformRepository(
     fun observeTranslationProjectsForEdition(editionId: Long) = projects.observeByTargetEdition(editionId)
     fun observeProgress(bookId: Long) = progressDao.observe(bookId)
     fun observeLexicon(projectId: Long) = database.lexiconV2Dao().observe(projectId)
+    fun observeLexiconCandidates(projectId: Long) = database.lexiconCandidateAggregateDao().observeAllActive(projectId)
     fun observeStoryMemory(projectId: Long) = database.memoryDao().observeStoryMemory(projectId)
     fun observeChapterMemory(projectId: Long) = database.memoryDao().observeChapterMemory(projectId)
     fun observeRunsByBook(bookId: Long) = database.platformTaskDao().observeRunsByBook(bookId)
@@ -67,6 +68,8 @@ class BookPlatformRepository(
     suspend fun upsertLexiconEntries(entries: List<LexiconEntryEntity>) = database.lexiconV2Dao().upsertAll(entries)
     suspend fun updateLexiconEntry(entry: LexiconEntryEntity) = database.lexiconV2Dao().update(entry)
     suspend fun deleteLexiconEntry(id: Long) = database.lexiconV2Dao().delete(id)
+    suspend fun markLexiconCandidateImported(id: Long) = database.lexiconCandidateAggregateDao().markImported(id)
+    suspend fun markLexiconCandidateIgnored(id: Long) = database.lexiconCandidateAggregateDao().markIgnored(id)
 
     fun observeReader(bookId: Long): Flow<List<ResolvedReaderSegment>> = combine(
         books.observeBook(bookId),

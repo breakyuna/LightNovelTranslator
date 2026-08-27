@@ -7,6 +7,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -114,6 +115,10 @@ fun BookWorkbenchDetailScreen(
 
     val projectLexicon by remember(currentProject?.id, selectedTab, useWideWorkbench) {
         if (currentProject != null && (selectedTab == WorkbenchTab.GLOSSARY || useWideWorkbench)) viewModel.observeLexicon(currentProject.id)
+        else flowOf(emptyList())
+    }.collectAsState(initial = emptyList())
+    val projectLexiconCandidates by remember(currentProject?.id, selectedTab, useWideWorkbench) {
+        if (currentProject != null && (selectedTab == WorkbenchTab.GLOSSARY || useWideWorkbench)) viewModel.observeLexiconCandidates(currentProject.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
@@ -234,6 +239,7 @@ fun BookWorkbenchDetailScreen(
                                 book = currentBook,
                                 project = currentProject,
                                 lexicon = projectLexicon,
+                                candidates = projectLexiconCandidates,
                                 storyMemory = projectStoryMemory,
                                 onScanTerms = { showTermScannerDialog = true },
                                 onAddTerm = { showAddTermDialog = true },
@@ -274,7 +280,7 @@ fun BookWorkbenchDetailScreen(
                     providers = allProviders,
                     selectedTab = selectedTab,
                     chapterCount = chapters.size,
-                    lexiconCount = projectLexicon.size,
+                    lexiconCount = projectLexicon.count { it.reviewStatus == ReviewStatus.CONFIRMED.name },
                     onSelectTab = { selectedTab = it },
                     onSelectEdition = { selectedTargetEditionId = it },
                     onCreateEdition = { showCreateEditionDialog = true },
@@ -1733,6 +1739,7 @@ private fun GlossaryManagementTab(
     book: BookEntity,
     project: TranslationProjectV2Entity?,
     lexicon: List<LexiconEntryEntity>,
+    candidates: List<LexiconCandidateAggregateEntity>,
     storyMemory: List<StoryMemoryEntity>,
     onScanTerms: () -> Unit,
     onAddTerm: () -> Unit,
@@ -1740,9 +1747,30 @@ private fun GlossaryManagementTab(
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("ALL") }
+    var selectedCandidateIds by remember(project?.id) { mutableStateOf<Set<Long>>(emptySet()) }
+    var editingCandidate by remember(project?.id) { mutableStateOf<LexiconCandidateReview?>(null) }
+    var conflict by remember(project?.id) { mutableStateOf<CandidateImportConflict?>(null) }
+    var pendingImport by remember(project?.id) { mutableStateOf<PendingCandidateImport?>(null) }
+
+    val officialLexicon = lexicon.filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+    val candidateReviews = LexiconCandidateNoiseFilter.filterForReview(candidates)
+        .map(LexiconCandidateVoting::review)
+        .filter { review ->
+            val matchCat = selectedCategory == "ALL" || review.winnerCategory.equals(selectedCategory, ignoreCase = true)
+            val matchQuery = searchQuery.isBlank() ||
+                review.sourceTerm.contains(searchQuery, ignoreCase = true) ||
+                review.winnerTargetTerm.contains(searchQuery, ignoreCase = true) ||
+                review.winnerNotes.contains(searchQuery, ignoreCase = true)
+            matchCat && matchQuery
+        }
+
+    LaunchedEffect(candidates) {
+        val validIds = candidates.mapTo(mutableSetOf()) { it.id }
+        selectedCandidateIds = selectedCandidateIds.intersect(validIds)
+    }
 
     val filteredLexicon = remember(lexicon, searchQuery, selectedCategory) {
-        lexicon.filter { entry ->
+        officialLexicon.filter { entry ->
             val matchCat = selectedCategory == "ALL" || entry.category.equals(selectedCategory, ignoreCase = true)
             val matchQuery = searchQuery.isBlank() ||
                 entry.sourceTerm.contains(searchQuery, ignoreCase = true) ||
@@ -1818,16 +1846,20 @@ private fun GlossaryManagementTab(
         // Category Filter Chips
         item {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(
-                    "ALL" to "全部 (${lexicon.size})",
+                    "ALL" to "全部 (${officialLexicon.size})",
                     "CHARACTER" to "人名",
                     "LOCATION" to "地名",
                     "SKILL" to "功法技能",
                     "LORE" to "势力/设定",
-                    "ITEM" to "道具法宝"
+                    "ITEM" to "道具法宝",
+                    "HONORIFIC" to "称谓头衔",
+                    "CUSTOM" to "自定义"
                 ).forEach { (cat, label) ->
                     val isSelected = selectedCategory == cat
                     FilterChip(
@@ -1836,6 +1868,81 @@ private fun GlossaryManagementTab(
                         label = { Text(label, fontSize = 12.sp) }
                     )
                 }
+            }
+        }
+
+        if (candidateReviews.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f))
+                ) {
+                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("AI 候选审核 · ${candidateReviews.size}", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "候选只保存证据，不会影响正式翻译；确认后才会进入术语约束。",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                            val batchableIds = candidateReviews
+                                .filter { it.isHighConfidenceForBatch }
+                                .map { it.id }
+                                .filter { it in selectedCandidateIds }
+                            TextButton(
+                                onClick = {
+                                    viewModel.confirmLexiconCandidatesBatch(batchableIds) { _, _ ->
+                                        selectedCandidateIds = selectedCandidateIds - batchableIds.toSet()
+                                    }
+                                },
+                                enabled = batchableIds.isNotEmpty()
+                            ) {
+                                Text("批量确认 (${batchableIds.size})")
+                            }
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = {
+                                selectedCandidateIds = candidateReviews
+                                    .filter { it.isHighConfidenceForBatch }
+                                    .mapTo(mutableSetOf()) { it.id }
+                            }) { Text("选择高一致候选") }
+                            TextButton(onClick = { selectedCandidateIds = emptySet() }) { Text("清空选择") }
+                        }
+                    }
+                }
+            }
+            items(candidateReviews, key = { it.id }) { review ->
+                LexiconCandidateCard(
+                    review = review,
+                    selected = review.id in selectedCandidateIds,
+                    onToggle = {
+                        selectedCandidateIds = if (review.id in selectedCandidateIds) {
+                            selectedCandidateIds - review.id
+                        } else {
+                            selectedCandidateIds + review.id
+                        }
+                    },
+                    onConfirm = {
+                        viewModel.confirmLexiconCandidate(review.id) { result ->
+                            when (result) {
+                                is CandidateImportResult.Conflict -> {
+                                    pendingImport = PendingCandidateImport(
+                                        targetTerm = review.winnerTargetTerm,
+                                        category = review.winnerCategory,
+                                        notes = review.winnerNotes
+                                    )
+                                    conflict = result.details
+                                }
+                                is CandidateImportResult.Failed -> viewModel.showMessage(result.message)
+                                else -> Unit
+                            }
+                        }
+                    },
+                    onEdit = { editingCandidate = review },
+                    onIgnore = { viewModel.ignoreLexiconCandidate(review.id) }
+                )
             }
         }
 
@@ -1865,6 +1972,223 @@ private fun GlossaryManagementTab(
             }
         }
     }
+
+    if (editingCandidate != null) {
+        val candidate = editingCandidate!!
+        CandidateEditDialog(
+            review = candidate,
+            onDismiss = { editingCandidate = null },
+            onConfirm = { target, category, notes ->
+                viewModel.confirmLexiconCandidate(
+                    candidateId = candidate.id,
+                    targetTerm = target,
+                    category = category,
+                    notes = notes
+                ) { result ->
+                    when (result) {
+                        is CandidateImportResult.Conflict -> {
+                            pendingImport = PendingCandidateImport(target, category, notes)
+                            conflict = result.details
+                            editingCandidate = null
+                        }
+                        is CandidateImportResult.Failed -> viewModel.showMessage(result.message)
+                        is CandidateImportResult.Imported -> {
+                            editingCandidate = null
+                            pendingImport = null
+                        }
+                        is CandidateImportResult.Skipped -> {
+                            editingCandidate = null
+                            pendingImport = null
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    if (conflict != null) {
+        val details = conflict!!
+        val pending = pendingImport ?: PendingCandidateImport(
+            details.candidate.winnerTargetTerm,
+            details.candidate.winnerCategory,
+            details.candidate.winnerNotes
+        )
+        AlertDialog(
+            onDismissRequest = { conflict = null; pendingImport = null },
+            title = { Text("正式术语冲突") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("原文：${details.candidate.sourceTerm}", fontWeight = FontWeight.Bold)
+                    Text("现有正式译名：${details.existing.targetTerm} (${details.existing.category})")
+                    Text("候选译名：${pending.targetTerm} (${pending.category})")
+                    Text(
+                        "请选择保留现有正式术语，或用候选内容覆盖；不会自动替你选择。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.confirmLexiconCandidate(
+                        candidateId = details.candidate.id,
+                        targetTerm = pending.targetTerm,
+                        category = pending.category,
+                        notes = pending.notes,
+                        overwrite = true
+                    ) {
+                        conflict = null
+                        pendingImport = null
+                    }
+                }) { Text("Overwrite") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        viewModel.skipLexiconCandidate(details.candidate.id) {
+                            conflict = null
+                            pendingImport = null
+                        }
+                    }) { Text("Skip") }
+                    TextButton(onClick = { conflict = null; pendingImport = null }) { Text("取消") }
+                }
+            }
+        )
+    }
+}
+
+private data class PendingCandidateImport(
+    val targetTerm: String,
+    val category: String,
+    val notes: String
+)
+
+@Composable
+private fun LexiconCandidateCard(
+    review: LexiconCandidateReview,
+    selected: Boolean,
+    onToggle: () -> Unit,
+    onConfirm: () -> Unit,
+    onEdit: () -> Unit,
+    onIgnore: () -> Unit
+) {
+    val targetVotes = review.targetVotes.entries
+        .sortedWith(
+            compareByDescending<Map.Entry<String, Int>> { it.value }
+                .thenBy { LexiconCandidateVoting.normalizeSourceTerm(it.key) }
+                .thenBy { it.key }
+        )
+    val categoryVotes = review.categoryVotes.entries
+        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = if (review.hasTargetConflict || review.hasCategoryConflict) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.65f))
+        } else null
+    ) {
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = selected, onCheckedChange = { onToggle() })
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(review.sourceTerm, fontWeight = FontWeight.Bold)
+                        Icon(Icons.Default.ArrowForward, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.primary)
+                        Text(review.winnerTargetTerm, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Text(
+                        "${review.winnerCategory} · 出现 ${review.observationCount} 次",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(onClick = onConfirm) {
+                    Icon(Icons.Default.Check, "确认", Modifier.size(16.dp))
+                    Spacer(Modifier.width(3.dp))
+                    Text("确认")
+                }
+            }
+            if (review.hasTargetConflict || review.hasCategoryConflict) {
+                Text(
+                    "存在译名冲突${if (review.hasCategoryConflict) " / 类别冲突" else ""}",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            if (targetVotes.isNotEmpty()) {
+                Text(
+                    targetVotes.joinToString(" · ") { "${it.key} ${it.value}" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (categoryVotes.isNotEmpty()) {
+                Text(
+                    "类别票：" + categoryVotes.joinToString(" · ") { "${it.key} ${it.value}" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                "首次：第 ${review.aggregate.firstSeenChapterIndex.takeIf { it > 0 } ?: "?"} 章 · 最近：第 ${review.aggregate.lastSeenChapterIndex.takeIf { it > 0 } ?: "?"} 章",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (review.winnerNotes.isNotBlank()) {
+                Text(review.winnerNotes, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onEdit) { Text("编辑后确认") }
+                TextButton(onClick = onIgnore) { Text("忽略", color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CandidateEditDialog(
+    review: LexiconCandidateReview,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String, String) -> Unit
+) {
+    var target by remember(review.id) { mutableStateOf(review.winnerTargetTerm) }
+    var category by remember(review.id) { mutableStateOf(review.winnerCategory) }
+    var notes by remember(review.id) { mutableStateOf(review.winnerNotes) }
+    var expanded by remember(review.id) { mutableStateOf(false) }
+    val categories = (LexiconCandidateVoting.aiCategories + "CUSTOM").sorted()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("编辑候选 · ${review.sourceTerm}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(value = target, onValueChange = { target = it }, label = { Text("规范译名") }, singleLine = true)
+                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("类别") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        categories.forEach { option ->
+                            DropdownMenuItem(text = { Text(option) }, onClick = { category = option; expanded = false })
+                        }
+                    }
+                }
+                OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("备注") }, maxLines = 3)
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onConfirm(target.trim(), category, notes.trim()) }, enabled = target.isNotBlank() && category.isNotBlank()) {
+                Text("确认并导入")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 @Composable
@@ -2342,13 +2666,13 @@ private fun TermScannerDialog(
                     ) {
                         Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF2E7D32), modifier = Modifier.size(48.dp))
                         Text(
-                            "扫描完成！共提取并入库 $scanCompletedCount 个专有术语。",
+                            "扫描完成！共形成 $scanCompletedCount 个待审核候选。",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            "新术语已自动存入术语库，后续翻译将严格采用规范译名。",
+                            "候选已保存观察证据；请在审核区确认后，才会进入正式翻译约束与 QA。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -2499,6 +2823,7 @@ private fun AddLexiconEntryDialog(
                             "SKILL" -> "⚔️ 功法技能"
                             "LORE" -> "🏛️ 宗门/设定"
                             "ITEM" -> "📜 道具法宝"
+                            "HONORIFIC" -> "🎖️ 称谓头衔"
                             else -> "自定义"
                         },
                         onValueChange = {},
@@ -2517,6 +2842,7 @@ private fun AddLexiconEntryDialog(
                             "SKILL" to "⚔️ 功法技能",
                             "LORE" to "🏛️ 宗门/设定",
                             "ITEM" to "📜 道具法宝",
+                            "HONORIFIC" to "🎖️ 称谓头衔",
                             "CUSTOM" to "自定义"
                         ).forEach { (cat, label) ->
                             DropdownMenuItem(

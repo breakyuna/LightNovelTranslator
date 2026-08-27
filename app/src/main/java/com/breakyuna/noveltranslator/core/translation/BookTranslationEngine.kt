@@ -1,6 +1,9 @@
 package com.breakyuna.noveltranslator.core.translation
 
 import androidx.room.withTransaction
+import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
+import com.breakyuna.noveltranslator.core.agent.TermCandidateValidator
+import com.breakyuna.noveltranslator.core.agent.TermValidationResult
 import com.breakyuna.noveltranslator.core.book.BookFileManager
 import com.breakyuna.noveltranslator.core.llm.*
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
@@ -49,11 +52,18 @@ class BookTranslationEngine(
     private val promptCacheCapability: ProviderPromptCacheCapability = NoPromptCacheCapability,
     private val debugEnabled: () -> Boolean = { false }
 ) {
+    private data class ChapterRepairOutcome(
+        val chapter: ParsedTranslationChapter?,
+        val promptTokens: Long,
+        val completionTokens: Long
+    )
+
     private val books = database.bookDao()
     private val projects = database.translationProjectV2Dao()
     private val tasks = database.platformTaskDao()
     private val controls = ConcurrentHashMap<Long, ProjectControl>()
     private val activeRuns = ConcurrentHashMap<Long, Long>()
+    private val lexiconCandidateAggregator = LexiconCandidateAggregator(database)
 
     suspend fun projectBookId(projectId: Long): Long? = projects.get(projectId)?.bookId
 
@@ -117,7 +127,12 @@ class BookTranslationEngine(
                 val sourceTokens = sourceChapters.map { chapter -> chapter.segments.sumOf { TokenBudgetPlanner.estimate(it.text) } }
                 val combinedSource = sourceChapters.flatMap { it.segments }.joinToString("\n") { it.text }
                 val context = contextEngine.prepare(project, combinedSource, sourceChapters.first().chapterIndex)
-                val fixedTokens = TokenBudgetPlanner.estimate(context.stablePrefix + context.recentContext) + 700
+                val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
+                    "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
+                }
+                val fixedTokens = TokenBudgetPlanner.estimate(
+                    context.stablePrefix + context.recentContext + matchedGlossaryText
+                ) + 700
                 val budget = TokenBudgetPlanner.plan(
                     maxContextTokens = provider.maxContextTokens,
                     userMaxBatchSize = project.maxBatchChapters,
@@ -293,40 +308,57 @@ class BookTranslationEngine(
             SystemLogger.error("LLM_API", "❌ 模型调用失败: ${result.errorMessage}", projectId = project.id, chapterIndex = firstIndex)
             result.errorMessage ?: "Translation request failed"
         }
-        val cost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
+        val initialCost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
         SystemLogger.info(
             "LLM_API",
-            "📥 收到模型响应 (耗时 ${result.durationMs}ms): 消耗输入 ${result.promptTokens} Tokens, 输出 ${result.completionTokens} Tokens, 预估费用 $${String.format(java.util.Locale.US, "%.5f", cost)}",
+            "📥 收到模型响应 (耗时 ${result.durationMs}ms): 消耗输入 ${result.promptTokens} Tokens, 输出 ${result.completionTokens} Tokens, 预估费用 $${String.format(java.util.Locale.US, "%.5f", initialCost)}",
             projectId = project.id,
             chapterIndex = firstIndex
         )
         val parsed = TranslationProtocol.parse(result.text)
         val mandatoryTerms = context.matchedLexicon
         var failed = 0
+        var totalPromptTokens = result.promptTokens
+        var totalCompletionTokens = result.completionTokens
         sources.forEach { source ->
             var translated = parsed.chapters.firstOrNull { it.shortId == source.shortId }
             var qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             if (!qa.accepted) {
-                SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 (${qa.problems.joinToString()})，启动自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
+                SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动一次自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_TRIGGERED", qa.problems)
-                translated = repairChapter(project, provider, runId, batchId, context, source, translated)
+                val repair = repairChapter(project, provider, runId, batchId, context, source, translated)
+                translated = repair.chapter
+                totalPromptTokens += repair.promptTokens
+                totalCompletionTokens += repair.completionTokens
                 qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             }
+            SystemLogger.info(
+                "QA_CHECK",
+                "章节 #${source.chapterIndex} glossary consistency=${qa.glossaryStatus}",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
             if (qa.accepted && translated != null) {
                 commitChapter(project, source, translated)
                 SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
             } else {
                 failed++
-                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_VALIDATION_FAILED", qa.problems)
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_VALIDATION_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
                 SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
             }
         }
         applyMetadata(project, sources, parsed.metaJson)
+        val totalCost = TokenCalculator.calculateCost(
+            totalPromptTokens,
+            totalCompletionTokens,
+            provider.inputPricePerMillion,
+            provider.outputPricePerMillion
+        )
         val batch = (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
             state = if (failed == 0) "COMPLETED" else "PARTIAL",
-            promptTokens = result.promptTokens,
-            completionTokens = result.completionTokens,
-            cost = cost,
+            promptTokens = totalPromptTokens,
+            completionTokens = totalCompletionTokens,
+            cost = totalCost,
             errorMessage = if (failed > 0) "$failed chapter(s) failed deterministic QA" else null
         )
         tasks.updateBatch(batch)
@@ -347,7 +379,7 @@ class BookTranslationEngine(
         context: ContextPackage,
         source: ProtocolChapter,
         partial: ParsedTranslationChapter?
-    ): ParsedTranslationChapter? {
+    ): ChapterRepairOutcome {
         val missing = source.segments.filter { partial?.segments?.containsKey(it.shortId) != true }
         val retrySource = if (missing.isNotEmpty() && partial != null) source.copy(segments = missing) else source
         val request = LlmRequest(
@@ -361,13 +393,18 @@ class BookTranslationEngine(
             )
         val retry = gateway.executeCompletion(request)
         recordUsage(runId, batchId, provider, request, retry)
-        if (!retry.isSuccess) return partial
-        val repaired = TranslationProtocol.parse(retry.text).chapters.firstOrNull() ?: return partial
-        if (partial == null) return repaired
+        if (!retry.isSuccess) return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
+        val repaired = TranslationProtocol.parse(retry.text).chapters.firstOrNull()
+            ?: return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
+        if (partial == null) return ChapterRepairOutcome(repaired, retry.promptTokens, retry.completionTokens)
         val merged = source.segments.mapNotNull { segment ->
             (repaired.segments[segment.shortId] ?: partial.segments[segment.shortId])?.let { segment.shortId to it }
         }.toMap(LinkedHashMap())
-        return partial.copy(segments = merged)
+        return ChapterRepairOutcome(
+            chapter = partial.copy(segments = merged),
+            promptTokens = retry.promptTokens,
+            completionTokens = retry.completionTokens
+        )
     }
 
     private suspend fun translateOversizedChapter(
@@ -410,25 +447,42 @@ class BookTranslationEngine(
             val request = LlmRequest(provider, TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage), TranslationProtocol.userPrompt(context, listOf(chunkSource)), provider.temperature, outputLimit(provider.maxContextTokens), "OVERSIZED_CHAPTER_CHUNK", prepareCache(project, provider, context))
             val result = gateway.executeCompletion(request)
             recordUsage(runId, batchId, provider, request, result)
+            prompt += result.promptTokens
+            completion += result.completionTokens
             check(result.isSuccess) { result.errorMessage ?: "Oversized chapter chunk failed" }
             val mandatoryTerms = context.matchedLexicon
             var parsed = TranslationProtocol.parse(result.text).chapters.firstOrNull()
             var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
             if (!qa.accepted) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
-                parsed = repairChapter(project, provider, runId, batchId, context, chunkSource, parsed)
+                val repair = repairChapter(project, provider, runId, batchId, context, chunkSource, parsed)
+                parsed = repair.chapter
+                prompt += repair.promptTokens
+                completion += repair.completionTokens
                 qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
             }
             if (!qa.accepted || parsed == null) {
-                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems)
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
+                tasks.updateBatch(
+                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                        state = "FAILED",
+                        promptTokens = prompt,
+                        completionTokens = completion,
+                        cost = TokenCalculator.calculateCost(
+                            prompt,
+                            completion,
+                            provider.inputPricePerMillion,
+                            provider.outputPricePerMillion
+                        ),
+                        errorMessage = qa.problems.joinToString()
+                    )
+                )
                 error(qa.problems.joinToString())
             }
             val validated = parsed ?: error("QA accepted a missing parsed chunk")
             validated.segments.forEach { (id, text) ->
                 translated[id] = translated[id].orEmpty() + text
             }
-            prompt += result.promptTokens
-            completion += result.completionTokens
         }
         commitChapter(project, source, ParsedTranslationChapter(source.shortId, translated))
         tasks.updateBatch(
@@ -549,22 +603,64 @@ class BookTranslationEngine(
                 SystemLogger.info("MEMORY", "🧠 随进度更新故事记忆: [${delta.key}] = ${delta.value}", projectId = project.id, chapterIndex = sources.first().chapterIndex)
             }
         }
+        val metadataSource = sources.flatMap { it.segments }.joinToString("\n") { it.text }
+        val confirmedSourceTerms = database.lexiconV2Dao().getAll(project.id)
+            .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+            .mapTo(mutableSetOf()) { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
+        val metadataCandidates = mutableListOf<GlossaryEntity>()
         parsed.lexiconCandidates.forEach { candidate ->
-            if (candidate.source.isNotBlank() && candidate.target.isNotBlank()) {
-                val existing = database.lexiconV2Dao().getBySourceTerm(project.id, candidate.source)
-                if (existing == null) {
-                    database.lexiconV2Dao().upsert(
-                        LexiconEntryEntity(
-                            translationProjectId = project.id,
-                            sourceTerm = candidate.source,
-                            targetTerm = candidate.target,
-                            notes = candidate.notes,
-                            source = LexiconSource.AI.name,
-                            reviewStatus = ReviewStatus.CANDIDATE.name
-                        )
-                    )
-                    SystemLogger.info("GLOSSARY", "✨ 随翻译进度生成待确认术语: '${candidate.source}' -> '${candidate.target}' (${candidate.notes})", projectId = project.id, chapterIndex = sources.first().chapterIndex)
+            val normalized = LexiconCandidateVoting.normalizeSourceTerm(candidate.source)
+            if (normalized in confirmedSourceTerms) return@forEach
+            when (
+                val validation = TermCandidateValidator.validate(
+                    original = candidate.source,
+                    suggested = candidate.target,
+                    categoryRaw = candidate.category,
+                    notes = candidate.notes,
+                    sourceText = metadataSource
+                )
+            ) {
+                is TermValidationResult.Accepted -> metadataCandidates += GlossaryEntity(
+                    projectId = project.id,
+                    originalTerm = validation.originalTerm,
+                    translatedTerm = validation.translatedTerm,
+                    category = validation.category,
+                    notes = validation.notes,
+                    isAutoExtracted = true,
+                    source = LexiconSource.AI.name,
+                    reviewStatus = ReviewStatus.CANDIDATE.name
+                )
+                is TermValidationResult.Rejected -> SystemLogger.warn(
+                    "GLOSSARY",
+                    "丢弃 META 术语候选: ${validation.rejection.reason}",
+                    projectId = project.id,
+                    chapterIndex = sources.firstOrNull()?.chapterIndex
+                )
+            }
+        }
+        metadataCandidates.groupBy { candidate ->
+            sources.firstOrNull { chapter ->
+                chapter.segments.any { segment ->
+                    segment.text.contains(candidate.originalTerm, ignoreCase = true)
                 }
+            } ?: sources.first()
+        }.forEach { (chapter, candidates) ->
+            val chapterSource = chapter.segments.joinToString("\n") { it.text }
+            val aggregation = lexiconCandidateAggregator.observeWindow(
+                projectId = project.id,
+                chapterIndex = chapter.chapterIndex,
+                sourceText = chapterSource,
+                candidates = candidates
+            )
+            aggregation.updated.forEach { aggregate ->
+                val review = LexiconCandidateVoting.review(aggregate)
+                SystemLogger.info(
+                    "GLOSSARY",
+                    "META 候选已聚合: ${aggregate.sourceTerm} obs=${aggregate.observationCount} " +
+                        "winner=${review.winnerTargetTerm}/${review.winnerCategory}",
+                    projectId = project.id,
+                    chapterIndex = chapter.chapterIndex
+                )
             }
         }
     }
@@ -687,7 +783,7 @@ class BookTranslationEngine(
 
 private data class MetadataChapter(val chapterId: Int?, val chapterIndex: Int?, val summary: String, val entities: String, val stateChanges: String, val newFacts: String, val unresolvedThreads: String)
 private data class MetadataStoryDelta(val operation: String, val key: String, val value: String, val entities: String)
-private data class MetadataLexicon(val source: String, val target: String, val notes: String)
+private data class MetadataLexicon(val source: String, val target: String, val category: String, val notes: String)
 private data class TranslationMetadata(val chapterMemory: List<MetadataChapter>, val storyDelta: List<MetadataStoryDelta>, val lexiconCandidates: List<MetadataLexicon>)
 
 private object MetadataParser {
@@ -711,8 +807,14 @@ private object MetadataParser {
         val story = list("storyMemoryDelta").map { map(it) }.map { row ->
             MetadataStoryDelta(str(row, "operation").ifBlank { "ADD" }, str(row, "key").ifBlank { str(row, "factKey") }, str(row, "value").ifBlank { str(row, "factValue") }, str(row, "entities"))
         }
-        val lexicon = list("lexiconCandidate").map { map(it) }.map { row ->
-            MetadataLexicon(str(row, "source").ifBlank { str(row, "sourceTerm") }, str(row, "target").ifBlank { str(row, "targetTerm") }, str(row, "notes"))
+        val lexiconRows = (root["lexiconCandidates"] as? List<*> ?: root["lexiconCandidate"] as? List<*>).orEmpty()
+        val lexicon = lexiconRows.map { map(it) }.map { row ->
+            MetadataLexicon(
+                str(row, "source").ifBlank { str(row, "sourceTerm") },
+                str(row, "target").ifBlank { str(row, "targetTerm") },
+                str(row, "category"),
+                str(row, "notes")
+            )
         }
         return TranslationMetadata(chapter, story, lexicon)
     }

@@ -6,16 +6,20 @@ import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
-import com.breakyuna.noveltranslator.data.model.TermCategory
+import com.breakyuna.noveltranslator.data.model.LexiconSource
+import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
+import com.breakyuna.noveltranslator.data.model.ReviewStatus
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 class TermExtractionAgent(private val llmClient: LlmGateway) {
 
     data class ExtractionResult(
         val terms: List<GlossaryEntity>,
         val usage: LlmResult,
-        val parseError: String? = null
+        val parseError: String? = null,
+        val validationRejections: List<TermValidationRejection> = emptyList()
     )
 
     suspend fun extractTerms(
@@ -63,21 +67,42 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
             temperature = 0.3f
         )
 
-        return parseExtractionResult(projectId, result)
+        return parseExtractionResult(projectId, result, sampleText)
     }
 
     companion object {
-        fun parseExtractionResult(projectId: Long, result: LlmResult): ExtractionResult {
+        fun parseExtractionResult(
+            projectId: Long,
+            result: LlmResult,
+            sourceText: String? = null
+        ): ExtractionResult {
             if (!result.isSuccess || result.text.isBlank()) return ExtractionResult(emptyList(), result)
             return try {
-                ExtractionResult(parseTermsJson(projectId, result.text), result)
+                val parsed = parseTermsJsonWithValidation(projectId, result.text, sourceText)
+                ExtractionResult(parsed.terms, result, validationRejections = parsed.rejections)
             } catch (error: IllegalArgumentException) {
                 ExtractionResult(emptyList(), result, error.message ?: "Invalid terminology JSON")
             }
         }
 
-        fun parseTermsJson(projectId: Long, rawText: String): List<GlossaryEntity> {
+        data class ParsedTerms(
+            val terms: List<GlossaryEntity>,
+            val rejections: List<TermValidationRejection>
+        )
+
+        fun parseTermsJson(
+            projectId: Long,
+            rawText: String,
+            sourceText: String? = null
+        ): List<GlossaryEntity> = parseTermsJsonWithValidation(projectId, rawText, sourceText).terms
+
+        fun parseTermsJsonWithValidation(
+            projectId: Long,
+            rawText: String,
+            sourceText: String? = null
+        ): ParsedTerms {
             val terms = mutableListOf<GlossaryEntity>()
+            val rejections = mutableListOf<TermValidationRejection>()
             try {
                 val jsonStr = rawText.trim()
                     .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
@@ -103,32 +128,32 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
                     val obj = jsonArray.optJSONObject(i) ?: continue
                     val orig = firstString(obj, "original", "originalTerm", "source", "sourceTerm").trim()
                     val sugg = firstString(obj, "suggested", "translatedTerm", "target", "targetTerm", "translation").trim()
-                    val catStr = firstString(obj, "category", "type").ifBlank { "CUSTOM" }.trim().uppercase()
+                    val catStr = firstString(obj, "category", "type").trim().uppercase(Locale.ROOT)
                     val notes = firstString(obj, "notes", "description", "context").trim()
 
-                    if (orig.isNotBlank() && sugg.isNotBlank()) {
-                        val category = when (catStr) {
-                            "FACTION", "RACE", "CONCEPT" -> TermCategory.LORE
-                            "TITLE" -> TermCategory.HONORIFIC
-                            else -> runCatching { TermCategory.valueOf(catStr) }.getOrDefault(TermCategory.CUSTOM)
-                        }
-
-                        terms.add(
+                    when (val validation = TermCandidateValidator.validate(orig, sugg, catStr, notes, sourceText)) {
+                        is TermValidationResult.Accepted -> terms.add(
                             GlossaryEntity(
                                 projectId = projectId,
-                                originalTerm = orig,
-                                translatedTerm = sugg,
-                                category = category,
-                                notes = notes,
-                                isAutoExtracted = true
+                                originalTerm = validation.originalTerm,
+                                translatedTerm = validation.translatedTerm,
+                                category = validation.category,
+                                notes = validation.notes,
+                                isAutoExtracted = true,
+                                source = LexiconSource.AI.name,
+                                reviewStatus = ReviewStatus.CANDIDATE.name
                             )
                         )
+                        is TermValidationResult.Rejected -> rejections += validation.rejection
                     }
                 }
             } catch (error: Exception) {
                 throw IllegalArgumentException("Invalid terminology JSON: ${error.message}", error)
             }
-            return terms.distinctBy { it.originalTerm.lowercase() }
+            return ParsedTerms(
+                terms = terms.distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm) },
+                rejections = rejections
+            )
         }
 
         private fun firstString(obj: JSONObject, vararg keys: String): String = keys.asSequence()

@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.breakyuna.noveltranslator.core.agent.ChapterSplitAgent
+import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.exporter.EpubExporter
 import com.breakyuna.noveltranslator.core.exporter.TxtExporter
@@ -130,6 +131,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val editionExporter = EditionExporter(db, bookFiles)
     val bookPlatformRepo = BookPlatformRepository(db, bookFiles)
     private val contextEngineV2 = ContextEngine(db.lexiconV2Dao(), db.memoryDao())
+    private val lexiconCandidateAggregator = LexiconCandidateAggregator(db)
     private val bookTranslationEngine = BookTranslationEngine(
         db,
         bookFiles,
@@ -679,6 +681,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun observeLexicon(projectId: Long): Flow<List<LexiconEntryEntity>> =
         bookPlatformRepo.observeLexicon(projectId)
 
+    fun observeLexiconCandidates(projectId: Long): Flow<List<LexiconCandidateAggregateEntity>> =
+        bookPlatformRepo.observeLexiconCandidates(projectId)
+
     fun observeStoryMemory(projectId: Long): Flow<List<StoryMemoryEntity>> =
         bookPlatformRepo.observeStoryMemory(projectId)
 
@@ -745,6 +750,180 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun confirmLexiconCandidate(
+        candidateId: Long,
+        targetTerm: String? = null,
+        category: String? = null,
+        notes: String? = null,
+        overwrite: Boolean = false,
+        onResult: (CandidateImportResult) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = db.withTransaction {
+                val candidate = db.lexiconCandidateAggregateDao().getById(candidateId)
+                    ?: return@withTransaction CandidateImportResult.Failed("Candidate not found")
+                if (candidate.state != LexiconCandidateState.ACTIVE.name) {
+                    return@withTransaction CandidateImportResult.Failed("Candidate is no longer active")
+                }
+                val review = LexiconCandidateVoting.review(candidate)
+                val existing = db.lexiconV2Dao().getAll(candidate.translationProjectId)
+                    .firstOrNull {
+                        it.reviewStatus == ReviewStatus.CONFIRMED.name &&
+                        LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) == candidate.normalizedSourceTerm
+                    }
+                if (existing != null && !overwrite) {
+                    return@withTransaction CandidateImportResult.Conflict(
+                        CandidateImportConflict(review, existing)
+                    )
+                }
+                val proposedTarget = targetTerm ?: review.winnerTargetTerm
+                val proposedCategory = category ?: review.winnerCategory
+                val proposedNotes = notes ?: review.winnerNotes
+                if (proposedTarget.isBlank() || !LexiconCandidateImportPlanner.isImportableCategory(proposedCategory)) {
+                    return@withTransaction CandidateImportResult.Failed("Candidate has no usable winner")
+                }
+                if (existing == null) {
+                    db.lexiconV2Dao().upsert(
+                        LexiconCandidateImportPlanner.createOfficialEntry(
+                            review = review,
+                            targetTerm = proposedTarget,
+                            category = proposedCategory,
+                            notes = proposedNotes
+                        )
+                    )
+                } else {
+                    db.lexiconV2Dao().update(
+                        LexiconCandidateImportPlanner.overwriteOfficialEntry(
+                            existing = existing,
+                            review = review,
+                            targetTerm = proposedTarget,
+                            category = proposedCategory,
+                            notes = proposedNotes
+                        )
+                    )
+                }
+                db.lexiconCandidateAggregateDao().markImported(candidateId)
+                CandidateImportResult.Imported(candidateId, overwritten = existing != null)
+            }
+            when (result) {
+                is CandidateImportResult.Imported -> com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                    "GLOSSARY_REVIEW",
+                    "导入候选 id=${result.candidateId}, mode=${if (result.overwritten) "Overwrite" else "Create"}",
+                    projectId = db.lexiconCandidateAggregateDao().getById(candidateId)?.translationProjectId
+                )
+                is CandidateImportResult.Conflict -> com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                    "GLOSSARY_REVIEW",
+                    "导入候选冲突 id=$candidateId，等待用户选择 Skip / Overwrite",
+                    projectId = result.details.candidate.aggregate.translationProjectId
+                )
+                is CandidateImportResult.Failed -> com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                    "GLOSSARY_REVIEW",
+                    "导入候选失败 id=$candidateId: ${result.message}"
+                )
+                is CandidateImportResult.Skipped -> Unit
+            }
+            withContext(Dispatchers.Main) { onResult(result) }
+        }
+    }
+
+    fun skipLexiconCandidate(candidateId: Long, onComplete: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var projectId: Long? = null
+            val skipped = db.withTransaction {
+                val candidate = db.lexiconCandidateAggregateDao().getById(candidateId)
+                    ?: return@withTransaction false
+                projectId = candidate.translationProjectId
+                if (candidate.state != LexiconCandidateState.ACTIVE.name) return@withTransaction false
+                val officialStillExists = db.lexiconV2Dao().getAll(candidate.translationProjectId).any { entry ->
+                    entry.reviewStatus == ReviewStatus.CONFIRMED.name &&
+                        LexiconCandidateVoting.normalizeSourceTerm(entry.sourceTerm) == candidate.normalizedSourceTerm
+                }
+                if (!officialStillExists) return@withTransaction false
+                db.lexiconCandidateAggregateDao().markImported(candidateId)
+                true
+            }
+            if (skipped) {
+                com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                    "GLOSSARY_REVIEW",
+                    "候选 id=$candidateId Skip，保留现有正式术语",
+                    projectId = projectId
+                )
+            } else {
+                com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                    "GLOSSARY_REVIEW",
+                    "候选 id=$candidateId Skip 取消：正式冲突已不存在或候选状态已变化",
+                    projectId = projectId
+                )
+            }
+            withContext(Dispatchers.Main) {
+                showMessage(
+                    if (skipped) "已跳过冲突候选，保留现有正式术语"
+                    else "正式术语已变化，候选仍保留，请重新审核"
+                )
+                onComplete()
+            }
+        }
+    }
+
+    fun ignoreLexiconCandidate(candidateId: Long, onComplete: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val projectId = db.lexiconCandidateAggregateDao().getById(candidateId)?.translationProjectId
+            db.lexiconCandidateAggregateDao().markIgnored(candidateId)
+            com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                "GLOSSARY_REVIEW",
+                "候选 id=$candidateId 已 Ignore",
+                projectId = projectId
+            )
+            withContext(Dispatchers.Main) {
+                showMessage("候选已忽略，后续扫描不会立即再次提示")
+                onComplete()
+            }
+        }
+    }
+
+    fun confirmLexiconCandidatesBatch(candidateIds: List<Long>, onComplete: (Int, Int) -> Unit = { _, _ -> }) {
+        if (candidateIds.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = db.withTransaction {
+                var imported = 0
+                var conflicts = 0
+                candidateIds.distinct().forEach { candidateId ->
+                    val candidate = db.lexiconCandidateAggregateDao().getById(candidateId) ?: return@forEach
+                    if (candidate.state != LexiconCandidateState.ACTIVE.name) return@forEach
+                    val review = LexiconCandidateVoting.review(candidate)
+                    val existing = db.lexiconV2Dao().getAll(candidate.translationProjectId)
+                        .firstOrNull {
+                            it.reviewStatus == ReviewStatus.CONFIRMED.name &&
+                            LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) == candidate.normalizedSourceTerm
+                        }
+                    if (existing != null) {
+                        conflicts++
+                    } else if (
+                        review.isHighConfidenceForBatch &&
+                        review.winnerTargetTerm.isNotBlank() &&
+                        LexiconCandidateImportPlanner.isImportableCategory(review.winnerCategory)
+                    ) {
+                        db.lexiconV2Dao().upsert(LexiconCandidateImportPlanner.createOfficialEntry(review))
+                        db.lexiconCandidateAggregateDao().markImported(candidateId)
+                        imported++
+                    }
+                }
+                imported to conflicts
+            }
+            com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                "GLOSSARY_REVIEW",
+                "批量确认完成: imported=${result.first}, conflicts=${result.second}",
+                projectId = candidateIds.firstOrNull()?.let { id ->
+                    db.lexiconCandidateAggregateDao().getById(id)?.translationProjectId
+                }
+            )
+            withContext(Dispatchers.Main) {
+                showMessage("已确认 ${result.first} 个候选${if (result.second > 0) "，${result.second} 个存在正式术语冲突" else ""}")
+                onComplete(result.first, result.second)
+            }
+        }
+    }
+
     fun retranslateChapter(bookId: Long, editionId: Long, logicalChapterId: Long, projectId: Long?) {
         viewModelScope.launch(Dispatchers.IO) {
             bookPlatformRepo.retranslateChapter(editionId, logicalChapterId)
@@ -791,9 +970,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     "🔍 启动专有术语扫描: Book#$bookId, 范围第 $startChapter ~ $endChapter 章 (${allChapters.size}章)，使用模型: ${provider.name}/${provider.selectedModel}",
                     projectId = targetProjectId
                 )
-                val existingTerms = db.lexiconV2Dao().getAll(targetProjectId)
-                    .mapTo(linkedSetOf()) { it.sourceTerm.lowercase() }
+                val confirmedLexicon = db.lexiconV2Dao().getAll(targetProjectId)
+                    .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+                val existingConfirmedTerms = confirmedLexicon
+                    .mapTo(linkedSetOf()) { it.sourceTerm }
+                val normalizedConfirmedTerms = confirmedLexicon
+                    .mapTo(linkedSetOf()) { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
                 var count = 0
+                var failedWindows = 0
                 var readableChapters = 0
                 allChapters.forEach { chapter ->
                     val segments = db.bookDao().getLogicalSegments(chapter.id)
@@ -818,33 +1002,84 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                 withContext(Dispatchers.Main) {
                                     onProgress("AI 正在扫描 $label（累计 $count 条候选）...")
                                 }
-                                val extraction = termExtractionAgent.extractTermsWithUsage(
+                                val extraction = try {
+                                    termExtractionAgent.extractTermsWithUsage(
+                                        projectId = targetProjectId,
+                                        sampleText = window,
+                                        provider = provider,
+                                        sourceLanguage = book.originalLanguage,
+                                        targetLanguage = targetLanguage,
+                                        existingTerms = existingConfirmedTerms
+                                    )
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (error: Exception) {
+                                    failedWindows++
+                                    com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                                        "GLOSSARY_SCAN",
+                                        "窗口失败，已保留此前聚合证据: $label · ${error.message}",
+                                        projectId = targetProjectId,
+                                        chapterIndex = chapter.chapterIndex
+                                    )
+                                    return@forEachIndexed
+                                }
+                                if (!extraction.usage.isSuccess || extraction.parseError != null) {
+                                    failedWindows++
+                                    com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                                        "GLOSSARY_SCAN",
+                                        "窗口未产生可用候选: $label",
+                                        details = listOfNotNull(
+                                            extraction.usage.errorMessage,
+                                            extraction.parseError,
+                                            extraction.validationRejections.takeIf { it.isNotEmpty() }
+                                                ?.joinToString { "${it.sourceTerm}: ${it.reason}" }
+                                        ).joinToString("; ").takeIf { it.isNotBlank() },
+                                        projectId = targetProjectId,
+                                        chapterIndex = chapter.chapterIndex
+                                    )
+                                    return@forEachIndexed
+                                }
+                                if (_debugModeEnabled.value) {
+                                    com.breakyuna.noveltranslator.core.logger.SystemLogger.debug(
+                                        "GLOSSARY_SCAN",
+                                        "window=${windowIndex + 1} parsed candidates=${extraction.terms.size}, " +
+                                            "validation rejects=${extraction.validationRejections.size}\n" +
+                                            "模型原始输出: ${extraction.usage.text.take(12_000)}",
+                                        projectId = targetProjectId,
+                                        chapterIndex = chapter.chapterIndex
+                                    )
+                                }
+                                val aggregation = lexiconCandidateAggregator.observeWindow(
                                     projectId = targetProjectId,
-                                    sampleText = "【${chapter.canonicalTitle}】\n$window",
-                                    provider = provider,
-                                    sourceLanguage = book.originalLanguage,
-                                    targetLanguage = targetLanguage,
-                                    existingTerms = existingTerms
+                                    chapterIndex = chapter.chapterIndex,
+                                    sourceText = window,
+                                    candidates = extraction.terms
+                                        .filterNot { LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm) in normalizedConfirmedTerms }
                                 )
-                                if (!extraction.usage.isSuccess) error(extraction.usage.errorMessage ?: "$label 模型调用失败")
-                                if (extraction.parseError != null) error("$label：${extraction.parseError}")
-                                val entries = extraction.terms
-                                    .filterNot { it.originalTerm.lowercase() in existingTerms }
-                                    .map { term ->
-                                        LexiconEntryEntity(
-                                            translationProjectId = targetProjectId,
-                                            sourceTerm = term.originalTerm,
-                                            targetTerm = term.translatedTerm,
-                                            category = term.category.name,
-                                            notes = term.notes,
-                                            source = LexiconSource.AI.name,
-                                            reviewStatus = ReviewStatus.CANDIDATE.name
-                                        )
+                                val rejectionCount = extraction.validationRejections.size + aggregation.rejected.size
+                                if (rejectionCount > 0) {
+                                    com.breakyuna.noveltranslator.core.logger.SystemLogger.debug(
+                                        "GLOSSARY_SCAN",
+                                        "validation reject=$rejectionCount" +
+                                            (extraction.validationRejections + aggregation.rejected)
+                                                .joinToString(prefix = ": ") { "${it.sourceTerm} (${it.reason})" },
+                                        projectId = targetProjectId,
+                                        chapterIndex = chapter.chapterIndex
+                                    )
+                                }
+                                count = db.lexiconCandidateAggregateDao().getAllActive(targetProjectId).size
+                                if (aggregation.updated.isNotEmpty()) {
+                                    val detail = aggregation.updated.joinToString("; ") { aggregate ->
+                                        val review = LexiconCandidateVoting.review(aggregate)
+                                        "${aggregate.sourceTerm} obs=${aggregate.observationCount} " +
+                                            "target=${review.winnerTargetTerm} category=${review.winnerCategory}"
                                     }
-                                if (entries.isNotEmpty()) {
-                                    entries.forEach { existingTerms += it.sourceTerm.lowercase() }
-                                    db.lexiconV2Dao().upsertAll(entries)
-                                    count += entries.size
+                                    com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                                        "GLOSSARY_SCAN",
+                                        "聚合更新 window=${windowIndex + 1}: $detail",
+                                        projectId = targetProjectId,
+                                        chapterIndex = chapter.chapterIndex
+                                    )
                                 }
                             }
                         }
@@ -859,22 +1094,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
                     "GLOSSARY_SCAN",
-                    "✅ 扫描完成！已完整处理 $readableChapters 章，共生成 $count 个待确认术语",
+                    "✅ 扫描完成！已处理 $readableChapters 章，共 $count 个待审核候选，失败窗口 $failedWindows",
                     projectId = targetProjectId
                 )
                 withContext(Dispatchers.Main) {
-                    showMessage("专有术语扫描完成，共生成 $count 个待确认术语")
+                    showMessage("专有术语扫描完成，共 $count 个待审核候选")
                     onComplete(count)
                 }
+            } catch (ce: CancellationException) {
+                // A cancelled scan keeps every aggregate persisted by completed windows.
+                throw ce
             } catch (e: Exception) {
                 com.breakyuna.noveltranslator.core.logger.SystemLogger.error(
                     "GLOSSARY_SCAN",
                     "❌ 专有术语扫描失败: ${e.message}",
                     projectId = targetProjectId
                 )
+                val retainedCount = targetProjectId?.let { db.lexiconCandidateAggregateDao().getAllActive(it).size } ?: 0
                 withContext(Dispatchers.Main) {
                     showMessage("术语扫描失败: ${e.localizedMessage}")
-                    onComplete(0)
+                    onComplete(retainedCount)
                 }
             }
         }
@@ -1195,17 +1434,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
                 showMessage("Extracting terms from chapter ${chapter.chapterIndex}...")
                 val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
-                val knownKeys = currentTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
-                val newTerms = mutableListOf<GlossaryEntity>()
+                val confirmedTerms = currentTerms.filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+                var observedCount = 0
                 splitTermScanWindows(sample).forEachIndexed { windowIndex, window ->
                     val extraction = termExtractionAgent.extractTermsWithUsage(
                         projectId = projectId,
-                        sampleText = "[Chapter ${chapter.chapterIndex}, part ${windowIndex + 1}]\n$window",
+                        sampleText = window,
                         provider = provider,
                         sourceLanguage = project.sourceLanguage,
                         targetLanguage = project.targetLanguage,
-                        existingTerms = currentTerms.map { it.originalTerm } + newTerms.map { it.originalTerm }
+                        existingTerms = confirmedTerms.map { it.originalTerm }
                     )
+                    logTermExtractionDebug(projectId, chapter.chapterIndex, windowIndex + 1, extraction)
                     recordAgentUsage(
                         projectId,
                         "Chapter ${chapter.chapterIndex} terminology extraction part ${windowIndex + 1}",
@@ -1217,15 +1457,18 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
                     }
                     check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
-                    extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
-                        if (knownKeys.add(normalizeTerm(term.originalTerm))) newTerms += term
-                    }
+                    val updatedCandidates = glossaryRepo.observeAiCandidates(
+                        projectId = projectId,
+                        chapterIndex = chapter.chapterIndex,
+                        observations = extraction.terms
+                    )
+                    observedCount += updatedCandidates.size
+                    logLegacyCandidateUpdates(projectId, chapter.chapterIndex, windowIndex + 1, updatedCandidates)
                 }
 
-                if (newTerms.isNotEmpty()) {
-                    glossaryRepo.insertTerms(newTerms)
+                if (observedCount > 0) {
                     withContext(Dispatchers.Main) {
-                        showMessage("Added ${newTerms.size} terminology candidates from chapter ${chapter.chapterIndex} for review.")
+                        showMessage("Recorded $observedCount terminology observations from chapter ${chapter.chapterIndex} for review.")
                     }
                 } else {
                     withContext(Dispatchers.Main) {
@@ -1257,12 +1500,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun approveGlossaryTerm(term: GlossaryEntity) {
-        updateGlossaryTerm(term.copy(isAutoExtracted = false))
+        updateGlossaryTerm(LegacyGlossaryCandidateVoting.confirm(term))
     }
 
     fun deleteGlossaryTerm(termId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            glossaryRepo.deleteTermById(termId)
+            val term = glossaryRepo.getTermById(termId)
+            if (
+                term != null &&
+                term.reviewStatus == ReviewStatus.CANDIDATE.name &&
+                term.source == LexiconSource.AI.name
+            ) {
+                glossaryRepo.updateTerm(LegacyGlossaryCandidateVoting.markIgnored(term))
+            } else {
+                glossaryRepo.deleteTermById(termId)
+            }
         }
     }
 
@@ -1305,8 +1557,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val knownTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
-                val knownKeys = knownTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
-                val discoveredCandidates = mutableListOf<TermExtractionCandidate>()
+                val confirmedTerms = knownTerms.filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+                val discoveredCandidates = knownTerms.asSequence()
+                    .filter {
+                        it.reviewStatus == ReviewStatus.CANDIDATE.name &&
+                            !LegacyGlossaryCandidateVoting.isIgnored(it)
+                    }
+                    .associateByTo(linkedMapOf()) { normalizeTerm(it.originalTerm) }
 
                 // Window samples with chapter metadata
                 data class ScanWindow(val chapter: ChapterEntity, val text: String, val index: Int)
@@ -1318,7 +1575,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         allWindows.add(
                             ScanWindow(
                                 chapter = chapter,
-                                text = "[Chapter ${chapter.chapterIndex}: ${chapter.title}]\n$w",
+                                text = w,
                                 index = allWindows.size + 1
                             )
                         )
@@ -1336,7 +1593,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     currentChapterTitle = chapters.first().title,
                     currentWindowIndex = 1,
                     totalWindows = totalWindows,
-                    discoveredTerms = emptyList(),
+                    discoveredTerms = discoveredCandidates.values.map(::TermExtractionCandidate),
                     promptTokens = 0L,
                     completionTokens = 0L,
                     estimatedCost = 0.0,
@@ -1356,7 +1613,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         currentChapterTitle = windowItem.chapter.title,
                         currentWindowIndex = windowIdx + 1,
                         totalWindows = totalWindows,
-                        discoveredTerms = discoveredCandidates.toList(),
+                        discoveredTerms = discoveredCandidates.values.map(::TermExtractionCandidate),
                         promptTokens = totalPromptTokens,
                         completionTokens = totalCompletionTokens,
                         estimatedCost = totalEstimatedCost,
@@ -1370,14 +1627,29 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         provider = provider,
                         sourceLanguage = project.sourceLanguage,
                         targetLanguage = project.targetLanguage,
-                        existingTerms = knownTerms.map { it.originalTerm } + discoveredCandidates.map { it.term.originalTerm }
+                        existingTerms = confirmedTerms.map { it.originalTerm }
+                    )
+                    logTermExtractionDebug(
+                        projectId,
+                        windowItem.chapter.chapterIndex,
+                        windowIdx + 1,
+                        extraction
                     )
 
-                    extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }.forEach { term ->
-                        if (knownKeys.add(normalizeTerm(term.originalTerm))) {
-                            discoveredCandidates += TermExtractionCandidate(term = term.copy(projectId = projectId))
-                        }
+                    val updatedCandidates = glossaryRepo.observeAiCandidates(
+                        projectId = projectId,
+                        chapterIndex = windowItem.chapter.chapterIndex,
+                        observations = extraction.terms
+                    )
+                    updatedCandidates.forEach { term ->
+                        discoveredCandidates[normalizeTerm(term.originalTerm)] = term
                     }
+                    logLegacyCandidateUpdates(
+                        projectId,
+                        windowItem.chapter.chapterIndex,
+                        windowIdx + 1,
+                        updatedCandidates
+                    )
 
                     totalPromptTokens += extraction.usage.promptTokens
                     totalCompletionTokens += extraction.usage.completionTokens
@@ -1388,6 +1660,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         provider.outputPricePerMillion
                     )
                     totalEstimatedCost += cost
+
+                    // Keep Stop/Review in sync with evidence already persisted for this window.
+                    _termExtractionState.value = TermExtractionUiState.Scanning(
+                        projectId = projectId,
+                        currentChapterIndex = windowItem.chapter.chapterIndex,
+                        currentChapterTitle = windowItem.chapter.title,
+                        currentWindowIndex = windowIdx + 1,
+                        totalWindows = totalWindows,
+                        discoveredTerms = discoveredCandidates.values.map(::TermExtractionCandidate),
+                        promptTokens = totalPromptTokens,
+                        completionTokens = totalCompletionTokens,
+                        estimatedCost = totalEstimatedCost,
+                        currency = provider.currency,
+                        isPaused = isExtractionPaused
+                    )
 
                     recordAgentUsage(
                         projectId,
@@ -1401,7 +1688,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 // Completed scanning - go to Review
                 _termExtractionState.value = TermExtractionUiState.Review(
                     projectId = projectId,
-                    candidates = discoveredCandidates.toList(),
+                    candidates = discoveredCandidates.values.map(::TermExtractionCandidate),
                     promptTokens = totalPromptTokens,
                     completionTokens = totalCompletionTokens,
                     estimatedCost = totalEstimatedCost,
@@ -1452,10 +1739,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun saveExtractedTerms(projectId: Long, terms: List<GlossaryEntity>) {
         viewModelScope.launch(Dispatchers.IO) {
-            val projectBoundTerms = terms.map { it.copy(projectId = projectId, isAutoExtracted = true) }
-            glossaryRepo.insertTerms(projectBoundTerms)
+            val rows = glossaryRepo.getGlossaryListByProject(projectId)
+            var confirmedCount = 0
+            terms.forEach { selected ->
+                val persisted = selected.id.takeIf { it > 0L }?.let { glossaryRepo.getTermById(it) }
+                    ?: rows.firstOrNull {
+                        normalizeTerm(it.originalTerm) == normalizeTerm(selected.originalTerm)
+                    }
+                if (persisted?.reviewStatus == ReviewStatus.CANDIDATE.name) {
+                    glossaryRepo.updateTerm(LegacyGlossaryCandidateVoting.confirm(persisted))
+                    confirmedCount++
+                }
+            }
             withContext(Dispatchers.Main) {
-                showMessage("Added ${projectBoundTerms.size} terms to project glossary!")
+                showMessage("Confirmed $confirmedCount terminology candidates.")
             }
         }
     }
@@ -1481,6 +1778,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             start = end - TERM_SCAN_OVERLAP_CHARS
         }
         return windows
+    }
+
+    private fun logTermExtractionDebug(
+        projectId: Long,
+        chapterIndex: Int,
+        windowIndex: Int,
+        extraction: TermExtractionAgent.ExtractionResult
+    ) {
+        if (!_debugModeEnabled.value) return
+        val rejectionDetails = extraction.validationRejections
+            .joinToString("; ") { "${it.sourceTerm}: ${it.reason}" }
+            .takeIf(String::isNotBlank)
+        com.breakyuna.noveltranslator.core.logger.SystemLogger.debug(
+            "GLOSSARY_SCAN",
+            "chapter=$chapterIndex window=$windowIndex parsed=${extraction.terms.size} " +
+                "validationRejects=${extraction.validationRejections.size}",
+            details = listOfNotNull(
+                extraction.parseError,
+                rejectionDetails,
+                extraction.usage.text.take(12_000).takeIf(String::isNotBlank)
+                    ?.let { "modelOutput=$it" }
+            ).joinToString("\n").takeIf(String::isNotBlank),
+            projectId = projectId,
+            chapterIndex = chapterIndex
+        )
+    }
+
+    private fun logLegacyCandidateUpdates(
+        projectId: Long,
+        chapterIndex: Int,
+        windowIndex: Int,
+        updated: List<GlossaryEntity>
+    ) {
+        if (!_debugModeEnabled.value || updated.isEmpty()) return
+        val details = updated.joinToString("; ") { term ->
+            val evidence = LegacyGlossaryCandidateVoting.decode(term)
+            "${term.originalTerm} obs=${evidence?.observationCount ?: 1} " +
+                "winner=${term.translatedTerm}/${term.category.name}"
+        }
+        com.breakyuna.noveltranslator.core.logger.SystemLogger.debug(
+            "GLOSSARY_SCAN",
+            "legacy aggregate updates=${updated.size} window=$windowIndex",
+            details = details,
+            projectId = projectId,
+            chapterIndex = chapterIndex
+        )
     }
 
     private fun requireCompatibleCurrency(project: ProjectEntity, provider: ApiProviderEntity) {
@@ -1762,9 +2105,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 val glossary = glossaryRepo.getGlossaryListByProject(chapter.projectId)
                     .asSequence()
-                    .filter { !it.isAutoExtracted && it.originalTerm.length in 1..200 }
+                    .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name && it.originalTerm.length in 1..200 }
                     .filter { resolvedOriginalParagraph.contains(it.originalTerm, ignoreCase = true) }
-                    .distinctBy { it.originalTerm.trim().lowercase() }
+                    .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm) }
                     .take(12)
                     .toList()
 
@@ -1786,7 +2129,7 @@ Output ONLY the new translated paragraph text.
                     maxTokens = minOf(16_384, maxOf(1_024, provider.maxContextTokens / 2))
                 )
                 val validation = if (result.isSuccess && !result.isTruncated && result.text.isNotBlank()) {
-                    com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator.validate(resolvedOriginalParagraph, result.text)
+                    com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator.validate(resolvedOriginalParagraph, result.text, glossary)
                 } else {
                     com.breakyuna.noveltranslator.core.translator.TranslationValidation(false, listOf(result.errorMessage ?: "empty or truncated response"))
                 }
@@ -1976,7 +2319,7 @@ Output ONLY the new translated paragraph text.
     }
 
     private fun normalizeTerm(value: String): String =
-        java.text.Normalizer.normalize(value.trim(), java.text.Normalizer.Form.NFKC).lowercase()
+        LexiconCandidateVoting.normalizeSourceTerm(value)
 
     private suspend fun syncProjectSegments(projectId: Long) {
         chapterRepo.getChaptersListByProject(projectId).forEach { chapter ->
@@ -2045,28 +2388,33 @@ Output ONLY the new translated paragraph text.
             for (chapter in chapters) {
                 val origText = fileManager.readOriginalChapter(projectId, chapter.originalFileName)
                 if (origText.isNotBlank()) {
-                    val currentTerms = glossaryRepo.getGlossaryListByProject(projectId).toMutableList()
-                    val knownKeys = currentTerms.mapTo(mutableSetOf()) { normalizeTerm(it.originalTerm) }
+                    val currentTerms = glossaryRepo.getGlossaryListByProject(projectId)
+                    val confirmedTerms = currentTerms.filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
                     splitTermScanWindows(origText).forEachIndexed { windowIndex, window ->
                         val extraction = termExtractionAgent.extractTermsWithUsage(
                             projectId = projectId,
-                            sampleText = "[Chapter ${chapter.chapterIndex}, part ${windowIndex + 1}]\n$window",
+                            sampleText = window,
                             provider = provider,
                             sourceLanguage = "auto",
                             targetLanguage = "zh",
-                            existingTerms = currentTerms.map { it.originalTerm }
+                            existingTerms = confirmedTerms.map { it.originalTerm }
                         )
+                        logTermExtractionDebug(projectId, chapter.chapterIndex, windowIndex + 1, extraction)
                         check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
                             extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
                         }
                         check(extraction.parseError == null) { extraction.parseError ?: "Invalid terminology JSON" }
-                        val newTerms = extraction.terms.distinctBy { normalizeTerm(it.originalTerm) }
-                            .filter { knownKeys.add(normalizeTerm(it.originalTerm)) }
-                            .map { it.copy(projectId = projectId, isAutoExtracted = true) }
-                        if (newTerms.isNotEmpty()) {
-                            glossaryRepo.insertTerms(newTerms)
-                            currentTerms += newTerms
-                        }
+                        val updatedCandidates = glossaryRepo.observeAiCandidates(
+                            projectId = projectId,
+                            chapterIndex = chapter.chapterIndex,
+                            observations = extraction.terms
+                        )
+                        logLegacyCandidateUpdates(
+                            projectId,
+                            chapter.chapterIndex,
+                            windowIndex + 1,
+                            updatedCandidates
+                        )
                     }
                 }
             }

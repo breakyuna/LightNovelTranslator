@@ -1,8 +1,14 @@
 package com.breakyuna.noveltranslator.core.translator
 
+import com.breakyuna.noveltranslator.core.translation.GlossaryQaStatus
+import com.breakyuna.noveltranslator.data.model.GlossaryEntity
+import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
+import com.breakyuna.noveltranslator.data.model.ReviewStatus
+
 data class TranslationValidation(
     val isAcceptable: Boolean,
-    val problems: List<String>
+    val problems: List<String>,
+    val glossaryStatus: GlossaryQaStatus = GlossaryQaStatus.NONE
 )
 
 object TranslationQualityValidator {
@@ -17,7 +23,11 @@ object TranslationQualityValidator {
     )
     private val imageRegex = Regex("\\[IMG:[^]]+]", RegexOption.IGNORE_CASE)
 
-    fun validate(source: String, translation: String): TranslationValidation {
+    fun validate(
+        source: String,
+        translation: String,
+        glossary: List<GlossaryEntity> = emptyList()
+    ): TranslationValidation {
         val problems = mutableListOf<String>()
         val trimmed = translation.trim()
         if (trimmed.isBlank()) problems += "empty output"
@@ -50,7 +60,29 @@ object TranslationQualityValidator {
             if (ratio > maximumRatio) problems += "translation is suspiciously long"
         }
 
-        return TranslationValidation(problems.isEmpty(), problems)
+        val activeGlossary = glossary
+            .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+            .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm) }
+            .filter {
+                it.originalTerm.isNotBlank() &&
+                    it.translatedTerm.isNotBlank() &&
+                    source.contains(it.originalTerm.trim(), ignoreCase = true)
+            }
+        val missingGlossary = activeGlossary.filterNot { entry ->
+            translation.contains(entry.translatedTerm.trim(), ignoreCase = true)
+        }
+        missingGlossary.forEach {
+            problems += "GLOSSARY_MISSING: ${it.originalTerm.trim()} -> ${it.translatedTerm.trim()}"
+        }
+        val appliedCount = activeGlossary.size - missingGlossary.size
+        val glossaryStatus = when {
+            activeGlossary.isEmpty() -> GlossaryQaStatus.NONE
+            appliedCount == activeGlossary.size -> GlossaryQaStatus.APPLIED
+            appliedCount == 0 -> GlossaryQaStatus.MISSING
+            else -> GlossaryQaStatus.PARTIAL
+        }
+
+        return TranslationValidation(problems.distinct().isEmpty(), problems.distinct(), glossaryStatus)
     }
 
     private fun paragraphs(text: String): List<String> = text

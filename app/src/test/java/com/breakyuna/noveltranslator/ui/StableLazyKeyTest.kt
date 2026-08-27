@@ -9,15 +9,18 @@ import org.junit.Test
 
 class StableLazyKeyTest {
     @Test
-    fun duplicateTermValuesStillReceiveDistinctReviewKeys() {
+    fun persistedTermRowsUseTheirStableUniqueDatabaseIds() {
         val duplicate = GlossaryEntity(
+            id = 101L,
             projectId = 3L,
             originalTerm = "Alice",
             translatedTerm = "爱丽丝"
         )
         val first = TermExtractionCandidate(term = duplicate)
-        val second = TermExtractionCandidate(term = duplicate)
+        val second = TermExtractionCandidate(term = duplicate.copy(id = 102L))
 
+        assertEquals(101L, first.id)
+        assertEquals(102L, second.id)
         assertNotEquals(first.id, second.id)
     }
 

@@ -1,6 +1,8 @@
 package com.breakyuna.noveltranslator.data.db
 
+import android.content.ContentValues
 import android.content.Context
+import android.database.sqlite.SQLiteDatabase
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -12,6 +14,7 @@ import com.breakyuna.noveltranslator.data.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class Converters {
     @TypeConverter
@@ -45,6 +48,19 @@ class Converters {
     }
 }
 
+private data class LegacyCandidateSeed(
+    val translationProjectId: Long,
+    val normalizedSourceTerm: String,
+    var sourceTerm: String,
+    val targetVotes: MutableMap<String, Int> = mutableMapOf(),
+    val categoryVotes: MutableMap<String, Int> = mutableMapOf(),
+    val notesVotes: MutableMap<String, Int> = mutableMapOf(),
+    var observationCount: Int = 0,
+    var firstSeenAt: Long = 0L,
+    var lastSeenAt: Long = 0L,
+    var caseSensitive: Boolean = false
+)
+
 @Database(
     entities = [
         ProjectEntity::class,
@@ -73,9 +89,10 @@ class Converters {
         ProviderCacheRecordEntity::class,
         PlatformTranslationRunEntity::class,
         PlatformTranslationBatchEntity::class,
-        PlatformRequestLogEntity::class
+        PlatformRequestLogEntity::class,
+        LexiconCandidateAggregateEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -92,6 +109,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun bookDao(): BookDao
     abstract fun translationProjectV2Dao(): TranslationProjectV2Dao
     abstract fun lexiconV2Dao(): LexiconV2Dao
+    abstract fun lexiconCandidateAggregateDao(): LexiconCandidateAggregateDao
     abstract fun memoryDao(): MemoryDao
     abstract fun readerProgressDao(): ReaderProgressDao
     abstract fun providerCacheDao(): ProviderCacheDao
@@ -290,12 +308,440 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * The reader-platform tables were introduced at v7 without a checked-in migration.
+         * Create them additively so a v6 installation can reach the current schema without the
+         * destructive fallback that used to hide this gap.
+         */
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS books (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        title TEXT NOT NULL,
+                        author TEXT NOT NULL,
+                        coverPath TEXT,
+                        description TEXT NOT NULL,
+                        originalLanguage TEXT NOT NULL,
+                        primaryEditionId INTEGER,
+                        preferredReadingEditionId INTEGER,
+                        hiddenFromShelf INTEGER NOT NULL,
+                        shelfOrder INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_books_shelfOrder ON books(shelfOrder)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS editions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        bookId INTEGER NOT NULL,
+                        name TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        language TEXT NOT NULL,
+                        sourceEditionId INTEGER,
+                        isComplete INTEGER NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(bookId) REFERENCES books(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_editions_bookId ON editions(bookId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_editions_bookId_type ON editions(bookId, type)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS logical_chapters (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        bookId INTEGER NOT NULL,
+                        chapterIndex INTEGER NOT NULL,
+                        canonicalTitle TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(bookId) REFERENCES books(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_logical_chapters_bookId_chapterIndex ON logical_chapters(bookId, chapterIndex)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS logical_segments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        logicalChapterId INTEGER NOT NULL,
+                        segmentIndex INTEGER NOT NULL,
+                        segmentType TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(logicalChapterId) REFERENCES logical_chapters(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_logical_segments_logicalChapterId_segmentIndex ON logical_segments(logicalChapterId, segmentIndex)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS edition_chapters (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        editionId INTEGER NOT NULL,
+                        logicalChapterId INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        contentFileName TEXT NOT NULL,
+                        wordCount INTEGER NOT NULL,
+                        isAvailable INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(editionId) REFERENCES editions(id) ON DELETE CASCADE,
+                        FOREIGN KEY(logicalChapterId) REFERENCES logical_chapters(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_edition_chapters_editionId_logicalChapterId ON edition_chapters(editionId, logicalChapterId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_edition_chapters_logicalChapterId ON edition_chapters(logicalChapterId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS edition_segments (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        editionChapterId INTEGER NOT NULL,
+                        segmentIndex INTEGER NOT NULL,
+                        baseText TEXT NOT NULL,
+                        sourceHash TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(editionChapterId) REFERENCES edition_chapters(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_edition_segments_editionChapterId_segmentIndex ON edition_segments(editionChapterId, segmentIndex)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS edition_segment_mappings (
+                        logicalSegmentId INTEGER NOT NULL,
+                        editionSegmentId INTEGER NOT NULL,
+                        mappingOrder INTEGER NOT NULL,
+                        PRIMARY KEY(logicalSegmentId, editionSegmentId),
+                        FOREIGN KEY(logicalSegmentId) REFERENCES logical_segments(id) ON DELETE CASCADE,
+                        FOREIGN KEY(editionSegmentId) REFERENCES edition_segments(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_edition_segment_mappings_editionSegmentId ON edition_segment_mappings(editionSegmentId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS segment_revisions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        editionSegmentId INTEGER NOT NULL,
+                        revisionType TEXT NOT NULL,
+                        text TEXT NOT NULL,
+                        priority INTEGER NOT NULL,
+                        sourceRevisionId INTEGER,
+                        isActive INTEGER NOT NULL,
+                        note TEXT,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(editionSegmentId) REFERENCES edition_segments(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_segment_revisions_editionSegmentId ON segment_revisions(editionSegmentId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_segment_revisions_editionSegmentId_priority_createdAt ON segment_revisions(editionSegmentId, priority, createdAt)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS translation_projects_v2 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        bookId INTEGER NOT NULL,
+                        sourceEditionId INTEGER NOT NULL,
+                        targetEditionId INTEGER NOT NULL,
+                        sourceLanguage TEXT NOT NULL,
+                        targetLanguage TEXT NOT NULL,
+                        providerId INTEGER,
+                        modelName TEXT NOT NULL,
+                        styleGuide TEXT NOT NULL,
+                        promptProtocolVersion INTEGER NOT NULL,
+                        translationMode TEXT NOT NULL,
+                        maxBatchChapters INTEGER NOT NULL,
+                        seamlessAheadChapters INTEGER NOT NULL,
+                        rangeStart INTEGER,
+                        rangeEnd INTEGER,
+                        highQualityReview INTEGER NOT NULL,
+                        state TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(bookId) REFERENCES books(id) ON DELETE CASCADE,
+                        FOREIGN KEY(sourceEditionId) REFERENCES editions(id) ON DELETE CASCADE,
+                        FOREIGN KEY(targetEditionId) REFERENCES editions(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_translation_projects_v2_bookId ON translation_projects_v2(bookId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_translation_projects_v2_sourceEditionId ON translation_projects_v2(sourceEditionId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_translation_projects_v2_targetEditionId ON translation_projects_v2(targetEditionId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS lexicon_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        sourceTerm TEXT NOT NULL,
+                        targetTerm TEXT NOT NULL,
+                        kind TEXT NOT NULL,
+                        category TEXT NOT NULL,
+                        aliases TEXT NOT NULL,
+                        notes TEXT NOT NULL,
+                        caseSensitive INTEGER NOT NULL,
+                        exactMatch INTEGER NOT NULL,
+                        priority INTEGER NOT NULL,
+                        enabled INTEGER NOT NULL,
+                        source TEXT NOT NULL,
+                        reviewStatus TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_lexicon_entries_translationProjectId ON lexicon_entries(translationProjectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_lexicon_entries_translationProjectId_sourceTerm ON lexicon_entries(translationProjectId, sourceTerm)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS story_memory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        factKey TEXT NOT NULL,
+                        factValue TEXT NOT NULL,
+                        entities TEXT NOT NULL,
+                        sourceChapterIndex INTEGER NOT NULL,
+                        lastUpdatedChapterIndex INTEGER NOT NULL,
+                        conflictNote TEXT,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_story_memory_translationProjectId ON story_memory(translationProjectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_story_memory_translationProjectId_factKey ON story_memory(translationProjectId, factKey)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS chapter_memory (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        logicalChapterId INTEGER NOT NULL,
+                        chapterIndex INTEGER NOT NULL,
+                        summary TEXT NOT NULL,
+                        entities TEXT NOT NULL,
+                        stateChanges TEXT NOT NULL,
+                        newFacts TEXT NOT NULL,
+                        unresolvedThreads TEXT NOT NULL,
+                        repairState TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE,
+                        FOREIGN KEY(logicalChapterId) REFERENCES logical_chapters(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_chapter_memory_translationProjectId_logicalChapterId ON chapter_memory(translationProjectId, logicalChapterId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_chapter_memory_logicalChapterId ON chapter_memory(logicalChapterId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS context_snapshots (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        protocolVersion INTEGER NOT NULL,
+                        styleGuideVersion INTEGER NOT NULL,
+                        coreLexiconVersion INTEGER NOT NULL,
+                        storyMemoryVersion INTEGER NOT NULL,
+                        stablePrefix TEXT NOT NULL,
+                        fingerprint TEXT NOT NULL,
+                        createdAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_context_snapshots_translationProjectId ON context_snapshots(translationProjectId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS reader_progress (
+                        bookId INTEGER NOT NULL PRIMARY KEY,
+                        preferredEditionId INTEGER,
+                        logicalChapterId INTEGER,
+                        logicalSegmentId INTEGER,
+                        segmentOffset INTEGER NOT NULL,
+                        displayMode TEXT NOT NULL,
+                        pagingMode TEXT NOT NULL,
+                        readerLayoutMode TEXT NOT NULL,
+                        pageAnimation TEXT NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(bookId) REFERENCES books(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_reader_progress_preferredEditionId ON reader_progress(preferredEditionId)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS provider_cache_records (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        providerName TEXT NOT NULL,
+                        modelName TEXT NOT NULL,
+                        fingerprint TEXT NOT NULL,
+                        remoteCacheId TEXT,
+                        cachedTokenCount INTEGER NOT NULL,
+                        hitTokens INTEGER NOT NULL,
+                        missTokens INTEGER NOT NULL,
+                        estimatedSavedCost REAL NOT NULL,
+                        expiresAt INTEGER,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_provider_cache_records_translationProjectId ON provider_cache_records(translationProjectId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_provider_cache_records_fingerprint ON provider_cache_records(fingerprint)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS platform_translation_runs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        bookId INTEGER NOT NULL,
+                        providerId INTEGER NOT NULL,
+                        providerName TEXT NOT NULL,
+                        modelName TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        completedChapters INTEGER NOT NULL,
+                        failedChapters INTEGER NOT NULL,
+                        promptTokens INTEGER NOT NULL,
+                        completionTokens INTEGER NOT NULL,
+                        cachedTokens INTEGER NOT NULL,
+                        totalCost REAL NOT NULL,
+                        currency TEXT NOT NULL,
+                        lastError TEXT,
+                        createdAt INTEGER NOT NULL,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE,
+                        FOREIGN KEY(bookId) REFERENCES books(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_translation_runs_translationProjectId ON platform_translation_runs(translationProjectId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_translation_runs_bookId ON platform_translation_runs(bookId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_translation_runs_state ON platform_translation_runs(state)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS platform_translation_batches (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        runId INTEGER NOT NULL,
+                        batchIndex INTEGER NOT NULL,
+                        firstChapterIndex INTEGER NOT NULL,
+                        lastChapterIndex INTEGER NOT NULL,
+                        state TEXT NOT NULL,
+                        contextSnapshotId INTEGER,
+                        promptTokens INTEGER NOT NULL,
+                        completionTokens INTEGER NOT NULL,
+                        cost REAL NOT NULL,
+                        errorMessage TEXT,
+                        updatedAt INTEGER NOT NULL,
+                        FOREIGN KEY(runId) REFERENCES platform_translation_runs(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_translation_batches_runId ON platform_translation_batches(runId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_platform_translation_batches_runId_batchIndex ON platform_translation_batches(runId, batchIndex)")
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS platform_request_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        runId INTEGER NOT NULL,
+                        batchId INTEGER,
+                        operation TEXT NOT NULL,
+                        attemptCount INTEGER NOT NULL,
+                        promptTokens INTEGER NOT NULL,
+                        completionTokens INTEGER NOT NULL,
+                        cachedTokens INTEGER NOT NULL,
+                        estimatedCost REAL NOT NULL,
+                        durationMs INTEGER NOT NULL,
+                        finishReason TEXT,
+                        errorCategory TEXT,
+                        errorMessage TEXT,
+                        isSuccess INTEGER NOT NULL,
+                        timestamp INTEGER NOT NULL,
+                        FOREIGN KEY(runId) REFERENCES platform_translation_runs(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_request_logs_runId ON platform_request_logs(runId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_platform_request_logs_timestamp ON platform_request_logs(timestamp)")
+            }
+        }
+
         internal val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN systemPrompt TEXT")
                 db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN userPrompt TEXT")
                 db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN responseText TEXT")
                 db.execSQL("ALTER TABLE platform_request_logs ADD COLUMN attemptTrace TEXT")
+            }
+        }
+
+        internal val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Old legacy rows only persisted provenance. In particular saveExtractedTerms()
+                // wrote isAutoExtracted=true after an explicit user save, so migration must not
+                // reinterpret those already-saved terms as unreviewed candidates.
+                db.execSQL("ALTER TABLE glossary ADD COLUMN source TEXT NOT NULL DEFAULT 'MANUAL'")
+                db.execSQL("ALTER TABLE glossary ADD COLUMN reviewStatus TEXT NOT NULL DEFAULT 'CONFIRMED'")
+                db.execSQL("UPDATE glossary SET source = 'AI', reviewStatus = 'CONFIRMED' WHERE isAutoExtracted = 1")
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS lexicon_candidate_aggregates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        translationProjectId INTEGER NOT NULL,
+                        sourceTerm TEXT NOT NULL,
+                        normalizedSourceTerm TEXT NOT NULL,
+                        targetVotesJson TEXT NOT NULL,
+                        categoryVotesJson TEXT NOT NULL,
+                        notesVotesJson TEXT NOT NULL,
+                        winnerTargetTerm TEXT NOT NULL,
+                        winnerCategory TEXT NOT NULL,
+                        winnerNotes TEXT NOT NULL,
+                        observationCount INTEGER NOT NULL,
+                        firstSeenChapterIndex INTEGER NOT NULL,
+                        lastSeenChapterIndex INTEGER NOT NULL,
+                        firstSeenAt INTEGER NOT NULL,
+                        lastSeenAt INTEGER NOT NULL,
+                        sourceHitCount INTEGER NOT NULL,
+                        independentHitCount INTEGER NOT NULL,
+                        parentHitCount INTEGER NOT NULL,
+                        caseSensitive INTEGER NOT NULL,
+                        state TEXT NOT NULL,
+                        FOREIGN KEY(translationProjectId) REFERENCES translation_projects_v2(id) ON DELETE CASCADE
+                    )
+                """.trimIndent())
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_lexicon_candidate_aggregates_translationProjectId ON lexicon_candidate_aggregates(translationProjectId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_lexicon_candidate_aggregates_translationProjectId_normalizedSourceTerm ON lexicon_candidate_aggregates(translationProjectId, normalizedSourceTerm)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_lexicon_candidate_aggregates_translationProjectId_state ON lexicon_candidate_aggregates(translationProjectId, state)")
+
+                // Older V2 scans wrote AI candidates directly to lexicon_entries. Preserve their
+                // observations and vote evidence while moving them into the review-only table.
+                val seeds = linkedMapOf<Pair<Long, String>, LegacyCandidateSeed>()
+                db.query(
+                    "SELECT translationProjectId, sourceTerm, targetTerm, category, notes, " +
+                        "caseSensitive, createdAt, updatedAt FROM lexicon_entries " +
+                        "WHERE source = 'AI' AND reviewStatus = 'CANDIDATE'"
+                ).use { cursor ->
+                    val projectIndex = cursor.getColumnIndexOrThrow("translationProjectId")
+                    val sourceIndex = cursor.getColumnIndexOrThrow("sourceTerm")
+                    val targetIndex = cursor.getColumnIndexOrThrow("targetTerm")
+                    val categoryIndex = cursor.getColumnIndexOrThrow("category")
+                    val notesIndex = cursor.getColumnIndexOrThrow("notes")
+                    val caseSensitiveIndex = cursor.getColumnIndexOrThrow("caseSensitive")
+                    val createdIndex = cursor.getColumnIndexOrThrow("createdAt")
+                    val updatedIndex = cursor.getColumnIndexOrThrow("updatedAt")
+                    while (cursor.moveToNext()) {
+                        val projectId = cursor.getLong(projectIndex)
+                        val sourceTerm = cursor.getString(sourceIndex).trim()
+                        val normalized = LexiconCandidateVoting.normalizeSourceTerm(sourceTerm)
+                        if (normalized.isBlank()) continue
+                        val seed = seeds.getOrPut(projectId to normalized) {
+                            LegacyCandidateSeed(projectId, normalized, sourceTerm)
+                        }
+                        if (sourceTerm < seed.sourceTerm) seed.sourceTerm = sourceTerm
+                        val target = cursor.getString(targetIndex).trim()
+                        val category = cursor.getString(categoryIndex).trim().uppercase(Locale.ROOT)
+                        val notes = cursor.getString(notesIndex).trim()
+                        seed.targetVotes[target] = (seed.targetVotes[target] ?: 0) + 1
+                        if (category.isNotBlank()) seed.categoryVotes[category] = (seed.categoryVotes[category] ?: 0) + 1
+                        if (notes.isNotBlank()) seed.notesVotes[notes] = (seed.notesVotes[notes] ?: 0) + 1
+                        seed.observationCount++
+                        val createdAt = cursor.getLong(createdIndex)
+                        val updatedAt = cursor.getLong(updatedIndex)
+                        seed.firstSeenAt = if (seed.firstSeenAt == 0L) createdAt else minOf(seed.firstSeenAt, createdAt)
+                        seed.lastSeenAt = maxOf(seed.lastSeenAt, updatedAt)
+                        seed.caseSensitive = seed.caseSensitive || cursor.getInt(caseSensitiveIndex) != 0
+                    }
+                }
+                seeds.values.forEach { seed ->
+                    val values = ContentValues().apply {
+                        put("translationProjectId", seed.translationProjectId)
+                        put("sourceTerm", seed.sourceTerm)
+                        put("normalizedSourceTerm", seed.normalizedSourceTerm)
+                        put("targetVotesJson", LexiconCandidateVoting.encodeVotes(seed.targetVotes))
+                        put("categoryVotesJson", LexiconCandidateVoting.encodeVotes(seed.categoryVotes))
+                        put("notesVotesJson", LexiconCandidateVoting.encodeVotes(seed.notesVotes))
+                        put("winnerTargetTerm", LexiconCandidateVoting.winner(seed.targetVotes).orEmpty())
+                        put("winnerCategory", LexiconCandidateVoting.winner(seed.categoryVotes).orEmpty())
+                        put("winnerNotes", LexiconCandidateVoting.winner(seed.notesVotes).orEmpty())
+                        put("observationCount", seed.observationCount)
+                        put("firstSeenChapterIndex", 0)
+                        put("lastSeenChapterIndex", 0)
+                        put("firstSeenAt", seed.firstSeenAt)
+                        put("lastSeenAt", seed.lastSeenAt)
+                        put("sourceHitCount", 0)
+                        put("independentHitCount", 0)
+                        put("parentHitCount", 0)
+                        put("caseSensitive", if (seed.caseSensitive) 1 else 0)
+                        put("state", LexiconCandidateState.ACTIVE.name)
+                    }
+                    db.insert("lexicon_candidate_aggregates", SQLiteDatabase.CONFLICT_ABORT, values)
+                }
             }
         }
 
@@ -309,9 +755,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "novel_translator_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_7_8)
-                    // The reader-platform redesign intentionally has no legacy project migration.
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                     .addCallback(object : Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)

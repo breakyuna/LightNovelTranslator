@@ -59,7 +59,7 @@ object TxtExporter {
             sb.append("\n\n\n")
         }
 
-        val approvedGlossary = glossary.filterNot { it.isAutoExtracted }
+        val approvedGlossary = glossary.filter { it.reviewStatus == com.breakyuna.noveltranslator.data.model.ReviewStatus.CONFIRMED.name }
         if (includeGlossaryAppendix && approvedGlossary.isNotEmpty()) {
             sb.append("=========================================\n")
             sb.append("【附录：专有名词与术语表 / Glossary Appendix】\n")

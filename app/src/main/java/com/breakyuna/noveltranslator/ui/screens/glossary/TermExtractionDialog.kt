@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
+import com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting
 import com.breakyuna.noveltranslator.data.model.ProjectEntity
 import com.breakyuna.noveltranslator.data.model.TermExtractionCandidate
 import com.breakyuna.noveltranslator.data.model.TermExtractionUiState
@@ -58,7 +59,11 @@ fun TermExtractionDialog(
         if (extractionState is TermExtractionUiState.Review) {
             val review = extractionState as TermExtractionUiState.Review
             selectedCandidates.clear()
-            selectedCandidates.addAll(review.candidates)
+            selectedCandidates.addAll(
+                review.candidates.filter { candidate ->
+                    LegacyGlossaryCandidateVoting.isHighConfidenceForBatch(candidate.term)
+                }
+            )
         }
     }
 
@@ -447,6 +452,7 @@ private fun CandidateTermCard(
     isSelected: Boolean,
     onToggle: () -> Unit
 ) {
+    val hasConflict = LegacyGlossaryCandidateVoting.hasConflict(term)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -455,7 +461,11 @@ private fun CandidateTermCard(
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surface,
         border = BorderStroke(
             1.dp,
-            if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+            when {
+                hasConflict -> MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                isSelected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+            }
         )
     ) {
         Row(
@@ -491,9 +501,26 @@ private fun CandidateTermCard(
                     text = "➔ ${term.translatedTerm}",
                     style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
                 )
-                if (term.notes.isNotBlank()) {
+                if (hasConflict) {
                     Text(
-                        text = term.notes,
+                        text = "存在译名或类别冲突，请人工确认",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                LegacyGlossaryCandidateVoting.evidenceSummary(term)?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
+                        color = MaterialTheme.colorScheme.tertiary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                val displayNotes = LegacyGlossaryCandidateVoting.displayNotes(term)
+                if (displayNotes.isNotBlank()) {
+                    Text(
+                        text = displayNotes,
                         style = MaterialTheme.typography.bodySmall.copy(fontSize = 10.5.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

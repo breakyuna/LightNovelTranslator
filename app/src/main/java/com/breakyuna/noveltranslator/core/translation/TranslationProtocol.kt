@@ -3,6 +3,8 @@ package com.breakyuna.noveltranslator.core.translation
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconKind
+import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
+import com.breakyuna.noveltranslator.data.model.LexiconEntryPolicy
 import com.breakyuna.noveltranslator.data.model.StoryMemoryEntity
 
 data class ProtocolSegment(val shortId: Int, val logicalSegmentId: Long, val text: String)
@@ -33,20 +35,28 @@ object TranslationProtocol {
     fun systemPrompt(sourceLanguage: String, targetLanguage: String): String = """
         You are a professional literary translator from $sourceLanguage to $targetLanguage.
         Translate every supplied segment completely. Preserve meaning, voice, paragraph boundaries, titles,
-        dialogue punctuation and every [IMG:...] marker. Obey confirmed terminology exactly.
+        dialogue punctuation and every [IMG:...] marker. When a confirmed source term appears in a
+        segment, use its exact confirmed target translation consistently; do not invent an alternate
+        transliteration or silently omit the target. Obey confirmed terminology exactly.
         Return only the protocol response. Never copy the source, add explanations, or reorder segments.
 
         The response must be:
         <TRANSLATION><C id="chapter"><S id="segment">translated text</S></C></TRANSLATION>
-        <META>{"chapterMemory":[],"storyMemoryDelta":[],"lexiconCandidate":[]}</META>
-        META must contain compact incremental data only. Translation remains valid if META cannot be produced.
+        <META>{"chapterMemory":[],"storyMemoryDelta":[],"lexiconCandidates":[]}</META>
+        META must contain compact incremental data only. If lexiconCandidates are returned, every item must have source, target, one canonical category (CHARACTER, LOCATION, LORE, SKILL, ITEM, or HONORIFIC), and brief notes. Translation remains valid if META cannot be produced.
     """.trimIndent()
 
     fun userPrompt(context: ContextPackage, chapters: List<ProtocolChapter>): String = buildString {
+        val requestSource = chapters.asSequence()
+            .flatMap { it.segments.asSequence() }
+            .joinToString("\n") { it.text }
+        val activeLexicon = context.matchedLexicon
+            .filter(LexiconEntryPolicy::isEligibleForTranslation)
+            .filter { LexiconTermMatcher.matchesSource(it, requestSource) }
         append("[TRANSLATION_PROTOCOL]\n").append(context.stablePrefix).append("\n\n")
-        if (context.matchedLexicon.isNotEmpty()) {
+        if (activeLexicon.isNotEmpty()) {
             append("[LEXICON]\n")
-            context.matchedLexicon.forEach { append(it.sourceTerm).append(" => ").append(it.targetTerm).append('\n') }
+            activeLexicon.forEach { append(it.sourceTerm).append(" => ").append(it.targetTerm).append('\n') }
         }
         if (context.relatedStoryMemory.isNotEmpty()) {
             append("\n[STORY_MEMORY]\n")
@@ -140,7 +150,11 @@ object TokenBudgetPlanner {
     fun estimate(text: String): Long = TokenCalculator.estimateTokens(text)
 }
 
-data class QaResult(val accepted: Boolean, val problems: List<String>)
+data class QaResult(
+    val accepted: Boolean,
+    val problems: List<String>,
+    val glossaryStatus: GlossaryQaStatus = GlossaryQaStatus.NONE
+)
 
 object DeterministicTranslationQa {
     fun validate(
@@ -149,7 +163,7 @@ object DeterministicTranslationQa {
         mandatoryTerms: List<LexiconEntryEntity> = emptyList()
     ): QaResult {
         val problems = mutableListOf<String>()
-        if (translated == null) return QaResult(false, listOf("missing chapter boundary"))
+        if (translated == null) return QaResult(false, listOf("missing chapter boundary"), glossaryStatus(mandatoryTerms, source, ""))
         val expected = source.segments.map { it.shortId }
         val actual = translated.segments.keys
         // Map iteration order is not a correctness property. Persistence always follows source order.
@@ -167,20 +181,43 @@ object DeterministicTranslationQa {
             }
         }
         val translatedChapterText = source.segments.joinToString("\n") { translated.segments[it.shortId].orEmpty() }
-        mandatoryTerms.distinctBy { it.sourceTerm.lowercase() }.forEach { entry ->
+        val activeGlossary = mandatoryTerms
+            .filter(LexiconEntryPolicy::isEligibleForTranslation)
+            .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
+        val missingGlossaryTerms = activeGlossary.filter { entry ->
             val sourceTerm = entry.sourceTerm.trim()
-            val meaningfulTerm = sourceTerm.any { it.code > 127 } && sourceTerm.length >= 2 ||
-                sourceTerm.count(Char::isLetterOrDigit) >= 3
-            val appearsInSource = meaningfulTerm && source.segments.any { LexiconTermMatcher.matchesSource(entry, it.text) }
-            if (appearsInSource && entry.targetTerm.isNotBlank() &&
-                !LexiconTermMatcher.matchesTarget(entry, translatedChapterText)
-            ) {
-                problems += "mandatory terminology violation: $sourceTerm"
-            }
+            val appearsInSource = sourceTerm.isNotBlank() && source.segments.any { LexiconTermMatcher.matchesSource(entry, it.text) }
+            appearsInSource && entry.targetTerm.isNotBlank() && !LexiconTermMatcher.matchesTarget(entry, translatedChapterText)
         }
+        missingGlossaryTerms.forEach { problems += "GLOSSARY_MISSING: ${it.sourceTerm.trim()} -> ${it.targetTerm.trim()}" }
         val duplicates = translated.segments.values.map { it.trim() }.filter { it.length >= 30 }.groupingBy { it }.eachCount().filterValues { it > 1 }
         if (duplicates.isNotEmpty()) problems += "repeated translated segments"
-        return QaResult(problems.isEmpty(), problems.distinct())
+        return QaResult(
+            accepted = problems.isEmpty(),
+            problems = problems.distinct(),
+            glossaryStatus = glossaryStatus(activeGlossary, source, translatedChapterText)
+        )
+    }
+
+    private fun glossaryStatus(
+        mandatoryTerms: List<LexiconEntryEntity>,
+        source: ProtocolChapter,
+        translatedText: String
+    ): GlossaryQaStatus {
+        val active = mandatoryTerms
+            .filter(LexiconEntryPolicy::isEligibleForTranslation)
+            .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
+            .filter { entry ->
+                val sourceTerm = entry.sourceTerm.trim()
+                sourceTerm.isNotBlank() && source.segments.any { LexiconTermMatcher.matchesSource(entry, it.text) }
+            }
+        if (active.isEmpty()) return GlossaryQaStatus.NONE
+        val applied = active.count { LexiconTermMatcher.matchesTarget(it, translatedText) }
+        return when {
+            applied == active.size -> GlossaryQaStatus.APPLIED
+            applied == 0 -> GlossaryQaStatus.MISSING
+            else -> GlossaryQaStatus.PARTIAL
+        }
     }
 }
 
@@ -193,7 +230,7 @@ internal object LexiconTermMatcher {
 
     fun matchesTarget(entry: LexiconEntryEntity, text: String): Boolean {
         val target = entry.targetTerm.trim()
-        if (target.isBlank()) return true
+        if (target.isBlank()) return false
         val chunks = Regex("[\\p{L}\\p{N}_]+").findAll(target).map { Regex.escape(it.value) }.toList()
         if (chunks.isEmpty()) return contains(text, target, entry.caseSensitive)
 

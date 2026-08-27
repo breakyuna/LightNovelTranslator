@@ -1,11 +1,14 @@
 package com.breakyuna.noveltranslator.data.model
 
-import java.util.UUID
-
 data class TermExtractionCandidate(
-    val id: String = UUID.randomUUID().toString(),
     val term: GlossaryEntity
-)
+) {
+    /**
+     * Every scan window persists legacy evidence before publishing it to review, so Compose can
+     * use the real stable database row id just like the V2 aggregate review screen.
+     */
+    val id: Long get() = term.id
+}
 
 sealed class TermExtractionUiState {
     object Idle : TermExtractionUiState()

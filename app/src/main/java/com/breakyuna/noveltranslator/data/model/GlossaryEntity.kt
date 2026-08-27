@@ -35,5 +35,8 @@ data class GlossaryEntity(
     val category: TermCategory = TermCategory.CHARACTER,
     val notes: String = "",
     val isAutoExtracted: Boolean = false,
+    /** Provenance is independent from whether the user has approved the term. */
+    val source: String = LexiconSource.MANUAL.name,
+    val reviewStatus: String = ReviewStatus.CONFIRMED.name,
     val createdAt: Long = System.currentTimeMillis()
 )

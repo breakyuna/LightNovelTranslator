@@ -6,6 +6,7 @@ import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.withLock
 import androidx.room.withTransaction
 
 class ProjectRepository(private val projectDao: ProjectDao) {
@@ -47,13 +48,59 @@ class ChapterRepository(private val chapterDao: ChapterDao) {
 }
 
 class GlossaryRepository(private val glossaryDao: GlossaryDao) {
+    private val candidateObservationMutex = kotlinx.coroutines.sync.Mutex()
+
     fun getGlossaryByProject(projectId: Long): Flow<List<GlossaryEntity>> = glossaryDao.getGlossaryByProject(projectId)
     suspend fun getGlossaryListByProject(projectId: Long): List<GlossaryEntity> = glossaryDao.getGlossaryListByProject(projectId)
+    suspend fun getTermById(id: Long): GlossaryEntity? = glossaryDao.getTermById(id)
     suspend fun insertTerm(term: GlossaryEntity): Long = glossaryDao.insertTerm(term)
     suspend fun insertTerms(terms: List<GlossaryEntity>): List<Long> = glossaryDao.insertTerms(terms)
     suspend fun updateTerm(term: GlossaryEntity) = glossaryDao.updateTerm(term)
     suspend fun deleteTermById(id: Long) = glossaryDao.deleteTermById(id)
     suspend fun deleteGlossaryByProject(projectId: Long) = glossaryDao.deleteGlossaryByProject(projectId)
+
+    suspend fun observeAiCandidates(
+        projectId: Long,
+        chapterIndex: Int,
+        observations: List<GlossaryEntity>
+    ): List<GlossaryEntity> = candidateObservationMutex.withLock {
+        val rows = glossaryDao.getGlossaryListByProject(projectId).toMutableList()
+        val confirmed = rows.asSequence()
+            .filter { it.reviewStatus == com.breakyuna.noveltranslator.data.model.ReviewStatus.CONFIRMED.name }
+            .mapTo(mutableSetOf()) {
+                com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm)
+            }
+        val candidates = rows.asSequence()
+            .filter { it.reviewStatus == com.breakyuna.noveltranslator.data.model.ReviewStatus.CANDIDATE.name }
+            .associateByTo(mutableMapOf()) {
+                com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm)
+            }
+        val updated = mutableListOf<GlossaryEntity>()
+        observations.distinctBy {
+            com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm)
+        }.forEach { observation ->
+            val key = com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting.normalizeSourceTerm(observation.originalTerm)
+            if (key.isBlank() || key in confirmed) return@forEach
+            val existing = candidates[key]
+            if (existing != null && com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting.isIgnored(existing)) {
+                return@forEach
+            }
+            val merged = com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting.merge(
+                existing = existing,
+                observation = observation.copy(projectId = projectId),
+                chapterIndex = chapterIndex
+            )
+            val persisted = if (merged.id == 0L) {
+                merged.copy(id = glossaryDao.insertTerm(merged))
+            } else {
+                glossaryDao.updateTerm(merged)
+                merged
+            }
+            candidates[key] = persisted
+            updated += persisted
+        }
+        updated
+    }
 }
 
 class ApiProviderRepository(

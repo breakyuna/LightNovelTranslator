@@ -17,6 +17,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
+import com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting
+import com.breakyuna.noveltranslator.data.model.LexiconSource
+import com.breakyuna.noveltranslator.data.model.ReviewStatus
 import com.breakyuna.noveltranslator.data.model.TermCategory
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.EmeraldAccent
@@ -86,7 +89,7 @@ fun TermItemCard(
                     )
                 }
 
-                if (term.isAutoExtracted) {
+                if (term.source == LexiconSource.AI.name || term.isAutoExtracted) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         shape = RoundedCornerShape(4.dp),
@@ -105,7 +108,7 @@ fun TermItemCard(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                if (term.isAutoExtracted) {
+                if (term.reviewStatus == ReviewStatus.CANDIDATE.name) {
                     IconButton(
                         onClick = onApprove,
                         modifier = Modifier.size(32.dp).testTag("approve_term_${term.id}")
@@ -181,10 +184,21 @@ fun TermItemCard(
                 )
             }
 
-            if (term.notes.isNotBlank()) {
+            LegacyGlossaryCandidateVoting.evidenceSummary(term)?.let { summary ->
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
-                    text = term.notes,
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                )
+            }
+            val displayNotes = LegacyGlossaryCandidateVoting.displayNotes(term)
+            if (displayNotes.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = displayNotes,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant

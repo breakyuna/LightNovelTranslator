@@ -13,6 +13,9 @@ interface GlossaryDao {
     @Query("SELECT * FROM glossary WHERE projectId = :projectId")
     suspend fun getGlossaryListByProject(projectId: Long): List<GlossaryEntity>
 
+    @Query("SELECT * FROM glossary WHERE id = :id LIMIT 1")
+    suspend fun getTermById(id: Long): GlossaryEntity?
+
     @Query("SELECT * FROM glossary WHERE projectId = :projectId AND category = :category")
     fun getGlossaryByCategory(projectId: Long, category: TermCategory): Flow<List<GlossaryEntity>>
 

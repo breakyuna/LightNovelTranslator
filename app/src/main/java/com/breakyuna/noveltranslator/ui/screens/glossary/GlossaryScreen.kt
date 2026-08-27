@@ -22,6 +22,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
+import com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting
+import com.breakyuna.noveltranslator.data.model.LexiconSource
+import com.breakyuna.noveltranslator.data.model.ReviewStatus
 import com.breakyuna.noveltranslator.data.model.TermCategory
 import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
@@ -51,12 +54,13 @@ fun GlossaryScreen(
     var showExtractionDialog by remember { mutableStateOf(false) }
     var editingTerm by remember { mutableStateOf<GlossaryEntity?>(null) }
 
-    val filteredGlossary = glossary.filter { term ->
+    val visibleGlossary = glossary.filterNot(LegacyGlossaryCandidateVoting::isIgnored)
+    val filteredGlossary = visibleGlossary.filter { term ->
         (selectedCategory == null || term.category == selectedCategory) &&
                 (searchQuery.isBlank() ||
                         term.originalTerm.contains(searchQuery, ignoreCase = true) ||
                         term.translatedTerm.contains(searchQuery, ignoreCase = true) ||
-                        term.notes.contains(searchQuery, ignoreCase = true))
+                        LegacyGlossaryCandidateVoting.displayNotes(term).contains(searchQuery, ignoreCase = true))
     }
 
     Scaffold(
@@ -184,13 +188,13 @@ fun GlossaryScreen(
             ) {
                 item {
                     CategoryFilterChipApple(
-                        label = "全部 (${glossary.size})",
+                        label = "全部 (${visibleGlossary.size})",
                         selected = selectedCategory == null,
                         onClick = { selectedCategory = null }
                     )
                 }
                 items(TermCategory.values(), key = { it.name }) { category ->
-                    val count = glossary.count { it.category == category }
+                    val count = visibleGlossary.count { it.category == category }
                     val catLabel = when (category) {
                         TermCategory.CHARACTER -> strings.catCharacter
                         TermCategory.LOCATION -> strings.catLocation
@@ -266,7 +270,11 @@ fun GlossaryScreen(
             projectId = project!!.id,
             onDismiss = { editingTerm = null },
             onSave = { updatedTerm ->
-                viewModel.updateGlossaryTerm(updatedTerm)
+                if (updatedTerm.reviewStatus == ReviewStatus.CANDIDATE.name) {
+                    viewModel.approveGlossaryTerm(updatedTerm)
+                } else {
+                    viewModel.updateGlossaryTerm(updatedTerm)
+                }
                 editingTerm = null
             }
         )
@@ -350,14 +358,14 @@ private fun GlossaryRowApple(
                     )
                 }
 
-                if (term.isAutoExtracted) {
+                if (term.source == LexiconSource.AI.name || term.isAutoExtracted) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Surface(
                         shape = RoundedCornerShape(4.dp),
                         color = StatusWarning.copy(alpha = 0.12f)
                     ) {
                         Text(
-                            text = "AI 提取待确认",
+                            text = if (term.reviewStatus == ReviewStatus.CANDIDATE.name) "AI 提取待确认" else "AI 来源",
                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                             style = MaterialTheme.typography.labelSmall.copy(
                                 fontWeight = FontWeight.Bold,
@@ -389,10 +397,28 @@ private fun GlossaryRowApple(
                 )
             }
 
-            if (term.notes.isNotBlank()) {
+            LegacyGlossaryCandidateVoting.evidenceSummary(term)?.let { summary ->
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = term.notes,
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = StatusWarning,
+                    maxLines = 2
+                )
+            }
+            if (LegacyGlossaryCandidateVoting.hasConflict(term)) {
+                Text(
+                    text = "存在译名或类别冲突",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            val displayNotes = LegacyGlossaryCandidateVoting.displayNotes(term)
+            if (displayNotes.isNotBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = displayNotes,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
@@ -400,7 +426,7 @@ private fun GlossaryRowApple(
             }
         }
 
-        if (term.isAutoExtracted) {
+        if (term.reviewStatus == ReviewStatus.CANDIDATE.name) {
             IconButton(onClick = onApprove, modifier = Modifier.size(28.dp)) {
                 Icon(Icons.Default.Check, contentDescription = "采纳", tint = StatusSuccess, modifier = Modifier.size(16.dp))
             }
@@ -427,13 +453,17 @@ fun TermEditDialog(
     var original by remember { mutableStateOf(term?.originalTerm ?: "") }
     var translated by remember { mutableStateOf(term?.translatedTerm ?: "") }
     var category by remember { mutableStateOf(term?.category ?: TermCategory.CHARACTER) }
-    var notes by remember { mutableStateOf(term?.notes ?: "") }
+    var notes by remember { mutableStateOf(term?.let(LegacyGlossaryCandidateVoting::displayNotes) ?: "") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (term == null) strings.addTermBtn else "编辑专有名词",
+                text = when {
+                    term == null -> strings.addTermBtn
+                    term.reviewStatus == ReviewStatus.CANDIDATE.name -> "编辑并确认候选"
+                    else -> "编辑专有名词"
+                },
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -488,22 +518,22 @@ fun TermEditDialog(
                         originalTerm = original,
                         translatedTerm = translated,
                         category = category,
-                        notes = notes,
-                        isAutoExtracted = false
+                        notes = notes
                     ) ?: GlossaryEntity(
                         projectId = projectId,
                         originalTerm = original,
                         translatedTerm = translated,
                         category = category,
                         notes = notes,
-                        isAutoExtracted = false
+                        source = LexiconSource.MANUAL.name,
+                        reviewStatus = ReviewStatus.CONFIRMED.name
                     )
                     onSave(entity)
                 },
                 enabled = original.isNotBlank() && translated.isNotBlank(),
                 shape = ButtonShape
             ) {
-                Text(strings.save)
+                Text(if (term?.reviewStatus == ReviewStatus.CANDIDATE.name) "确认并保存" else strings.save)
             }
         },
         dismissButton = {

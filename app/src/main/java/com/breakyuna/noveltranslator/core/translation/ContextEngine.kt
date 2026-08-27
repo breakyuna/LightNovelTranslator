@@ -4,6 +4,8 @@ import com.breakyuna.noveltranslator.data.db.LexiconV2Dao
 import com.breakyuna.noveltranslator.data.db.MemoryDao
 import com.breakyuna.noveltranslator.data.model.ContextSnapshotEntity
 import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
+import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
+import com.breakyuna.noveltranslator.data.model.LexiconEntryPolicy
 import com.breakyuna.noveltranslator.data.model.TranslationProjectV2Entity
 import java.security.MessageDigest
 
@@ -17,8 +19,13 @@ class ContextEngine(
         firstChapterIndex: Int
     ): ContextPackage {
         val confirmed = lexiconDao.getConfirmed(project.id)
-        val matched = confirmed.filter { matches(it, sourceText) }
-            .sortedWith(compareByDescending<LexiconEntryEntity> { it.priority }.thenByDescending { it.sourceTerm.length })
+        val matched = confirmed.filter { LexiconEntryPolicy.isEligibleForTranslation(it) && matches(it, sourceText) }
+            .sortedWith(
+                compareByDescending<LexiconEntryEntity> { it.priority }
+                    .thenByDescending { it.sourceTerm.length }
+                    .thenBy { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
+                    .thenBy { it.id }
+            )
         val allStory = memoryDao.getStoryMemory(project.id)
         val normalizedSource = sourceText.lowercase()
         val related = allStory.filter { memory ->
@@ -31,7 +38,7 @@ class ContextEngine(
             .sortedBy { it.chapterIndex }
             .joinToString("\n") { "Chapter ${it.chapterIndex}: ${it.summary.take(700)}" }
 
-        val expectedSnapshot = buildSnapshot(project, confirmed)
+        val expectedSnapshot = buildSnapshot(project)
         val latestSnapshot = memoryDao.latestSnapshot(project.id)
         val snapshot = if (
             latestSnapshot != null &&
@@ -53,37 +60,18 @@ class ContextEngine(
         )
     }
 
-    private fun buildSnapshot(
-        project: TranslationProjectV2Entity,
-        confirmed: List<LexiconEntryEntity>
-    ): ContextSnapshotEntity {
-        val coreTerms = confirmed.asSequence()
-            .filter { it.priority >= CORE_PRIORITY }
-            .sortedWith(
-                compareByDescending<LexiconEntryEntity> { it.priority }
-                    .thenByDescending { it.sourceTerm.length }
-                    .thenBy { it.sourceTerm.lowercase() }
-            )
-            .take(80)
-            .toList()
+    private fun buildSnapshot(project: TranslationProjectV2Entity): ContextSnapshotEntity {
         val prefix = buildString {
             append("Protocol version: ").append(project.promptProtocolVersion).append('\n')
             append("Style guide: ").append(project.styleGuide.trim()).append('\n')
-            if (coreTerms.isNotEmpty()) {
-                append("Core terminology:\n")
-                coreTerms.forEach { append(it.sourceTerm).append(" => ").append(it.targetTerm).append('\n') }
-            }
         }
         val snapshot = ContextSnapshotEntity(
             translationProjectId = project.id,
             protocolVersion = project.promptProtocolVersion,
             styleGuideVersion = versionOf(project.styleGuide.trim()),
-            coreLexiconVersion = versionOf(
-                coreTerms.joinToString("\n") {
-                    listOf(it.sourceTerm, it.targetTerm, it.aliases, it.caseSensitive, it.exactMatch, it.priority, it.enabled)
-                        .joinToString("\u001f")
-                }
-            ),
+            // Glossary entries are request-local dynamic context and must never be cached in the
+            // stable prefix. Otherwise a high-priority term constrains unrelated chapters.
+            coreLexiconVersion = 0,
             storyMemoryVersion = 1,
             stablePrefix = prefix,
             fingerprint = sha256(prefix)
@@ -99,6 +87,4 @@ class ContextEngine(
         .digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
 
     private fun versionOf(value: String): Int = sha256(value).take(8).toLong(16).toInt()
-
-    companion object { private const val CORE_PRIORITY = 100 }
 }

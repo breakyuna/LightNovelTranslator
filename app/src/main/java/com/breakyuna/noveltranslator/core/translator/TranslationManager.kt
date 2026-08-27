@@ -710,7 +710,7 @@ class TranslationManager(
 
                     // Reject omissions, altered illustration markers and obvious refusals, then retry once.
                     if (result.isSuccess && result.text.isNotBlank()) {
-                        val validation = TranslationQualityValidator.validate(currentChunkText, result.text)
+                        val validation = TranslationQualityValidator.validate(currentChunkText, result.text, activeGlossary)
                         if (!validation.isAcceptable) {
                             awaitRequestBoundary(runId)
                             emitLiveLog(
@@ -729,7 +729,7 @@ class TranslationManager(
                             )
                             recordLlmAttempts(runId, projectId, chapter.id, chapter.chapterIndex, chunkIdx + 1, provider, retry, persistedChunk?.id)
                             val retryValidation = if (retry.isSuccess && !retry.isTruncated) {
-                                TranslationQualityValidator.validate(currentChunkText, retry.text)
+                                TranslationQualityValidator.validate(currentChunkText, retry.text, activeGlossary)
                             } else {
                                 TranslationValidation(false, listOf(retry.errorMessage ?: "retry was truncated"))
                             }
@@ -883,20 +883,16 @@ class TranslationManager(
                     // 2. Progressive Glossary Expansion: auto-extract unrecorded key proper nouns
                     var termExtractionWarning: String? = null
                     try {
-                        val existingKeys = glossary.map { it.originalTerm.trim().lowercase() }.toSet()
-                        val termExtractPrompt = """
-                            Extract 1-6 important proper nouns from this chapter that are not already known.
-                            Source language: ${project.sourceLanguage}
-                            Required translation language: ${project.targetLanguage}
-                            Allowed categories: CHARACTER, LOCATION, LORE, SKILL, ITEM, HONORIFIC, CUSTOM.
-                            Return JSON only: [{"original":"...","suggested":"...","category":"CHARACTER","notes":"brief evidence"}].
-
-                            Original chapter sample:
-                            ${representativeExcerpt(originalText, 6000)}
-
-                            Translation sample:
-                            ${representativeExcerpt(fullTranslatedText, 6000)}
-                        """.trimIndent()
+                        val confirmedTerms = glossary
+                            .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+                            .map { it.originalTerm }
+                        val termScanSource = representativeExcerpt(originalText, 6000)
+                        val termExtractPrompt = TranslationPrompts.buildTermExtractionPrompt(
+                            textSample = termScanSource,
+                            sourceLanguage = project.sourceLanguage,
+                            targetLanguage = project.targetLanguage,
+                            existingTerms = confirmedTerms
+                        )
                         awaitRequestBoundary(runId)
                         val termResult = llmClient.executeCompletion(
                             provider = provider,
@@ -916,20 +912,23 @@ class TranslationManager(
                             provider.outputPricePerMillion
                         )
                         if (termResult.isSuccess && termResult.text.isNotBlank()) {
-                            val parsedNewTerms = com.breakyuna.noveltranslator.core.agent.TermExtractionAgent.parseTermsJson(projectId, termResult.text)
-                            val brandNewTerms = parsedNewTerms.filter { 
-                                it.originalTerm.isNotBlank() && 
-                                it.translatedTerm.isNotBlank() && 
-                                !existingKeys.contains(it.originalTerm.trim().lowercase()) 
-                            }
-                            if (brandNewTerms.isNotEmpty()) {
-                                glossaryRepository.insertTerms(brandNewTerms)
+                            val parsedNewTerms = com.breakyuna.noveltranslator.core.agent.TermExtractionAgent.parseTermsJson(
+                                projectId = projectId,
+                                rawText = termResult.text,
+                                sourceText = termScanSource
+                            )
+                            val observations = glossaryRepository.observeAiCandidates(
+                                projectId = projectId,
+                                chapterIndex = chapter.chapterIndex,
+                                observations = parsedNewTerms
+                            )
+                            if (observations.isNotEmpty()) {
                                 glossary = glossaryRepository.getGlossaryListByProject(projectId)
                                 emitLiveLog(
                                     type = LiveLogType.SUCCESS,
-                                    message = "Discovered ${brandNewTerms.size} new terminology entry(s) from Chapter ${chapter.chapterIndex}",
+                                    message = "Recorded ${observations.size} terminology observation(s) from Chapter ${chapter.chapterIndex}",
                                     chapterIndex = chapter.chapterIndex,
-                                    detail = brandNewTerms.joinToString(", ") { "${it.originalTerm}➔${it.translatedTerm}" },
+                                    detail = observations.joinToString(", ") { "${it.originalTerm}➔${it.translatedTerm}" },
                                     projectId = projectId
                                 )
                             }
@@ -1398,8 +1397,13 @@ class TranslationManager(
         val seen = mutableSetOf<String>()
         for (term in glossary) {
             val original = term.originalTerm.trim()
-            if (term.isAutoExtracted || original.isBlank() || original.length > 200) continue
-            val key = original.lowercase()
+            if (
+                term.reviewStatus != ReviewStatus.CONFIRMED.name ||
+                original.isBlank() ||
+                term.translatedTerm.isBlank() ||
+                original.length > 200
+            ) continue
+            val key = LexiconCandidateVoting.normalizeSourceTerm(original)
             if (!seen.add(key) || !originalText.contains(original, ignoreCase = true)) continue
             val bounded = term.copy(
                 originalTerm = original.take(120),

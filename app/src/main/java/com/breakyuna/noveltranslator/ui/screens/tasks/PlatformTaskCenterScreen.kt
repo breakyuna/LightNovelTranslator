@@ -1368,7 +1368,8 @@ private fun GlossaryMemoryDialog(
     viewModel: AppViewModel,
     onDismiss: () -> Unit
 ) {
-    val lexicon by remember(projectId) { viewModel.bookPlatformRepo.observeLexicon(projectId) }.collectAsState(initial = emptyList())
+    val allLexicon by remember(projectId) { viewModel.bookPlatformRepo.observeLexicon(projectId) }.collectAsState(initial = emptyList())
+    val lexicon = allLexicon.filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
     val storyMemory by remember(projectId) { viewModel.bookPlatformRepo.observeStoryMemory(projectId) }.collectAsState(initial = emptyList())
     val chapterMemory by remember(projectId) { viewModel.bookPlatformRepo.observeChapterMemory(projectId) }.collectAsState(initial = emptyList())
 

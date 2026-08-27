@@ -1,6 +1,8 @@
 package com.breakyuna.noveltranslator.core.llm
 
 import com.breakyuna.noveltranslator.data.model.GlossaryEntity
+import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
+import com.breakyuna.noveltranslator.data.model.ReviewStatus
 
 object TranslationPrompts {
 
@@ -16,7 +18,7 @@ Your task is to translate the novel from $sourceLanguage to $targetLanguage with
 Strict Translation Rules:
 1. Style & Tone: Use a "$style" style. Match the genre, mood, dialogue tone, pacing, and nuances of the original text.
 2. Dialogue & Voice: Make character dialogues match their distinct personalities, social status, and emotions.
-3. Terminology Consistency: Strictly adhere to the provided Glossary and Terminology Table.
+3. Terminology Consistency: For every confirmed glossary entry that appears in the source, use its exact target translation consistently. Do not invent alternate transliterations, omit the target, or let unconfirmed candidates influence the translation.
 4. Completeness: Translate every single paragraph and sentence faithfully. Never skip, truncate, summarize, or omit anything.
 5. Formatting: Retain the original paragraph breaks and dialogue punctuation conventions.
 6. Output Format: Output ONLY the translated novel content. Do NOT include greetings, preamble, explanations, notes, or markdown fences unless the original text contains them.
@@ -31,16 +33,17 @@ Strict Translation Rules:
         previousContextSummary: String? = null
     ): String {
         val sb = StringBuilder()
+        val activeGlossary = selectConfirmedGlossaryForText(glossary, chapterText)
 
         if (!previousContextSummary.isNullOrBlank()) {
             sb.append("=== PREVIOUS STORY CONTEXT & SUMMARY (For Narrative & Character Continuity) ===\n")
             sb.append(previousContextSummary.trim()).append("\n\n")
         }
 
-        if (glossary.isNotEmpty()) {
+        if (activeGlossary.isNotEmpty()) {
             sb.append("=== MANDATORY TERMINOLOGY & GLOSSARY (Strictly enforce these translations) ===\n")
-            for (term in glossary) {
-                sb.append("• [${term.category.name}] \"${term.originalTerm}\" -> \"${term.translatedTerm}\"")
+            for (term in activeGlossary) {
+                sb.append("• [${term.category.name}] \"${term.originalTerm.trim()}\" -> \"${term.translatedTerm.trim()}\"")
                 if (term.notes.isNotBlank()) {
                     sb.append(" (Note: ${term.notes})")
                 }
@@ -67,6 +70,7 @@ Strict Translation Rules:
         previousChunkTranslationReference: String? = null
     ): String {
         val sb = StringBuilder()
+        val activeGlossary = selectConfirmedGlossaryForText(glossary, chunkText)
 
         if (!previousContextSummary.isNullOrBlank()) {
             sb.append("=== PREVIOUS CHAPTER STORY SUMMARY ===\n")
@@ -78,10 +82,10 @@ Strict Translation Rules:
             sb.append(previousChunkTranslationReference.trim()).append("\n\n")
         }
 
-        if (glossary.isNotEmpty()) {
+        if (activeGlossary.isNotEmpty()) {
             sb.append("=== MANDATORY TERMINOLOGY & GLOSSARY (Strictly enforce these translations) ===\n")
-            for (term in glossary) {
-                sb.append("• [${term.category.name}] \"${term.originalTerm}\" -> \"${term.translatedTerm}\"")
+            for (term in activeGlossary) {
+                sb.append("• [${term.category.name}] \"${term.originalTerm.trim()}\" -> \"${term.translatedTerm.trim()}\"")
                 if (term.notes.isNotBlank()) {
                     sb.append(" (Note: ${term.notes})")
                 }
@@ -97,6 +101,21 @@ Strict Translation Rules:
 
         return sb.toString()
     }
+
+    /**
+     * Legacy prompt boundary: only confirmed, usable terms that occur in this exact source
+     * payload may become translation constraints. V2 uses ContextEngine for the same policy.
+     */
+    fun selectConfirmedGlossaryForText(
+        glossary: Iterable<GlossaryEntity>,
+        sourceText: String
+    ): List<GlossaryEntity> = glossary.asSequence()
+        .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
+        .map { it.copy(originalTerm = it.originalTerm.trim(), translatedTerm = it.translatedTerm.trim()) }
+        .filter { it.originalTerm.isNotBlank() && it.translatedTerm.isNotBlank() }
+        .filter { sourceText.contains(it.originalTerm, ignoreCase = true) }
+        .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.originalTerm) }
+        .toList()
 
     fun buildContinuationPrompt(
         originalChunkText: String,
@@ -156,26 +175,57 @@ $excerpt
         val existing = existingTerms.asSequence().map { it.trim().take(120) }
             .filter { it.isNotBlank() }.take(300).joinToString(", ")
         return """
-    You are an expert novel editor and lore archivist. Analyze the following novel excerpt and extract key proper nouns and terms to build a translation glossary.
+    You are an expert novel editor and lore archivist. Analyze the novel excerpt and discover only terms that are genuinely useful as stable translation glossary entries.
 
 Source language: $sourceLanguage
 Required target language for every suggested translation: $targetLanguage
-Existing source terms that MUST NOT be returned again: ${existing.ifBlank { "None" }}
+Already CONFIRMED source terms (do not return these again): ${existing.ifBlank { "None" }}
 
-Extract entities under these categories:
-- CHARACTER (Names, nicknames, aliases)
-- LOCATION (Kingdoms, cities, dungeons, taverns, realms)
-- LORE (Factions, clans, races, gods, magical concepts)
-- SKILL (Techniques, spells, martial arts, abilities)
-- ITEM (Weapons, artifacts, currency, materials)
-- HONORIFIC (Special titles, forms of address)
+DISCOVERY RULE: Be complete during discovery, but keep the final term boundary strict and necessary. Include a term only when it is one of these:
+1. A specific character name, nickname, or alias in this work.
+2. A specific place, country, city, academy, dungeon, region, or other named location.
+3. A specific organization, family, faction, race, religion, deity, or other named world-building group.
+4. A skill, spell, ability, or system that has a proper name.
+5. A named weapon, artifact, item, currency, material, or other uniquely named object.
+6. A work-specific concept whose meaning or translation cannot be stably inferred from an ordinary translation and matters for world-building consistency.
+7. A specific, fixed special title used as a named designation in this work.
 
-Output format: Return valid JSON array of objects:
+DO NOT extract ordinary nouns, common verbs, adjectives, adverbs, pronouns, ordinary descriptive phrases, generic jobs, generic family/social relationship words, generic titles, generic magic or weapon classes, generic monster classes, or generic place types. A word is not special merely because it appears in a fantasy novel.
+
+Usually exclude examples such as: sword, magic, castle, carriage, monster, guild, warrior, merchant, student, teacher, father, mother, young master, miss, lord, mister, mana. Include one only if the excerpt explicitly establishes it as a specific fixed named concept, not merely because it is capitalized or used often.
+
+BOUNDARY RULES:
+- "original" must be an exact continuous substring copied from the excerpt, with no rewriting, translation, invented spelling, or surrounding explanation.
+- If the text says "Knight Irene" and Irene is the actual name, return "Irene", not "Knight Irene".
+- If "Silver Moon Academy" is the official institution name, return the complete phrase "Silver Moon Academy".
+- Do not return a whole sentence or a long descriptive phrase. Prefer the smallest necessary proper name, except when the complete phrase itself is the established name.
+- A source term may intentionally keep the same spelling in the target language for a named token or control-like marker; do not use source==target as a reason to include an ordinary word.
+- Keep notes to one short sentence about disambiguation, identity, or world-building meaning. Do not write an essay.
+
+POSITIVE examples:
+- "Irene entered the Silver Moon Academy." -> "Irene" (CHARACTER), "Silver Moon Academy" (LOCATION)
+- "He invoked Starfall Severance." -> "Starfall Severance" (SKILL) when it is the named spell, not "magic".
+- "The relic Dawnpiercer was drawn." -> "Dawnpiercer" (ITEM) when it is the named relic, not "sword".
+NEGATIVE examples:
+- "The knight raised his sword." -> do not extract "knight" or "sword".
+- "They rode a carriage toward the castle." -> do not extract "carriage" or "castle".
+- "The young master spoke to his mother." -> do not extract "young master" or "mother".
+
+Allowed category values are exactly:
+- CHARACTER: specific person name, nickname, or alias
+- LOCATION: specific named place
+- LORE: specific named faction, race, religion, deity, or work-specific concept
+- SKILL: specifically named skill, spell, ability, or system
+- ITEM: specifically named object, weapon, currency, or material
+- HONORIFIC: specific fixed special designation or title
+Never output CUSTOM or any other category.
+
+Output only a valid JSON array of objects:
 [
   {
     "original": "original term in text",
     "suggested": "recommended target translation",
-    "category": "CHARACTER" | "LOCATION" | "LORE" | "SKILL" | "ITEM" | "HONORIFIC" | "CUSTOM",
+    "category": "CHARACTER",
     "notes": "short description or context"
   }
 ]
