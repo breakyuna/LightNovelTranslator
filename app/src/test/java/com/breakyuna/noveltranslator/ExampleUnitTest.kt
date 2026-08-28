@@ -208,10 +208,10 @@ class ExampleUnitTest {
 
             正文
             第一章 开始旅程
-            第一章正文
+            这是第一章正文内容。
 
             第二章 遇到挑战
-            第二章正文
+            这是第二章正文内容。
         """.trimIndent()
 
         val cropped = TxtParser.cropTableOfContents(text)
@@ -223,8 +223,8 @@ class ExampleUnitTest {
         assertTrue(cropped.startsWith("第一章 开始旅程"))
         assertFalse(cropped.contains("........1"))
         assertEquals(listOf("第一章 开始旅程", "第二章 遇到挑战"), chapters.map { it.title })
-        assertTrue(chapters[0].content.contains("第一章正文"))
-        assertTrue(chapters[1].content.contains("第二章正文"))
+        assertTrue(chapters[0].content.contains("第一章正文内容"))
+        assertTrue(chapters[1].content.contains("第二章正文内容"))
     }
 
     @Test
