@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.ui.screens.bookshelf
 
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
