@@ -1913,7 +1913,7 @@ private fun GlossaryManagementTab(
                     }
                 }
             }
-            items(candidateReviews, key = { it.id }) { review ->
+            items(candidateReviews, key = { "candidate_${it.id}" }) { review ->
                 LexiconCandidateCard(
                     review = review,
                     selected = review.id in selectedCandidateIds,
@@ -1963,7 +1963,7 @@ private fun GlossaryManagementTab(
                 }
             }
         } else {
-            items(filteredLexicon, key = { it.id }) { entry ->
+            items(filteredLexicon, key = { "lexicon_${it.id}" }) { entry ->
                 LexiconEntryCard(
                     entry = entry,
                     onConfirm = { viewModel.confirmLexiconEntry(entry) },
@@ -2323,7 +2323,7 @@ private fun LogsAndHistoryTab(
                             }
                         }
                     } else {
-                        items(allRuns, key = { it.id }) { run ->
+                        items(allRuns, key = { "run_${it.id}" }) { run ->
                             Card(
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     selectedRunId = run.id
@@ -2385,7 +2385,7 @@ private fun LogsAndHistoryTab(
                             }
                         }
                     } else {
-                        items(requestLogs, key = { it.id }) { log ->
+                        items(requestLogs, key = { "req_${it.id}" }) { log ->
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp),
@@ -2470,7 +2470,7 @@ private fun DebugDiagnosticsTab(
         }
         if (runFlow.isNotEmpty()) {
             item { Text("完整执行流程", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
-            items(runFlow, key = { it.id }) { entry ->
+            items(runFlow, key = { "flow_${it.id}" }) { entry ->
                 Text(
                     "${entry.formattedTime}  [${entry.tag}] ${entry.message}",
                     style = MaterialTheme.typography.bodySmall,
@@ -2483,7 +2483,7 @@ private fun DebugDiagnosticsTab(
         if (requestLogs.isEmpty()) {
             item { Text("此任务没有 Debug API 内容；可能是在开启 Debug 模式之前执行的。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
-            items(requestLogs, key = { it.id }) { log ->
+            items(requestLogs, key = { "debug_req_${it.id}" }) { log ->
                 val expanded = expandedLogId == log.id
                 val detail by produceState<PlatformRequestLogEntity?>(initialValue = null, log.id, expanded) {
                     if (expanded) value = viewModel.getRequestLogDetail(log.id)
