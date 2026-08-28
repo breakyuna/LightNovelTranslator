@@ -56,6 +56,9 @@ interface BookDao {
     @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
     fun observeEditions(bookId: Long): Flow<List<EditionEntity>>
 
+    @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
+    suspend fun getEditions(bookId: Long): List<EditionEntity>
+
     @Query("SELECT * FROM editions WHERE id = :editionId")
     suspend fun getEdition(editionId: Long): EditionEntity?
 
@@ -70,6 +73,9 @@ interface BookDao {
 
     @Query("SELECT * FROM logical_chapters WHERE bookId = :bookId ORDER BY chapterIndex")
     suspend fun getChapters(bookId: Long): List<LogicalChapterEntity>
+
+    @Query("DELETE FROM logical_chapters WHERE bookId = :bookId")
+    suspend fun deleteLogicalChaptersByBook(bookId: Long)
 
     @Insert suspend fun insertLogicalChapter(chapter: LogicalChapterEntity): Long
     @Insert suspend fun insertLogicalChapters(chapters: List<LogicalChapterEntity>): List<Long>

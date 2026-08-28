@@ -6,7 +6,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -21,11 +24,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.data.model.BookEntity
 import com.breakyuna.noveltranslator.data.model.EditionEntity
 import com.breakyuna.noveltranslator.data.model.EditionType
 import com.breakyuna.noveltranslator.data.model.LogicalChapterEntity
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
+import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
@@ -77,6 +82,7 @@ fun BookDetailScreen(
     var showCreateTranslation by remember { mutableStateOf(false) }
     var exportEdition by remember { mutableStateOf<EditionEntity?>(null) }
     var showEditInfo by remember { mutableStateOf(false) }
+    var showResplitDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -162,7 +168,8 @@ fun BookDetailScreen(
                         WideDirectoryPanel(
                             chapters = chapters,
                             strings = strings,
-                            onReadChapter = onReadChapter
+                            onReadChapter = onReadChapter,
+                            onResplit = { showResplitDialog = true }
                         )
                     }
                 }
@@ -215,7 +222,8 @@ fun BookDetailScreen(
                                 expanded = directoryExpanded,
                                 strings = strings,
                                 onToggle = { directoryExpanded = !directoryExpanded },
-                                onReadChapter = onReadChapter
+                                onReadChapter = onReadChapter,
+                                onResplit = { showResplitDialog = true }
                             )
                         }
                     }
@@ -244,6 +252,16 @@ fun BookDetailScreen(
             viewModel.updateBookMetadata(book!!.id, title, author, description, language)
             showEditInfo = false
         }
+    }
+    if (showResplitDialog) {
+        BookChapterResplitDialog(
+            currentChapterCount = chapters.size,
+            onDismiss = { showResplitDialog = false },
+            onConfirm = { regex, cropTableOfContents ->
+                showResplitDialog = false
+                viewModel.reSplitBookChapters(bookId, regex, cropTableOfContents)
+            }
+        )
     }
 }
 
@@ -315,6 +333,7 @@ private fun WideDirectoryPanel(
     chapters: List<LogicalChapterEntity>,
     strings: PlatformUiStrings,
     onReadChapter: (Long) -> Unit,
+    onResplit: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -343,6 +362,9 @@ private fun WideDirectoryPanel(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            TextButton(onClick = onResplit) {
+                Text(strings.resplitChapters, maxLines = 1)
+            }
             Badge { Text("${chapters.size} 章") }
         }
 
@@ -407,19 +429,30 @@ private fun WideDirectoryPanel(
 @Composable
 private fun DirectoryPanel(
     chapters: List<LogicalChapterEntity>, expanded: Boolean, strings: PlatformUiStrings,
-    onToggle: () -> Unit, onReadChapter: (Long) -> Unit, modifier: Modifier = Modifier
+    onToggle: () -> Unit, onReadChapter: (Long) -> Unit, onResplit: () -> Unit, modifier: Modifier = Modifier
 ) {
     ElevatedCard(modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth()) {
-            Row(Modifier.fillMaxWidth().clickable(onClick = onToggle).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.FormatListNumbered, null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable(onClick = onToggle)
+                ) {
                     Text(strings.tableOfContents, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text(strings.chapterCount(chapters.size), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Text(if (expanded) strings.collapse else strings.expand, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+                TextButton(onClick = onResplit) {
+                    Text(strings.resplitChapters, maxLines = 1)
+                }
+                TextButton(onClick = onToggle) {
+                    Text(if (expanded) strings.collapse else strings.expand, maxLines = 1)
+                }
+                IconButton(onClick = onToggle) {
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+                }
             }
             if (expanded) {
                 HorizontalDivider()
@@ -437,6 +470,130 @@ private fun DirectoryPanel(
             }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BookChapterResplitDialog(
+    currentChapterCount: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (regexPattern: String, cropTableOfContents: Boolean) -> Unit
+) {
+    val strings = platformUiStrings()
+    val appStrings = LocalAppStrings.current
+    var selectedPreset by remember { mutableStateOf("default") }
+    var regexText by remember { mutableStateOf("") }
+    var cropTableOfContents by remember { mutableStateOf(false) }
+    val regexError = remember(regexText) {
+        regexText.takeIf(String::isNotBlank)?.let { candidate ->
+            runCatching { TxtParser.validateChapterRegex(candidate) }
+                .exceptionOrNull()
+                ?.localizedMessage
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(strings.resplitChapters) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    strings.resplitChaptersDescription,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    strings.chapterCount(currentChapterCount),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = selectedPreset == "default",
+                        onClick = {
+                            selectedPreset = "default"
+                            regexText = ""
+                        },
+                        label = { Text(appStrings.presetChinese) }
+                    )
+                    FilterChip(
+                        selected = selectedPreset == "english",
+                        onClick = {
+                            selectedPreset = "english"
+                            regexText = TxtParser.REGEX_ENGLISH
+                        },
+                        label = { Text(appStrings.presetEnglish) }
+                    )
+                    FilterChip(
+                        selected = selectedPreset == "markdown",
+                        onClick = {
+                            selectedPreset = "markdown"
+                            regexText = TxtParser.REGEX_MARKDOWN
+                        },
+                        label = { Text(appStrings.presetMarkdown) }
+                    )
+                }
+                OutlinedTextField(
+                    value = regexText,
+                    onValueChange = {
+                        regexText = it
+                        selectedPreset = "custom"
+                    },
+                    label = { Text(strings.customChapterRegex) },
+                    placeholder = { Text(strings.customChapterRegexHint) },
+                    supportingText = {
+                        Text(
+                            regexError ?: strings.customChapterRegexHint,
+                            color = if (regexError == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    },
+                    isError = regexError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.cropTableOfContents, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            strings.cropTableOfContentsHint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = cropTableOfContents,
+                        onCheckedChange = { cropTableOfContents = it }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = regexError == null,
+                onClick = { onConfirm(regexText, cropTableOfContents) }
+            ) {
+                Text(strings.resplitChaptersConfirm)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
+    )
 }
 
 @Composable

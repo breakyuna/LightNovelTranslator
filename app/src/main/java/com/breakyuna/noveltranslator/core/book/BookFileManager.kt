@@ -43,6 +43,14 @@ class BookFileManager(private val context: Context) {
         return fileName
     }
 
+    /** Removes only the generated chapter files for one specific book Edition. */
+    fun clearEditionChapters(bookId: Long, editionId: Long) {
+        val directory = editionChaptersDir(bookId, editionId)
+        directory.listFiles()?.forEach { child ->
+            check(child.deleteRecursively()) { "Unable to remove old chapter file ${child.name}" }
+        }
+    }
+
     fun saveCover(bookId: Long, originalName: String, input: java.io.InputStream): File {
         val extension = File(originalName).extension.lowercase().takeIf { it in setOf("jpg", "jpeg", "png", "webp") } ?: "jpg"
         val target = File(coverDir(bookId), "cover.$extension")

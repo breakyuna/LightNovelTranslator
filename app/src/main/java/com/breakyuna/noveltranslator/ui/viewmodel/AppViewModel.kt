@@ -553,6 +553,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun reSplitBookChapters(
+        bookId: Long,
+        regexPattern: String = TxtParser.REGEX_CHINESE,
+        cropTableOfContents: Boolean = false
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                bookImporter.reSplit(
+                    bookId = bookId,
+                    regexPattern = regexPattern,
+                    cropTableOfContents = cropTableOfContents
+                )
+            }.onSuccess { chapterCount ->
+                withContext(Dispatchers.Main) {
+                    showMessage("已重新分章，共 $chapterCount 章")
+                }
+            }.onFailure { error ->
+                withContext(Dispatchers.Main) {
+                    showMessage("重新分章失败：${error.localizedMessage ?: "无法处理原文"}")
+                }
+            }
+        }
+    }
+
     fun createTranslationEdition(
         bookId: Long,
         sourceEditionId: Long,

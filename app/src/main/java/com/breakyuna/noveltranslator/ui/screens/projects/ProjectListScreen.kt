@@ -161,16 +161,14 @@ fun ProjectListScreen(
     if (showImportDialog) {
         ImportNovelDialog(
             onDismiss = { showImportDialog = false },
-            onImport = { name, uri, bytes, srcLang, tgtLang, style, regex, cropTableOfContents ->
+            onImport = { name, uri, bytes, srcLang, tgtLang, style ->
                 if (uri != null) {
                     viewModel.importFileFromUri(
                         uri = uri,
                         fileName = name,
                         sourceLang = srcLang,
                         targetLang = tgtLang,
-                        style = style,
-                        customRegex = regex,
-                        cropTableOfContents = cropTableOfContents
+                        style = style
                     )
                 } else if (bytes != null) {
                     viewModel.importFile(
@@ -178,9 +176,7 @@ fun ProjectListScreen(
                         fileBytes = bytes,
                         sourceLang = srcLang,
                         targetLang = tgtLang,
-                        style = style,
-                        customRegex = regex,
-                        cropTableOfContents = cropTableOfContents
+                        style = style
                     )
                 }
                 showImportDialog = false
@@ -361,9 +357,7 @@ fun ImportNovelDialog(
         bytes: ByteArray?,
         srcLang: String,
         tgtLang: String,
-        style: String,
-        regex: String?,
-        cropTableOfContents: Boolean
+        style: String
     ) -> Unit
 ) {
     val strings = LocalAppStrings.current
@@ -377,8 +371,6 @@ fun ImportNovelDialog(
     var sourceLang by remember { mutableStateOf("English") }
     var targetLang by remember { mutableStateOf("Chinese") }
     var translationStyle by remember { mutableStateOf("Literary Novel") }
-    var customRegex by remember { mutableStateOf("") }
-    var cropTableOfContents by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -565,35 +557,6 @@ fun ImportNovelDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                OutlinedTextField(
-                    value = customRegex,
-                    onValueChange = { customRegex = it },
-                    label = { Text(strings.customRegexLabel) },
-                    placeholder = { Text(strings.customRegexPlaceholder) },
-                    shape = SmallControlShape,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = strings.cropTableOfContentsLabel,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                        Text(
-                            text = strings.cropTableOfContentsDescription,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = cropTableOfContents,
-                        onCheckedChange = { cropTableOfContents = it }
-                    )
-                }
             }
         },
         confirmButton = {
@@ -612,9 +575,7 @@ fun ImportNovelDialog(
                             finalBytes,
                             sourceLang,
                             targetLang,
-                            translationStyle,
-                            customRegex.ifBlank { null },
-                            cropTableOfContents
+                            translationStyle
                         )
                     }
                 },
