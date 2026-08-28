@@ -23,7 +23,6 @@ import com.breakyuna.noveltranslator.ui.screens.bookdetail.BookDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.EditionDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
-import com.breakyuna.noveltranslator.ui.screens.tasks.TaskQueueScreen
 import com.breakyuna.noveltranslator.ui.screens.tasks.PlatformTaskCenterScreen
 import com.breakyuna.noveltranslator.ui.screens.translation.TranslationRunnerScreen
 import com.breakyuna.noveltranslator.ui.screens.workspace.ProjectWorkspaceScreen

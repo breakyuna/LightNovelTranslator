@@ -26,7 +26,6 @@ import com.breakyuna.noveltranslator.core.translation.BookTranslationScheduler
 import com.breakyuna.noveltranslator.core.translation.ContextEngine
 import com.breakyuna.noveltranslator.core.sample.SampleNovelProvider
 import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
-import com.breakyuna.noveltranslator.core.task.TranslationTaskItem
 import com.breakyuna.noveltranslator.core.task.TranslationTaskManager
 import com.breakyuna.noveltranslator.core.translator.TranslationJobState
 import com.breakyuna.noveltranslator.core.translator.TranslationManager

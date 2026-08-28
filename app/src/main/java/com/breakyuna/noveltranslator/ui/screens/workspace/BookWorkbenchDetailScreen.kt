@@ -29,7 +29,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -52,9 +51,6 @@ import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIO
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
-import java.io.File
-import java.text.DateFormat
-import java.util.Date
 
 enum class WorkbenchTab(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     TASKS("任务控制台", Icons.Default.Dashboard),

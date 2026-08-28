@@ -5,8 +5,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.project.ProjectFileManager
 import com.breakyuna.noveltranslator.data.model.TermCategory
-import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
-import com.breakyuna.noveltranslator.ui.i18n.getAppStrings
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
