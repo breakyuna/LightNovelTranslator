@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.ui.screens.tasks
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,8 +36,6 @@ import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
 

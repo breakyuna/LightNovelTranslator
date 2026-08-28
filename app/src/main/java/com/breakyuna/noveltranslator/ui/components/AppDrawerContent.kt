@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.ui.components
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,10 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.data.model.ProjectEntity
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
-import com.breakyuna.noveltranslator.ui.theme.EmeraldAccent
 import com.breakyuna.noveltranslator.ui.theme.PrimaryIndigo
-import com.breakyuna.noveltranslator.ui.theme.SecondaryCyan
-import com.breakyuna.noveltranslator.ui.theme.TertiaryAmber
 
 enum class NavItem(
     val icon: ImageVector,

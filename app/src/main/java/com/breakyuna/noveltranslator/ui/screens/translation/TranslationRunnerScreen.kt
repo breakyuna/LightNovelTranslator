@@ -1,12 +1,10 @@
 package com.breakyuna.noveltranslator.ui.screens.translation
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -17,7 +15,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -25,10 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.translator.TranslationJobState
-import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
-import com.breakyuna.noveltranslator.data.model.ChapterEntity
 import com.breakyuna.noveltranslator.data.model.ChapterStatus
-import com.breakyuna.noveltranslator.data.model.LiveLogMessage
 import com.breakyuna.noveltranslator.data.model.LiveLogType
 import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings

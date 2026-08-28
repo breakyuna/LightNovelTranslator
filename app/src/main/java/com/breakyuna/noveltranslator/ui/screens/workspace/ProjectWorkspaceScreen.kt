@@ -35,7 +35,6 @@ import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import java.io.File
-import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
