@@ -1378,8 +1378,7 @@ private fun ModelStyleConfigurationCard(
                                 else -> "文学出版级翻译，语句通顺优美，严格保持专有名词一致"
                             }
                         },
-                        label = { Text(preset, fontSize = 10.sp, maxLines = 1) },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                        label = { Text(preset, fontSize = 10.sp, maxLines = 1) }
                     )
                 }
             }
