@@ -57,6 +57,8 @@ object SystemLogger {
     private const val LEGACY_BACKUP_SUFFIX = ".legacy"
     internal const val MAX_MEMORY_LOGS = 600
     private const val MAX_FILE_BYTES = 5L * 1024L * 1024L
+    private const val RETENTION_MILLIS = 30L * 24L * 60L * 60L * 1_000L
+    private const val CLEANUP_INTERVAL_MILLIS = 24L * 60L * 60L * 1_000L
 
     private sealed interface PersistenceCommand {
         data class Initialize(val directory: File, val recoveryGeneration: Long) : PersistenceCommand
@@ -83,9 +85,9 @@ object SystemLogger {
 
     @Volatile
     private var logFile: File? = null
-    private var initializedDirectoryPath: String? = null
     private var recoveryGeneration = 0L
     private var activeLogFile: File? = null
+    private var lastCleanupAt = 0L
 
     init {
         persistenceScope.launch {
@@ -109,10 +111,7 @@ object SystemLogger {
     }
 
     internal fun initDirectory(directory: File) {
-        val normalizedPath = directory.absoluteFile.normalize().path
         synchronized(stateLock) {
-            if (initializedDirectoryPath == normalizedPath) return
-            initializedDirectoryPath = normalizedPath
             memoryLogs.clear()
             _logsFlow.value = emptyList()
             logFile = null
@@ -165,7 +164,7 @@ object SystemLogger {
             append("=== NOVEL TRANSLATOR STUDIO - SYSTEM RUNTIME LOGS ===\n")
             append("Exported At: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}\n")
             append("Total In-Memory Entries: ${snapshot.size}\n\n")
-            for (entry in snapshot.asReversed()) {
+            for (entry in snapshot) {
                 append("[${entry.formattedDate}] [${entry.level}] [${entry.tag}] ")
                 if (entry.projectId != null) append("[Proj#${entry.projectId}] ")
                 if (entry.chapterIndex != null) append("[Chap#${entry.chapterIndex}] ")
@@ -181,7 +180,7 @@ object SystemLogger {
 
     private fun publishAndEnqueue(entry: SystemLogEntry) {
         synchronized(stateLock) {
-            memoryLogs.addFirst(entry)
+            memoryLogs.addLast(entry)
             trimMemoryLogs()
             _logsFlow.value = memoryLogs.toList()
             persistenceCommands.trySend(PersistenceCommand.Append(entry))
@@ -197,22 +196,20 @@ object SystemLogger {
             val legacy = File(directory, LEGACY_FILE_NAME)
             if (!target.exists() && legacy.exists()) migrateLegacyFile(legacy, target)
             if (!target.exists()) target.createNewFile()
+            val now = System.currentTimeMillis()
+            cleanupExpiredLogs(target, now)
 
             activeLogFile = target
             logFile = target
-            val recovered = loadRecentJsonlEntries(target)
             val recoveryStillCurrent = synchronized(stateLock) {
                 commandGeneration == recoveryGeneration
             }
-            if (recoveryStillCurrent) mergeRecoveredEntries(recovered)
+            if (recoveryStillCurrent) lastCleanupAt = now
 
-            if (pendingBeforeInitialization.isNotEmpty()) {
+            if (recoveryStillCurrent && pendingBeforeInitialization.isNotEmpty()) {
                 val pending = pendingBeforeInitialization.toList()
                 pendingBeforeInitialization.clear()
-                if (recoveryStillCurrent) {
-                    mergeRecoveredEntries(pending)
-                    pending.forEach(::appendEntry)
-                }
+                pending.forEach(::appendEntry)
             }
             if (recoveryStillCurrent) {
                 publishFromPersistenceWorker(
@@ -251,7 +248,7 @@ object SystemLogger {
 
     private fun publishFromPersistenceWorker(entry: SystemLogEntry, persist: Boolean) {
         synchronized(stateLock) {
-            memoryLogs.addFirst(entry)
+            memoryLogs.addLast(entry)
             trimMemoryLogs()
             _logsFlow.value = memoryLogs.toList()
         }
@@ -268,8 +265,54 @@ object SystemLogger {
 
     private fun appendEntry(entry: SystemLogEntry) {
         val file = activeLogFile ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastCleanupAt >= CLEANUP_INTERVAL_MILLIS) {
+            cleanupExpiredLogs(file, now)
+            lastCleanupAt = now
+        }
         if (file.length() > MAX_FILE_BYTES) rotate(file)
         file.appendText(adapter.toJson(entry) + "\n", Charsets.UTF_8)
+    }
+
+    /** Keep the historical log file useful without allowing unbounded growth. */
+    private fun cleanupExpiredLogs(currentFile: File, now: Long) {
+        val cutoff = now - RETENTION_MILLIS
+        pruneJsonlFile(currentFile, cutoff)
+        val rotated = File(currentFile.parentFile, currentFile.name + ROTATED_FILE_SUFFIX)
+        if (rotated.exists()) {
+            if (rotated.lastModified() < cutoff) {
+                rotated.delete()
+            } else {
+                pruneJsonlFile(rotated, cutoff)
+            }
+        }
+    }
+
+    private fun pruneJsonlFile(file: File, cutoff: Long) {
+        if (!file.exists()) return
+        val temporary = File(file.parentFile, file.name + ".retaining")
+        runCatching {
+            temporary.bufferedWriter(Charsets.UTF_8).use { writer ->
+                file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { line ->
+                        if (line.isBlank()) return@forEach
+                        val entry = runCatching { adapter.fromJson(line) }.getOrNull()
+                        if (entry != null && entry.timestamp >= cutoff) {
+                            writer.append(line)
+                            writer.newLine()
+                        }
+                    }
+                }
+            }
+            if (!temporary.renameTo(file)) {
+                // Keep the original file in place until the replacement path is ready; the
+                // copy fallback is for filesystems where renameTo cannot replace an existing file.
+                temporary.copyTo(file, overwrite = true)
+                temporary.delete()
+            }
+        }.onFailure {
+            temporary.delete()
+        }
     }
 
     private fun rotate(file: File) {
@@ -296,35 +339,6 @@ object SystemLogger {
                 }
             }
         }
-    }
-
-    private fun mergeRecoveredEntries(recoveredChronological: List<SystemLogEntry>) {
-        synchronized(stateLock) {
-            val currentIds = memoryLogs.mapTo(hashSetOf()) { it.id }
-            recoveredChronological.asReversed().forEach { entry ->
-                if (currentIds.add(entry.id)) memoryLogs.addLast(entry)
-            }
-            trimMemoryLogs()
-            _logsFlow.value = memoryLogs.toList()
-        }
-    }
-
-    private fun loadRecentJsonlEntries(currentFile: File): List<SystemLogEntry> {
-        val recent = ArrayDeque<SystemLogEntry>()
-        val rotated = File(currentFile.parentFile, currentFile.name + ROTATED_FILE_SUFFIX)
-        listOf(rotated, currentFile).forEach { file ->
-            if (!file.exists()) return@forEach
-            file.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                lines.forEach lineLoop@{ line ->
-                    if (line.isBlank()) return@lineLoop
-                    val entry = runCatching { adapter.fromJson(line) }.getOrNull() ?: return@lineLoop
-                    if (entry.id.isBlank()) return@lineLoop
-                    recent.addLast(entry)
-                    while (recent.size > MAX_MEMORY_LOGS) recent.removeFirst()
-                }
-            }
-        }
-        return recent.toList()
     }
 
     private fun migrateLegacyFile(legacy: File, target: File) {
@@ -440,7 +454,7 @@ object SystemLogger {
     }
 
     private fun trimMemoryLogs() {
-        while (memoryLogs.size > MAX_MEMORY_LOGS) memoryLogs.removeLast()
+        while (memoryLogs.size > MAX_MEMORY_LOGS) memoryLogs.removeFirst()
     }
 
     private fun sanitize(value: String): String = value
@@ -463,9 +477,9 @@ object SystemLogger {
 
     private fun resetStateForTests(completion: CompletableDeferred<Unit>) {
         activeLogFile = null
+        lastCleanupAt = 0L
         pendingBeforeInitialization.clear()
         synchronized(stateLock) {
-            initializedDirectoryPath = null
             logFile = null
             recoveryGeneration++
             memoryLogs.clear()

@@ -405,8 +405,8 @@ fun ProjectWorkspaceScreen(
         ChapterSplitDialog(
             currentRegex = TxtParser.REGEX_CHINESE,
             onDismiss = { showSplitDialog = false },
-            onReSplitWithRegex = { regex ->
-                viewModel.reSplitChapters(currentProject.id, regex)
+            onReSplitWithRegex = { regex, cropTableOfContents ->
+                viewModel.reSplitChapters(currentProject.id, regex, cropTableOfContents)
                 showSplitDialog = false
             },
             onRunAgentSplit = {
@@ -560,12 +560,13 @@ private fun shareExportedFile(context: android.content.Context, file: File, mime
 fun ChapterSplitDialog(
     currentRegex: String,
     onDismiss: () -> Unit,
-    onReSplitWithRegex: (String) -> Unit,
+    onReSplitWithRegex: (String, Boolean) -> Unit,
     onRunAgentSplit: () -> Unit
 ) {
     val strings = LocalAppStrings.current
     var selectedPreset by remember { mutableStateOf("chinese") }
     var customRegexText by remember { mutableStateOf(currentRegex) }
+    var cropTableOfContents by remember { mutableStateOf(false) }
     var showDestructiveConfirm by remember { mutableStateOf(false) }
     var pendingAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
@@ -637,6 +638,27 @@ fun ChapterSplitDialog(
                     textStyle = MaterialTheme.typography.bodySmall
                 )
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.cropTableOfContentsLabel,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = strings.cropTableOfContentsDescription,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = cropTableOfContents,
+                        onCheckedChange = { cropTableOfContents = it }
+                    )
+                }
+
                 HorizontalDivider()
 
                 Card(
@@ -669,7 +691,11 @@ fun ChapterSplitDialog(
         },
         confirmButton = {
             Button(
-                onClick = { requestDestructiveAction { onReSplitWithRegex(customRegexText) } },
+                onClick = {
+                    requestDestructiveAction {
+                        onReSplitWithRegex(customRegexText, cropTableOfContents)
+                    }
+                },
                 shape = ButtonShape
             ) {
                 Text(strings.resliceByRegex)

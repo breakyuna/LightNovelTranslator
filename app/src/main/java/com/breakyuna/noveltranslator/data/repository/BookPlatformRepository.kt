@@ -204,7 +204,8 @@ class BookPlatformRepository(
         maxBatchChapters: Int = 1,
         rangeStart: Int? = null,
         rangeEnd: Int? = null,
-        seamlessAheadChapters: Int = 5
+        seamlessAheadChapters: Int = 5,
+        styleGuide: String = "保持文学韵味与专有名词一致性"
     ): Long = database.withTransaction {
         if (mode == TranslationMode.CHAPTER_RANGE) {
             require(rangeStart != null && rangeEnd != null && rangeStart > 0 && rangeEnd >= rangeStart) { "Invalid chapter range" }
@@ -222,6 +223,7 @@ class BookPlatformRepository(
                 targetLanguage = target.language,
                 providerId = providerId,
                 modelName = modelName,
+                styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
                 translationMode = mode.name,
                 maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
                 rangeStart = rangeStart,

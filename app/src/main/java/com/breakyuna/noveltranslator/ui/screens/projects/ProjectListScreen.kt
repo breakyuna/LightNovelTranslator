@@ -161,11 +161,27 @@ fun ProjectListScreen(
     if (showImportDialog) {
         ImportNovelDialog(
             onDismiss = { showImportDialog = false },
-            onImport = { name, uri, bytes, srcLang, tgtLang, style, regex ->
+            onImport = { name, uri, bytes, srcLang, tgtLang, style, regex, cropTableOfContents ->
                 if (uri != null) {
-                    viewModel.importFileFromUri(uri, name, srcLang, tgtLang, style, regex)
+                    viewModel.importFileFromUri(
+                        uri = uri,
+                        fileName = name,
+                        sourceLang = srcLang,
+                        targetLang = tgtLang,
+                        style = style,
+                        customRegex = regex,
+                        cropTableOfContents = cropTableOfContents
+                    )
                 } else if (bytes != null) {
-                    viewModel.importFile(name, bytes, srcLang, tgtLang, style, regex)
+                    viewModel.importFile(
+                        fileName = name,
+                        fileBytes = bytes,
+                        sourceLang = srcLang,
+                        targetLang = tgtLang,
+                        style = style,
+                        customRegex = regex,
+                        cropTableOfContents = cropTableOfContents
+                    )
                 }
                 showImportDialog = false
             }
@@ -339,7 +355,16 @@ fun ProjectCardApple(
 @Composable
 fun ImportNovelDialog(
     onDismiss: () -> Unit,
-    onImport: (name: String, uri: Uri?, bytes: ByteArray?, srcLang: String, tgtLang: String, style: String, regex: String?) -> Unit
+    onImport: (
+        name: String,
+        uri: Uri?,
+        bytes: ByteArray?,
+        srcLang: String,
+        tgtLang: String,
+        style: String,
+        regex: String?,
+        cropTableOfContents: Boolean
+    ) -> Unit
 ) {
     val strings = LocalAppStrings.current
     var fileName by remember { mutableStateOf("") }
@@ -353,6 +378,7 @@ fun ImportNovelDialog(
     var targetLang by remember { mutableStateOf("Chinese") }
     var translationStyle by remember { mutableStateOf("Literary Novel") }
     var customRegex by remember { mutableStateOf("") }
+    var cropTableOfContents by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -547,6 +573,27 @@ fun ImportNovelDialog(
                     shape = SmallControlShape,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = strings.cropTableOfContentsLabel,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = strings.cropTableOfContentsDescription,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = cropTableOfContents,
+                        onCheckedChange = { cropTableOfContents = it }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -566,7 +613,8 @@ fun ImportNovelDialog(
                             sourceLang,
                             targetLang,
                             translationStyle,
-                            customRegex.ifBlank { null }
+                            customRegex.ifBlank { null },
+                            cropTableOfContents
                         )
                     }
                 },

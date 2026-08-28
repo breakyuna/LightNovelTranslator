@@ -40,6 +40,8 @@ interface AppStrings {
     val translationStylePlaceholder: String
     val customRegexLabel: String
     val customRegexPlaceholder: String
+    val cropTableOfContentsLabel: String
+    val cropTableOfContentsDescription: String
 
     // Workspace & Cards
     val authorLabel: String
@@ -415,8 +417,10 @@ object ChineseStrings : AppStrings {
     override val targetLangLabel = "目标语言"
     override val translationStyleLabel = "翻译风格 / 语气"
     override val translationStylePlaceholder = "例如：文学小说、信达雅、流畅通俗"
-    override val customRegexLabel = "自定义章节正则 (选填)"
-    override val customRegexPlaceholder = "留空将自动匹配中英文章节标题"
+    override val customRegexLabel = "自定义 TXT 章节正则 (选填)"
+    override val customRegexPlaceholder = "仅用于 TXT；留空使用默认中文章节规则，正则需匹配整行标题"
+    override val cropTableOfContentsLabel = "自动裁剪开头目录"
+    override val cropTableOfContentsDescription = "检测到目录和正文起点时，导入或重分章时移除目录内容"
 
     // Workspace & Cards
     override val authorLabel = "作者"
@@ -792,8 +796,10 @@ object EnglishStrings : AppStrings {
     override val targetLangLabel = "Target Lang"
     override val translationStyleLabel = "Translation Style"
     override val translationStylePlaceholder = "e.g. Literary Novel, Faithful, Fluent"
-    override val customRegexLabel = "Custom Chapter Regex (Optional)"
-    override val customRegexPlaceholder = "Leave empty for auto Chinese/English regex"
+    override val customRegexLabel = "Custom TXT Chapter Regex (Optional)"
+    override val customRegexPlaceholder = "TXT only; leave empty for the default Chinese rule and match the entire heading line"
+    override val cropTableOfContentsLabel = "Crop leading table of contents"
+    override val cropTableOfContentsDescription = "Remove a detected leading TOC when a reliable body boundary is found"
 
     // Workspace & Cards
     override val authorLabel = "Author"

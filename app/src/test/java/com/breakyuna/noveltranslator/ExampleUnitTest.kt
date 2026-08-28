@@ -180,6 +180,85 @@ class ExampleUnitTest {
     }
 
     @Test
+    fun customRegexRecognizesNonStandardChapterHeadings() {
+        val text = """
+            Part 01 - Arrival
+            The first part begins here.
+
+            Part 02 - Departure
+            The second part begins here.
+        """.trimIndent()
+
+        val chapters = TxtParser.splitIntoChapters(
+            fullText = text,
+            regexPattern = "^Part\\s+\\d+\\s+-.*$"
+        )
+
+        assertEquals(2, chapters.size)
+        assertEquals("Part 01 - Arrival", chapters[0].title)
+        assertTrue(chapters[1].content.contains("second part"))
+    }
+
+    @Test
+    fun tocCroppingRemovesOnlyTheLeadingDirectoryAndKeepsBody() {
+        val text = """
+            目录
+            第一章 开始旅程........1
+            第二章 遇到挑战........2
+
+            正文
+            第一章 开始旅程
+            第一章正文
+
+            第二章 遇到挑战
+            第二章正文
+        """.trimIndent()
+
+        val cropped = TxtParser.cropTableOfContents(text)
+        val chapters = TxtParser.splitIntoChapters(
+            fullText = text,
+            cropTableOfContents = true
+        )
+
+        assertTrue(cropped.startsWith("第一章 开始旅程"))
+        assertFalse(cropped.contains("........1"))
+        assertEquals(listOf("第一章 开始旅程", "第二章 遇到挑战"), chapters.map { it.title })
+        assertTrue(chapters[0].content.contains("第一章正文"))
+        assertTrue(chapters[1].content.contains("第二章正文"))
+    }
+
+    @Test
+    fun streamingTocCroppingUsesTheSameBoundaryAsInMemorySplit() {
+        val text = """
+            Contents
+            Chapter 1 - Beginning.........1
+            Chapter 2 - Aftermath.........2
+
+            Chapter 1 - Beginning
+            Body one.
+            Chapter 2 - Aftermath
+            Body two.
+        """.trimIndent()
+
+        val chapters = TxtParser.chapterSequence(
+            reader = text.reader().buffered(),
+            regexPattern = "^Chapter\\s+\\d+\\s+-.*$",
+            cropTableOfContents = true
+        ).toList()
+
+        assertEquals(2, chapters.size)
+        assertEquals("Chapter 1 - Beginning", chapters.first().title)
+        assertTrue(chapters.first().content.contains("Body one"))
+    }
+
+    @Test
+    fun uncertainTocIsPreservedInsteadOfDroppingText() {
+        val text = "目录\n这里没有足够证据判断目录结束位置。"
+
+        assertEquals(text, TxtParser.cropTableOfContents(text))
+    }
+
+    @Test
     fun testSingleMonolithicTextFallbackChunking() {
         val paragraphs = List(20) { idx -> "这是第 ${idx + 1} 个段落的内容，包含足够的字数用来测试段落切割逻辑。" }
         val fullText = paragraphs.joinToString("\n\n")

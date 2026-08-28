@@ -7,6 +7,7 @@ import java.nio.ByteBuffer
 import java.nio.CharBuffer
 import java.nio.charset.Charset
 import java.nio.charset.CodingErrorAction
+import java.util.Locale
 
 data class ParsedChapter(
     val index: Int,
@@ -97,17 +98,50 @@ object TxtParser {
     val REGEX_ENGLISH = "(^\\s*(Chapter|CHAPTER|Section|SECTION|Book|BOOK|Prologue|PROLOGUE|Epilogue|EPILOGUE|Act|ACT)\\s*(\\d+|[IVXLCDM]+)?.*)"
     val REGEX_MARKDOWN = "(^#{1,3}\\s+.*)"
 
+    /** Validates a user-supplied chapter heading expression before any file work begins. */
+    fun validateChapterRegex(regexPattern: String) {
+        require(regexPattern.isNotBlank()) { "Chapter regex must not be blank" }
+        require(regexPattern.length <= MAX_REGEX_LENGTH) { "Chapter regex is too long" }
+        runCatching { Regex(regexPattern) }
+            .getOrElse { error ->
+                throw IllegalArgumentException(
+                    "Invalid chapter regex: ${error.message ?: "syntax error"}",
+                    error
+                )
+            }
+    }
+
+    /**
+     * Removes a confidently identified leading table of contents without touching the source file.
+     * The detector is intentionally conservative: it requires a TOC label or a run of page-numbered
+     * heading entries, then waits for a real heading/body boundary before returning a crop point.
+     */
+    fun cropTableOfContents(
+        fullText: String,
+        regexPattern: String = REGEX_CHINESE
+    ): String {
+        if (fullText.isBlank()) return fullText
+        validateChapterRegex(regexPattern)
+        return cropLeadingTableOfContents(fullText, Regex(regexPattern))
+    }
+
     /**
      * Splits full text into chapters based on regex pattern or fallback chunking
      */
     fun splitIntoChapters(
         fullText: String,
         regexPattern: String = REGEX_CHINESE,
-        fallbackChunkWords: Int = 2500
+        fallbackChunkWords: Int = 2500,
+        cropTableOfContents: Boolean = false
     ): List<ParsedChapter> {
-        val lines = fullText.lines()
-        require(regexPattern.length <= 500) { "Chapter regex is too long" }
-        val pattern = Regex(regexPattern, RegexOption.MULTILINE)
+        validateChapterRegex(regexPattern)
+        val pattern = Regex(regexPattern)
+        val sourceText = if (cropTableOfContents) {
+            cropLeadingTableOfContents(fullText, pattern)
+        } else {
+            fullText
+        }
+        val lines = sourceText.lines()
 
         val chapters = mutableListOf<ParsedChapter>()
         var currentTitle = "Preface / Prologue"
@@ -148,8 +182,8 @@ object TxtParser {
         }
 
         // If no chapters were detected (single monolithic chapter), perform intelligent character chunking
-        if (chapters.size <= 1 && fullText.length > fallbackChunkWords * 2) {
-            return splitByParagraphChunks(fullText, fallbackChunkWords)
+        if (chapters.size <= 1 && sourceText.length > fallbackChunkWords * 2) {
+            return splitByParagraphChunks(sourceText, fallbackChunkWords)
         }
 
         return chapters
@@ -162,9 +196,10 @@ object TxtParser {
     fun chapterSequence(
         reader: BufferedReader,
         regexPattern: String = REGEX_CHINESE,
-        fallbackChunkWords: Int = 2500
+        fallbackChunkWords: Int = 2500,
+        cropTableOfContents: Boolean = false
     ): Sequence<ParsedChapter> = sequence {
-        require(regexPattern.length <= 500) { "Chapter regex is too long" }
+        validateChapterRegex(regexPattern)
         require(fallbackChunkWords > 0)
         val pattern = Regex(regexPattern)
         var currentTitle = "Preface / Prologue"
@@ -183,7 +218,27 @@ object TxtParser {
             return chapter
         }
 
-        for (chunk in lineChunks(reader)) {
+        val chunks = if (cropTableOfContents) {
+            val iterator = lineChunks(reader).iterator()
+            val prefix = mutableListOf<ReaderChunk>()
+            var prefixCharacters = 0
+            while (
+                iterator.hasNext() &&
+                prefix.size < MAX_TOC_SCAN_LINES &&
+                prefixCharacters < MAX_TOC_SCAN_CHARS
+            ) {
+                val chunk = iterator.next()
+                prefix += chunk
+                prefixCharacters += chunk.text.length + if (chunk.endsLine) 1 else 0
+            }
+            val cropIndex = findTableOfContentsStart(prefix, pattern)
+            val retainedPrefix = if (cropIndex == null) prefix else prefix.drop(cropIndex)
+            retainedPrefix.asSequence() + iterator.asSequence()
+        } else {
+            lineChunks(reader)
+        }
+
+        for (chunk in chunks) {
             val line = chunk.text
             val trimmed = line.trim()
             if (chunk.canBeHeading && trimmed.isNotEmpty() && pattern.matches(trimmed)) {
@@ -216,6 +271,80 @@ object TxtParser {
     }
 
     private data class ReaderChunk(val text: String, val endsLine: Boolean, val canBeHeading: Boolean)
+
+    private fun cropLeadingTableOfContents(fullText: String, pattern: Regex): String {
+        val lines = fullText.lines().map { ReaderChunk(it, endsLine = true, canBeHeading = true) }
+        val cropIndex = findTableOfContentsStart(lines, pattern) ?: return fullText
+        return lines.drop(cropIndex).joinToString("\n") { it.text }
+    }
+
+    private fun findTableOfContentsStart(
+        lines: List<ReaderChunk>,
+        pattern: Regex
+    ): Int? {
+        if (lines.isEmpty()) return null
+        val scanLimit = minOf(lines.size, MAX_TOC_SCAN_LINES)
+        val labelScanLimit = minOf(scanLimit, MAX_TOC_LABEL_SCAN_LINES)
+        val tocLabelIndex = lines
+            .subList(0, labelScanLimit)
+            .indexOfFirst { isTableOfContentsLabel(it.text) }
+        val hasExplicitLabel = tocLabelIndex >= 0
+        val startIndex = if (hasExplicitLabel) tocLabelIndex + 1 else 0
+        val candidateKeys = mutableSetOf<String>()
+        var pageNumberedHeadings = 0
+        var bodyMarkerSeen = false
+
+        for (index in startIndex until scanLimit) {
+            val line = lines[index]
+            if (!line.canBeHeading) continue
+            val trimmed = line.text.trim()
+            if (trimmed.isBlank()) continue
+
+            if (isBodyStartMarker(trimmed) && candidateKeys.isNotEmpty()) {
+                bodyMarkerSeen = true
+                continue
+            }
+            if (!pattern.matches(trimmed)) continue
+
+            val key = normalizeTableOfContentsEntry(trimmed)
+            val repeatedEntry = key.isNotBlank() && key in candidateKeys
+            val looksLikeTocEntry = isPageNumberedTableOfContentsEntry(trimmed)
+
+            if (bodyMarkerSeen) return index
+            if (!looksLikeTocEntry && hasExplicitLabel && (pageNumberedHeadings > 0 || repeatedEntry)) {
+                return index
+            }
+            if (!looksLikeTocEntry && !hasExplicitLabel && pageNumberedHeadings >= 2) {
+                return index
+            }
+
+            if (looksLikeTocEntry) pageNumberedHeadings++
+            if (key.isNotBlank()) candidateKeys += key
+        }
+        return null
+    }
+
+    private fun isTableOfContentsLabel(line: String): Boolean {
+        val normalized = line.trim().lowercase(Locale.ROOT)
+        if (normalized.length > 100) return false
+        return normalized.startsWith("目录") || normalized.startsWith("目次") ||
+            normalized.contains("table of contents") || normalized.startsWith("contents") ||
+            normalized == "content"
+    }
+
+    private fun isBodyStartMarker(line: String): Boolean {
+        val normalized = line.trim().lowercase(Locale.ROOT)
+        return BODY_START_MARKER.matches(normalized)
+    }
+
+    private fun isPageNumberedTableOfContentsEntry(line: String): Boolean =
+        TOC_PAGE_SUFFIX.containsMatchIn(line.trim())
+
+    private fun normalizeTableOfContentsEntry(line: String): String =
+        TOC_PAGE_SUFFIX.replace(line.trim(), "")
+            .replace(WHITESPACE, " ")
+            .trim()
+            .lowercase(Locale.ROOT)
 
     /** Keeps even a malformed TXT containing a multi-megabyte physical line bounded in memory. */
     private fun lineChunks(reader: BufferedReader): Sequence<ReaderChunk> = sequence {
@@ -330,6 +459,19 @@ object TxtParser {
     }
 
     private const val CHARSET_SAMPLE_BYTES = 64 * 1024
+    private const val MAX_REGEX_LENGTH = 500
+    private const val MAX_TOC_SCAN_LINES = 6_000
+    private const val MAX_TOC_LABEL_SCAN_LINES = 400
+    private const val MAX_TOC_SCAN_CHARS = 512 * 1024
     private const val MAX_PHYSICAL_LINE_CHARS = 64 * 1024
     private const val MAX_STREAMED_CHAPTER_CHARS = 1_000_000
+    private val BODY_START_MARKER = Regex(
+        "(?:正文|正文开始|本文正文|开始阅读|start of (?:the )?story|begin(?:ning)? of (?:the )?text)",
+        RegexOption.IGNORE_CASE
+    )
+    private val WHITESPACE = Regex("\\s+")
+    private val TOC_PAGE_SUFFIX = Regex(
+        "(?:\\.{2,}|…{2,}|·{2,}|-{2,}|_{2,}|\\s{2,})\\s*(?:\\d{1,6}|[ivxlcdm]{1,12})\\s*$",
+        RegexOption.IGNORE_CASE
+    )
 }

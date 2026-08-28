@@ -18,6 +18,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class SystemLoggerTest {
@@ -73,11 +74,11 @@ class SystemLoggerTest {
             .filter { it.tag == "CONCURRENT" }
         assertEquals(400, persisted.size)
         assertEquals(snapshot.map { it.id }.toSet(), persisted.map { it.id }.toSet())
-        assertEquals(snapshot.map { it.id }, persisted.asReversed().map { it.id })
+        assertEquals(snapshot.map { it.id }, persisted.map { it.id })
     }
 
     @Test
-    fun jsonlRecoveryPreservesEveryPersistedIdentityAndTimestampField() = runBlocking {
+    fun newSessionStartsEmptyWhileKeepingPreviousEntriesInJsonl() = runBlocking {
         val directory = temporaryFolder.newFolder("recovery")
         SystemLogger.initDirectory(directory)
         SystemLogger.info(
@@ -93,26 +94,29 @@ class SystemLoggerTest {
         SystemLogger.resetForTests()
         SystemLogger.initDirectory(directory)
         SystemLogger.awaitIdleForTests()
-        val recovered = SystemLogger.logsFlow.value.single { it.message == "recover me" }
+        assertTrue(SystemLogger.logsFlow.value.none { it.message == "recover me" })
 
-        assertEquals(original, recovered)
-        assertEquals(original.id, recovered.id)
-        assertEquals(original.timestamp, recovered.timestamp)
-        assertEquals(41L, recovered.projectId)
-        assertEquals(7, recovered.chapterIndex)
-        assertEquals("line one\nline two", recovered.details)
+        val persisted = readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME)).single { it.message == "recover me" }
+        assertEquals(original, persisted)
+        assertEquals(original.id, persisted.id)
+        assertEquals(original.timestamp, persisted.timestamp)
+        assertEquals(41L, persisted.projectId)
+        assertEquals(7, persisted.chapterIndex)
+        assertEquals("line one\nline two", persisted.details)
     }
 
     @Test
     fun legacyTextMigratesWithDeterministicUniqueIdsAndOriginalTime() = runBlocking {
         val directory = temporaryFolder.newFolder("legacy")
         val legacy = File(directory, SystemLogger.LEGACY_FILE_NAME)
+        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            .format(Date(System.currentTimeMillis() - 1_000L))
         legacy.writeText(
             """
-            [2026-08-26 10:11:12] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
+            [$legacyTimestampText] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
               Details: first line
               second line
-            [2026-08-26 10:11:12] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
+            [$legacyTimestampText] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
             """.trimIndent() + "\n",
             Charsets.UTF_8
         )
@@ -126,10 +130,10 @@ class SystemLoggerTest {
 
         SystemLogger.initDirectory(directory)
         SystemLogger.awaitIdleForTests()
-        val migrated = SystemLogger.logsFlow.value.filter { it.message == "repeated" }
+        val migrated = readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME)).filter { it.message == "repeated" }
             .sortedBy { it.id }
         val expectedTimestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .parse("2026-08-26 10:11:12")!!.time
+            .parse(legacyTimestampText)!!.time
 
         assertEquals(2, migrated.size)
         assertTrue(migrated.all { it.timestamp == expectedTimestamp })
@@ -145,7 +149,7 @@ class SystemLoggerTest {
         SystemLogger.resetForTests()
         SystemLogger.initDirectory(directory)
         SystemLogger.awaitIdleForTests()
-        val secondRecovery = SystemLogger.logsFlow.value
+        val secondRecovery = readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME))
             .filter { it.message == "repeated" }
             .associate { it.id to it.timestamp }
         assertEquals(firstRecovery, secondRecovery)
@@ -155,9 +159,11 @@ class SystemLoggerTest {
     fun largeLegacyHistoryIsMigratedButMemoryRemainsBounded() = runBlocking {
         val directory = temporaryFolder.newFolder("large-legacy")
         val legacy = File(directory, SystemLogger.LEGACY_FILE_NAME)
+        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            .format(Date(System.currentTimeMillis() - 1_000L))
         legacy.bufferedWriter(Charsets.UTF_8).use { writer ->
             repeat(1_200) { index ->
-                writer.appendLine("[2026-08-26 10:11:12] [INFO] [LEGACY_BURST] entry-$index")
+                writer.appendLine("[$legacyTimestampText] [INFO] [LEGACY_BURST] entry-$index")
             }
         }
 
@@ -165,8 +171,7 @@ class SystemLoggerTest {
         SystemLogger.awaitIdleForTests()
 
         val visible = SystemLogger.logsFlow.value
-        assertEquals(SystemLogger.MAX_MEMORY_LOGS, visible.size)
-        assertEquals(visible.size, visible.map { it.id }.toSet().size)
+        assertTrue(visible.none { it.tag == "LEGACY_BURST" })
         assertEquals(
             1_200,
             readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME)).count { it.tag == "LEGACY_BURST" }
@@ -189,8 +194,10 @@ class SystemLoggerTest {
     @Test
     fun clearDuringInitializationCannotRepublishRecoveredHistory() = runBlocking {
         val directory = temporaryFolder.newFolder("clear-race")
+        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
+            .format(Date(System.currentTimeMillis() - 1_000L))
         File(directory, SystemLogger.LEGACY_FILE_NAME).writeText(
-            "[2026-08-26 10:11:12] [ERROR] [OLD] must disappear\n",
+            "[$legacyTimestampText] [ERROR] [OLD] must disappear\n",
             Charsets.UTF_8
         )
 

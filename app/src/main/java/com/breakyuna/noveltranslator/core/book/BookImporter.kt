@@ -32,9 +32,12 @@ class BookImporter(
         fileName: String,
         sourceFile: File,
         originalLanguage: String = "Auto",
-        customRegex: String? = null
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
     ): Long {
         val isEpub = fileName.endsWith(".epub", true) || fileName.endsWith(".equb", true)
+        val effectiveRegex = customRegex?.trim()?.takeIf(String::isNotBlank)
+        if (!isEpub) effectiveRegex?.let(TxtParser::validateChapterRegex)
         var title = fileName.substringBeforeLast('.').trim().ifBlank { "Imported novel" }
         var author = "Unknown"
         var coverPath: String? = null
@@ -52,12 +55,17 @@ class BookImporter(
                     author = author,
                     originalLanguage = originalLanguage,
                     sourceFile = preservedSource,
-                    customRegex = customRegex
+                    customRegex = effectiveRegex,
+                    cropTableOfContents = cropTableOfContents
                 )
                 return bookId
             }
             val parsed: List<ParsedChapter> = run {
-                val epub = EpubParser.parseEpubFile(preservedSource, files.sharedImagesDir(bookId))
+                val epub = EpubParser.parseEpubFile(
+                    preservedSource,
+                    files.sharedImagesDir(bookId),
+                    cropTableOfContents = cropTableOfContents
+                )
                 title = epub.title.ifBlank { title }
                 author = epub.author.ifBlank { author }
                 coverPath = epub.coverFileName
@@ -151,7 +159,8 @@ class BookImporter(
         author: String,
         originalLanguage: String,
         sourceFile: File,
-        customRegex: String?
+        customRegex: String?,
+        cropTableOfContents: Boolean
     ) {
         val editionId = database.withTransaction {
             database.bookDao().insertEdition(
@@ -168,7 +177,8 @@ class BookImporter(
         TxtParser.openDetectedReader(sourceFile).use { reader ->
             val chapters = TxtParser.chapterSequence(
                 reader,
-                customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE
+                customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE,
+                cropTableOfContents = cropTableOfContents
             ).iterator()
             while (chapters.hasNext()) {
                 val parsed = chapters.next()

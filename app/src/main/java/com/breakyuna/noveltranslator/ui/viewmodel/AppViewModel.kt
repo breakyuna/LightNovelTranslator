@@ -435,7 +435,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun importBooksFromUris(
         uris: List<android.net.Uri>,
         originalLanguage: String = "Auto",
-        customRegex: String? = null
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
     ) {
         if (uris.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
@@ -461,7 +462,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     app.contentResolver.openInputStream(uri)?.use { input ->
                         temp.outputStream().use { output -> input.copyTo(output) }
                     } ?: error("无法读取所选文件")
-                    bookImporter.import(fileName, temp, originalLanguage, customRegex)
+                    bookImporter.import(
+                        fileName = fileName,
+                        sourceFile = temp,
+                        originalLanguage = originalLanguage,
+                        customRegex = customRegex,
+                        cropTableOfContents = cropTableOfContents
+                    )
                     successCount++
                 } catch (error: Throwable) {
                     failCount++
@@ -494,7 +501,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         uri: android.net.Uri,
         fileName: String,
         originalLanguage: String = "Auto",
-        customRegex: String? = null
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             val temp = File.createTempFile("book_import_", ".tmp", getApplication<Application>().cacheDir)
@@ -502,7 +510,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
                     temp.outputStream().use { output -> input.copyTo(output) }
                 } ?: error("Unable to open the selected file")
-                val bookId = bookImporter.import(fileName, temp, originalLanguage, customRegex)
+                val bookId = bookImporter.import(
+                    fileName = fileName,
+                    sourceFile = temp,
+                    originalLanguage = originalLanguage,
+                    customRegex = customRegex,
+                    cropTableOfContents = cropTableOfContents
+                )
                 withContext(Dispatchers.Main) { showMessage("小说已加入书架（Book #$bookId）") }
             } catch (error: Throwable) {
                 withContext(Dispatchers.Main) { showMessage("导入失败：${error.localizedMessage}") }
@@ -512,10 +526,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun importPastedBook(title: String, text: String, originalLanguage: String = "Auto") {
+    fun importPastedBook(
+        title: String,
+        text: String,
+        originalLanguage: String = "Auto",
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                val chapters = TxtParser.splitIntoChapters(text, TxtParser.REGEX_CHINESE)
+                val chapters = TxtParser.splitIntoChapters(
+                    fullText = text,
+                    regexPattern = customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE,
+                    cropTableOfContents = cropTableOfContents
+                )
                 bookImporter.importAcquired(
                     AcquiredBook(
                         title = title.trim().ifBlank { "粘贴的小说" },
@@ -559,13 +583,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rangeStart: Int? = null,
         rangeEnd: Int? = null,
         seamlessAheadChapters: Int = 5,
+        styleGuide: String = "保持文学韵味与专有名词一致性",
         startImmediately: Boolean = true
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 bookPlatformRepo.createTranslationProject(
-                    bookId, sourceEditionId, targetEditionId, providerId, modelName, mode, maxBatchChapters,
-                    rangeStart, rangeEnd, seamlessAheadChapters
+                    bookId = bookId,
+                    sourceEditionId = sourceEditionId,
+                    targetEditionId = targetEditionId,
+                    providerId = providerId,
+                    modelName = modelName,
+                    mode = mode,
+                    maxBatchChapters = maxBatchChapters,
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd,
+                    seamlessAheadChapters = seamlessAheadChapters,
+                    styleGuide = styleGuide
                 )
             }.onSuccess { projectId ->
                 showMessage("Edition 翻译任务已配置")
@@ -706,7 +740,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
                 rangeStart = rangeStart,
                 rangeEnd = rangeEnd,
-                styleGuide = styleGuide.take(2000),
+                styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
                 updatedAt = System.currentTimeMillis()
             )
             bookPlatformRepo.updateTranslationProject(updated)
@@ -1179,10 +1213,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         sourceLang: String = "Auto",
         targetLang: String = "Chinese",
         style: String = "Literary Novel",
-        customRegex: String? = null
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            performImport(fileName, sourceLang, targetLang, style, customRegex, fileBytes) { projectId ->
+            performImport(fileName, sourceLang, targetLang, style, customRegex, cropTableOfContents, fileBytes) { projectId ->
                 fileManager.saveRawFile(projectId, fileName, fileBytes)
             }
         }
@@ -1194,10 +1229,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         sourceLang: String = "Auto",
         targetLang: String = "Chinese",
         style: String = "Literary Novel",
-        customRegex: String? = null
+        customRegex: String? = null,
+        cropTableOfContents: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            performImport(fileName, sourceLang, targetLang, style, customRegex, null) { projectId ->
+            performImport(fileName, sourceLang, targetLang, style, customRegex, cropTableOfContents, null) { projectId ->
                 getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
                     fileManager.saveRawFile(projectId, fileName, input, MAX_IMPORT_BYTES.toLong())
                 } ?: error("Unable to open the selected file")
@@ -1211,6 +1247,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         targetLang: String,
         style: String,
         customRegex: String?,
+        cropTableOfContents: Boolean,
         txtBytes: ByteArray?,
         saveRawFile: (Long) -> File
     ) {
@@ -1236,14 +1273,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             var parsedTitle = defaultTitle
             var parsedAuthor = "Unknown"
             val parsedChapters = if (isEpub) {
-                val epubBook = EpubParser.parseEpubFile(rawFile, fileManager.getImagesDir(projectId))
+                val epubBook = EpubParser.parseEpubFile(
+                    rawFile,
+                    fileManager.getImagesDir(projectId),
+                    cropTableOfContents = cropTableOfContents
+                )
                 if (epubBook.title.isNotBlank()) parsedTitle = epubBook.title.trim().take(300)
                 if (epubBook.author.isNotBlank()) parsedAuthor = epubBook.author.trim().take(300)
                 epubBook.chapters
             } else {
                 val bytes = txtBytes ?: rawFile.readBytes()
                 val (text, _) = TxtParser.detectCharsetAndRead(bytes)
-                TxtParser.splitIntoChapters(text, customRegex?.takeIf { it.isNotBlank() } ?: TxtParser.REGEX_CHINESE)
+                TxtParser.splitIntoChapters(
+                    fullText = text,
+                    regexPattern = customRegex?.takeIf { it.isNotBlank() } ?: TxtParser.REGEX_CHINESE,
+                    cropTableOfContents = cropTableOfContents
+                )
             }
             require(parsedChapters.isNotEmpty()) { "No readable chapters were found in this file" }
             val chapterEntities = parsedChapters.map { parsed ->
@@ -1303,7 +1348,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // Chapter Split Management & Agent Splitter
     // ==========================================
 
-    fun reSplitChapters(projectId: Long, regexPattern: String) {
+    fun reSplitChapters(
+        projectId: Long,
+        regexPattern: String,
+        cropTableOfContents: Boolean = false
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
             val project = projectRepo.getProjectById(projectId) ?: return@launch
@@ -1311,7 +1360,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val rawBytes = rawFile.readBytes()
 
             val (fullText, _) = TxtParser.detectCharsetAndRead(rawBytes)
-            val parsedChapters = TxtParser.splitIntoChapters(fullText, regexPattern)
+            val parsedChapters = TxtParser.splitIntoChapters(
+                fullText = fullText,
+                regexPattern = regexPattern,
+                cropTableOfContents = cropTableOfContents
+            )
 
             require(parsedChapters.isNotEmpty()) { "No chapters matched this pattern" }
             val chapterEntities = replaceChaptersSafely(project, parsedChapters)

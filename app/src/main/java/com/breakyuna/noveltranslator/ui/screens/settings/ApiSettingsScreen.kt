@@ -17,6 +17,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -99,6 +100,14 @@ fun ApiSettingsScreen(
             "TRANSLATION" -> systemLogs.filter { it.tag.contains("TRANSLATE", ignoreCase = true) || it.tag.contains("SPLIT", ignoreCase = true) }
             "API" -> systemLogs.filter { it.tag.contains("LLM", ignoreCase = true) || it.tag.contains("API", ignoreCase = true) }
             else -> systemLogs
+        }
+    }
+    val visibleLogs = remember(filteredLogs) { filteredLogs.takeLast(120) }
+    val logListState = rememberLazyListState()
+    LaunchedEffect(visibleLogs.lastOrNull()?.id, visibleLogs.size, logFilter) {
+        if (visibleLogs.isNotEmpty()) {
+            // Index 0 is the filter row; the last log is the final list item.
+            logListState.animateScrollToItem(visibleLogs.size)
         }
     }
 
@@ -530,6 +539,7 @@ fun ApiSettingsScreen(
                         // Sub-Page 3: 系统日志 (System Logs)
                         // ----------------------------------------------------
                         LazyColumn(
+                            state = logListState,
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(paddingValues),
@@ -593,7 +603,7 @@ fun ApiSettingsScreen(
                                     }
                                 }
                             } else {
-                                items(filteredLogs.take(120), key = { it.id }) { log ->
+                                items(visibleLogs, key = { it.id }) { log ->
                                     AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
                                         val isExpanded = expandedLogId == log.id
                                         val levelColor = when (log.level) {

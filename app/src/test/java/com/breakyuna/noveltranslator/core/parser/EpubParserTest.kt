@@ -61,4 +61,46 @@ class EpubParserTest {
             root.deleteRecursively()
         }
     }
+
+    @Test
+    fun optionalTocCroppingSkipsNavigationDocuments() {
+        val root = createTempDir(prefix = "epub_toc_test_")
+        try {
+            val epub = File(root, "book.epub")
+            ZipOutputStream(epub.outputStream()).use { zip ->
+                fun add(path: String, value: String) {
+                    zip.putNextEntry(ZipEntry(path))
+                    zip.write(value.toByteArray(Charsets.UTF_8))
+                    zip.closeEntry()
+                }
+
+                add("META-INF/container.xml", """
+                    <container><rootfile full-path="OEBPS/content.opf"/></container>
+                """.trimIndent())
+                add("OEBPS/content.opf", """
+                    <package><metadata><dc:title>TOC Book</dc:title></metadata>
+                    <manifest>
+                      <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"/>
+                      <item id="first" href="Text/first.xhtml" media-type="application/xhtml+xml"/>
+                      <item id="second" href="Text/second.xhtml" media-type="application/xhtml+xml"/>
+                    </manifest>
+                    <spine><itemref idref="nav"/><itemref idref="first"/><itemref idref="second"/></spine>
+                    </package>
+                """.trimIndent())
+                add("OEBPS/nav.xhtml", """
+                    <html><body><nav epub:type="toc"><h1>Contents</h1>
+                    <ol><li><a href="Text/first.xhtml">First</a></li><li><a href="Text/second.xhtml">Second</a></li></ol>
+                    </nav></body></html>
+                """.trimIndent())
+                add("OEBPS/Text/first.xhtml", "<html><body><h1>First</h1><p>one</p></body></html>")
+                add("OEBPS/Text/second.xhtml", "<html><body><h1>Second</h1><p>two</p></body></html>")
+            }
+
+            val book = EpubParser.parseEpubFile(epub, cropTableOfContents = true)
+
+            assertEquals(listOf("First", "Second"), book.chapters.map { it.title })
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 }

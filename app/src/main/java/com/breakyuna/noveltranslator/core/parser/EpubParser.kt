@@ -4,9 +4,10 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
+import java.util.Locale
+import java.util.regex.Pattern
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
-import java.util.regex.Pattern
 
 data class ParsedEpubBook(
     val title: String,
@@ -25,25 +26,37 @@ data class ExtractedImage(
 object EpubParser {
 
     /** Compatibility wrapper. New import code should prefer the InputStream/File overload. */
-    fun parseEpub(epubBytes: ByteArray, imagesOutputDirectory: File? = null): ParsedEpubBook {
-        return parseEpub(ByteArrayInputStream(epubBytes), imagesOutputDirectory)
+    fun parseEpub(
+        epubBytes: ByteArray,
+        imagesOutputDirectory: File? = null,
+        cropTableOfContents: Boolean = false
+    ): ParsedEpubBook {
+        return parseEpub(ByteArrayInputStream(epubBytes), imagesOutputDirectory, cropTableOfContents)
     }
 
     /** Copies only the bounded stream to a temporary ZIP file, never materializing the package in a map. */
-    fun parseEpub(input: InputStream, imagesOutputDirectory: File? = null): ParsedEpubBook {
+    fun parseEpub(
+        input: InputStream,
+        imagesOutputDirectory: File? = null,
+        cropTableOfContents: Boolean = false
+    ): ParsedEpubBook {
         val parent = imagesOutputDirectory?.parentFile
             ?: File(System.getProperty("java.io.tmpdir") ?: ".")
         val temporary = File.createTempFile("epub_import_", ".epub", parent)
         try {
             copyInputLimited(input, temporary)
-            return parseEpubFile(temporary, imagesOutputDirectory)
+            return parseEpubFile(temporary, imagesOutputDirectory, cropTableOfContents)
         } finally {
             temporary.delete()
         }
     }
 
     /** Parses a package from disk without retaining every ZIP entry in memory. */
-    fun parseEpubFile(epubFile: File, imagesOutputDirectory: File? = null): ParsedEpubBook {
+    fun parseEpubFile(
+        epubFile: File,
+        imagesOutputDirectory: File? = null,
+        cropTableOfContents: Boolean = false
+    ): ParsedEpubBook {
         require(epubFile.length() <= MAX_EPUB_BYTES) { "EPUB exceeds the 100 MB import limit" }
         val entries = linkedMapOf<String, ZipEntry>()
         ZipFile(epubFile).use { zipFile ->
@@ -170,6 +183,7 @@ object EpubParser {
                 }
                 val htmlDir = fullHtmlPath.substringBeforeLast('/', "").let { if (it.isBlank()) "" else "$it/" }
                 val (chapterTitle, textBody) = cleanHtmlToPlainText(htmlContent, chapterIndex, htmlDir, imageNamesByPath)
+                if (cropTableOfContents && isTableOfContentsDocument(path, htmlContent, chapterTitle)) return
                 if (textBody.isNotBlank()) {
                     chapters.add(ParsedChapter(chapterIndex++, chapterTitle, textBody, TxtParser.countWords(textBody)))
                 }
@@ -282,6 +296,24 @@ object EpubParser {
         return Pair(extractedTitle, cleaned)
     }
 
+    private fun isTableOfContentsDocument(path: String, html: String, title: String): Boolean {
+        val linkMatcher = Pattern.compile("<a\\b[^>]*href\\s*=", Pattern.CASE_INSENSITIVE).matcher(html)
+        var linkCount = 0
+        while (linkMatcher.find() && linkCount < 8) linkCount++
+
+        val hasTocNavigation = TOC_NAVIGATION_MARKER.containsMatchIn(html)
+        val pathStem = path.substringAfterLast('/').substringBeforeLast('.', path).lowercase(Locale.ROOT)
+        val pathSuggestsToc = pathStem.contains("toc") || pathStem.contains("contents") ||
+            pathStem.contains("navigation") || pathStem == "nav" || pathStem.contains("目次") || pathStem.contains("目录")
+        val titleSuggestsToc = title.trim().lowercase(Locale.ROOT) in setOf(
+            "目录", "目次", "contents", "content", "table of contents"
+        )
+
+        return hasTocNavigation ||
+            (pathSuggestsToc && linkCount >= 1) ||
+            (titleSuggestsToc && linkCount >= 1)
+    }
+
     private class ExtractionBudget(var total: Long = 0)
 
     private fun readEntryLimited(input: InputStream, budget: ExtractionBudget): ByteArray {
@@ -338,4 +370,8 @@ object EpubParser {
     private const val MAX_ENTRY_BYTES = 25 * 1024 * 1024
     private const val MAX_UNCOMPRESSED_BYTES = 250L * 1024 * 1024
     private const val MAX_ZIP_ENTRIES = 10_000
+    private val TOC_NAVIGATION_MARKER = Regex(
+        "<nav\\b[^>]*(?:epub:type|role)\\s*=\\s*[\"'][^\"']*(?:\\btoc\\b|\\bdoc-toc\\b)[^\"']*[\"']",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    )
 }

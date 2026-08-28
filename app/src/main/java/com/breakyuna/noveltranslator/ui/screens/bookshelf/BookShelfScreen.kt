@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.breakyuna.noveltranslator.data.model.ShelfBook
+import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
@@ -81,12 +82,15 @@ fun BookShelfScreen(
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showGroupDialog by remember { mutableStateOf(false) }
     var newGroupName by remember { mutableStateOf("") }
+    var showImportOptions by remember { mutableStateOf(false) }
+    var pendingImportUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
 
     val batchImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNotEmpty()) {
-            viewModel.importBooksFromUris(uris)
+            pendingImportUris = uris
+            showImportOptions = true
         }
     }
 
@@ -459,6 +463,26 @@ fun BookShelfScreen(
         }
     }
 
+    if (showImportOptions) {
+        BookImportOptionsDialog(
+            selectedFileCount = pendingImportUris.size,
+            onChooseFiles = launchFilePicker,
+            onDismiss = {
+                showImportOptions = false
+                pendingImportUris = emptyList()
+            },
+            onImport = { customRegex, cropTableOfContents ->
+                viewModel.importBooksFromUris(
+                    uris = pendingImportUris,
+                    customRegex = customRegex.ifBlank { null },
+                    cropTableOfContents = cropTableOfContents
+                )
+                showImportOptions = false
+                pendingImportUris = emptyList()
+            }
+        )
+    }
+
     // Action Dialogs
     if (showGroupDialog) {
         AlertDialog(
@@ -580,6 +604,100 @@ fun BookShelfScreen(
             onDelete = { viewModel.deleteBookPermanently(book.id); editingBook = null }
         )
     }
+}
+
+@Composable
+private fun BookImportOptionsDialog(
+    selectedFileCount: Int,
+    onChooseFiles: () -> Unit,
+    onDismiss: () -> Unit,
+    onImport: (customRegex: String, cropTableOfContents: Boolean) -> Unit
+) {
+    val strings = platformUiStrings()
+    var customRegex by remember { mutableStateOf("") }
+    var cropTableOfContents by remember { mutableStateOf(false) }
+    val regexError = remember(customRegex) {
+        customRegex.takeIf(String::isNotBlank)?.let { candidate ->
+            runCatching { TxtParser.validateChapterRegex(candidate) }
+                .exceptionOrNull()
+                ?.localizedMessage
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(strings.chapterParsingOptions) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = onChooseFiles,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (selectedFileCount > 0) strings.chooseImportFiles else strings.chooseFile)
+                }
+                if (selectedFileCount > 0) {
+                    Text(
+                        text = strings.selectedImportFiles(selectedFileCount),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    text = strings.importHint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = customRegex,
+                    onValueChange = { customRegex = it },
+                    label = { Text(strings.customChapterRegex) },
+                    placeholder = { Text(strings.customChapterRegexHint) },
+                    supportingText = {
+                        Text(
+                            regexError ?: strings.customChapterRegexHint,
+                            color = if (regexError == null) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.error
+                            }
+                        )
+                    },
+                    isError = regexError != null,
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.cropTableOfContents, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            strings.cropTableOfContentsHint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = cropTableOfContents,
+                        onCheckedChange = { cropTableOfContents = it }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedFileCount > 0 && regexError == null,
+                onClick = { onImport(customRegex, cropTableOfContents) }
+            ) {
+                Text(strings.importAction)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
+    )
 }
 
 @Composable

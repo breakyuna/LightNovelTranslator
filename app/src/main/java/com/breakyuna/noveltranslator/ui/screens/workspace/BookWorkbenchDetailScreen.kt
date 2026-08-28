@@ -54,7 +54,6 @@ import kotlinx.coroutines.flow.flowOf
 
 enum class WorkbenchTab(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
     TASKS("任务控制台", Icons.Default.Dashboard),
-    CONFIG("功能配置", Icons.Default.Tune),
     GLOSSARY("名词与术语表", Icons.Default.Spellcheck),
     LOGS("运行与系统日志", Icons.Default.Terminal)
 }
@@ -123,10 +122,6 @@ fun BookWorkbenchDetailScreen(
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
 
-    val latestBatches by remember(latestRun?.id, selectedTab) {
-        if (latestRun != null && selectedTab == WorkbenchTab.TASKS) viewModel.observeBatches(latestRun.id)
-        else flowOf(emptyList())
-    }.collectAsState(initial = emptyList())
     var showCreateEditionDialog by rememberSaveable { mutableStateOf(false) }
     var showTermScannerDialog by rememberSaveable { mutableStateOf(false) }
     var showAddTermDialog by rememberSaveable { mutableStateOf(false) }
@@ -204,30 +199,14 @@ fun BookWorkbenchDetailScreen(
                     when (selectedTab) {
                         WorkbenchTab.TASKS -> {
                             TasksAndControlTab(
-                                book = currentBook,
-                                editions = editions,
                                 chapters = chapters,
                                 targetEdition = currentTargetEdition,
                                 project = currentProject,
                                 run = latestRun,
-                                batches = latestBatches,
-                                providers = allProviders,
                                 systemLogs = systemLogs,
                                 viewModel = viewModel,
-                                onConfigureProject = { selectedTab = WorkbenchTab.CONFIG },
                                 onScanTerms = { showTermScannerDialog = true },
                                 onSelectChapterAction = { chapterActionTarget = it }
-                            )
-                        }
-                        WorkbenchTab.CONFIG -> {
-                            ConfigurationTab(
-                                book = currentBook,
-                                editions = editions,
-                                targetEdition = currentTargetEdition,
-                                project = currentProject,
-                                providers = allProviders,
-                                viewModel = viewModel,
-                                onCreateEdition = { showCreateEditionDialog = true }
                             )
                         }
                         WorkbenchTab.GLOSSARY -> {
@@ -272,8 +251,8 @@ fun BookWorkbenchDetailScreen(
                     editions = editions,
                     selectedEdition = currentTargetEdition,
                     project = currentProject,
-                    run = latestRun,
                     providers = allProviders,
+                    run = latestRun,
                     selectedTab = selectedTab,
                     chapterCount = chapters.size,
                     lexiconCount = projectLexicon.count { it.reviewStatus == ReviewStatus.CONFIRMED.name },
@@ -304,6 +283,9 @@ fun BookWorkbenchDetailScreen(
                     book = currentBook,
                     editions = editions,
                     selectedEdition = currentTargetEdition,
+                    project = currentProject,
+                    providers = allProviders,
+                    viewModel = viewModel,
                     onSelectEdition = { selectedTargetEditionId = it },
                     onCreateEdition = { showCreateEditionDialog = true }
                 )
@@ -346,7 +328,7 @@ fun BookWorkbenchDetailScreen(
                 viewModel.createTranslationEdition(currentBook.id, sourceId, targetLang, name) { newEditionId ->
                     selectedTargetEditionId = newEditionId
                     showCreateEditionDialog = false
-                    selectedTab = WorkbenchTab.CONFIG
+                    selectedTab = WorkbenchTab.TASKS
                 }
             }
         )
@@ -449,7 +431,6 @@ private fun WorkbenchSidebar(
     viewModel: AppViewModel
 ) {
     var editionMenuExpanded by remember { mutableStateOf(false) }
-    val provider = providers.firstOrNull { it.id == project?.providerId }
     val currentState = project?.state ?: run?.state ?: "IDLE"
     val completedChapters = run?.completedChapters ?: 0
     val progress = if (chapterCount > 0) {
@@ -618,36 +599,15 @@ private fun WorkbenchSidebar(
                     }
                 }
 
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectTab(WorkbenchTab.CONFIG) },
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Memory, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(7.dp))
-                            Text("模型配置", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.weight(1f))
-                            Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(18.dp))
-                        }
-                        Text(
-                            provider?.name ?: "尚未选择供应商",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            project?.modelName?.ifBlank { provider?.selectedModel ?: "默认模型" } ?: "点击配置翻译模型",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
+                ModelStyleConfigurationCard(
+                    book = book,
+                    editions = editions,
+                    targetEdition = selectedEdition,
+                    project = project,
+                    providers = providers,
+                    viewModel = viewModel,
+                    compact = true
+                )
             }
 
             HorizontalDivider()
@@ -668,13 +628,15 @@ private fun WorkbenchSidebar(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(
                         onClick = {
-                            when {
-                                project == null -> onSelectTab(WorkbenchTab.CONFIG)
-                                currentState == "RUNNING" -> viewModel.pauseBookTranslation(project.id)
-                                currentState == "PAUSED" -> viewModel.resumeBookTranslation(project.id)
-                                else -> viewModel.runBookTranslation(project.id)
+                            if (project != null) {
+                                when (currentState) {
+                                    "RUNNING" -> viewModel.pauseBookTranslation(project.id)
+                                    "PAUSED" -> viewModel.resumeBookTranslation(project.id)
+                                    else -> viewModel.runBookTranslation(project.id)
+                                }
                             }
                         },
+                        enabled = project != null,
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
@@ -689,7 +651,7 @@ private fun WorkbenchSidebar(
                         Spacer(Modifier.width(6.dp))
                         Text(
                             when {
-                                project == null -> "配置任务"
+                                project == null -> "请先保存模型配置"
                                 currentState == "RUNNING" -> "暂停"
                                 currentState == "PAUSED" -> "继续"
                                 else -> "开始翻译"
@@ -728,7 +690,6 @@ private fun WideWorkspaceHeader(
 ) {
     val description = when (tab) {
         WorkbenchTab.TASKS -> "监控进度、控制翻译并处理单章任务"
-        WorkbenchTab.CONFIG -> "选择模型、翻译范围与文学风格"
         WorkbenchTab.GLOSSARY -> "审核候选术语并维护 Story Memory"
         WorkbenchTab.LOGS -> "查看任务历史、模型调用和诊断日志"
     }
@@ -784,6 +745,9 @@ private fun WorkbenchHeroCard(
     book: BookEntity,
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
+    project: TranslationProjectV2Entity?,
+    providers: List<ApiProviderEntity>,
+    viewModel: AppViewModel,
     onSelectEdition: (Long) -> Unit,
     onCreateEdition: () -> Unit
 ) {
@@ -791,107 +755,164 @@ private fun WorkbenchHeroCard(
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            val showConfigBesideBook = maxWidth >= 720.dp
+            if (showConfigBesideBook) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    BookHeroSummary(
+                        book = book,
+                        editions = editions,
+                        selectedEdition = selectedEdition,
+                        onSelectEdition = onSelectEdition,
+                        onCreateEdition = onCreateEdition,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ModelStyleConfigurationCard(
+                        book = book,
+                        editions = editions,
+                        targetEdition = selectedEdition,
+                        project = project,
+                        providers = providers,
+                        viewModel = viewModel,
+                        compact = false,
+                        modifier = Modifier.widthIn(min = 300.dp, max = 420.dp)
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    BookHeroSummary(
+                        book = book,
+                        editions = editions,
+                        selectedEdition = selectedEdition,
+                        onSelectEdition = onSelectEdition,
+                        onCreateEdition = onCreateEdition,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    ModelStyleConfigurationCard(
+                        book = book,
+                        editions = editions,
+                        targetEdition = selectedEdition,
+                        project = project,
+                        providers = providers,
+                        viewModel = viewModel,
+                        compact = false,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookHeroSummary(
+    book: BookEntity,
+    editions: List<EditionEntity>,
+    selectedEdition: EditionEntity?,
+    onSelectEdition: (Long) -> Unit,
+    onCreateEdition: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Surface(
+            modifier = Modifier.size(52.dp, 72.dp),
+            shape = RoundedCornerShape(6.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shadowElevation = 2.dp
+        ) {
+            val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
+            if (cover != null) {
+                Image(
+                    bitmap = cover!!,
+                    contentDescription = book.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Book Cover
+                Text(
+                    book.title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Surface(
-                    modifier = Modifier.size(52.dp, 72.dp),
-                    shape = RoundedCornerShape(6.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shadowElevation = 2.dp
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
                 ) {
-                    val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
-                    if (cover != null) {
-                        Image(
-                            bitmap = cover!!,
-                            contentDescription = book.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-
-                // Info & Edition selector
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            book.title,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Text(
-                                if (selectedEdition?.type == EditionType.AI_TRANSLATION.name) "AI 译本" else "原版",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-
                     Text(
-                        "${book.author.ifBlank { "未知作者" }} · 原文: ${book.originalLanguage.ifBlank { "Auto" }}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        if (selectedEdition?.type == EditionType.AI_TRANSLATION.name) "AI 译本" else "原版",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
+                }
+            }
 
-                    // Edition Dropdown chips
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("当前版本:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        editions.forEach { edition ->
-                            val isSelected = edition.id == selectedEdition?.id
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { onSelectEdition(edition.id) },
-                                label = {
-                                    Text(
-                                        edition.name.take(12),
-                                        fontSize = 11.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                },
-                                modifier = Modifier.height(28.dp),
-                                leadingIcon = if (isSelected) {
-                                    { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
-                                } else null
+            Text(
+                "${book.author.ifBlank { "未知作者" }} · 原文: ${book.originalLanguage.ifBlank { "Auto" }}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("当前版本:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                editions.forEach { edition ->
+                    val isSelected = edition.id == selectedEdition?.id
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSelectEdition(edition.id) },
+                        label = {
+                            Text(
+                                edition.name.take(12),
+                                fontSize = 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                             )
-                        }
-                        IconButton(
-                            onClick = onCreateEdition,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(Icons.Default.AddCircleOutline, "新建版本", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
-                        }
-                    }
+                        },
+                        modifier = Modifier.height(28.dp),
+                        leadingIcon = if (isSelected) {
+                            { Icon(Icons.Default.Check, null, Modifier.size(12.dp)) }
+                        } else null
+                    )
+                }
+                IconButton(
+                    onClick = onCreateEdition,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(Icons.Default.AddCircleOutline, "新建版本", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                 }
             }
         }
@@ -900,17 +921,12 @@ private fun WorkbenchHeroCard(
 
 @Composable
 private fun TasksAndControlTab(
-    book: BookEntity,
-    editions: List<EditionEntity>,
     chapters: List<LogicalChapterEntity>,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
     run: PlatformTranslationRunEntity?,
-    batches: List<PlatformTranslationBatchEntity>,
-    providers: List<ApiProviderEntity>,
     systemLogs: List<SystemLogEntry>,
     viewModel: AppViewModel,
-    onConfigureProject: () -> Unit,
     onScanTerms: () -> Unit,
     onSelectChapterAction: (LogicalChapterEntity) -> Unit
 ) {
@@ -942,17 +958,11 @@ private fun TasksAndControlTab(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "选择或创建目标翻译版本，并指定 AI 供应商与提示词偏好即可一键开启翻译。",
+                            "请在上方模型配置卡中选择供应商、模型并保存任务；保存后可在本页直接调整翻译范围与批处理规模。",
                             style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Button(onClick = onConfigureProject) {
-                            Icon(Icons.Default.Settings, null, Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("前往配置翻译任务")
-                        }
                     }
                 }
             }
@@ -1107,22 +1117,25 @@ private fun TasksAndControlTab(
                                 else -> {
                                     Button(
                                         onClick = { viewModel.runBookTranslation(project.id) },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
                                         Text(if (completedChapters > 0) "继续翻译剩余章节" else "开始全书翻译")
-                                    }
-                                    OutlinedButton(onClick = onConfigureProject) {
-                                        Icon(Icons.Default.Tune, null, Modifier.size(16.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text("修改配置")
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            item {
+                TaskScaleConfigurationCard(
+                    project = project,
+                    totalChapters = totalChapters,
+                    viewModel = viewModel
+                )
             }
 
             // Chapter Matrix / Status Grid
@@ -1154,44 +1167,11 @@ private fun TasksAndControlTab(
                             )
                         }
 
-                        // Matrix Flow Grid
-                        val sampleDisplayChapters = chapters.take(60)
-                        LazyVerticalGrid(
-                            columns = GridCells.Adaptive(minSize = 48.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 180.dp),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            items(sampleDisplayChapters, key = { it.id }) { chapter ->
-                                val isDone = chapter.chapterIndex <= completedChapters
-                                Surface(
-                                    modifier = Modifier
-                                        .size(48.dp, 36.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable { onSelectChapterAction(chapter) },
-                                    color = if (isDone) Color(0xFF2E7D32).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                                    border = if (isDone) borderModifier(Color(0xFF2E7D32)) else null
-                                ) {
-                                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                        Text(
-                                            "${chapter.chapterIndex}",
-                                            fontSize = 12.sp,
-                                            fontWeight = if (isDone) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isDone) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        if (chapters.size > 60) {
-                            Text(
-                                "已展示前 60 章，更多章节可直接在阅读器中浏览。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        ChapterStatusMatrix(
+                            chapters = chapters,
+                            completedChapters = completedChapters,
+                            onSelectChapter = onSelectChapterAction
+                        )
                     }
                 }
             }
@@ -1202,6 +1182,491 @@ private fun TasksAndControlTab(
                     projectId = project.id,
                     systemLogs = systemLogs
                 )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ModelStyleConfigurationCard(
+    book: BookEntity,
+    editions: List<EditionEntity>,
+    targetEdition: EditionEntity?,
+    project: TranslationProjectV2Entity?,
+    providers: List<ApiProviderEntity>,
+    viewModel: AppViewModel,
+    compact: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val originalEdition = editions.firstOrNull { it.id == book.primaryEditionId }
+        ?: editions.firstOrNull { it.type == EditionType.IMPORTED.name }
+        ?: editions.firstOrNull()
+    val projectProviderId = project?.providerId
+    var selectedProviderId by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
+        mutableStateOf(project?.providerId ?: providers.firstOrNull()?.id)
+    }
+    var selectedModel by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
+        mutableStateOf(
+            project?.modelName?.ifBlank {
+                providers.firstOrNull { it.id == projectProviderId }?.selectedModel
+                    ?: providers.firstOrNull()?.selectedModel.orEmpty()
+            } ?: providers.firstOrNull()?.selectedModel.orEmpty()
+        )
+    }
+    var styleGuide by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
+        mutableStateOf(project?.styleGuide?.ifBlank { "保持文学韵味与专有名词一致性" } ?: "保持文学韵味与专有名词一致性")
+    }
+    var providerMenuExpanded by remember { mutableStateOf(false) }
+    var isTestingProvider by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+    val activeProvider = providers.firstOrNull { it.id == selectedProviderId } ?: providers.firstOrNull()
+    val canCreateProject = project != null || (
+        targetEdition != null &&
+            originalEdition != null &&
+            targetEdition.id != originalEdition.id
+        )
+    val canSave = targetEdition != null && canCreateProject &&
+        (activeProvider != null || selectedProviderId != null)
+
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(if (compact) 12.dp else 14.dp),
+            verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Memory, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(7.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("模型配置", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        if (project == null) "保存后创建当前译本任务" else "当前译本使用的供应商与模型",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            if (providers.isEmpty()) {
+                Text(
+                    "暂无可用 AI 供应商，请先在系统设置中添加 API Key。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            } else {
+                ExposedDropdownMenuBox(
+                    expanded = providerMenuExpanded,
+                    onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
+                ) {
+                    OutlinedTextField(
+                        value = activeProvider?.let { "${it.name} (${it.providerType.displayName})" }.orEmpty(),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("AI 供应商") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(providerMenuExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth(),
+                        singleLine = true
+                    )
+                    ExposedDropdownMenu(
+                        expanded = providerMenuExpanded,
+                        onDismissRequest = { providerMenuExpanded = false }
+                    ) {
+                        providers.forEach { provider ->
+                            DropdownMenuItem(
+                                text = { Text("${provider.name} (${provider.providerType.displayName})") },
+                                onClick = {
+                                    selectedProviderId = provider.id
+                                    selectedModel = provider.selectedModel
+                                    providerMenuExpanded = false
+                                    testResult = null
+                                }
+                            )
+                        }
+                    }
+                }
+
+                OutlinedTextField(
+                    value = selectedModel,
+                    onValueChange = { selectedModel = it.take(200) },
+                    label = { Text("模型名称") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            activeProvider?.let { provider ->
+                                isTestingProvider = true
+                                testResult = null
+                                viewModel.testProvider(provider) { success, message ->
+                                    isTestingProvider = false
+                                    testResult = if (success) "连接成功" else "连接失败: $message"
+                                }
+                            }
+                        },
+                        enabled = activeProvider != null && !isTestingProvider,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        if (isTestingProvider) {
+                            CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.NetworkCheck, null, Modifier.size(15.dp))
+                        }
+                        Spacer(Modifier.width(5.dp))
+                        Text("测试连接")
+                    }
+                    if (!testResult.isNullOrBlank()) {
+                        Text(
+                            testResult.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (testResult == "连接成功") Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(start = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            if (project == null && !canCreateProject) {
+                Text(
+                    "请先通过书籍信息旁的“+”新建 AI 翻译版本，再保存翻译任务。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            HorizontalDivider()
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(7.dp))
+                Column {
+                    Text("风格与提示词定制", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(
+                        "影响当前译本后续翻译的文学风格与约束",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                listOf("仙侠修真", "西幻魔法", "轻小说", "严谨文学").forEach { preset ->
+                    AssistChip(
+                        onClick = {
+                            styleGuide = when (preset) {
+                                "仙侠修真" -> "保留东方仙侠玄幻风格，境界称号统一规范，对话自然流畅"
+                                "西幻魔法" -> "保留西幻史诗与魔法体系设定，地名人名音译典雅"
+                                "轻小说" -> "日系轻小说风格，语气生动鲜明，保留人物个性口吻"
+                                else -> "文学出版级翻译，语句通顺优美，严格保持专有名词一致"
+                            }
+                        },
+                        label = { Text(preset, fontSize = 10.sp, maxLines = 1) },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = styleGuide,
+                onValueChange = { styleGuide = it.take(2_000) },
+                label = { Text("文学风格指导与自定义提示词") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = if (compact) 2 else 3,
+                maxLines = if (compact) 4 else 6
+            )
+
+            Button(
+                onClick = {
+                    if (targetEdition != null) {
+                        if (project != null) {
+                            val mode = runCatching { TranslationMode.valueOf(project.translationMode) }
+                                .getOrDefault(TranslationMode.FULL_BOOK)
+                            viewModel.updateTranslationProjectConfig(
+                                projectId = project.id,
+                                providerId = activeProvider?.id ?: selectedProviderId,
+                                modelName = selectedModel,
+                                mode = mode,
+                                maxBatchChapters = project.maxBatchChapters,
+                                rangeStart = project.rangeStart,
+                                rangeEnd = project.rangeEnd,
+                                styleGuide = styleGuide
+                            )
+                        } else if (originalEdition != null) {
+                            viewModel.configureEditionTranslation(
+                                bookId = book.id,
+                                sourceEditionId = originalEdition.id,
+                                targetEditionId = targetEdition.id,
+                                providerId = activeProvider?.id ?: selectedProviderId,
+                                modelName = selectedModel,
+                                mode = TranslationMode.FULL_BOOK,
+                                maxBatchChapters = 1,
+                                styleGuide = styleGuide,
+                                startImmediately = false
+                            )
+                        }
+                    }
+                },
+                enabled = canSave,
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(vertical = 7.dp)
+            ) {
+                Icon(Icons.Default.Save, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(5.dp))
+                Text(if (project == null) "保存并创建任务" else "保存模型与风格")
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskScaleConfigurationCard(
+    project: TranslationProjectV2Entity,
+    totalChapters: Int,
+    viewModel: AppViewModel
+) {
+    var translationMode by rememberSaveable(project.id, project.updatedAt) {
+        mutableStateOf(project.translationMode)
+    }
+    var batchSize by rememberSaveable(project.id, project.updatedAt) {
+        mutableStateOf(project.maxBatchChapters.coerceIn(1, 5))
+    }
+    var rangeStartText by rememberSaveable(project.id, project.updatedAt) {
+        mutableStateOf(project.rangeStart?.toString() ?: "1")
+    }
+    var rangeEndText by rememberSaveable(project.id, project.updatedAt) {
+        mutableStateOf(project.rangeEnd?.toString() ?: totalChapters.coerceAtLeast(1).toString())
+    }
+
+    val rangeStart = rangeStartText.toIntOrNull()
+    val rangeEnd = rangeEndText.toIntOrNull()
+    val rangeIsValid = translationMode != TranslationMode.CHAPTER_RANGE.name ||
+        (rangeStart != null && rangeEnd != null && rangeStart > 0 && rangeEnd >= rangeStart)
+    val canEdit = project.state != "RUNNING"
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("任务范围与批处理规模", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "翻译任务运行前可随时调整；保存后下一次启动任务时生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        "最多 $totalChapters 章",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(
+                    TranslationMode.FULL_BOOK.name to "全书翻译",
+                    TranslationMode.CHAPTER_RANGE.name to "指定范围",
+                    TranslationMode.SEAMLESS.name to "无缝预翻译"
+                ).forEach { (mode, label) ->
+                    FilterChip(
+                        selected = translationMode == mode,
+                        onClick = { if (canEdit) translationMode = mode },
+                        enabled = canEdit,
+                        label = { Text(label, maxLines = 1) }
+                    )
+                }
+            }
+
+            if (translationMode == TranslationMode.CHAPTER_RANGE.name) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = rangeStartText,
+                        onValueChange = { if (canEdit) rangeStartText = it.filter(Char::isDigit) },
+                        label = { Text("起始章节") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = canEdit,
+                        isError = rangeStartText.isNotBlank() && rangeStart == null
+                    )
+                    OutlinedTextField(
+                        value = rangeEndText,
+                        onValueChange = { if (canEdit) rangeEndText = it.filter(Char::isDigit) },
+                        label = { Text("结束章节") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        enabled = canEdit,
+                        isError = rangeEndText.isNotBlank() && rangeEnd == null
+                    )
+                }
+                if (!rangeIsValid) {
+                    Text(
+                        "请输入有效章节范围，结束章节不能小于起始章节。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("单次批处理章节数", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "$batchSize 章 / 批次",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Slider(
+                    value = batchSize.toFloat(),
+                    onValueChange = { if (canEdit) batchSize = it.toInt().coerceIn(1, 5) },
+                    valueRange = 1f..5f,
+                    steps = 3,
+                    enabled = canEdit
+                )
+                if (!canEdit) {
+                    Text(
+                        "任务运行中暂不能修改参数，请先暂停任务；修改内容将在下一次启动时生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
+                Text(
+                    "推荐 1～2 章以获得更高的文学翻译精度与专有名词一致性。模型上下文不足时仍会自动降为单章。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Button(
+                onClick = {
+                    val mode = runCatching { TranslationMode.valueOf(translationMode) }
+                        .getOrDefault(TranslationMode.FULL_BOOK)
+                    viewModel.updateTranslationProjectConfig(
+                        projectId = project.id,
+                        providerId = project.providerId,
+                        modelName = project.modelName,
+                        mode = mode,
+                        maxBatchChapters = batchSize,
+                        rangeStart = if (mode == TranslationMode.CHAPTER_RANGE) rangeStart else null,
+                        rangeEnd = if (mode == TranslationMode.CHAPTER_RANGE) rangeEnd else null,
+                        styleGuide = project.styleGuide
+                    )
+                },
+                enabled = canEdit && rangeIsValid,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Save, null, Modifier.size(17.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("保存任务参数")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChapterStatusMatrix(
+    chapters: List<LogicalChapterEntity>,
+    completedChapters: Int,
+    onSelectChapter: (LogicalChapterEntity) -> Unit
+) {
+    if (chapters.isEmpty()) {
+        Text(
+            "暂无章节",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val cellMinWidth = 48.dp
+        val cellSpacing = 4.dp
+        val columnCount = ((maxWidth + cellSpacing) / (cellMinWidth + cellSpacing))
+            .toInt()
+            .coerceAtLeast(1)
+        val rowCount = (chapters.size + columnCount - 1) / columnCount
+        val gridHeight = 36.dp * rowCount.toFloat() + cellSpacing * (rowCount - 1).coerceAtLeast(0).toFloat()
+
+        // Fixed height lets the outer LazyColumn own vertical scrolling while the grid still
+        // lazily composes visible cells. No chapters are truncated at an arbitrary count.
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columnCount),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(gridHeight),
+            horizontalArrangement = Arrangement.spacedBy(cellSpacing),
+            verticalArrangement = Arrangement.spacedBy(cellSpacing),
+            userScrollEnabled = false
+        ) {
+            items(chapters, key = { it.id }) { chapter ->
+                val isDone = chapter.chapterIndex <= completedChapters
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onSelectChapter(chapter) },
+                    color = if (isDone) Color(0xFF2E7D32).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
+                    border = if (isDone) borderModifier(Color(0xFF2E7D32)) else null
+                ) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "${chapter.chapterIndex}",
+                            fontSize = 12.sp,
+                            fontWeight = if (isDone) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isDone) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }
@@ -1230,7 +1695,9 @@ private fun StatBox(title: String, value: String) {
 @Composable
 private fun LiveProcessLogCard(
     projectId: Long?,
-    systemLogs: List<SystemLogEntry>
+    systemLogs: List<SystemLogEntry>,
+    modifier: Modifier = Modifier,
+    expandToAvailableSpace: Boolean = false
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -1255,12 +1722,13 @@ private fun LiveProcessLogCard(
     }
 
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (expandToAvailableSpace) Modifier.fillMaxHeight() else Modifier)
                 .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
@@ -1324,16 +1792,18 @@ private fun LiveProcessLogCard(
 
             // Log Console Box
             val listState = rememberLazyListState()
-            LaunchedEffect(filteredLogs.size) {
+            LaunchedEffect(filteredLogs.lastOrNull()?.id, filteredLogs.size, selectedTagFilter, searchQuery) {
                 if (filteredLogs.isNotEmpty()) {
                     listState.animateScrollToItem(filteredLogs.size - 1)
                 }
             }
 
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(220.dp),
+                modifier = if (expandToAvailableSpace) {
+                    Modifier.fillMaxWidth().weight(1f)
+                } else {
+                    Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 360.dp)
+                },
                 shape = RoundedCornerShape(6.dp),
                 color = Color(0xFF141418)
             ) {
@@ -1411,325 +1881,6 @@ private fun LiveProcessLogCard(
         }
     }
 }
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConfigurationTab(
-    book: BookEntity,
-    editions: List<EditionEntity>,
-    targetEdition: EditionEntity?,
-    project: TranslationProjectV2Entity?,
-    providers: List<ApiProviderEntity>,
-    viewModel: AppViewModel,
-    onCreateEdition: () -> Unit
-) {
-    if (targetEdition == null) {
-        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("请先创建一个目标翻译版本 (Edition)")
-                Button(onClick = onCreateEdition) {
-                    Text("+ 新建目标翻译版本")
-                }
-            }
-        }
-        return
-    }
-
-    val originalEdition = editions.firstOrNull { it.id == book.primaryEditionId }
-        ?: editions.firstOrNull { it.type == EditionType.IMPORTED.name }
-        ?: editions.firstOrNull()
-
-    var selectedProviderId by rememberSaveable(project) { mutableStateOf(project?.providerId ?: providers.firstOrNull()?.id) }
-    var selectedModel by rememberSaveable(project) { mutableStateOf(project?.modelName ?: providers.firstOrNull { it.id == selectedProviderId }?.selectedModel.orEmpty()) }
-    var translationMode by rememberSaveable(project) { mutableStateOf(project?.translationMode ?: TranslationMode.FULL_BOOK.name) }
-    var batchSize by rememberSaveable(project) { mutableStateOf(project?.maxBatchChapters ?: 1) }
-    var rangeStartText by rememberSaveable(project) { mutableStateOf(project?.rangeStart?.toString() ?: "1") }
-    var rangeEndText by rememberSaveable(project) { mutableStateOf(project?.rangeEnd?.toString() ?: "50") }
-    var styleGuide by rememberSaveable(project) { mutableStateOf(project?.styleGuide ?: "保持文学韵味与专有名词一致性") }
-    var autoGlossaryUpdate by rememberSaveable { mutableStateOf(true) }
-
-    var isTestingProvider by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<String?>(null) }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        item {
-            Text(
-                "配置当前译本任务 · ${targetEdition.name}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                "源版本: ${originalEdition?.name ?: "原版"} (${originalEdition?.language ?: "Auto"}) -> 目标语言: ${targetEdition.language}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        // Provider & Model Selection
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("1. AI 供应商与模型", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-
-                    if (providers.isEmpty()) {
-                        Text("暂无可用的 AI 供应商，请先在系统设置中添加 API Key。", color = MaterialTheme.colorScheme.error)
-                    } else {
-                        var expandedProvider by remember { mutableStateOf(false) }
-                        val activeProvider = providers.firstOrNull { it.id == selectedProviderId } ?: providers.first()
-
-                        ExposedDropdownMenuBox(
-                            expanded = expandedProvider,
-                            onExpandedChange = { expandedProvider = !expandedProvider }
-                        ) {
-                            OutlinedTextField(
-                                value = "${activeProvider.name} (${activeProvider.providerType.displayName})",
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("AI 供应商") },
-                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expandedProvider) },
-                                modifier = Modifier.menuAnchor().fillMaxWidth()
-                            )
-                            ExposedDropdownMenu(
-                                expanded = expandedProvider,
-                                onDismissRequest = { expandedProvider = false }
-                            ) {
-                                providers.forEach { p ->
-                                    DropdownMenuItem(
-                                        text = { Text("${p.name} (${p.providerType.displayName})") },
-                                        onClick = {
-                                            selectedProviderId = p.id
-                                            selectedModel = p.selectedModel
-                                            expandedProvider = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        OutlinedTextField(
-                            value = selectedModel,
-                            onValueChange = { selectedModel = it },
-                            label = { Text("指定模型名称 (例如 gemini-2.5-flash, deepseek-chat)") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    isTestingProvider = true
-                                    testResult = null
-                                    viewModel.testProvider(activeProvider) { success, msg ->
-                                        isTestingProvider = false
-                                        testResult = if (success) "连接成功: $msg" else "连接失败: $msg"
-                                    }
-                                }
-                            ) {
-                                if (isTestingProvider) {
-                                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.width(6.dp))
-                                } else {
-                                    Icon(Icons.Default.NetworkCheck, null, Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                }
-                                Text("测试连接")
-                            }
-
-                            if (!testResult.isNullOrBlank()) {
-                                Text(
-                                    testResult!!,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = if (testResult!!.startsWith("连接成功")) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Batch & Mode Settings
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("2. 翻译模式与批处理规模", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-
-                    // Mode Selection
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf(
-                            TranslationMode.FULL_BOOK.name to "全书翻译",
-                            TranslationMode.CHAPTER_RANGE.name to "指定范围",
-                            TranslationMode.SEAMLESS.name to "无缝预翻译"
-                        ).forEach { (mode, label) ->
-                            val isSelected = translationMode == mode
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { translationMode = mode },
-                                label = { Text(label) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    if (translationMode == TranslationMode.CHAPTER_RANGE.name) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = rangeStartText,
-                                onValueChange = { rangeStartText = it.filter { c -> c.isDigit() } },
-                                label = { Text("起始章节") },
-                                modifier = Modifier.weight(1f)
-                            )
-                            OutlinedTextField(
-                                value = rangeEndText,
-                                onValueChange = { rangeEndText = it.filter { c -> c.isDigit() } },
-                                label = { Text("结束章节") },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    // Batch Size Slider
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("单次批处理章节数:", style = MaterialTheme.typography.bodyMedium)
-                            Text("$batchSize 章 / 批次", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Slider(
-                            value = batchSize.toFloat(),
-                            onValueChange = { batchSize = it.toInt() },
-                            valueRange = 1f..5f,
-                            steps = 3
-                        )
-                        Text(
-                            "推荐 1~2 章以获得最高的文学翻译精度与专有名词一致性。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    // Auto Glossary Switch
-                    HorizontalDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
-                            Text("随翻译进度自动更新名词表", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                "在翻译过程中，智能识别新出现的人物名、地名、功法术语并自动存入名词库供后文参考。",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(checked = autoGlossaryUpdate, onCheckedChange = { autoGlossaryUpdate = it })
-                    }
-                }
-            }
-        }
-
-        // Custom Prompt & Literary Persona
-        item {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text("3. 风格与提示词定制", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-
-                    // Presets
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf("仙侠修真", "西幻魔法", "轻小说", "严谨文学").forEach { preset ->
-                            AssistChip(
-                                onClick = {
-                                    styleGuide = when (preset) {
-                                        "仙侠修真" -> "保留东方仙侠玄幻风格，境界称号统一规范，对话自然流畅"
-                                        "西幻魔法" -> "保留西幻史诗与魔法体系设定，地名人名音译典雅"
-                                        "轻小说" -> "日系轻小说风格，语气生动鲜明，保留人物个性口吻"
-                                        else -> "文学出版级翻译，语句通顺优美，严格保持专有名词一致"
-                                    }
-                                },
-                                label = { Text(preset, fontSize = 11.sp) }
-                            )
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = styleGuide,
-                        onValueChange = { styleGuide = it },
-                        label = { Text("文学风格指导与自定义提示词") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 3,
-                        maxLines = 5
-                    )
-                }
-            }
-        }
-
-        // Save Button
-        item {
-            Button(
-                onClick = {
-                    if (originalEdition != null) {
-                        val modeEnum = runCatching { TranslationMode.valueOf(translationMode) }.getOrDefault(TranslationMode.FULL_BOOK)
-                        val start = rangeStartText.toIntOrNull()
-                        val end = rangeEndText.toIntOrNull()
-
-                        if (project != null) {
-                            viewModel.updateTranslationProjectConfig(
-                                projectId = project.id,
-                                providerId = selectedProviderId,
-                                modelName = selectedModel,
-                                mode = modeEnum,
-                                maxBatchChapters = batchSize,
-                                rangeStart = start,
-                                rangeEnd = end,
-                                styleGuide = styleGuide
-                            )
-                        } else {
-                            viewModel.configureEditionTranslation(
-                                bookId = book.id,
-                                sourceEditionId = originalEdition.id,
-                                targetEditionId = targetEdition.id,
-                                providerId = selectedProviderId,
-                                modelName = selectedModel,
-                                mode = modeEnum,
-                                maxBatchChapters = batchSize,
-                                rangeStart = start,
-                                rangeEnd = end,
-                                startImmediately = false
-                            )
-                        }
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().height(48.dp)
-            ) {
-                Icon(Icons.Default.Save, null)
-                Spacer(Modifier.width(8.dp))
-                Text("保存配置")
-            }
-        }
-    }
-}
-
 @Composable
 private fun GlossaryManagementTab(
     book: BookEntity,
@@ -1759,6 +1910,10 @@ private fun GlossaryManagementTab(
                 review.winnerNotes.contains(searchQuery, ignoreCase = true)
             matchCat && matchQuery
         }
+    val highConfidenceReviews = candidateReviews.filter { it.isHighConfidenceForBatch }
+    val selectedHighConfidenceIds = highConfidenceReviews
+        .filter { it.id in selectedCandidateIds }
+        .map { it.id }
 
     LaunchedEffect(candidates) {
         val validIds = candidates.mapTo(mutableSetOf()) { it.id }
@@ -1878,46 +2033,54 @@ private fun GlossaryManagementTab(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("AI 候选审核 · ${candidateReviews.size}", fontWeight = FontWeight.Bold)
                                 Text(
-                                    "候选只保存证据，不会影响正式翻译；确认后才会进入术语约束。",
+                                    "候选只保存证据，不会影响正式翻译；确认后才会进入术语约束。高一致候选才允许批量确认。",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer
                                 )
                             }
-                            val batchableIds = candidateReviews
-                                .filter { it.isHighConfidenceForBatch }
-                                .map { it.id }
-                                .filter { it in selectedCandidateIds }
-                            TextButton(
+                            Button(
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                                 onClick = {
-                                    viewModel.confirmLexiconCandidatesBatch(batchableIds) { _, _ ->
-                                        selectedCandidateIds = selectedCandidateIds - batchableIds.toSet()
+                                    viewModel.confirmLexiconCandidatesBatch(selectedHighConfidenceIds) { _, _ ->
+                                        selectedCandidateIds = selectedCandidateIds - selectedHighConfidenceIds.toSet()
                                     }
                                 },
-                                enabled = batchableIds.isNotEmpty()
+                                enabled = selectedHighConfidenceIds.isNotEmpty()
                             ) {
-                                Text("批量确认 (${batchableIds.size})")
+                                Text("批量确认 ${selectedHighConfidenceIds.size}")
                             }
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             TextButton(onClick = {
-                                selectedCandidateIds = candidateReviews
-                                    .filter { it.isHighConfidenceForBatch }
-                                    .mapTo(mutableSetOf()) { it.id }
-                            }) { Text("选择高一致候选") }
+                                if (highConfidenceReviews.isEmpty()) {
+                                    viewModel.showMessage("当前没有可批量确认的高一致候选；至少需要两次一致观察、总体一致率不低于 80% 且不能存在译名或类别冲突")
+                                } else {
+                                    selectedCandidateIds = highConfidenceReviews.mapTo(mutableSetOf()) { it.id }
+                                }
+                            }) { Text("选择高一致候选 (${highConfidenceReviews.size})") }
                             TextButton(onClick = { selectedCandidateIds = emptySet() }) { Text("清空选择") }
+                            Text(
+                                "已选高一致 ${selectedHighConfidenceIds.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
                         }
                     }
                 }
             }
-            items(candidateReviews, key = { "candidate_${it.id}" }) { review ->
+            items(candidateReviews, key = { it.id }) { review ->
                 LexiconCandidateCard(
                     review = review,
                     selected = review.id in selectedCandidateIds,
-                    onToggle = {
-                        selectedCandidateIds = if (review.id in selectedCandidateIds) {
-                            selectedCandidateIds - review.id
-                        } else {
+                    onToggle = { checked ->
+                        selectedCandidateIds = if (checked) {
                             selectedCandidateIds + review.id
+                        } else {
+                            selectedCandidateIds - review.id
                         }
                     },
                     onConfirm = {
@@ -2063,7 +2226,7 @@ private data class PendingCandidateImport(
 private fun LexiconCandidateCard(
     review: LexiconCandidateReview,
     selected: Boolean,
-    onToggle: () -> Unit,
+    onToggle: (Boolean) -> Unit,
     onConfirm: () -> Unit,
     onEdit: () -> Unit,
     onIgnore: () -> Unit
@@ -2085,7 +2248,7 @@ private fun LexiconCandidateCard(
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = selected, onCheckedChange = { onToggle() })
+                Checkbox(checked = selected, onCheckedChange = onToggle)
                 Column(modifier = Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(review.sourceTerm, fontWeight = FontWeight.Bold)
@@ -2096,6 +2259,25 @@ private fun LexiconCandidateCard(
                         "${review.winnerCategory} · 出现 ${review.observationCount} 次",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(5.dp),
+                    color = if (review.isHighConfidenceForBatch) {
+                        MaterialTheme.colorScheme.primaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    }
+                ) {
+                    Text(
+                        if (review.isHighConfidenceForBatch) "高一致" else "单独审核",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (review.isHighConfidenceForBatch) {
+                            MaterialTheme.colorScheme.onPrimaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
                 TextButton(onClick = onConfirm) {
@@ -2422,12 +2604,22 @@ private fun LogsAndHistoryTab(
                 )
             } else {
                 Box(Modifier.fillMaxSize().padding(16.dp)) {
-                    LiveProcessLogCard(projectId = project?.id, systemLogs = systemLogs)
+                    LiveProcessLogCard(
+                        projectId = project?.id,
+                        systemLogs = systemLogs,
+                        modifier = Modifier.fillMaxSize(),
+                        expandToAvailableSpace = true
+                    )
                 }
             }
             3 -> {
                 Box(Modifier.fillMaxSize().padding(16.dp)) {
-                    LiveProcessLogCard(projectId = project?.id, systemLogs = systemLogs)
+                    LiveProcessLogCard(
+                        projectId = project?.id,
+                        systemLogs = systemLogs,
+                        modifier = Modifier.fillMaxSize(),
+                        expandToAvailableSpace = true
+                    )
                 }
             }
         }
