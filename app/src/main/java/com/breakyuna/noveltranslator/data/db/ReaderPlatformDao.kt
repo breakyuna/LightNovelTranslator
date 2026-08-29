@@ -161,6 +161,9 @@ interface TranslationProjectV2Dao {
     @Query("SELECT * FROM translation_projects_v2 WHERE bookId = :bookId ORDER BY createdAt DESC")
     fun observeByBook(bookId: Long): Flow<List<TranslationProjectV2Entity>>
 
+    @Query("SELECT * FROM translation_projects_v2 WHERE bookId = :bookId ORDER BY createdAt DESC")
+    suspend fun getByBook(bookId: Long): List<TranslationProjectV2Entity>
+
     @Query("SELECT * FROM translation_projects_v2 WHERE targetEditionId = :editionId ORDER BY createdAt DESC")
     fun observeByTargetEdition(editionId: Long): Flow<List<TranslationProjectV2Entity>>
 
@@ -283,14 +286,6 @@ interface PlatformTaskDao {
         FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC
     """)
     fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>>
-
-    @Query("""
-        SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
-               cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,
-               isSuccess, timestamp
-        FROM platform_request_logs ORDER BY timestamp DESC LIMIT 500
-    """)
-    fun observeAllRequestLogs(): Flow<List<PlatformRequestLogSummary>>
 
     @Query("SELECT * FROM platform_request_logs WHERE id = :id")
     suspend fun getRequestLog(id: Long): PlatformRequestLogEntity?

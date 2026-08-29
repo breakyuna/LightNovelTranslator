@@ -2,6 +2,8 @@ package com.breakyuna.noveltranslator.core.llm
 
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 import kotlin.random.Random
@@ -38,7 +40,7 @@ data class LlmRequest(
     val maxTokens: Int? = null,
     val operation: String = "TRANSLATION",
     val promptCacheHint: PromptCacheHint? = null,
-    /** Optional per-project gate; legacy callers may continue using the gateway-wide signal. */
+    /** Optional per-request gate used by the translation scheduler. */
     val controlSignal: TranslationControlSignal? = null
 )
 
@@ -60,7 +62,7 @@ interface LlmGateway {
     suspend fun fetchAvailableModels(provider: ApiProviderEntity): Result<List<String>>
 }
 
-/** Compatibility helper for existing agents while callers migrate to LlmRequest. */
+/** Convenience overload for small agents that do not need request metadata. */
 suspend fun LlmGateway.executeCompletion(
     provider: ApiProviderEntity,
     systemPrompt: String,
@@ -80,16 +82,33 @@ fun interface DelayProvider {
 class TranslationControlSignal {
     private val paused = AtomicBoolean(false)
     private val cancelled = AtomicBoolean(false)
+    /** Serializes the complete provider call, not just the preflight check. */
+    private val requestGate = Mutex()
 
     val isPaused: Boolean get() = paused.get()
     val isCancelled: Boolean get() = cancelled.get()
 
-    fun requestPause() = paused.set(true)
+    /**
+     * Marks the signal paused and waits for an already-started provider call to finish. This makes
+     * the return of pause a hard boundary: no retry can begin after the caller observes it.
+     */
+    suspend fun requestPause() {
+        paused.set(true)
+        requestGate.withLock { }
+    }
+
+    /** Marks the signal cancelled and waits until an already-started provider call has finished. */
+    suspend fun requestCancel() {
+        cancelled.set(true)
+        requestGate.withLock { }
+    }
+
     fun resume() = paused.set(false)
     fun cancel() = cancelled.set(true)
-    fun reset() {
-        paused.set(false)
-        cancelled.set(false)
+
+    /** Checks the signal while holding the same gate as the whole physical provider call. */
+    suspend fun <T> withRequestPermit(block: suspend () -> T): T? = requestGate.withLock {
+        if (paused.get() || cancelled.get()) null else block()
     }
 }
 
@@ -131,33 +150,26 @@ object RetryPolicy {
 /** Retry wrapper with injectable waiting, suitable for unit tests with no real sleep. */
 class RetryingLlmGateway(
     private val delegate: LlmGateway,
-    private val delayProvider: DelayProvider = CoroutineDelayProvider,
-    private val controlSignal: TranslationControlSignal? = null
+    private val delayProvider: DelayProvider = CoroutineDelayProvider
 ) : LlmGateway {
     override suspend fun executeCompletion(request: LlmRequest): LlmResult {
         val attempts = mutableListOf<LlmAttempt>()
-        val signal = request.controlSignal ?: controlSignal
+        val signal = request.controlSignal
         var attemptNumber = 1
         while (true) {
             if (signal?.isCancelled == true) {
                 throw kotlinx.coroutines.CancellationException("Translation cancelled")
             }
-            // Pausing before a call is intentionally fail-fast. The workflow boundary will wait
-            // for resume, while this lower layer must never start a paid request during a pause.
-            if (signal?.isPaused == true) {
-                return LlmResult(
-                    text = "",
-                    promptTokens = attempts.sumOf { it.result.promptTokens },
-                    completionTokens = attempts.sumOf { it.result.completionTokens },
-                    isSuccess = false,
-                    errorCategory = LlmErrorCategory.CANCELLED,
-                    errorMessage = "Translation paused before request",
-                    operation = request.operation,
-                    attempts = attempts.toList()
-                )
-            }
+            awaitResume(signal)
             val result = try {
-                delegate.executeCompletion(request)
+                if (signal == null) {
+                    delegate.executeCompletion(request)
+                } else {
+                    // A pause racing with this loop either waits here or wins the permit check;
+                    // neither path can start another physical provider call while paused.
+                    signal.withRequestPermit { delegate.executeCompletion(request) }
+                        ?: continue
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 throw cancelled
             } catch (error: Throwable) {
@@ -196,33 +208,34 @@ class RetryingLlmGateway(
                     attempts = attempts.toList()
                 )
             }
-            if (!waitForRetry(decision.delayMs, signal)) {
-                return normalizedResult.copy(
-                    promptTokens = attempts.sumOf { it.result.promptTokens },
-                    completionTokens = attempts.sumOf { it.result.completionTokens },
-                    durationMs = attempts.sumOf { it.result.durationMs },
-                    attempts = attempts.toList()
-                )
-            }
+            waitForRetry(decision.delayMs, signal)
             attemptNumber++
         }
     }
 
-    private suspend fun waitForRetry(delayMs: Long, signal: TranslationControlSignal?): Boolean {
+    private suspend fun awaitResume(signal: TranslationControlSignal?) {
+        if (signal == null) return
+        while (signal.isPaused) {
+            if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
+            delayProvider.delayFor(250L)
+        }
+        if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
+    }
+
+    private suspend fun waitForRetry(delayMs: Long, signal: TranslationControlSignal?) {
         if (signal == null) {
             delayProvider.delayFor(delayMs)
-            return true
+            return
         }
         var remaining = delayMs
         while (remaining > 0) {
             if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
-            if (signal.isPaused) return false
+            awaitResume(signal)
             val slice = min(250L, remaining)
             delayProvider.delayFor(slice)
             remaining -= slice
         }
-        if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
-        return !signal.isPaused
+        awaitResume(signal)
     }
 
     override suspend fun fetchAvailableModels(provider: ApiProviderEntity): Result<List<String>> =

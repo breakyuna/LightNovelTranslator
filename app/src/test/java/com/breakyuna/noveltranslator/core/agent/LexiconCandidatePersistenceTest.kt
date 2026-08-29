@@ -6,7 +6,6 @@ import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.data.db.AppDatabase
 import com.breakyuna.noveltranslator.data.model.BookEntity
 import com.breakyuna.noveltranslator.data.model.EditionEntity
-import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateState
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
 import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
@@ -50,8 +49,7 @@ class LexiconCandidatePersistenceTest {
                     providerId = null
                 )
             )
-            val candidate = GlossaryEntity(
-                projectId = projectId,
+            val candidate = ExtractedTermCandidate(
                 originalTerm = "Alice",
                 translatedTerm = "爱丽丝",
                 category = TermCategory.CHARACTER

@@ -36,7 +36,7 @@ fun AppBottomBar(
                 val strings = LocalAppStrings.current
                 TopLevelDestination.values().forEach { destination ->
                     val isSelected = when (destination) {
-                        TopLevelDestination.PROJECTS -> currentRoute?.startsWith("bookshelf") == true
+                        TopLevelDestination.BOOKSHELF -> currentRoute?.startsWith("bookshelf") == true
                         TopLevelDestination.HISTORY -> currentRoute?.startsWith("history") == true
                         TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("workbench") == true
                         TopLevelDestination.SETTINGS -> currentRoute?.startsWith("settings") == true

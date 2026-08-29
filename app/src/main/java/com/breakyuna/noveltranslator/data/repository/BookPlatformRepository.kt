@@ -52,24 +52,29 @@ class BookPlatformRepository(
     fun observeRunsByProject(projectId: Long) = database.platformTaskDao().observeRunsByProject(projectId)
     fun observeBatches(runId: Long) = database.platformTaskDao().observeBatches(runId)
     fun observeRequestLogs(runId: Long) = database.platformTaskDao().observeRequestLogs(runId)
-    fun observeAllPlatformRequestLogs() = database.platformTaskDao().observeAllRequestLogs()
 
     suspend fun getTranslationProject(projectId: Long) = projects.get(projectId)
+    suspend fun getTranslationProjects(bookId: Long) = projects.getByBook(bookId)
     suspend fun updateTranslationProject(project: TranslationProjectV2Entity) = projects.update(project)
     suspend fun getChapters(bookId: Long) = books.getChapters(bookId)
-    suspend fun getEditionChapters(bookId: Long, editionId: Long): Set<Long> {
-        val all = books.getChapters(bookId)
-        return all.filter { books.getEditionChapter(editionId, it.id) != null }.map { it.id }.toSet()
-    }
     suspend fun retranslateChapter(editionId: Long, logicalChapterId: Long) {
-        books.deleteEditionChapter(editionId, logicalChapterId)
+        val edition = books.getEdition(editionId) ?: return
+        require(edition.type == EditionType.AI_TRANSLATION.name) {
+            "Only AI_TRANSLATION Editions can be retranslated"
+        }
+        val chapter = books.getEditionChapter(editionId, logicalChapterId) ?: return
+        database.withTransaction {
+            books.deleteEditionChapter(editionId, logicalChapterId)
+            if (edition.isComplete) {
+                books.updateEdition(edition.copy(isComplete = false, updatedAt = System.currentTimeMillis()))
+            }
+        }
+        files.deleteEditionChapterFile(edition.bookId, editionId, chapter.contentFileName)
     }
     suspend fun upsertLexiconEntry(entry: LexiconEntryEntity) = database.lexiconV2Dao().upsert(entry)
     suspend fun upsertLexiconEntries(entries: List<LexiconEntryEntity>) = database.lexiconV2Dao().upsertAll(entries)
     suspend fun updateLexiconEntry(entry: LexiconEntryEntity) = database.lexiconV2Dao().update(entry)
     suspend fun deleteLexiconEntry(id: Long) = database.lexiconV2Dao().delete(id)
-    suspend fun markLexiconCandidateImported(id: Long) = database.lexiconCandidateAggregateDao().markImported(id)
-    suspend fun markLexiconCandidateIgnored(id: Long) = database.lexiconCandidateAggregateDao().markIgnored(id)
 
     fun observeReader(bookId: Long): Flow<List<ResolvedReaderSegment>> = combine(
         books.observeBook(bookId),
@@ -215,6 +220,12 @@ class BookPlatformRepository(
         require(source.bookId == bookId)
         val target = books.getEdition(targetEditionId) ?: error("Target edition not found")
         require(target.bookId == bookId && target.id != source.id)
+        require(target.type == EditionType.AI_TRANSLATION.name) {
+            "Translation projects must write to an AI_TRANSLATION Edition"
+        }
+        require(target.sourceEditionId == sourceEditionId) {
+            "Target Edition must be derived from the selected source Edition"
+        }
         val projectId = projects.insert(
             TranslationProjectV2Entity(
                 bookId = bookId,

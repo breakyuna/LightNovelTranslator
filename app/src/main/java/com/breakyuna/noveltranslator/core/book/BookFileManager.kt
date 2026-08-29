@@ -11,7 +11,7 @@ class BookFileManager(private val context: Context) {
     fun coverDir(bookId: Long) = ensured(File(bookDir(bookId), "cover"))
     fun sourceDir(bookId: Long) = ensured(File(bookDir(bookId), "source"))
     fun sharedImagesDir(bookId: Long) = ensured(File(bookDir(bookId), "shared/images"))
-    fun editionChaptersDir(bookId: Long, editionId: Long) = ensured(File(bookDir(bookId), "editions/edition_$editionId/chapters"))
+    fun editionChaptersDir(bookId: Long, editionId: Long) = ensured(editionChaptersPath(bookId, editionId))
     fun workspaceDir(bookId: Long) = ensured(File(bookDir(bookId), "workspace"))
     fun cacheDir(bookId: Long) = ensured(File(context.cacheDir, "books/book_$bookId"))
     fun exportDir(bookId: Long) = ensured(File(context.filesDir, "exports/book_$bookId"))
@@ -43,11 +43,59 @@ class BookFileManager(private val context: Context) {
         return fileName
     }
 
-    /** Removes only the generated chapter files for one specific book Edition. */
-    fun clearEditionChapters(bookId: Long, editionId: Long) {
-        val directory = editionChaptersDir(bookId, editionId)
-        directory.listFiles()?.forEach { child ->
-            check(child.deleteRecursively()) { "Unable to remove old chapter file ${child.name}" }
+    /** Writes a new immutable chapter file for a translation revision. */
+    fun saveEditionChapterVersion(bookId: Long, editionId: Long, chapterIndex: Int, title: String, text: String): String {
+        val fileName = "%04d_%s_%s.txt".format(
+            chapterIndex,
+            safeName(title).take(40).ifBlank { "chapter" },
+            UUID.randomUUID().toString()
+        )
+        atomicWrite(File(editionChaptersDir(bookId, editionId), fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
+        return fileName
+    }
+
+    fun deleteEditionChapterFile(bookId: Long, editionId: Long, fileName: String?) {
+        fileName?.let { File(editionChaptersDir(bookId, editionId), File(it).name).delete() }
+    }
+
+    /** Creates a sibling staging directory for a full Edition rebuild. */
+    fun createEditionChapterStagingDir(bookId: Long, editionId: Long): File {
+        val parent = File(bookDir(bookId), "editions/edition_$editionId").apply { mkdirs() }
+        val staging = File(parent, ".chapters-staging-${UUID.randomUUID()}")
+        check(staging.mkdirs()) { "Unable to create chapter staging directory" }
+        return staging
+    }
+
+    fun saveStagedEditionChapter(stagingDir: File, chapterIndex: Int, title: String, text: String): String {
+        val fileName = "%04d_%s.txt".format(chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
+        atomicWrite(File(stagingDir, fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
+        return fileName
+    }
+
+    /** Swaps a completed staging directory into place and returns the old directory for rollback. */
+    fun swapEditionChapterDirectory(bookId: Long, editionId: Long, stagingDir: File): File? {
+        val target = editionChaptersPath(bookId, editionId)
+        val backup = File(target.parentFile, ".chapters-backup-${UUID.randomUUID()}")
+        val hadTarget = target.exists()
+        if (hadTarget) check(target.renameTo(backup)) { "Unable to stage previous chapter directory" }
+        try {
+            check(stagingDir.renameTo(target)) { "Unable to activate chapter staging directory" }
+            return backup.takeIf { hadTarget }
+        } catch (error: Throwable) {
+            if (!target.exists() && hadTarget) backup.renameTo(target)
+            throw error
+        }
+    }
+
+    fun finalizeEditionChapterSwap(backupDir: File?) {
+        backupDir?.deleteRecursively()
+    }
+
+    fun rollbackEditionChapterSwap(bookId: Long, editionId: Long, backupDir: File?) {
+        val target = editionChaptersPath(bookId, editionId)
+        target.deleteRecursively()
+        if (backupDir != null && backupDir.exists()) {
+            check(backupDir.renameTo(target)) { "Unable to restore previous chapter directory" }
         }
     }
 
@@ -95,4 +143,7 @@ class BookFileManager(private val context: Context) {
         .trim().take(100)
 
     private fun ensured(file: File): File = file.apply { if (!exists()) mkdirs() }
+
+    private fun editionChaptersPath(bookId: Long, editionId: Long): File =
+        File(bookDir(bookId), "editions/edition_$editionId/chapters")
 }

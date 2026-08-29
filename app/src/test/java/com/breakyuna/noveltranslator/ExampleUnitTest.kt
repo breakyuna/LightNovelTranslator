@@ -4,7 +4,6 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.parser.TxtParser
-import com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
 import com.breakyuna.noveltranslator.ui.i18n.getAppStrings
@@ -12,24 +11,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ExampleUnitTest {
-
-    @Test
-    fun translationQualityValidatorDetectsOmissionsAndMarkerChanges() {
-        val source = """
-            First source paragraph with enough detail to establish the scene and its characters.
-
-            [IMG:illustration01.jpg]
-
-            Second source paragraph continues the action with several complete sentences and dialogue.
-        """.trimIndent().repeat(4)
-        val missing = TranslationQualityValidator.validate(source, "A very short summary.")
-        assertFalse(missing.isAcceptable)
-        assertTrue(missing.problems.any { it.contains("short") || it.contains("paragraph") })
-
-        val alteredMarker = TranslationQualityValidator.validate(source, source.replace("illustration01.jpg", "other.jpg"))
-        assertFalse(alteredMarker.isAcceptable)
-        assertTrue(alteredMarker.problems.any { it.contains("image markers") })
-    }
 
     @Test
     fun termExtractionPromptRequiresRequestedTargetLanguage() {
@@ -66,14 +47,13 @@ class ExampleUnitTest {
     @Test
     fun malformedTerminologyJsonIsRejected() {
         assertThrows(IllegalArgumentException::class.java) {
-            TermExtractionAgent.parseTermsJson(1L, "not-json")
+            TermExtractionAgent.parseTermsJson("not-json")
         }
     }
 
     @Test
     fun malformedTerminologyResponseKeepsUsageForAccounting() {
         val result = TermExtractionAgent.parseExtractionResult(
-            projectId = 1L,
             result = LlmResult(
                 text = "not-json",
                 promptTokens = 12,
@@ -328,22 +308,4 @@ class ExampleUnitTest {
         assertEquals("2.50M", TokenCalculator.formatTokenCount(2500000))
     }
 
-    @Test
-    fun testDrawerNavigationItemsAndI18n() {
-        val zhStrings = getAppStrings(AppLanguage.CHINESE)
-        val enStrings = getAppStrings(AppLanguage.ENGLISH)
-
-        assertEquals("项目列表", zhStrings.navHome)
-        assertEquals("Projects", enStrings.navHome)
-        assertEquals("翻译驾驶舱", zhStrings.navTranslation)
-        assertEquals("Translation Cockpit", enStrings.navTranslation)
-        assertEquals("术语专有名词库", zhStrings.navGlossary)
-        assertEquals("Glossary & Terms", enStrings.navGlossary)
-        assertEquals("双语/译文阅读器", zhStrings.navReader)
-        assertEquals("Bilingual Reader", enStrings.navReader)
-        assertEquals("系统设置", zhStrings.navSettings)
-        assertEquals("System Settings", enStrings.navSettings)
-        assertEquals("系统日志", zhStrings.navLogs)
-        assertEquals("System Logs", enStrings.navLogs)
-    }
 }

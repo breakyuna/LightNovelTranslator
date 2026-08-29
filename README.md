@@ -108,7 +108,6 @@ app/src/main/java/com/breakyuna/noveltranslator/
 │   ├── llm/            # Provider、请求、重试与 Token
 │   ├── parser/         # TXT / EPUB 解析
 │   ├── translation/    # 书籍翻译引擎、协议、上下文与 QA
-│   └── translator/     # 兼容的旧版翻译链路
 ├── data/
 │   ├── db/             # Room Database 与 DAO
 │   ├── model/          # Entity、领域模型和查询投影
@@ -123,7 +122,7 @@ app/src/main/java/com/breakyuna/noveltranslator/
 
 ## 数据与文件
 
-Room 保存关系、状态、阅读进度、Revision、Memory、Lexicon、任务和审计数据；正文和二进制资源由文件管理层保存。
+Room 保存关系、状态、阅读进度、Revision、Memory、Lexicon、任务和审计数据；正文和二进制资源由文件管理层保存。当前 beta 使用独立的平台数据库文件，不再加载旧版项目、章节或任务表。
 
 ```text
 files/books/book_<id>/
@@ -171,7 +170,7 @@ ANDROID_KEY_PASSWORD
 
 ## 贡献与约束
 
-提交代码前请阅读 [`AGENTS.md`](AGENTS.md)。涉及数据模型的改动必须同步数据库版本、Migration、DAO 投影和迁移测试；涉及顶级页面的改动必须同时更新手机底栏、平板侧栏与 `NavHost`。
+提交代码前请阅读 [`AGENTS.md`](AGENTS.md)。涉及数据模型的改动必须同步当前数据库实体、DAO 投影和 schema；涉及顶级页面的改动必须同时更新手机底栏、平板侧栏与 `NavHost`。
 
 ## License
 

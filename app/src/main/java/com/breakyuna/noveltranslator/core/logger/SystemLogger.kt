@@ -25,7 +25,6 @@ enum class LogLevel {
     ERROR,
     DEBUG
 }
-
 data class SystemLogEntry(
     val id: String = StableLogId.create(),
     val timestamp: Long = System.currentTimeMillis(),
@@ -52,9 +51,7 @@ data class SystemLogEntry(
  */
 object SystemLogger {
     internal const val JSONL_FILE_NAME = "system_runtime.jsonl"
-    internal const val LEGACY_FILE_NAME = "system_runtime.log"
     private const val ROTATED_FILE_SUFFIX = ".1"
-    private const val LEGACY_BACKUP_SUFFIX = ".legacy"
     internal const val MAX_MEMORY_LOGS = 600
     private const val MAX_FILE_BYTES = 5L * 1024L * 1024L
     private const val RETENTION_MILLIS = 30L * 24L * 60L * 60L * 1_000L
@@ -115,6 +112,8 @@ object SystemLogger {
             memoryLogs.clear()
             _logsFlow.value = emptyList()
             logFile = null
+            activeLogFile = null
+            lastCleanupAt = 0L
             recoveryGeneration++
             persistenceCommands.trySend(
                 PersistenceCommand.Initialize(directory, recoveryGeneration)
@@ -193,39 +192,41 @@ object SystemLogger {
                 throw IllegalStateException("Unable to create log directory: ${directory.path}")
             }
             val target = File(directory, JSONL_FILE_NAME)
-            val legacy = File(directory, LEGACY_FILE_NAME)
-            if (!target.exists() && legacy.exists()) migrateLegacyFile(legacy, target)
             if (!target.exists()) target.createNewFile()
             val now = System.currentTimeMillis()
             cleanupExpiredLogs(target, now)
 
-            activeLogFile = target
-            logFile = target
-            val recoveryStillCurrent = synchronized(stateLock) {
-                commandGeneration == recoveryGeneration
-            }
-            if (recoveryStillCurrent) lastCleanupAt = now
-
-            if (recoveryStillCurrent && pendingBeforeInitialization.isNotEmpty()) {
-                val pending = pendingBeforeInitialization.toList()
+            synchronized(stateLock) {
+                // A newer directory command may have been queued while cleanup was running.
+                // Never expose the stale file as active, otherwise an intervening log could be
+                // appended to the directory that the caller has already replaced. Drain the
+                // pending queue while holding the same lock so a concurrent init cannot clear
+                // activeLogFile between the generation check and the append.
+                if (commandGeneration != recoveryGeneration) return
+                activeLogFile = target
+                logFile = target
+                lastCleanupAt = now
+                pendingBeforeInitialization.forEach(::appendEntry)
                 pendingBeforeInitialization.clear()
-                pending.forEach(::appendEntry)
             }
-            if (recoveryStillCurrent) {
-                publishFromPersistenceWorker(
-                    createEntry(LogLevel.INFO, "SYSTEM", "System logger initialized successfully."),
-                    persist = true
-                )
-            }
+            publishFromPersistenceWorker(
+                createEntry(LogLevel.INFO, "SYSTEM", "System logger initialized successfully."),
+                persist = true,
+                expectedGeneration = commandGeneration
+            )
         } catch (error: Exception) {
-            activeLogFile = null
+            synchronized(stateLock) {
+                if (commandGeneration != recoveryGeneration) return
+                activeLogFile = null
+            }
             publishFromPersistenceWorker(
                 createEntry(
                     LogLevel.WARN,
                     "SYSTEM",
                     "Failed to initialize log file: ${error.localizedMessage ?: error.javaClass.simpleName}"
                 ),
-                persist = false
+                persist = false,
+                expectedGeneration = commandGeneration
             )
         }
     }
@@ -246,8 +247,13 @@ object SystemLogger {
         chapterIndex = chapterIndex
     )
 
-    private fun publishFromPersistenceWorker(entry: SystemLogEntry, persist: Boolean) {
+    private fun publishFromPersistenceWorker(
+        entry: SystemLogEntry,
+        persist: Boolean,
+        expectedGeneration: Long? = null
+    ) {
         synchronized(stateLock) {
+            if (expectedGeneration != null && expectedGeneration != recoveryGeneration) return
             memoryLogs.addLast(entry)
             trimMemoryLogs()
             _logsFlow.value = memoryLogs.toList()
@@ -327,9 +333,7 @@ object SystemLogger {
         runCatching {
             listOf(
                 file,
-                File(file.parentFile, file.name + ROTATED_FILE_SUFFIX),
-                File(file.parentFile, LEGACY_FILE_NAME),
-                File(file.parentFile, LEGACY_FILE_NAME + LEGACY_BACKUP_SUFFIX)
+                File(file.parentFile, file.name + ROTATED_FILE_SUFFIX)
             ).forEach { candidate ->
                 if (candidate == file) {
                     candidate.parentFile?.mkdirs()
@@ -339,118 +343,6 @@ object SystemLogger {
                 }
             }
         }
-    }
-
-    private fun migrateLegacyFile(legacy: File, target: File) {
-        val migrated = parseLegacyEntries(legacy.readLines(Charsets.UTF_8))
-        val temporary = File(target.parentFile, target.name + ".migrating")
-        temporary.bufferedWriter(Charsets.UTF_8).use { writer ->
-            migrated.forEach { entry ->
-                writer.append(adapter.toJson(entry))
-                writer.newLine()
-            }
-        }
-        if (target.exists() && !target.delete()) {
-            throw IllegalStateException("Unable to replace incomplete JSONL log")
-        }
-        if (!temporary.renameTo(target)) {
-            temporary.copyTo(target, overwrite = true)
-            temporary.delete()
-        }
-        val backup = File(legacy.parentFile, legacy.name + LEGACY_BACKUP_SUFFIX)
-        if (backup.exists()) backup.delete()
-        legacy.renameTo(backup)
-    }
-
-    internal fun parseLegacyEntries(lines: List<String>): List<SystemLogEntry> {
-        data class Draft(
-            val rawTimestamp: String,
-            val level: LogLevel,
-            val tag: String,
-            val projectId: Long?,
-            val chapterIndex: Int?,
-            val messageLines: MutableList<String>,
-            val detailLines: MutableList<String>,
-            val ordinal: Int
-        )
-
-        val header = Regex("^\\[(.+?)] \\[(INFO|WARN|ERROR|DEBUG)] \\[(.+?)] (.*)$")
-        val projectPrefix = Regex("^\\[Proj#(-?\\d+)]\\s*")
-        val chapterPrefix = Regex("^\\[Chap#(-?\\d+)]\\s*")
-        val timestampParser = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).apply {
-            isLenient = false
-        }
-        val result = mutableListOf<SystemLogEntry>()
-        var draft: Draft? = null
-        var inDetails = false
-        var ordinal = 0
-
-        fun flush() {
-            val current = draft ?: return
-            val message = sanitize(current.messageLines.joinToString("\n"))
-            val details = current.detailLines.joinToString("\n").takeIf { it.isNotBlank() }?.let(::sanitize)
-            val canonical = listOf(
-                current.ordinal.toString(),
-                current.rawTimestamp,
-                current.level.name,
-                current.tag,
-                current.projectId?.toString().orEmpty(),
-                current.chapterIndex?.toString().orEmpty(),
-                message,
-                details.orEmpty()
-            ).joinToString("\u001f")
-            val timestamp = runCatching { timestampParser.parse(current.rawTimestamp)?.time }
-                .getOrNull() ?: 0L
-            result += SystemLogEntry(
-                id = StableLogId.fromLegacyRecord(canonical),
-                timestamp = timestamp,
-                level = current.level,
-                tag = sanitize(current.tag),
-                message = message,
-                details = details,
-                projectId = current.projectId,
-                chapterIndex = current.chapterIndex
-            )
-            draft = null
-            inDetails = false
-        }
-
-        lines.forEach { line ->
-            val match = header.find(line)
-            if (match != null) {
-                flush()
-                var remainder = match.groupValues[4]
-                val projectMatch = projectPrefix.find(remainder)
-                val projectId = projectMatch?.groupValues?.get(1)?.toLongOrNull()
-                if (projectMatch != null) remainder = remainder.removeRange(projectMatch.range).trimStart()
-                val chapterMatch = chapterPrefix.find(remainder)
-                val chapterIndex = chapterMatch?.groupValues?.get(1)?.toIntOrNull()
-                if (chapterMatch != null) remainder = remainder.removeRange(chapterMatch.range).trimStart()
-                draft = Draft(
-                    rawTimestamp = match.groupValues[1],
-                    level = runCatching { LogLevel.valueOf(match.groupValues[2]) }.getOrDefault(LogLevel.INFO),
-                    tag = match.groupValues[3],
-                    projectId = projectId,
-                    chapterIndex = chapterIndex,
-                    messageLines = mutableListOf(remainder),
-                    detailLines = mutableListOf(),
-                    ordinal = ordinal++
-                )
-            } else {
-                val current = draft ?: return@forEach
-                when {
-                    line.startsWith("  Details: ") -> {
-                        inDetails = true
-                        current.detailLines += line.removePrefix("  Details: ")
-                    }
-                    inDetails && line.startsWith("  ") -> current.detailLines += line.removePrefix("  ")
-                    inDetails -> current.detailLines += line
-                    else -> current.messageLines += line
-                }
-            }
-        }
-        flush()
-        return result
     }
 
     private fun trimMemoryLogs() {

@@ -41,6 +41,21 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun parser_keeps_complete_translation_when_optional_meta_is_truncated() {
+        val parsed = TranslationProtocol.parse(
+            """
+            <TRANSLATION><C id="1"><S id="1">完整译文</S></C></TRANSLATION>
+            <META>{"chapterMemory":[
+            """.trimIndent()
+        )
+
+        assertTrue(parsed.isTruncated)
+        assertFalse(parsed.translationTruncated)
+        assertTrue(parsed.metadataTruncated)
+        assertEquals("完整译文", parsed.chapters.single().segments[1])
+    }
+
+    @Test
     fun parser_records_duplicate_segment_ids_for_repair() {
         val parsed = TranslationProtocol.parse(
             """

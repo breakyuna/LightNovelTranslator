@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.core.translation
 
 import androidx.room.withTransaction
+import com.breakyuna.noveltranslator.core.agent.ExtractedTermCandidate
 import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
 import com.breakyuna.noveltranslator.core.agent.TermCandidateValidator
 import com.breakyuna.noveltranslator.core.agent.TermValidationResult
@@ -33,9 +34,17 @@ class BookTranslationScheduler(
     private val globalSlots = Semaphore(maxConcurrentBooks.coerceAtLeast(1))
 
     suspend fun run(projectId: Long) {
-        val bookId = engine.projectBookId(projectId) ?: return
-        globalSlots.withPermit {
-            bookLocks.getOrPut(bookId) { Mutex() }.withLock { engine.runStrictlySerial(projectId) }
+        try {
+            val bookId = engine.projectBookId(projectId) ?: return
+            globalSlots.withPermit {
+                bookLocks.getOrPut(bookId) { Mutex() }.withLock { engine.runStrictlySerial(projectId) }
+            }
+        } finally {
+            // A queued job can be cancelled while waiting for the global slot or the per-book
+            // mutex, before runStrictlySerial has a chance to enter its own cleanup block.
+            // Drop that orphaned control so a later explicit run is not rejected by a stale
+            // pre-start cancellation signal.
+            engine.clearControlIfIdle(projectId)
         }
     }
 
@@ -76,10 +85,18 @@ class BookTranslationEngine(
     private val projects = database.translationProjectV2Dao()
     private val tasks = database.platformTaskDao()
     private val controls = ConcurrentHashMap<Long, ProjectControl>()
+    /** Projects that have claimed the per-book execution slot, including startup I/O. */
+    private val claimedProjects = ConcurrentHashMap.newKeySet<Long>()
     private val activeRuns = ConcurrentHashMap<Long, Long>()
     private val lexiconCandidateAggregator = LexiconCandidateAggregator(database)
 
     suspend fun projectBookId(projectId: Long): Long? = projects.get(projectId)?.bookId
+
+    internal fun clearControlIfIdle(projectId: Long) {
+        if (projectId !in claimedProjects && activeRuns[projectId] == null) {
+            controls.remove(projectId)
+        }
+    }
 
     suspend fun pause(projectId: Long) {
         controls.getOrPut(projectId) { ProjectControl() }.requestPause()
@@ -88,7 +105,8 @@ class BookTranslationEngine(
     }
 
     suspend fun resume(projectId: Long) {
-        controls.getOrPut(projectId) { ProjectControl() }.resume()
+        val control = controls.getOrPut(projectId) { ProjectControl() }
+        if (!control.resume()) return
         projects.updateState(projectId, "RUNNING")
         activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "RUNNING", updatedAt = System.currentTimeMillis())) } }
     }
@@ -105,49 +123,56 @@ class BookTranslationEngine(
     }
 
     suspend fun runStrictlySerial(projectId: Long) {
-        val project = projects.get(projectId) ?: return
-        // Provider credentials are encrypted at rest. Always resolve through the repository
-        // decryption boundary instead of reading ApiProviderDao directly.
-        val provider = project.providerId?.let { providerResolver(it) }?.let { resolved ->
-            resolved.copy(selectedModel = project.modelName.ifBlank { resolved.selectedModel })
-        }
-            ?: error("Translation project has no available provider")
-        val targets = selectTargets(project)
-        // If the draft already exists, enabling the option should still allow a one-time
-        // post-draft review. Only chapters without an active AI_POLISH revision are selected,
-        // so pressing run again does not pay for the same review repeatedly.
-        val reviewOnlyTargets = if (targets.isEmpty() && project.highQualityReview) {
-            selectReviewTargets(project)
-        } else {
-            emptyList()
-        }
-        if (targets.isEmpty() && reviewOnlyTargets.isEmpty()) {
-            SystemLogger.info("TRANSLATION", "项目 #${project.id} 所有章节已完成，暂无新的初稿或待审校章节。", projectId = project.id)
-            return
-        }
-        val control = controls.getOrPut(projectId) { ProjectControl() }.apply { reset() }
-        val runId = tasks.insertRun(
-            PlatformTranslationRunEntity(
-                translationProjectId = project.id,
-                bookId = project.bookId,
-                providerId = provider.id,
-                providerName = provider.name,
-                modelName = provider.selectedModel,
-                state = "RUNNING",
-                currency = provider.currency
-            )
-        )
-        activeRuns[projectId] = runId
-        projects.updateState(project.id, "RUNNING")
-        SystemLogger.info(
-            "TRANSLATION",
-            "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，待翻译 ${targets.size} 章，待二次审校 ${reviewOnlyTargets.size} 章",
-            projectId = project.id
-        )
+        // Acquire the gate before any startup I/O. A pause/cancel issued while the project,
+        // provider, or chapter list is loading must not be erased by a late reset.
+        // A control signal may be created by pause/cancel while the scheduler is still waiting
+        // for a book slot. Reusing it preserves that decision instead of starting a paid run
+        // after a cancellation that arrived before startup I/O.
+        claimedProjects.add(projectId)
+        val control = controls.computeIfAbsent(projectId) { ProjectControl() }
         try {
-            var cursor = 0
-            var batchIndex = 0
-            while (cursor < targets.size) {
+            val project = projects.get(projectId) ?: return
+            // Provider credentials are encrypted at rest. Always resolve through the repository
+            // decryption boundary instead of reading ApiProviderDao directly.
+            val provider = project.providerId?.let { providerResolver(it) }?.let { resolved ->
+                resolved.copy(selectedModel = project.modelName.ifBlank { resolved.selectedModel })
+            }
+                ?: error("Translation project has no available provider")
+            val targets = selectTargets(project)
+            // If the draft already exists, enabling the option should still allow a one-time
+            // post-draft review. Only chapters without an active AI_POLISH revision are selected,
+            // so pressing run again does not pay for the same review repeatedly.
+            val reviewOnlyTargets = if (targets.isEmpty() && project.highQualityReview) {
+                selectReviewTargets(project)
+            } else {
+                emptyList()
+            }
+            if (targets.isEmpty() && reviewOnlyTargets.isEmpty()) {
+                SystemLogger.info("TRANSLATION", "项目 #${project.id} 所有章节已完成，暂无新的初稿或待审校章节。", projectId = project.id)
+                return
+            }
+            val runId = tasks.insertRun(
+                PlatformTranslationRunEntity(
+                    translationProjectId = project.id,
+                    bookId = project.bookId,
+                    providerId = provider.id,
+                    providerName = provider.name,
+                    modelName = provider.selectedModel,
+                    state = "RUNNING",
+                    currency = provider.currency
+                )
+            )
+            activeRuns[projectId] = runId
+            projects.updateState(project.id, "RUNNING")
+            SystemLogger.info(
+                "TRANSLATION",
+                "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，待翻译 ${targets.size} 章，待二次审校 ${reviewOnlyTargets.size} 章",
+                projectId = project.id
+            )
+            try {
+                var cursor = 0
+                var batchIndex = 0
+                while (cursor < targets.size) {
                 awaitBoundary(projectId, control)
                 val candidates = targets.drop(cursor).take(project.maxBatchChapters.coerceIn(1, 5))
                 val sourceChapters = candidates.mapIndexed { index, chapter -> loadSourceChapter(project, chapter, index + 1) }
@@ -242,38 +267,42 @@ class BookTranslationEngine(
                 "✅ 翻译任务执行完毕！最终状态: $finalState，已成功翻译 ${run?.completedChapters ?: 0} 章，失败 ${run?.failedChapters ?: 0} 章",
                 projectId = project.id
             )
-        } catch (cancelled: CancellationException) {
-            projects.updateState(project.id, "CANCELLED")
-            tasks.getRunningBatches(runId).forEach { batch ->
-                tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
-            }
-            tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
-            SystemLogger.warn("TRANSLATION", "🛑 翻译任务已被用户取消", projectId = project.id)
-        } catch (error: Throwable) {
-            val failureReport = buildFailureReport(error)
-            projects.updateState(project.id, "FAILED")
-            tasks.getRun(runId)?.let {
-                tasks.updateRun(it.copy(state = "FAILED", lastError = failureReport.take(2_000), updatedAt = System.currentTimeMillis()))
-            }
-            tasks.insertRequestLog(
-                PlatformRequestLogEntity(
-                    runId = runId,
-                    batchId = null,
-                    operation = "TRANSLATION_RUN",
-                    attemptCount = 1,
-                    promptTokens = 0,
-                    completionTokens = 0,
-                    estimatedCost = 0.0,
-                    durationMs = 0,
-                    errorCategory = error::class.simpleName ?: "UNEXPECTED_ERROR",
-                    errorMessage = failureReport,
-                    isSuccess = false
+            } catch (cancelled: CancellationException) {
+                projects.updateState(project.id, "CANCELLED")
+                tasks.getRunningBatches(runId).forEach { batch ->
+                    tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+                }
+                tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
+                SystemLogger.warn("TRANSLATION", "🛑 翻译任务已被用户取消", projectId = project.id)
+            } catch (error: Throwable) {
+                val failureReport = buildFailureReport(error)
+                projects.updateState(project.id, "FAILED")
+                tasks.getRun(runId)?.let {
+                    tasks.updateRun(it.copy(state = "FAILED", lastError = failureReport.take(2_000), updatedAt = System.currentTimeMillis()))
+                }
+                tasks.insertRequestLog(
+                    PlatformRequestLogEntity(
+                        runId = runId,
+                        batchId = null,
+                        operation = "TRANSLATION_RUN",
+                        attemptCount = 1,
+                        promptTokens = 0,
+                        completionTokens = 0,
+                        estimatedCost = 0.0,
+                        durationMs = 0,
+                        errorCategory = error::class.simpleName ?: "UNEXPECTED_ERROR",
+                        errorMessage = failureReport,
+                        isSuccess = false
+                    )
                 )
-            )
-            SystemLogger.error("TRANSLATION", "❌ 翻译任务异常终止: ${error.message}", details = failureReport, projectId = project.id)
-            throw error
+                SystemLogger.error("TRANSLATION", "❌ 翻译任务异常终止: ${error.message}", details = failureReport, projectId = project.id)
+                throw error
+            } finally {
+                activeRuns.remove(projectId)
+            }
         } finally {
-            activeRuns.remove(projectId)
+            controls.remove(projectId, control)
+            claimedProjects.remove(projectId)
         }
     }
 
@@ -291,12 +320,18 @@ class BookTranslationEngine(
     }
 
     private suspend fun awaitBoundary(projectId: Long, control: ProjectControl) {
-        if (control.cancelled.get()) throw CancellationException("Translation cancelled")
-        while (control.paused.get()) {
-            delay(200)
+        while (true) {
             if (control.cancelled.get()) throw CancellationException("Translation cancelled")
+            if (control.paused.get()) {
+                projects.updateState(projectId, "PAUSED")
+                delay(200)
+                continue
+            }
+            // Pause can race with the state write above. Re-check after publishing RUNNING so a
+            // request cannot observe a running project while its gate is already paused.
+            projects.updateState(projectId, "RUNNING")
+            if (!control.paused.get() && !control.cancelled.get()) return
         }
-        projects.updateState(projectId, "RUNNING")
     }
 
     /** Checks the project gate after a provider call and immediately before any durable write. */
@@ -467,7 +502,7 @@ class BookTranslationEngine(
             .maxByOrNull { it.chapterIndex }
             ?: return "" to ""
         // Prefer the revision-resolved text so manual edits and glossary replacements are visible
-        // in continuity context; fall back to the chapter files for legacy/partially imported rows.
+        // in continuity context; fall back to the chapter file for partially imported rows.
         val previousSource = try {
             loadSourceChapter(project, previous, shortId = 1)
         } catch (cancelled: CancellationException) {
@@ -652,7 +687,10 @@ class BookTranslationEngine(
             chapterIndex = firstIndex
         )
         val parsed = TranslationProtocol.parse(result.text)
-        val completeParsed = parsed.takeUnless { it.isTruncated }
+        // Parse each chapter independently. A response can be structurally truncated after one or
+        // more complete chapters; QA accepts those complete chapters and repairs only the missing
+        // or malformed chapter instead of discarding valid work from the same paid request.
+        val completeParsed = parsed
         val mandatoryTerms = context.matchedLexicon
         var failed = 0
         var totalPromptTokens = result.promptTokens
@@ -895,7 +933,7 @@ class BookTranslationEngine(
         }
         val parsed = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
         val candidate = parsed
-            ?.takeUnless { result.isTruncated || it.isTruncated }
+            ?.takeUnless { result.isTruncated }
             ?.chapters
             ?.singleOrNull()
             ?.takeIf { it.shortId == source.shortId }
@@ -1007,7 +1045,6 @@ class BookTranslationEngine(
         if (!retry.isSuccess || retry.isTruncated) return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
         val repairedResponse = runCatching { TranslationProtocol.parse(retry.text) }.getOrNull()
         val repaired = repairedResponse
-            ?.takeUnless { it.isTruncated }
             ?.chapters
             ?.filter { it.shortId == source.shortId }
             ?.singleOrNull()
@@ -1109,7 +1146,7 @@ class BookTranslationEngine(
             val mandatoryTerms = context.matchedLexicon
             val parsedResponse = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
             var parsed = parsedResponse
-                ?.takeUnless { it.isTruncated }
+                ?.takeUnless { result.isTruncated }
                 ?.chapters
                 ?.filter { it.shortId == chunkSource.shortId }
                 ?.singleOrNull()
@@ -1154,7 +1191,8 @@ class BookTranslationEngine(
             }
             val validated = parsed ?: error("QA accepted a missing parsed chunk")
             validated.segments.forEach { (id, text) ->
-                translated[id] = translated[id].orEmpty() + text
+                val previous = translated[id]
+                translated[id] = if (previous.isNullOrBlank()) text else "$previous\n\n$text"
             }
             previousChunkTranslationTail = validated.segments.values.joinToString("\n").takeLast(900)
         }
@@ -1185,66 +1223,74 @@ class BookTranslationEngine(
         revisionType: RevisionType = RevisionType.AI_TRANSLATION
     ) {
         val joined = source.segments.joinToString("\n\n") { translated.segments[it.shortId].orEmpty() }
-        val fileName = files.saveEditionChapter(project.bookId, project.targetEditionId, source.chapterIndex, source.title, joined)
-        database.withTransaction {
-            val existingTargetChapter = books.getEditionChapter(project.targetEditionId, source.logicalChapterId)
-            val targetChapter = if (existingTargetChapter == null) {
-                val id = books.insertEditionChapter(
-                    EditionChapterEntity(
-                        editionId = project.targetEditionId,
-                        logicalChapterId = source.logicalChapterId,
-                        title = source.title,
-                        contentFileName = fileName,
-                        wordCount = joined.length,
-                        isAvailable = true
-                    )
-                )
-                books.getEditionChapter(project.targetEditionId, source.logicalChapterId)?.copy(id = id)
-                    ?: error("Inserted target chapter could not be reloaded")
-            } else {
-                books.updateEditionChapter(
-                    existingTargetChapter.copy(
-                        contentFileName = fileName,
-                        wordCount = joined.length,
-                        isAvailable = true,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-                existingTargetChapter
-            }
-            val existing = books.getEditionSegments(targetChapter.id)
-            val existingByLogical = if (existing.isEmpty()) emptyMap() else {
-                val ids = source.segments.map { it.logicalSegmentId }
-                val mappings = books.getMappings(ids).filter { mapping -> existing.any { it.id == mapping.editionSegmentId } }
-                mappings.associate { it.logicalSegmentId to it.editionSegmentId }
-            }
-            source.segments.forEach { segment ->
-                val text = translated.segments[segment.shortId] ?: return@forEach
-                val existingId = existingByLogical[segment.logicalSegmentId]
-                val revisionTypeName = revisionType.name
-                if (existingId != null) {
-                    // A new translation invalidates the previous second-pass marker. Likewise,
-                    // repeated review calls replace the previous AI_POLISH revision without
-                    // touching manual or confirmed glossary revisions.
-                    books.getActiveRevisions(listOf(existingId))
-                        .filter { it.revisionType == RevisionType.AI_POLISH.name }
-                        .forEach { books.deactivateRevision(it.id) }
-                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = existingId, revisionType = revisionTypeName, text = text))
-                } else {
-                    val segmentId = books.insertEditionSegments(
-                        listOf(
-                            EditionSegmentEntity(
-                                editionChapterId = targetChapter.id,
-                                segmentIndex = segment.shortId - 1,
-                                baseText = text,
-                                sourceHash = "translated:${segment.logicalSegmentId}"
-                            )
+        val previousFileName = books.getEditionChapter(project.targetEditionId, source.logicalChapterId)?.contentFileName
+        val fileName = files.saveEditionChapterVersion(project.bookId, project.targetEditionId, source.chapterIndex, source.title, joined)
+        try {
+            awaitCommitBoundary(project.id)
+            database.withTransaction {
+                val existingTargetChapter = books.getEditionChapter(project.targetEditionId, source.logicalChapterId)
+                val targetChapter = if (existingTargetChapter == null) {
+                    val id = books.insertEditionChapter(
+                        EditionChapterEntity(
+                            editionId = project.targetEditionId,
+                            logicalChapterId = source.logicalChapterId,
+                            title = source.title,
+                            contentFileName = fileName,
+                            wordCount = joined.length,
+                            isAvailable = true
                         )
-                    ).single()
-                    books.insertMappings(listOf(EditionSegmentMappingEntity(segment.logicalSegmentId, segmentId)))
-                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = segmentId, revisionType = revisionTypeName, text = text))
+                    )
+                    books.getEditionChapter(project.targetEditionId, source.logicalChapterId)?.copy(id = id)
+                        ?: error("Inserted target chapter could not be reloaded")
+                } else {
+                    books.updateEditionChapter(
+                        existingTargetChapter.copy(
+                            contentFileName = fileName,
+                            wordCount = joined.length,
+                            isAvailable = true,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                    existingTargetChapter
+                }
+                val existing = books.getEditionSegments(targetChapter.id)
+                val existingByLogical = if (existing.isEmpty()) emptyMap() else {
+                    val ids = source.segments.map { it.logicalSegmentId }
+                    val mappings = books.getMappings(ids).filter { mapping -> existing.any { it.id == mapping.editionSegmentId } }
+                    mappings.associate { it.logicalSegmentId to it.editionSegmentId }
+                }
+                source.segments.forEach { segment ->
+                    val text = translated.segments[segment.shortId] ?: return@forEach
+                    val existingId = existingByLogical[segment.logicalSegmentId]
+                    val revisionTypeName = revisionType.name
+                    if (existingId != null) {
+                        // A new translation invalidates the previous second-pass marker. Likewise,
+                        // repeated review calls replace the previous AI_POLISH revision without
+                        // touching manual or confirmed glossary revisions.
+                        books.getActiveRevisions(listOf(existingId))
+                            .filter { it.revisionType == RevisionType.AI_POLISH.name }
+                            .forEach { books.deactivateRevision(it.id) }
+                        books.insertRevision(SegmentRevisionEntity(editionSegmentId = existingId, revisionType = revisionTypeName, text = text))
+                    } else {
+                        val segmentId = books.insertEditionSegments(
+                            listOf(
+                                EditionSegmentEntity(
+                                    editionChapterId = targetChapter.id,
+                                    segmentIndex = segment.shortId - 1,
+                                    baseText = text,
+                                    sourceHash = "translated:${segment.logicalSegmentId}"
+                                )
+                            )
+                        ).single()
+                        books.insertMappings(listOf(EditionSegmentMappingEntity(segment.logicalSegmentId, segmentId)))
+                        books.insertRevision(SegmentRevisionEntity(editionSegmentId = segmentId, revisionType = revisionTypeName, text = text))
+                    }
                 }
             }
+            files.deleteEditionChapterFile(project.bookId, project.targetEditionId, previousFileName)
+        } catch (error: Throwable) {
+            files.deleteEditionChapterFile(project.bookId, project.targetEditionId, fileName)
+            throw error
         }
     }
 
@@ -1294,7 +1340,7 @@ class BookTranslationEngine(
         val confirmedSourceTerms = database.lexiconV2Dao().getAll(project.id)
             .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
             .mapTo(mutableSetOf()) { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
-        val metadataCandidates = mutableListOf<GlossaryEntity>()
+        val metadataCandidates = mutableListOf<ExtractedTermCandidate>()
         parsed.lexiconCandidates.forEach { candidate ->
             val normalized = LexiconCandidateVoting.normalizeSourceTerm(candidate.source)
             if (normalized in confirmedSourceTerms) return@forEach
@@ -1307,15 +1353,11 @@ class BookTranslationEngine(
                     sourceText = metadataSource
                 )
             ) {
-                is TermValidationResult.Accepted -> metadataCandidates += GlossaryEntity(
-                    projectId = project.id,
+                is TermValidationResult.Accepted -> metadataCandidates += ExtractedTermCandidate(
                     originalTerm = validation.originalTerm,
                     translatedTerm = validation.translatedTerm,
                     category = validation.category,
-                    notes = validation.notes,
-                    isAutoExtracted = true,
-                    source = LexiconSource.AI.name,
-                    reviewStatus = ReviewStatus.CANDIDATE.name
+                    notes = validation.notes
                 )
                 is TermValidationResult.Rejected -> SystemLogger.warn(
                     "GLOSSARY",
@@ -1499,26 +1541,23 @@ class BookTranslationEngine(
         val cancelled: AtomicBoolean = AtomicBoolean(false),
         val signal: TranslationControlSignal = TranslationControlSignal()
     ) {
-        fun requestPause() {
+        suspend fun requestPause() {
             paused.set(true)
             signal.requestPause()
         }
 
-        fun resume() {
+        fun resume(): Boolean {
+            if (cancelled.get()) return false
             paused.set(false)
             signal.resume()
+            return true
         }
 
-        fun cancel() {
+        suspend fun cancel() {
             cancelled.set(true)
-            signal.cancel()
+            signal.requestCancel()
         }
 
-        fun reset() {
-            paused.set(false)
-            cancelled.set(false)
-            signal.reset()
-        }
     }
 }
 

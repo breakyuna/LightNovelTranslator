@@ -18,7 +18,7 @@ enum class TopLevelDestination(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    PROJECTS(
+    BOOKSHELF(
         route = "bookshelf",
         selectedIcon = Icons.Filled.LibraryBooks,
         unselectedIcon = Icons.Outlined.LibraryBooks
@@ -40,7 +40,7 @@ enum class TopLevelDestination(
     );
 
     fun getLabel(strings: AppStrings): String = when (this) {
-        PROJECTS -> if (strings === EnglishStrings) "Bookshelf" else "书架"
+        BOOKSHELF -> if (strings === EnglishStrings) "Bookshelf" else "书架"
         HISTORY -> if (strings === EnglishStrings) "History" else "阅读历史"
         TASKS -> if (strings === EnglishStrings) "Workbench" else "工作台"
         SETTINGS -> strings.navSettings

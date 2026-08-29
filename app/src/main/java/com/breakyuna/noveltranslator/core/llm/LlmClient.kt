@@ -465,15 +465,19 @@ class LlmClient : LlmGateway {
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
-                    val responseBody = readResponseBodyLimited(it)
-                    if (continuation.isActive) continuation.resume(
-                        HttpPayload(
-                            code = it.code,
-                            body = responseBody,
-                            retryAfterMs = parseRetryAfter(it.header("Retry-After")),
-                            requestId = it.header("x-request-id") ?: it.header("request-id")
+                    try {
+                        val responseBody = readResponseBodyLimited(it)
+                        if (continuation.isActive) continuation.resume(
+                            HttpPayload(
+                                code = it.code,
+                                body = responseBody,
+                                retryAfterMs = parseRetryAfter(it.header("Retry-After")),
+                                requestId = it.header("x-request-id") ?: it.header("request-id")
+                            )
                         )
-                    )
+                    } catch (error: Throwable) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    }
                 }
             }
         })
@@ -570,8 +574,13 @@ class LlmClient : LlmGateway {
             val obj = JSONObject(body)
             obj.optJSONObject("error")?.optString("message") ?: obj.optString("message")
         }.getOrNull().orEmpty()
-        return parsed.ifBlank { body }.take(MAX_ERROR_CHARS)
+        return redactSensitive(parsed.ifBlank { body }).take(MAX_ERROR_CHARS)
     }
+
+    private fun redactSensitive(value: String): String = value
+        .replace(Regex("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,}]+"), "\$1[REDACTED]")
+        .replace(Regex("(?i)(x-goog-api-key\\s*[:=]\\s*)[^\\s,}]+"), "\$1[REDACTED]")
+        .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*[^\\s,}]+"), "\$1=[REDACTED]")
 
     private fun validateEndpoint(endpoint: String, providerType: ProviderType) {
         val uri = runCatching { URI(endpoint) }.getOrElse { throw IllegalArgumentException("Invalid API endpoint") }

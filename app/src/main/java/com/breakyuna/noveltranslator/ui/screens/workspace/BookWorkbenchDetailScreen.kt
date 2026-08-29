@@ -45,7 +45,6 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
-import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
@@ -128,7 +127,7 @@ fun BookWorkbenchDetailScreen(
     var showAddTermDialog by rememberSaveable { mutableStateOf(false) }
     var chapterActionTarget by remember { mutableStateOf<LogicalChapterEntity?>(null) }
     var aiSplitProvider by remember(bookId) { mutableStateOf<ApiProviderEntity?>(null) }
-    var aiSplitPreview by remember(bookId) { mutableStateOf<List<ParsedChapter>?>(null) }
+    var aiSplitPreview by remember(bookId) { mutableStateOf<List<ChapterSplitPreview>?>(null) }
 
     val currentBook = book
     if (currentBook == null) {
@@ -409,7 +408,10 @@ fun BookWorkbenchDetailScreen(
 
     aiSplitPreview?.let { preview ->
         AlertDialog(
-            onDismissRequest = { aiSplitPreview = null },
+            onDismissRequest = {
+                aiSplitPreview = null
+                viewModel.discardAgentBookChapterSplit(currentBook.id)
+            },
             title = { Text("确认章节识别结果（${preview.size} 章）") },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
@@ -430,11 +432,16 @@ fun BookWorkbenchDetailScreen(
                 Button(
                     onClick = {
                         aiSplitPreview = null
-                        viewModel.applyAgentBookChapterSplit(currentBook.id, preview)
+                        viewModel.applyAgentBookChapterSplit(currentBook.id)
                     }
                 ) { Text("确认并应用") }
             },
-            dismissButton = { TextButton(onClick = { aiSplitPreview = null }) { Text("放弃") } }
+            dismissButton = {
+                TextButton(onClick = {
+                    aiSplitPreview = null
+                    viewModel.discardAgentBookChapterSplit(currentBook.id)
+                }) { Text("放弃") }
+            }
         )
     }
 
@@ -450,7 +457,6 @@ fun BookWorkbenchDetailScreen(
                 Button(
                     onClick = {
                         viewModel.retranslateChapter(
-                            bookId = currentBook.id,
                             editionId = currentTargetEdition.id,
                             logicalChapterId = targetCh.id,
                             projectId = currentProject?.id

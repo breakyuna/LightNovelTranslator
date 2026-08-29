@@ -42,8 +42,12 @@ data class ParsedTranslationChapter(
 data class ParsedTranslationResponse(
     val chapters: List<ParsedTranslationChapter>,
     val metaJson: String?,
-    val isTruncated: Boolean
-)
+    val translationTruncated: Boolean,
+    val metadataTruncated: Boolean
+) {
+    /** True when either the translation or optional metadata section is incomplete. */
+    val isTruncated: Boolean get() = translationTruncated || metadataTruncated
+}
 
 object TranslationProtocol {
     fun systemPrompt(sourceLanguage: String, targetLanguage: String): String = """
@@ -263,11 +267,18 @@ object TranslationProtocol {
                 if (incompleteChapter.segments.isNotEmpty()) chapters += incompleteChapter
             }
         }
-        val meta = Regex("<META>([\\s\\S]*?)</META>", RegexOption.IGNORE_CASE).find(raw)?.groupValues?.get(1)?.trim()
+        val metaMatch = Regex("<META\\s*>([\\s\\S]*?)</META\\s*>", RegexOption.IGNORE_CASE).find(raw)
+        val meta = metaMatch?.groupValues?.get(1)?.trim()
+        val translationTruncated = translationMatch == null
+        val metadataStart = Regex("<META\\s*>", RegexOption.IGNORE_CASE).find(raw)
+        val metadataEnd = Regex("</META\\s*>", RegexOption.IGNORE_CASE).find(raw)
+        val metadataTruncated = metadataStart != null &&
+            (metadataEnd == null || metadataEnd.range.first < metadataStart.range.first)
         return ParsedTranslationResponse(
             chapters = chapters,
             metaJson = meta,
-            isTruncated = translationMatch == null || raw.contains("<META>", true) && !raw.contains("</META>", true)
+            translationTruncated = translationTruncated,
+            metadataTruncated = metadataTruncated
         )
     }
 
@@ -400,7 +411,7 @@ object DeterministicTranslationQa {
             if (sourceProtected != targetProtected || residualMarkerPattern.containsMatchIn(target)) {
                 issue("PROTECTED_TOKEN_CHANGED", "protected token sequence changed", segment.shortId)
             }
-            // Keep the legacy diagnostic wording because it is useful in logs and existing UI filters.
+            // Keep the established diagnostic wording because it is useful in logs and UI filters.
             if (sourceImages != targetImages) issue("IMAGE_MARKER_CHANGED", "image markers changed", segment.shortId)
             val sourceNumbers = numberPattern.findAll(sourceText).map { it.value }.toList()
             val targetNumbers = numberPattern.findAll(target).map { it.value }.toList()

@@ -5,10 +5,8 @@ import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
-import com.breakyuna.noveltranslator.data.model.GlossaryEntity
-import com.breakyuna.noveltranslator.data.model.LexiconSource
+import com.breakyuna.noveltranslator.data.model.TermCategory
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
-import com.breakyuna.noveltranslator.data.model.ReviewStatus
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
@@ -16,22 +14,20 @@ import java.util.Locale
 class TermExtractionAgent(private val llmClient: LlmGateway) {
 
     data class ExtractionResult(
-        val terms: List<GlossaryEntity>,
+        val terms: List<ExtractedTermCandidate>,
         val usage: LlmResult,
         val parseError: String? = null,
         val validationRejections: List<TermValidationRejection> = emptyList()
     )
 
     suspend fun extractTerms(
-        projectId: Long,
         sampleText: String,
         provider: ApiProviderEntity,
         sourceLanguage: String,
         targetLanguage: String,
         existingTerms: Collection<String> = emptyList()
-    ): List<GlossaryEntity> {
+    ): List<ExtractedTermCandidate> {
         val extraction = extractTermsWithUsage(
-            projectId,
             sampleText,
             provider,
             sourceLanguage,
@@ -46,7 +42,6 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
     }
 
     suspend fun extractTermsWithUsage(
-        projectId: Long,
         sampleText: String,
         provider: ApiProviderEntity,
         sourceLanguage: String,
@@ -67,18 +62,17 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
             temperature = 0.3f
         )
 
-        return parseExtractionResult(projectId, result, sampleText)
+        return parseExtractionResult(result, sampleText)
     }
 
     companion object {
         fun parseExtractionResult(
-            projectId: Long,
             result: LlmResult,
             sourceText: String? = null
         ): ExtractionResult {
             if (!result.isSuccess || result.text.isBlank()) return ExtractionResult(emptyList(), result)
             return try {
-                val parsed = parseTermsJsonWithValidation(projectId, result.text, sourceText)
+                val parsed = parseTermsJsonWithValidation(result.text, sourceText)
                 ExtractionResult(parsed.terms, result, validationRejections = parsed.rejections)
             } catch (error: IllegalArgumentException) {
                 ExtractionResult(emptyList(), result, error.message ?: "Invalid terminology JSON")
@@ -86,22 +80,20 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         }
 
         data class ParsedTerms(
-            val terms: List<GlossaryEntity>,
+            val terms: List<ExtractedTermCandidate>,
             val rejections: List<TermValidationRejection>
         )
 
         fun parseTermsJson(
-            projectId: Long,
             rawText: String,
             sourceText: String? = null
-        ): List<GlossaryEntity> = parseTermsJsonWithValidation(projectId, rawText, sourceText).terms
+        ): List<ExtractedTermCandidate> = parseTermsJsonWithValidation(rawText, sourceText).terms
 
         fun parseTermsJsonWithValidation(
-            projectId: Long,
             rawText: String,
             sourceText: String? = null
         ): ParsedTerms {
-            val terms = mutableListOf<GlossaryEntity>()
+            val terms = mutableListOf<ExtractedTermCandidate>()
             val rejections = mutableListOf<TermValidationRejection>()
             try {
                 val jsonStr = rawText.trim()
@@ -109,9 +101,15 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
                     .replace(Regex("\\s*```$"), "")
                     .trim()
                 val jsonArray = when {
-                    jsonStr.startsWith("[") -> JSONArray(jsonStr.substring(0, jsonStr.lastIndexOf(']') + 1))
+                    jsonStr.startsWith("[") -> {
+                        val end = jsonStr.lastIndexOf(']')
+                        require(end > 0) { "Terminology response has an unterminated JSON array" }
+                        JSONArray(jsonStr.substring(0, end + 1))
+                    }
                     jsonStr.startsWith("{") -> {
-                        val root = JSONObject(jsonStr.substring(0, jsonStr.lastIndexOf('}') + 1))
+                        val end = jsonStr.lastIndexOf('}')
+                        require(end > 0) { "Terminology response has an unterminated JSON object" }
+                        val root = JSONObject(jsonStr.substring(0, end + 1))
                         root.optJSONArray("terms")
                             ?: root.optJSONArray("glossary")
                             ?: root.optJSONArray("items")
@@ -133,15 +131,11 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
 
                     when (val validation = TermCandidateValidator.validate(orig, sugg, catStr, notes, sourceText)) {
                         is TermValidationResult.Accepted -> terms.add(
-                            GlossaryEntity(
-                                projectId = projectId,
+                            ExtractedTermCandidate(
                                 originalTerm = validation.originalTerm,
                                 translatedTerm = validation.translatedTerm,
                                 category = validation.category,
-                                notes = validation.notes,
-                                isAutoExtracted = true,
-                                source = LexiconSource.AI.name,
-                                reviewStatus = ReviewStatus.CANDIDATE.name
+                                notes = validation.notes
                             )
                         )
                         is TermValidationResult.Rejected -> rejections += validation.rejection

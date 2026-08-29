@@ -65,7 +65,7 @@ fun ApiSettingsScreen(
     val currentLang by viewModel.currentLanguage.collectAsState()
     val providers by viewModel.allProviders.collectAsState()
     val systemLogs by viewModel.systemLogs.collectAsState()
-    val projects by viewModel.allProjects.collectAsState()
+    val projects by viewModel.platformTranslationProjects.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val debugModeEnabled by viewModel.debugModeEnabled.collectAsState()
 
@@ -230,7 +230,7 @@ fun ApiSettingsScreen(
                             // 4. 系统信息 Entrance
                             AppSettingsRow(
                                 title = "系统信息",
-                                subtitle = "应用版本与本地项目统计",
+                                subtitle = "应用版本与翻译工程统计",
                                 leadingIcon = Icons.Outlined.Info,
                                 iconTint = AccentGreen,
                                 iconBackground = AccentGreen.copy(alpha = 0.12f),
@@ -686,7 +686,7 @@ fun ApiSettingsScreen(
                                     AppDivider(startIndent = 16.dp)
                                     AppStatusRow(label = "当前版本", value = "v0.7.0 beta", modifier = Modifier.padding(16.dp))
                                     AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "本地小说项目", value = "${projects.size} 个工程", modifier = Modifier.padding(16.dp))
+                                    AppStatusRow(label = "翻译工程", value = "${projects.size} 个工程", modifier = Modifier.padding(16.dp))
                                 }
                             }
                         }

@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.core.agent
 import androidx.room.withTransaction
 import com.breakyuna.noveltranslator.data.db.AppDatabase
 import com.breakyuna.noveltranslator.data.model.CandidateObservation
-import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateAggregateEntity
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateStatePolicy
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
@@ -22,10 +21,10 @@ class LexiconCandidateAggregator(private val database: AppDatabase) {
         projectId: Long,
         chapterIndex: Int,
         sourceText: String,
-        candidates: List<GlossaryEntity>,
+        candidates: List<ExtractedTermCandidate>,
         observedAt: Long = System.currentTimeMillis()
     ): CandidateAggregationResult {
-        val accepted = mutableListOf<GlossaryEntity>()
+        val accepted = mutableListOf<ExtractedTermCandidate>()
         val rejected = mutableListOf<TermValidationRejection>()
         candidates.forEach { candidate ->
             when (
@@ -85,7 +84,7 @@ class LexiconCandidateAggregator(private val database: AppDatabase) {
         projectId: Long,
         chapterIndex: Int,
         sourceText: String,
-        candidates: List<GlossaryEntity>,
+        candidates: List<ExtractedTermCandidate>,
         observedAt: Long
     ): List<CandidateObservation> {
         if (candidates.isEmpty()) return emptyList()

@@ -14,24 +14,16 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
-import com.breakyuna.noveltranslator.ui.screens.glossary.GlossaryScreen
 import com.breakyuna.noveltranslator.ui.screens.history.ReadingHistoryScreen
-import com.breakyuna.noveltranslator.ui.screens.preview.BilingualReaderScreen
-import com.breakyuna.noveltranslator.ui.screens.projects.ProjectListScreen
 import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.BookDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.EditionDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
 import com.breakyuna.noveltranslator.ui.screens.tasks.PlatformTaskCenterScreen
-import com.breakyuna.noveltranslator.ui.screens.translation.TranslationRunnerScreen
-import com.breakyuna.noveltranslator.ui.screens.workspace.ProjectWorkspaceScreen
 import com.breakyuna.noveltranslator.ui.screens.workspace.BookWorkbenchDetailScreen
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.launch
-
-// Screen compatibility alias
-typealias Screen = AppDestination
 
 @Composable
 fun AppNavigation(
@@ -43,8 +35,6 @@ fun AppNavigation(
     val coroutineScope = rememberCoroutineScope()
 
     val userMessage by viewModel.userMessage.collectAsState()
-    val activeProject by viewModel.activeProject.collectAsState()
-
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
 
@@ -130,20 +120,6 @@ fun AppNavigation(
                             viewModel = viewModel,
                             onOpenDetail = { navController.navigate(AppDestination.BookDetail.createRoute(it)) },
                             onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(it)) }
-                        )
-                    }
-
-                    // Legacy project route remains internal while lower-level translation utilities are reused.
-                    composable(AppDestination.Projects.route) {
-                        ProjectListScreen(
-                            viewModel = viewModel,
-                            onSelectProject = { projectId ->
-                                viewModel.setActiveProject(projectId)
-                                navController.navigate(AppDestination.Workspace.createRoute(projectId))
-                            },
-                            onOpenSettings = {
-                                navController.navigate(AppDestination.Settings.createRoute(-1))
-                            }
                         )
                     }
 
@@ -274,75 +250,6 @@ fun AppNavigation(
                         )
                     }
 
-                    // ==========================================
-                    // Project Sub-Pages (Entered from Project)
-                    // ==========================================
-                    // Project Workspace / Home
-                    composable(
-                        route = AppDestination.Workspace.route,
-                        arguments = listOf(navArgument("projectId") { type = NavType.LongType })
-                    ) { backStackEntry ->
-                        val projId = backStackEntry.arguments?.getLong("projectId") ?: 0L
-                        LaunchedEffect(projId) {
-                            viewModel.setActiveProject(projId)
-                        }
-                        ProjectWorkspaceScreen(
-                            viewModel = viewModel,
-                            onBack = {
-                                navController.popBackStack()
-                            },
-                            onNavigateToTranslation = {
-                                navController.navigate(AppDestination.Translation.createRoute(projId))
-                            },
-                            onNavigateToGlossary = {
-                                navController.navigate(AppDestination.Glossary.createRoute(projId))
-                            },
-                            onNavigateToReader = { chapterId ->
-                                navController.navigate(AppDestination.Reader.createRoute(chapterId))
-                            }
-                        )
-                    }
-
-                    // Translation Runner
-                    composable(
-                        route = AppDestination.Translation.route,
-                        arguments = listOf(navArgument("projectId") { type = NavType.LongType })
-                    ) {
-                        TranslationRunnerScreen(
-                            viewModel = viewModel,
-                            onBack = { navController.popBackStack() },
-                            onNavigateToReader = { chId ->
-                                navController.navigate(AppDestination.Reader.createRoute(chId))
-                            },
-                            onNavigateToTasks = {
-                                navController.navigate(AppDestination.Tasks.route)
-                            }
-                        )
-                    }
-
-                    // Project Glossary
-                    composable(
-                        route = AppDestination.Glossary.route,
-                        arguments = listOf(navArgument("projectId") { type = NavType.LongType })
-                    ) {
-                        GlossaryScreen(
-                            viewModel = viewModel,
-                            onBack = { navController.popBackStack() }
-                        )
-                    }
-
-                    // Bilingual Reader
-                    composable(
-                        route = AppDestination.Reader.route,
-                        arguments = listOf(navArgument("chapterId") { type = NavType.LongType })
-                    ) { backStackEntry ->
-                        val chapterId = backStackEntry.arguments?.getLong("chapterId") ?: 0L
-                        BilingualReaderScreen(
-                            chapterId = chapterId,
-                            viewModel = viewModel,
-                            onBack = { navController.popBackStack() }
-                        )
-                    }
                 }
             }
         }

@@ -123,23 +123,29 @@ class RetryPolicyTest {
     }
 
     @Test
-    fun pauseDuringBackoffPreventsAnotherPhysicalRequest() = runTest {
+    fun pauseDuringBackoffWaitsForResumeBeforeAnotherPhysicalRequest() = runTest {
         val signal = TranslationControlSignal()
         val fake = FakeLlmGateway(ArrayDeque(listOf(
             failure(LlmErrorCategory.NETWORK_UNAVAILABLE),
-            LlmResult("must not run", 1, 1, true)
+            LlmResult("ok", 1, 1, true)
         )))
+        var pausedOnce = false
         val delay = object : DelayProvider {
             override suspend fun delayFor(milliseconds: Long) {
-                signal.requestPause()
+                if (!pausedOnce) {
+                    pausedOnce = true
+                    signal.requestPause()
+                } else if (signal.isPaused) {
+                    signal.resume()
+                }
             }
         }
-        val result = RetryingLlmGateway(fake, delay, signal)
-            .executeCompletion(LlmRequest(provider(), "", ""))
+        val result = RetryingLlmGateway(fake, delay)
+            .executeCompletion(LlmRequest(provider(), "", "", controlSignal = signal))
 
-        assertEquals(1, fake.calls)
-        assertEquals(1, result.attempts.size)
-        assertFalse(result.isSuccess)
+        assertEquals(2, fake.calls)
+        assertEquals(2, result.attempts.size)
+        assertTrue(result.isSuccess)
     }
 
     @Test

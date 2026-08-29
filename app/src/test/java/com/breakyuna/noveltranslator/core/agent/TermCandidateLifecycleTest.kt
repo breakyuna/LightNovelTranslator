@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.core.agent
 
-import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.translation.DeterministicTranslationQa
 import com.breakyuna.noveltranslator.core.translation.ContextPackage
 import com.breakyuna.noveltranslator.core.translation.GlossaryQaStatus
@@ -8,9 +7,7 @@ import com.breakyuna.noveltranslator.core.translation.ParsedTranslationChapter
 import com.breakyuna.noveltranslator.core.translation.ProtocolChapter
 import com.breakyuna.noveltranslator.core.translation.ProtocolSegment
 import com.breakyuna.noveltranslator.core.translation.TranslationProtocol
-import com.breakyuna.noveltranslator.core.translator.TranslationQualityValidator
 import com.breakyuna.noveltranslator.data.model.CandidateObservation
-import com.breakyuna.noveltranslator.data.model.GlossaryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateAggregateEntity
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateNoiseFilter
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateState
@@ -20,7 +17,6 @@ import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconEntryPolicy
 import com.breakyuna.noveltranslator.data.model.LexiconKind
 import com.breakyuna.noveltranslator.data.model.LexiconSource
-import com.breakyuna.noveltranslator.data.model.LegacyGlossaryCandidateVoting
 import com.breakyuna.noveltranslator.data.model.ReviewStatus
 import com.breakyuna.noveltranslator.data.model.TermCategory
 import org.junit.Assert.assertEquals
@@ -38,7 +34,6 @@ class TermCandidateLifecycleTest {
     @Test
     fun unknownAiCategoryIsRejectedInsteadOfBecomingCustom() {
         val parsed = TermExtractionAgent.parseTermsJsonWithValidation(
-            projectId = 1L,
             rawText = "[{\"original\":\"Alice\",\"suggested\":\"爱丽丝\",\"category\":\"CUSTOM\"}]",
             sourceText = "Alice arrived."
         )
@@ -50,7 +45,6 @@ class TermCandidateLifecycleTest {
     @Test
     fun sourceTermMustBeAnExactSubstringOfTheScanWindow() {
         val parsed = TermExtractionAgent.parseTermsJsonWithValidation(
-            projectId = 1L,
             rawText = "[{\"original\":\"Bob\",\"suggested\":\"鲍勃\",\"category\":\"CHARACTER\"}]",
             sourceText = "Alice arrived."
         )
@@ -62,7 +56,6 @@ class TermCandidateLifecycleTest {
     @Test
     fun numericOnlyCandidateIsRejectedEvenWithPunctuation() {
         val parsed = TermExtractionAgent.parseTermsJsonWithValidation(
-            projectId = 1L,
             rawText = "[{\"original\":\"12-34\",\"suggested\":\"一二三四\",\"category\":\"LORE\"}]",
             sourceText = "Code 12-34 appeared."
         )
@@ -74,7 +67,6 @@ class TermCandidateLifecycleTest {
     @Test
     fun unchangedNamedTokenIsAllowedWhenItIsAnExactSourceMatch() {
         val parsed = TermExtractionAgent.parseTermsJsonWithValidation(
-            projectId = 1L,
             rawText = "[{\"original\":\"Dawnpiercer\",\"suggested\":\"Dawnpiercer\",\"category\":\"ITEM\"}]",
             sourceText = "Dawnpiercer was drawn."
         )
@@ -86,7 +78,6 @@ class TermCandidateLifecycleTest {
     @Test
     fun unchangedOrdinaryLookingWordIsRejectedCautiously() {
         val parsed = TermExtractionAgent.parseTermsJsonWithValidation(
-            projectId = 1L,
             rawText = "[{\"original\":\"sword\",\"suggested\":\"sword\",\"category\":\"ITEM\"}]",
             sourceText = "The sword was drawn."
         )
@@ -166,29 +157,6 @@ class TermCandidateLifecycleTest {
     }
 
     @Test
-    fun legacyCandidateEvidenceSurvivesSerializationAndAccumulatesVotes() {
-        val first = GlossaryEntity(0, 3L, "Alice", "爱丽丝", TermCategory.CHARACTER, "hero")
-        var aggregate = LegacyGlossaryCandidateVoting.merge(null, first, chapterIndex = 1, observedAt = 100)
-        aggregate = LegacyGlossaryCandidateVoting.merge(aggregate, first, chapterIndex = 5, observedAt = 200)
-        aggregate = LegacyGlossaryCandidateVoting.merge(
-            aggregate,
-            first.copy(translatedTerm = "艾丽丝"),
-            chapterIndex = 9,
-            observedAt = 300
-        )
-
-        val restored = aggregate.copy()
-        val evidence = LegacyGlossaryCandidateVoting.decode(restored)
-        assertNotNull(evidence)
-        assertEquals(3, evidence!!.observationCount)
-        assertEquals(mapOf("爱丽丝" to 2, "艾丽丝" to 1), evidence.targetVotes)
-        assertTrue(evidence.hasConflict)
-        assertFalse(evidence.isHighConfidenceForBatch)
-        assertEquals("爱丽丝", restored.translatedTerm)
-        assertTrue(LegacyGlossaryCandidateVoting.isIgnored(LegacyGlossaryCandidateVoting.markIgnored(restored)))
-    }
-
-    @Test
     fun batchConfidenceRequiresRepeatedAndConsistentEvidence() {
         var aggregate = LexiconCandidateVoting.merge(null, observation("爱丽丝", "CHARACTER", 1, 100))
         assertFalse(LexiconCandidateVoting.review(aggregate).isHighConfidenceForBatch)
@@ -196,25 +164,6 @@ class TermCandidateLifecycleTest {
         assertTrue(LexiconCandidateVoting.review(aggregate).isHighConfidenceForBatch)
         aggregate = LexiconCandidateVoting.merge(aggregate, observation("艾丽丝", "CHARACTER", 3, 300))
         assertFalse(LexiconCandidateVoting.review(aggregate).isHighConfidenceForBatch)
-    }
-
-    @Test
-    fun translationPromptIgnoresUnconfirmedGlossaryRows() {
-        val candidate = GlossaryEntity(
-            projectId = 1L,
-            originalTerm = "Alice",
-            translatedTerm = "候选译名",
-            reviewStatus = ReviewStatus.CANDIDATE.name
-        )
-        val confirmed = candidate.copy(translatedTerm = "爱丽丝", reviewStatus = ReviewStatus.CONFIRMED.name)
-        val prompt = TranslationPrompts.buildUserPrompt(
-            chapterTitle = "Chapter",
-            chapterText = "Alice arrived.",
-            glossary = listOf(candidate, confirmed)
-        )
-
-        assertTrue(prompt.contains("爱丽丝"))
-        assertFalse(prompt.contains("候选译名"))
     }
 
     @Test
@@ -290,21 +239,6 @@ class TermCandidateLifecycleTest {
         assertEquals(GlossaryQaStatus.MISSING, missingResult.glossaryStatus)
         assertTrue(missingResult.problems.any { it.startsWith("GLOSSARY_MISSING") })
         assertTrue(missingResult.problems.size >= 2)
-    }
-
-    @Test
-    fun legacyGlossaryQaOnlyChecksConfirmedTerms() {
-        val candidate = GlossaryEntity(
-            projectId = 1L,
-            originalTerm = "Alice",
-            translatedTerm = "爱丽丝",
-            source = LexiconSource.AI.name,
-            reviewStatus = ReviewStatus.CANDIDATE.name
-        )
-        val confirmed = candidate.copy(reviewStatus = ReviewStatus.CONFIRMED.name)
-        val result = TranslationQualityValidator.validate("Alice waved.", "她挥手了。", listOf(candidate, confirmed))
-        assertEquals(GlossaryQaStatus.MISSING, result.glossaryStatus)
-        assertTrue(result.problems.any { it.startsWith("GLOSSARY_MISSING") })
     }
 
     private fun observation(target: String, category: String, chapter: Int, timestamp: Long) = CandidateObservation(

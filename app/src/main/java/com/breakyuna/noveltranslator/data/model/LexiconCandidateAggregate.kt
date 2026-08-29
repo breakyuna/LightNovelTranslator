@@ -38,7 +38,7 @@ data class LexiconCandidateAggregateEntity(
     val targetVotesJson: String = "{}",
     val categoryVotesJson: String = "{}",
     val notesVotesJson: String = "{}",
-    /** Cached deterministic winners make legacy migration and list rendering resilient. */
+    /** Cached deterministic winners keep review rendering stable without re-decoding every row. */
     val winnerTargetTerm: String = "",
     val winnerCategory: String = "",
     val winnerNotes: String = "",

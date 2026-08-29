@@ -10,16 +10,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class SystemLoggerTest {
     @get:Rule
@@ -106,79 +102,6 @@ class SystemLoggerTest {
     }
 
     @Test
-    fun legacyTextMigratesWithDeterministicUniqueIdsAndOriginalTime() = runBlocking {
-        val directory = temporaryFolder.newFolder("legacy")
-        val legacy = File(directory, SystemLogger.LEGACY_FILE_NAME)
-        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .format(Date(System.currentTimeMillis() - 1_000L))
-        legacy.writeText(
-            """
-            [$legacyTimestampText] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
-              Details: first line
-              second line
-            [$legacyTimestampText] [WARN] [TRANSLATION] [Proj#17] [Chap#9] repeated
-            """.trimIndent() + "\n",
-            Charsets.UTF_8
-        )
-        legacy.setLastModified(123L)
-        val legacyFileTimestamp = legacy.lastModified()
-
-        val parsedOnce = SystemLogger.parseLegacyEntries(legacy.readLines())
-        val parsedTwice = SystemLogger.parseLegacyEntries(legacy.readLines())
-        assertEquals(parsedOnce.map { it.id }, parsedTwice.map { it.id })
-        assertNotEquals(parsedOnce[0].id, parsedOnce[1].id)
-
-        SystemLogger.initDirectory(directory)
-        SystemLogger.awaitIdleForTests()
-        val migrated = readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME)).filter { it.message == "repeated" }
-            .sortedBy { it.id }
-        val expectedTimestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .parse(legacyTimestampText)!!.time
-
-        assertEquals(2, migrated.size)
-        assertTrue(migrated.all { it.timestamp == expectedTimestamp })
-        assertTrue(migrated.none { it.timestamp == legacyFileTimestamp })
-        assertTrue(migrated.all { it.projectId == 17L && it.chapterIndex == 9 })
-        assertTrue(migrated.map { it.id }.all { it.startsWith("legacy-") })
-        assertTrue(migrated.map { it.id }.toSet().size == 2)
-        assertTrue(migrated.any { it.details == "first line\nsecond line" })
-        assertTrue(File(directory, SystemLogger.JSONL_FILE_NAME).exists())
-        assertTrue(File(directory, SystemLogger.LEGACY_FILE_NAME + ".legacy").exists())
-
-        val firstRecovery = migrated.associate { it.id to it.timestamp }
-        SystemLogger.resetForTests()
-        SystemLogger.initDirectory(directory)
-        SystemLogger.awaitIdleForTests()
-        val secondRecovery = readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME))
-            .filter { it.message == "repeated" }
-            .associate { it.id to it.timestamp }
-        assertEquals(firstRecovery, secondRecovery)
-    }
-
-    @Test
-    fun largeLegacyHistoryIsMigratedButMemoryRemainsBounded() = runBlocking {
-        val directory = temporaryFolder.newFolder("large-legacy")
-        val legacy = File(directory, SystemLogger.LEGACY_FILE_NAME)
-        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .format(Date(System.currentTimeMillis() - 1_000L))
-        legacy.bufferedWriter(Charsets.UTF_8).use { writer ->
-            repeat(1_200) { index ->
-                writer.appendLine("[$legacyTimestampText] [INFO] [LEGACY_BURST] entry-$index")
-            }
-        }
-
-        SystemLogger.initDirectory(directory)
-        SystemLogger.awaitIdleForTests()
-
-        val visible = SystemLogger.logsFlow.value
-        assertTrue(visible.none { it.tag == "LEGACY_BURST" })
-        assertEquals(
-            1_200,
-            readJsonl(File(directory, SystemLogger.JSONL_FILE_NAME)).count { it.tag == "LEGACY_BURST" }
-        )
-    }
-
-    @Test
     fun highFrequencyPersistenceRetainsUniqueRecentLazyKeys() = runBlocking {
         val directory = temporaryFolder.newFolder("burst")
         SystemLogger.initDirectory(directory)
@@ -192,16 +115,13 @@ class SystemLoggerTest {
     }
 
     @Test
-    fun clearDuringInitializationCannotRepublishRecoveredHistory() = runBlocking {
-        val directory = temporaryFolder.newFolder("clear-race")
-        val legacyTimestampText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-            .format(Date(System.currentTimeMillis() - 1_000L))
-        File(directory, SystemLogger.LEGACY_FILE_NAME).writeText(
-            "[$legacyTimestampText] [ERROR] [OLD] must disappear\n",
-            Charsets.UTF_8
-        )
-
+    fun clearRemovesPersistedHistory() = runBlocking {
+        val directory = temporaryFolder.newFolder("clear")
         SystemLogger.initDirectory(directory)
+        SystemLogger.awaitIdleForTests()
+        SystemLogger.error("OLD", "must disappear")
+        SystemLogger.awaitIdleForTests()
+
         SystemLogger.clearLogs()
         SystemLogger.awaitIdleForTests()
 

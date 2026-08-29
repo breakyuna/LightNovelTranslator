@@ -28,6 +28,8 @@ class BookImporter(
     private val database: AppDatabase,
     private val files: BookFileManager
 ) {
+    private data class StagedChapter(val title: String, val fileName: String, val wordCount: Int)
+
     suspend fun import(
         fileName: String,
         sourceFile: File,
@@ -184,46 +186,73 @@ class BookImporter(
     ): Int {
         require(chapters.hasNext()) { "No readable chapters were found" }
         val now = System.currentTimeMillis()
-        return database.withTransaction {
-            val dao = database.bookDao()
-            dao.deleteLogicalChaptersByBook(bookId)
-            files.clearEditionChapters(bookId, originalEdition.id)
+        val stagingDir = files.createEditionChapterStagingDir(bookId, originalEdition.id)
+        val staged = mutableListOf<StagedChapter>()
+        var backupDir: File? = null
+        try {
             var chapterCount = 0
             while (chapters.hasNext()) {
                 val parsed = chapters.next()
                 chapterCount++
-                persistChapterInTransaction(
-                    bookId = bookId,
-                    editionId = originalEdition.id,
-                    chapterIndex = chapterCount,
-                    title = parsed.title,
-                    content = parsed.content,
-                    wordCount = parsed.wordCount
-                )
+                val title = parsed.title.trim().ifBlank { "Chapter $chapterCount" }
+                val fileName = files.saveStagedEditionChapter(stagingDir, chapterCount, title, parsed.content)
+                staged += StagedChapter(title, fileName, parsed.wordCount)
             }
             require(chapterCount > 0) { "No readable chapters were found" }
-            dao.updateEdition(originalEdition.copy(isComplete = true, updatedAt = now))
-            dao.update(
-                (dao.getBook(bookId) ?: error("Book not found")).copy(
-                    primaryEditionId = originalEdition.id,
-                    preferredReadingEditionId = originalEdition.id,
-                    updatedAt = now
-                )
-            )
-            database.readerProgressDao().upsert(
-                (progress ?: ReaderProgressEntity(bookId, originalEdition.id, null, null)).copy(
-                    preferredEditionId = originalEdition.id,
-                    logicalChapterId = null,
-                    logicalSegmentId = null,
-                    segmentOffset = 0,
-                    updatedAt = now
-                )
-            )
-            chapterCount
+
+            // Swap files only after every chapter has been written successfully. If the DB
+            // transaction fails, restore the previous directory before exposing the error.
+            backupDir = files.swapEditionChapterDirectory(bookId, originalEdition.id, stagingDir)
+            return try {
+                database.withTransaction {
+                    val dao = database.bookDao()
+                    dao.deleteLogicalChaptersByBook(bookId)
+                    staged.forEachIndexed { index, chapter ->
+                        val content = files.readEditionChapter(
+                            bookId,
+                            originalEdition.id,
+                            chapter.fileName
+                        )
+                        persistChapterInTransaction(
+                            bookId = bookId,
+                            editionId = originalEdition.id,
+                            chapterIndex = index + 1,
+                            title = chapter.title,
+                            content = content,
+                            wordCount = chapter.wordCount,
+                            fileName = chapter.fileName
+                        )
+                    }
+                    dao.updateEdition(originalEdition.copy(isComplete = true, updatedAt = now))
+                    dao.update(
+                        (dao.getBook(bookId) ?: error("Book not found")).copy(
+                            primaryEditionId = originalEdition.id,
+                            preferredReadingEditionId = originalEdition.id,
+                            updatedAt = now
+                        )
+                    )
+                    database.readerProgressDao().upsert(
+                        (progress ?: ReaderProgressEntity(bookId, originalEdition.id, null, null)).copy(
+                            preferredEditionId = originalEdition.id,
+                            logicalChapterId = null,
+                            logicalSegmentId = null,
+                            segmentOffset = 0,
+                            updatedAt = now
+                        )
+                    )
+                    chapterCount
+                }.also { files.finalizeEditionChapterSwap(backupDir) }
+            } catch (error: Throwable) {
+                files.rollbackEditionChapterSwap(bookId, originalEdition.id, backupDir)
+                throw error
+            }
+        } finally {
+            stagingDir.deleteRecursively()
         }
     }
 
     suspend fun importAcquired(book: AcquiredBook, language: String = "Auto"): Long {
+        require(book.chapters.isNotEmpty()) { "No readable chapters were found" }
         val bookId = database.bookDao().insert(
             BookEntity(
                 title = book.title,
@@ -339,10 +368,11 @@ class BookImporter(
         chapterIndex: Int,
         title: String,
         content: String,
-        wordCount: Int
+        wordCount: Int,
+        fileName: String? = null
     ) {
         val parts = splitSegments(content)
-        val fileName = files.saveEditionChapter(bookId, editionId, chapterIndex, title, content)
+        val storedFileName = fileName ?: files.saveEditionChapter(bookId, editionId, chapterIndex, title, content)
         val dao = database.bookDao()
         val logicalChapterId = dao.insertLogicalChapter(
             LogicalChapterEntity(bookId = bookId, chapterIndex = chapterIndex, canonicalTitle = title)
@@ -352,7 +382,7 @@ class BookImporter(
                 editionId = editionId,
                 logicalChapterId = logicalChapterId,
                 title = title,
-                contentFileName = fileName,
+                contentFileName = storedFileName,
                 wordCount = wordCount
             )
         )
