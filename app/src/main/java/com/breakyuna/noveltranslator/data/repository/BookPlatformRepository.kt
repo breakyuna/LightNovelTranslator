@@ -448,7 +448,7 @@ class BookPlatformRepository(
                 text = text,
                 note = normalizedNote
             )
-        }
+        )
     }
 
     suspend fun renameBook(bookId: Long, title: String) {

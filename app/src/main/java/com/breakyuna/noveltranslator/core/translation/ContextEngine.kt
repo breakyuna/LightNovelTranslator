@@ -88,7 +88,7 @@ class ContextEngine(
                 MAX_GLOSSARY_CHARS
             ) { entry ->
                 entry.sourceTerm.length + entry.targetTerm.length + entry.notes.length + entry.category.length + 32
-            ),
+            },
             relatedStoryMemory = related,
             recentContext = recent.take(MAX_RECENT_CONTEXT_CHARS),
             fingerprint = snapshot.fingerprint,
