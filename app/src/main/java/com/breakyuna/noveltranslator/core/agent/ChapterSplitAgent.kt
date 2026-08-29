@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.core.agent
 import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmRequest
 import com.breakyuna.noveltranslator.core.llm.LlmResult
+import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.core.parser.TxtParser
@@ -15,7 +16,8 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
         fullText: String,
         provider: ApiProviderEntity,
         onProgress: ((completedWindows: Int, totalWindows: Int) -> Unit)? = null,
-        onUsage: ((LlmResult) -> Unit)? = null
+        onUsage: ((LlmResult) -> Unit)? = null,
+        controlSignal: TranslationControlSignal? = null
     ): List<ParsedChapter> {
         if (fullText.isBlank()) return emptyList()
         require(fullText.length <= MAX_AI_SPLIT_CHARS) {
@@ -23,7 +25,11 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
         }
         val locatedMarkers = mutableListOf<Pair<Int, String>>()
         val step = WINDOW_CHARS - WINDOW_OVERLAP_CHARS
-        val totalWindows = maxOf(1, (fullText.length - WINDOW_OVERLAP_CHARS + step - 1) / step)
+        val totalWindows = if (fullText.length <= WINDOW_CHARS) {
+            1
+        } else {
+            1 + (fullText.length - WINDOW_CHARS + step - 1) / step
+        }
         var completedWindows = 0
         var windowStart = 0
         while (windowStart < fullText.length) {
@@ -36,7 +42,8 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
                     userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(window),
                     temperature = 0.2f,
                     maxTokens = 3000,
-                    operation = "CHAPTER_SPLIT"
+                    operation = "CHAPTER_SPLIT",
+                    controlSignal = controlSignal
                 )
             )
             onUsage?.invoke(result)
@@ -57,7 +64,7 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
         }
 
         val markers = locatedMarkers.sortedBy { it.first }.distinctBy { it.first }
-        if (markers.isEmpty()) return TxtParser.splitIntoChapters(fullText, TxtParser.REGEX_CHINESE)
+        if (markers.isEmpty()) return fallbackSplit(fullText)
         val chapters = mutableListOf<ParsedChapter>()
         markers.forEachIndexed { index, (start, title) ->
             val end = markers.getOrNull(index + 1)?.first ?: fullText.length
@@ -70,7 +77,28 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
                 wordCount = TxtParser.countWords(content)
             )
         }
-        return chapters.ifEmpty { TxtParser.splitIntoChapters(fullText, TxtParser.REGEX_CHINESE) }
+        return chapters.ifEmpty { fallbackSplit(fullText) }
+    }
+
+    /** Keeps a rejected/empty AI response from forcing English or Markdown books into one chunk. */
+    private fun fallbackSplit(fullText: String): List<ParsedChapter> {
+        val patterns = listOf(
+            TxtParser.REGEX_CHINESE,
+            TxtParser.REGEX_JAPANESE,
+            TxtParser.REGEX_KOREAN,
+            TxtParser.REGEX_ENGLISH,
+            TxtParser.REGEX_MARKDOWN
+        )
+        val pattern = patterns
+            .map { candidate ->
+                val regex = Regex(candidate)
+                candidate to fullText.lineSequence().count { line -> regex.matches(line.trim()) }
+            }
+            .maxByOrNull { it.second }
+            ?.takeIf { it.second > 0 }
+            ?.first
+            ?: TxtParser.REGEX_CHINESE
+        return TxtParser.splitIntoChapters(fullText, pattern)
     }
 
     private fun parseMarkers(raw: String): List<Pair<String, String>>? = runCatching {
@@ -91,6 +119,6 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
     companion object {
         private const val WINDOW_CHARS = 22_000
         private const val WINDOW_OVERLAP_CHARS = 1_000
-        private const val MAX_AI_SPLIT_CHARS = 2_000_000
+        const val MAX_AI_SPLIT_CHARS = 2_000_000
     }
 }

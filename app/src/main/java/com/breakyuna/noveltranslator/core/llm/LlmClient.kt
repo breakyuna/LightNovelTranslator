@@ -17,6 +17,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -143,6 +144,7 @@ class LlmClient : LlmGateway {
     private suspend fun fetchOllamaModels(provider: ApiProviderEntity): List<String> {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = "$base/api/tags"
+        validateEndpoint(endpoint, provider.providerType)
         val requestBuilder = Request.Builder().url(endpoint).get()
         applyCustomHeaders(requestBuilder, provider)
         val payload = performRequest(requestBuilder.build())
@@ -223,32 +225,33 @@ class LlmClient : LlmGateway {
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
         return try {
-                when (provider.providerType) {
-                    ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
-                        provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
-                    )
-                    ProviderType.GEMINI_DIRECT -> callGemini(
-                        provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
-                    )
-                    else -> callOpenAiCompatible(
-                        provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
-                    )
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (e: Exception) {
-                LlmResult(
-                    text = "",
-                    promptTokens = 0,
-                    completionTokens = 0,
-                    isSuccess = false,
-                    errorCategory = classifyException(e),
-                    retryable = isRetryableCategory(classifyException(e)),
-                    errorMessage = safeErrorMessage(e),
-                    usageSource = UsageSource.UNKNOWN,
-                    durationMs = System.currentTimeMillis() - startedAt
+            when (provider.providerType) {
+                ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
                 )
-            }
+                ProviderType.GEMINI_DIRECT -> callGemini(
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
+                )
+                else -> callOpenAiCompatible(
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
+                )
+            }.copy(operation = operation)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            LlmResult(
+                text = "",
+                promptTokens = 0,
+                completionTokens = 0,
+                isSuccess = false,
+                errorCategory = classifyException(e),
+                retryable = isRetryableCategory(classifyException(e)),
+                errorMessage = safeErrorMessage(e),
+                usageSource = UsageSource.UNKNOWN,
+                durationMs = System.currentTimeMillis() - startedAt,
+                operation = operation
+            )
+        }
     }
 
     private fun isRetryableCategory(category: LlmErrorCategory): Boolean = when (category) {
@@ -313,10 +316,7 @@ class LlmClient : LlmGateway {
         }
         val builder = Request.Builder().url(endpoint).post(body.toString().toRequestBody(jsonMediaType))
         provider.apiKey.trim().takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
-        runCatching {
-            val custom = JSONObject(provider.customHeadersJson)
-            custom.keys().forEach { key -> builder.header(key, custom.getString(key)) }
-        }
+        applyCustomHeaders(builder, provider)
         val payload = performRequest(builder.build())
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
@@ -562,10 +562,17 @@ class LlmClient : LlmGateway {
     }
 
     private fun applyCustomHeaders(builder: Request.Builder, provider: ApiProviderEntity) {
-        runCatching {
-            val custom = JSONObject(provider.customHeadersJson)
-            require(custom.keys().asSequence().all { key -> custom.opt(key) is String })
-            custom.keys().forEach { key -> builder.header(key, custom.getString(key)) }
+        val custom = runCatching { JSONObject(provider.customHeadersJson.ifBlank { "{}" }) }
+            .getOrElse { throw IllegalArgumentException("Custom headers must be valid JSON") }
+        custom.keys().forEach { key ->
+            require(key.isNotBlank() && key.length <= 128 && key.none { it == '\r' || it == '\n' }) {
+                "Invalid custom header name"
+            }
+            val value = custom.opt(key)
+            require(value is String && value.length <= 4_096 && value.none { it == '\r' || it == '\n' }) {
+                "Custom header values must be single-line strings"
+            }
+            builder.header(key, value)
         }
     }
 
@@ -594,7 +601,7 @@ class LlmClient : LlmGateway {
     }
 
     private fun isPrivateHost(host: String): Boolean {
-        val value = host.trim('[', ']').lowercase()
+        val value = host.trim('[', ']').lowercase(Locale.ROOT)
         if (value == "localhost" || value == "::1" || value.endsWith(".local")) return true
         val octets = value.split('.').mapNotNull { it.toIntOrNull() }
         if (octets.size != 4 || octets.any { it !in 0..255 }) return false

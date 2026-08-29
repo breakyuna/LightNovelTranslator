@@ -219,7 +219,8 @@ fun AppNavigation(
                             onBack = { navController.popBackStack() },
                             onRead = { chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(bookId, chapterId))
-                            }
+                            },
+                            onDeleted = { navController.popBackStack() }
                         )
                     }
 

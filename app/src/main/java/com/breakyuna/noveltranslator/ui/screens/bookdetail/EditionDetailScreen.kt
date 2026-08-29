@@ -31,7 +31,8 @@ fun EditionDetailScreen(
     editionId: Long,
     viewModel: AppViewModel,
     onBack: () -> Unit,
-    onRead: (Long?) -> Unit
+    onRead: (Long?) -> Unit,
+    onDeleted: () -> Unit = {}
 ) {
     val strings = platformUiStrings()
     val edition by viewModel.bookPlatformRepo.observeEdition(editionId).collectAsState(initial = null)
@@ -44,6 +45,7 @@ fun EditionDetailScreen(
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     var showSetup by remember { mutableStateOf(false) }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
 
     val jumpToChapter: (Long) -> Unit = { chapterId ->
         val index = preview.indexOfFirst { it.logicalChapterId == chapterId }.coerceAtLeast(0)
@@ -62,6 +64,7 @@ fun EditionDetailScreen(
             onPause = viewModel::pauseBookTranslation,
             onResume = viewModel::resumeBookTranslation,
             onCancel = viewModel::cancelBookTranslation,
+            onDelete = { showDeleteConfirmation = true },
             onRead = {
                 viewModel.selectReadingEdition(bookId, editionId) { onRead(null) }
             },
@@ -111,6 +114,7 @@ fun EditionDetailScreen(
     if (showSetup && edition?.sourceEditionId != null) {
         TranslationSetupDialog(
             providers = providers,
+            chapterCount = chapters.size,
             onDismiss = { showSetup = false },
             onCreate = { provider, mode, batch, start, end, ahead ->
                 viewModel.configureEditionTranslation(
@@ -127,6 +131,34 @@ fun EditionDetailScreen(
                 )
                 showSetup = false
             }
+        )
+    }
+
+    if (showDeleteConfirmation && edition != null && edition!!.type != EditionType.IMPORTED.name) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { Text(if (strings.bookshelf == "Bookshelf") "Delete Edition" else "删除译本") },
+            text = {
+                Text(
+                    if (strings.bookshelf == "Bookshelf") {
+                        "Delete this Edition, its translation task, revisions and files? The original Edition will remain."
+                    } else {
+                        "确定删除此译本、翻译任务、修订记录和文件吗？原始版本不会受影响。"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteEdition(bookId, editionId) {
+                            showDeleteConfirmation = false
+                            onDeleted()
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text(if (strings.bookshelf == "Bookshelf") "Delete" else "删除") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text(if (strings.bookshelf == "Bookshelf") "Cancel" else "取消") } }
         )
     }
 }
@@ -175,6 +207,7 @@ private fun EditionOperationSidebar(
     onPause: (Long) -> Unit,
     onResume: (Long) -> Unit,
     onCancel: (Long) -> Unit,
+    onDelete: () -> Unit,
     onRead: () -> Unit,
     onChapter: (Long) -> Unit
 ) {
@@ -189,7 +222,7 @@ private fun EditionOperationSidebar(
             Button(onClick = onConfigure, modifier = Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.AddTask, null)
                 Spacer(Modifier.width(7.dp))
-                Text(if (projects.isEmpty()) { if (english) "Configure translation" else "配置翻译" } else { if (english) "New translation task" else "新建翻译任务" })
+                Text(if (projects.isEmpty()) { if (english) "Configure translation" else "配置翻译" } else { if (english) "Edit translation task" else "编辑翻译任务" })
             }
             projects.take(3).forEach { project ->
                 Text("${project.translationMode} · ${project.state}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
@@ -201,6 +234,17 @@ private fun EditionOperationSidebar(
                     }
                     if (project.state in setOf("RUNNING", "PAUSED")) TextButton(onClick = { onCancel(project.id) }) { Text(strings.stop) }
                 }
+            }
+        }
+        if (edition != null && edition.type != EditionType.IMPORTED.name) {
+            OutlinedButton(
+                onClick = onDelete,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+            ) {
+                Icon(Icons.Default.DeleteOutline, null)
+                Spacer(Modifier.width(7.dp))
+                Text(if (english) "Delete Edition" else "删除此译本")
             }
         }
         OutlinedButton(onClick = onRead, modifier = Modifier.fillMaxWidth()) { Text(if (english) "Set as reading Edition and open" else "设为阅读版本并打开") }
@@ -222,18 +266,29 @@ private fun EditionOperationSidebar(
 @Composable
 private fun TranslationSetupDialog(
     providers: List<ApiProviderEntity>,
+    chapterCount: Int,
     onDismiss: () -> Unit,
     onCreate: (ApiProviderEntity?, TranslationMode, Int, Int?, Int?, Int) -> Unit
 ) {
     val strings = platformUiStrings()
     val english = strings.bookshelf == "Bookshelf"
     var provider by remember { mutableStateOf(providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()) }
+    LaunchedEffect(providers) {
+        provider = provider?.id?.let { id -> providers.firstOrNull { it.id == id } }
+            ?: providers.firstOrNull { it.isDefault }
+            ?: providers.firstOrNull()
+    }
     var providerMenu by remember { mutableStateOf(false) }
     var mode by remember { mutableStateOf(TranslationMode.FULL_BOOK) }
     var batch by remember { mutableIntStateOf(1) }
     var rangeStart by remember { mutableStateOf("1") }
-    var rangeEnd by remember { mutableStateOf("10") }
+    var rangeEnd by remember(chapterCount) { mutableStateOf(chapterCount.coerceAtLeast(1).toString()) }
     var ahead by remember { mutableIntStateOf(5) }
+    val rangeStartValue = rangeStart.toIntOrNull()
+    val rangeEndValue = rangeEnd.toIntOrNull()
+    val rangeValid = mode != TranslationMode.CHAPTER_RANGE ||
+        (rangeStartValue != null && rangeEndValue != null && rangeStartValue > 0 &&
+            rangeEndValue >= rangeStartValue && rangeEndValue <= chapterCount)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (english) "Configure Edition translation" else "配置 Edition 翻译") },
@@ -251,6 +306,13 @@ private fun TranslationSetupDialog(
                     OutlinedTextField(rangeStart, { rangeStart = it.filter(Char::isDigit) }, label = { Text(if (english) "Start chapter" else "起始章") }, modifier = Modifier.weight(1f), singleLine = true)
                     OutlinedTextField(rangeEnd, { rangeEnd = it.filter(Char::isDigit) }, label = { Text(if (english) "End chapter" else "结束章") }, modifier = Modifier.weight(1f), singleLine = true)
                 }
+                if (mode == TranslationMode.CHAPTER_RANGE && !rangeValid) {
+                    Text(
+                        if (english) "Enter a valid range within the $chapterCount available chapters." else "请输入有效范围，不能超过当前 $chapterCount 章。",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
                 if (mode == TranslationMode.SEAMLESS) {
                     Text(if (english) "Buffer $ahead chapters ahead" else "提前缓冲 $ahead 章")
                     Slider(ahead.toFloat(), { ahead = it.toInt().coerceIn(1, 20) }, valueRange = 1f..20f, steps = 18)
@@ -259,7 +321,7 @@ private fun TranslationSetupDialog(
                 Slider(batch.toFloat(), { batch = it.toInt().coerceIn(1, 5) }, valueRange = 1f..5f, steps = 3)
             }
         },
-        confirmButton = { TextButton(onClick = { onCreate(provider, mode, batch, rangeStart.toIntOrNull(), rangeEnd.toIntOrNull(), ahead) }, enabled = provider != null) { Text(if (english) "Create and start" else "创建并启动") } },
+        confirmButton = { TextButton(onClick = { onCreate(provider, mode, batch, rangeStartValue, rangeEndValue, ahead) }, enabled = provider != null && rangeValid) { Text(if (english) "Create and start" else "创建并启动") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text(strings.cancel) } }
     )
 }

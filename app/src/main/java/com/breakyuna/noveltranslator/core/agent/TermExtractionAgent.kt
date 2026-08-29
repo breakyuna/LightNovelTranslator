@@ -2,10 +2,10 @@ package com.breakyuna.noveltranslator.core.agent
 
 import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmResult
+import com.breakyuna.noveltranslator.core.llm.LlmRequest
+import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
-import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
-import com.breakyuna.noveltranslator.data.model.TermCategory
 import com.breakyuna.noveltranslator.data.model.LexiconCandidateVoting
 import org.json.JSONArray
 import org.json.JSONObject
@@ -25,14 +25,16 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         provider: ApiProviderEntity,
         sourceLanguage: String,
         targetLanguage: String,
-        existingTerms: Collection<String> = emptyList()
+        existingTerms: Collection<String> = emptyList(),
+        controlSignal: TranslationControlSignal? = null
     ): List<ExtractedTermCandidate> {
         val extraction = extractTermsWithUsage(
             sampleText,
             provider,
             sourceLanguage,
             targetLanguage,
-            existingTerms
+            existingTerms,
+            controlSignal
         )
         check(extraction.usage.isSuccess && extraction.usage.text.isNotBlank()) {
             extraction.usage.errorMessage ?: "Terminology extraction returned no usable response"
@@ -46,7 +48,8 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         provider: ApiProviderEntity,
         sourceLanguage: String,
         targetLanguage: String,
-        existingTerms: Collection<String> = emptyList()
+        existingTerms: Collection<String> = emptyList(),
+        controlSignal: TranslationControlSignal? = null
     ): ExtractionResult {
         val prompt = TranslationPrompts.buildTermExtractionPrompt(
             sampleText,
@@ -56,10 +59,14 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         )
 
         val result = llmClient.executeCompletion(
-            provider = provider,
-            systemPrompt = "You are a specialized novel terminologist. Output valid JSON array only.",
-            userPrompt = prompt,
-            temperature = 0.3f
+            LlmRequest(
+                provider = provider,
+                systemPrompt = "You are a specialized novel terminologist. Output valid JSON array only.",
+                userPrompt = prompt,
+                temperature = 0.3f,
+                operation = "TERM_EXTRACTION",
+                controlSignal = controlSignal
+            )
         )
 
         return parseExtractionResult(result, sampleText)

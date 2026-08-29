@@ -8,7 +8,10 @@ import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.exporter.EditionExporter
 import com.breakyuna.noveltranslator.core.llm.LlmClient
+import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.RetryingLlmGateway
+import com.breakyuna.noveltranslator.core.llm.TokenCalculator
+import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.core.parser.*
 import com.breakyuna.noveltranslator.core.book.BookFileManager
@@ -33,10 +36,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -118,6 +123,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
     private val bookTranslationJobs = ConcurrentHashMap<Long, Job>()
     private val seamlessJobs = ConcurrentHashMap<Long, Job>()
+    private val translationJobRegistryLock = Any()
+    /** Blocks new progress/translation workers while their Book or Edition is being removed. */
+    private val deletingBooks = ConcurrentHashMap.newKeySet<Long>()
+    private val deletingTranslationProjects = ConcurrentHashMap.newKeySet<Long>()
+    private val readerProgressJobs = ConcurrentHashMap<Long, Job>()
+    private val auxiliaryAiJobs = ConcurrentHashMap<String, Job>()
+    private val auxiliaryAiControls = ConcurrentHashMap<String, TranslationControlSignal>()
+    private val auxiliaryAiRegistryLock = Any()
     private val lastSeamlessChapter = ConcurrentHashMap<Long, Long?>()
     /** Full split bodies stay outside Compose state until the user explicitly confirms them. */
     private val pendingChapterSplits = ConcurrentHashMap<Long, List<ParsedChapter>>()
@@ -212,7 +225,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     if (cursor.moveToFirst()) cursor.getString(0) else null
                 } ?: uri.lastPathSegment ?: "imported_novel.txt"
 
-                val lowerName = fileName.lowercase()
+                val lowerName = fileName.lowercase(Locale.ROOT)
                 if (!lowerName.endsWith(".txt") && !lowerName.endsWith(".epub")) {
                     skippedCount++
                     continue
@@ -221,7 +234,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val temp = File.createTempFile("book_import_", ".tmp", app.cacheDir)
                 try {
                     app.contentResolver.openInputStream(uri)?.use { input ->
-                        temp.outputStream().use { output -> input.copyTo(output) }
+                        copyImportToTemp(input, temp)
                     } ?: error("无法读取所选文件")
                     bookImporter.import(
                         fileName = fileName,
@@ -271,7 +284,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             val temp = File.createTempFile("book_import_", ".tmp", getApplication<Application>().cacheDir)
             try {
                 getApplication<Application>().contentResolver.openInputStream(uri)?.use { input ->
-                    temp.outputStream().use { output -> input.copyTo(output) }
+                    copyImportToTemp(input, temp)
                 } ?: error("Unable to open the selected file")
                 val bookId = bookImporter.import(
                     fileName = fileName,
@@ -302,7 +315,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCancellable {
                 val chapters = TxtParser.splitIntoChapters(
                     fullText = text,
-                    regexPattern = customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE,
+                    regexPattern = customRegex?.takeIf(String::isNotBlank)
+                        ?: TxtParser.inferChapterRegex(text, originalLanguage),
                     cropTableOfContents = cropTableOfContents
                 )
                 bookImporter.importAcquired(
@@ -318,9 +332,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Copies picker content with the same hard limit enforced by the normalized importer. */
+    private fun copyImportToTemp(input: java.io.InputStream, target: File) {
+        target.outputStream().use { output ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count.toLong()
+                require(total <= BookFileManager.MAX_IMPORT_BYTES) {
+                    "File exceeds the 100 MB import limit"
+                }
+                output.write(buffer, 0, count)
+            }
+        }
+    }
+
     fun reSplitBookChapters(
         bookId: Long,
-        regexPattern: String = TxtParser.REGEX_CHINESE,
+        regexPattern: String = "",
         cropTableOfContents: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -412,7 +443,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun bookImagesDir(bookId: Long): File = bookFiles.sharedImagesDir(bookId)
 
     fun runBookTranslation(projectId: Long) {
-        launchBookTranslation(projectId, "翻译任务失败")
+        // Seamless prefetch uses the same project and durable run tables. Do not queue a second
+        // explicit worker for that project while the background buffer is already running.
+        val seamlessRunning = synchronized(translationJobRegistryLock) {
+            seamlessJobs.containsKey(projectId)
+        }
+        if (!launchBookTranslation(projectId, "翻译任务失败")) {
+            showMessage(if (seamlessRunning) "该翻译任务正在进行无感预翻译" else "该翻译任务已经在运行")
+        }
     }
 
     fun pauseBookTranslation(projectId: Long) {
@@ -420,89 +458,282 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resumeBookTranslation(projectId: Long) {
-        viewModelScope.launch(Dispatchers.IO) { bookTranslationScheduler.resume(projectId) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val resumed = bookTranslationScheduler.resume(projectId)
+            if (!resumed) {
+                withContext(Dispatchers.Main) { showMessage("该翻译任务当前不可恢复") }
+                return@launch
+            }
+            // A PAUSED worker normally remains registered, but an app restart or an external
+            // interruption can leave only the durable PAUSED/RUNNING state behind. In that case
+            // resume must install a fresh scheduler worker instead of merely flipping the flag.
+            val hasWorker = synchronized(translationJobRegistryLock) {
+                bookTranslationJobs.containsKey(projectId) || seamlessJobs.containsKey(projectId)
+            }
+            if (!hasWorker) launchBookTranslation(projectId, "继续翻译失败")
+        }
     }
 
     fun cancelBookTranslation(projectId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
+            // Keep both references registered until their own finally blocks run. Removing a
+            // seamless job here would let a reader-progress callback launch a replacement worker
+            // while the cancelled coroutine is still unwinding.
+            val jobs = synchronized(translationJobRegistryLock) {
+                listOfNotNull(bookTranslationJobs[projectId], seamlessJobs[projectId]).distinct()
+            }
+            jobs.forEach { it.cancel() }
+            // Cancel the local coroutine before awaiting the provider gate. OkHttp's cancellable
+            // call then releases an in-flight request promptly, while the durable state update
+            // still runs after the gate is closed and prevents a replacement worker from starting.
             bookTranslationScheduler.cancel(projectId)
-            bookTranslationJobs[projectId]?.cancel()
-            seamlessJobs.remove(projectId)?.cancel()
         }
     }
 
-    private fun launchBookTranslation(projectId: Long, failureLabel: String) {
+    fun cancelGlossaryScan(bookId: Long) {
+        cancelAuxiliaryAiJob("glossary-scan:$bookId")
+    }
+
+    fun cancelAgentBookChapterSplit(bookId: Long) {
+        cancelAuxiliaryAiJob("chapter-split:$bookId")
+    }
+
+    private fun launchBookTranslation(projectId: Long, failureLabel: String): Boolean {
+        val job: Job
+        synchronized(translationJobRegistryLock) {
+            // Explicit and seamless workers share one durable project/run state. The lock makes
+            // the cross-map check atomic so a reader progress callback cannot race a manual start.
+            if (projectId in deletingTranslationProjects || seamlessJobs.containsKey(projectId)) return false
+            job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                try {
+                    val project = bookPlatformRepo.getTranslationProject(projectId)
+                    if (project == null) return@launch
+                    val blocked = synchronized(translationJobRegistryLock) {
+                        project.bookId in deletingBooks || projectId in deletingTranslationProjects
+                    }
+                    if (blocked) return@launch
+                    bookTranslationScheduler.run(projectId)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    withContext(Dispatchers.Main) {
+                        showMessage("$failureLabel：${error.localizedMessage ?: "未知错误"}")
+                    }
+                } finally {
+                    // Do not remove a newer run that may have been installed after this job was
+                    // cancelled. The identity check keeps the one-project/one-job invariant intact.
+                    coroutineContext[Job]?.let { currentJob -> bookTranslationJobs.remove(projectId, currentJob) }
+                }
+            }
+            if (bookTranslationJobs.putIfAbsent(projectId, job) != null) {
+                job.cancel()
+                return false
+            }
+            // Start while the registry lock is held. A cancellation cannot otherwise land in the
+            // gap between registration and start, leaving a cancelled LAZY Job as a stale blocker.
+            job.start()
+        }
+        return true
+    }
+
+    /** Runs one paid helper operation at a time per key and preserves cancellation across retries. */
+    private fun launchAuxiliaryAiJob(
+        key: String,
+        block: suspend (TranslationControlSignal) -> Unit
+    ): Boolean {
+        val signal = TranslationControlSignal()
         val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
-                bookTranslationScheduler.run(projectId)
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Throwable) {
-                withContext(Dispatchers.Main) {
-                    showMessage("$failureLabel：${error.localizedMessage ?: "未知错误"}")
-                }
+                block(signal)
             } finally {
-                // Do not remove a newer run that may have been installed after this job was
-                // cancelled. The identity check keeps the one-project/one-job invariant intact.
-                coroutineContext[Job]?.let { currentJob -> bookTranslationJobs.remove(projectId, currentJob) }
+                auxiliaryAiControls.remove(key, signal)
+                coroutineContext[Job]?.let { currentJob -> auxiliaryAiJobs.remove(key, currentJob) }
             }
         }
-        if (bookTranslationJobs.putIfAbsent(projectId, job) == null) {
-            job.start()
-        } else {
+        val bookId = key.substringAfter(':', missingDelimiterValue = "").toLongOrNull()
+        val duplicate = synchronized(translationJobRegistryLock) {
+            // Deletion marks the book before it cancels helper workers. Registering under the same
+            // lock closes the gap where a new scan could be inserted after cancellation but before
+            // the database/file removal.
+            if (bookId != null && bookId in deletingBooks) {
+                true
+            } else {
+                synchronized(auxiliaryAiRegistryLock) {
+                    if (auxiliaryAiJobs.containsKey(key)) {
+                        true
+                    } else {
+                        auxiliaryAiJobs[key] = job
+                        auxiliaryAiControls[key] = signal
+                        // Keep registration and start atomic with respect to deletion/cancellation
+                        // so a cancelled LAZY helper can never remain in the registry forever.
+                        job.start()
+                        false
+                    }
+                }
+            }
+        }
+        if (duplicate) {
             job.cancel()
+            return false
+        }
+        return true
+    }
+
+    private fun cancelAuxiliaryAiJob(key: String) {
+        auxiliaryAiControls[key]?.cancel()
+        auxiliaryAiJobs[key]?.cancel()
+    }
+
+    private fun logAuxiliaryUsage(
+        operation: String,
+        bookId: Long,
+        provider: ApiProviderEntity,
+        result: LlmResult,
+        projectId: Long? = null,
+        chapterIndex: Int? = null
+    ) {
+        val cost = TokenCalculator.calculateCost(
+            result.promptTokens,
+            result.completionTokens,
+            provider.inputPricePerMillion,
+            provider.outputPricePerMillion
+        )
+        val details = buildString {
+            append("bookId=").append(bookId)
+            append("; model=").append(provider.name).append('/').append(provider.selectedModel)
+            append("; promptTokens=").append(result.promptTokens)
+            append("; completionTokens=").append(result.completionTokens)
+            append("; cost=").append(String.format(java.util.Locale.US, "%.6f", cost))
+            append("; durationMs=").append(result.durationMs)
+            append("; attempts=").append(result.attempts.size.coerceAtLeast(1))
+            append("; usageSource=").append(result.usageSource.name)
+            result.errorCategory?.let { append("; errorCategory=").append(it.name) }
+            result.errorMessage?.takeIf { it.isNotBlank() }?.let { append("; error=").append(it) }
+        }
+        val message = if (result.isSuccess) {
+            "$operation helper request completed"
+        } else {
+            "$operation helper request failed"
+        }
+        if (result.isSuccess) {
+            com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
+                "LLM_AUXILIARY",
+                message,
+                details = details,
+                projectId = projectId,
+                chapterIndex = chapterIndex
+            )
+        } else {
+            com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                "LLM_AUXILIARY",
+                message,
+                details = details,
+                projectId = projectId,
+                chapterIndex = chapterIndex
+            )
         }
     }
 
     fun saveReaderProgress(progress: ReaderProgressEntity) {
-        viewModelScope.launch(Dispatchers.IO) {
-            bookPlatformRepo.saveReaderProgress(progress)
-            val chapterId = progress.logicalChapterId ?: return@launch
-            if (lastSeamlessChapter.put(progress.bookId, chapterId) == chapterId) return@launch
-            // Read the source of truth directly: this callback can run from the reader while the
-            // app-level WhileSubscribed StateFlow has no active collector and still holds its
-            // initial empty value.
-            bookPlatformRepo.getTranslationProjects(progress.bookId)
-                .filter { it.translationMode == TranslationMode.SEAMLESS.name }
-                .forEach { project ->
-                    val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
-                        try {
-                            runCancellable { bookTranslationScheduler.run(project.id) }
-                                .onFailure { showMessage("无感翻译缓冲失败：${it.localizedMessage}") }
-                        } finally {
-                            coroutineContext[Job]?.let { currentJob -> seamlessJobs.remove(project.id, currentJob) }
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                val savedProgress = bookPlatformRepo.saveReaderProgress(progress) ?: return@launch
+                val chapterId = savedProgress.logicalChapterId ?: return@launch
+                if (lastSeamlessChapter.put(savedProgress.bookId, chapterId) == chapterId) return@launch
+                // Read the source of truth directly: this callback can run from the reader while
+                // the app-level WhileSubscribed StateFlow has no active collector and still holds
+                // its initial empty value.
+                bookPlatformRepo.getTranslationProjects(savedProgress.bookId)
+                    // Automatic prefetch is opt-in for a live, resumable project. A cancelled or
+                    // failed project must stay terminal until the user explicitly starts it again;
+                    // a paused project must not be silently resumed by scrolling the reader.
+                    .filter {
+                        it.translationMode == TranslationMode.SEAMLESS.name &&
+                            it.state in setOf("IDLE", "INTERRUPTED", "COMPLETED", "COMPLETED_WITH_ERRORS")
+                    }
+                    .forEach { project ->
+                        val seamlessJob = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                            try {
+                                runCancellable { bookTranslationScheduler.run(project.id) }
+                                    .onFailure { showMessage("无感翻译缓冲失败：${it.localizedMessage}") }
+                            } finally {
+                                coroutineContext[Job]?.let { currentJob -> seamlessJobs.remove(project.id, currentJob) }
+                            }
+                        }
+                        val selected = synchronized(translationJobRegistryLock) {
+                            if (savedProgress.bookId in deletingBooks || project.id in deletingTranslationProjects ||
+                                bookTranslationJobs.containsKey(project.id)
+                            ) {
+                                null
+                            } else {
+                                val chosen = seamlessJobs.compute(project.id) { _, existing ->
+                                    if (existing?.isActive == true) existing else seamlessJob
+                                }
+                                if (chosen === seamlessJob) {
+                                    // Do not leave a registered LAZY Job unstarted if cancellation
+                                    // wins immediately after this critical section.
+                                    seamlessJob.start()
+                                }
+                                chosen
+                            }
+                        }
+                        if (selected == null) {
+                            seamlessJob.cancel()
+                        } else if (selected !== seamlessJob) {
+                            seamlessJob.cancel()
                         }
                     }
-                    val selected = seamlessJobs.compute(project.id) { _, existing ->
-                        if (existing?.isActive == true) existing else job
-                    }
-                    if (selected === job) {
-                        job.start()
-                    } else {
-                        job.cancel()
-                    }
+            } finally {
+                coroutineContext[Job]?.let { currentJob -> readerProgressJobs.remove(progress.bookId, currentJob) }
+            }
+        }
+        var canStart = false
+        val previous = synchronized(translationJobRegistryLock) {
+            if (progress.bookId in deletingBooks) {
+                null
+            } else {
+                canStart = true
+                readerProgressJobs.put(progress.bookId, job).also {
+                    // Registration and start must be one critical section; otherwise deletion can
+                    // cancel this LAZY job before its finally block is able to remove the entry.
+                    job.start()
                 }
+            }
+        }
+        if (!canStart) {
+            job.cancel()
+        } else {
+            previous?.cancel()
         }
     }
 
     fun saveManualRevision(editionSegmentId: Long, text: String) {
         viewModelScope.launch(Dispatchers.IO) {
-            bookPlatformRepo.saveManualRevision(editionSegmentId, text)
-            showMessage("修改已保存，并保留修订历史")
+            runCancellable { bookPlatformRepo.saveManualRevision(editionSegmentId, text) }
+                .onSuccess { withContext(Dispatchers.Main) { showMessage("修改已保存，并保留修订历史") } }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("保存修改失败：${error.localizedMessage ?: "文本无效或过长"}") } }
         }
     }
 
     fun renameBook(bookId: Long, title: String) {
-        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.renameBook(bookId, title) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCancellable { bookPlatformRepo.renameBook(bookId, title) }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("重命名失败：${error.localizedMessage ?: "书名无效"}") } }
+        }
     }
 
     fun updateBookMetadata(bookId: Long, title: String, author: String, description: String, language: String) {
-        viewModelScope.launch(Dispatchers.IO) { bookPlatformRepo.updateBookMetadata(bookId, title, author, description, language) }
+        viewModelScope.launch(Dispatchers.IO) {
+            runCancellable { bookPlatformRepo.updateBookMetadata(bookId, title, author, description, language) }
+                .onSuccess { withContext(Dispatchers.Main) { showMessage("书籍信息已保存") } }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("保存书籍信息失败：${error.localizedMessage ?: "输入无效"}") } }
+        }
     }
 
     fun setBookCover(bookId: Long, uri: android.net.Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             runCancellable {
+                require(bookPlatformRepo.getBook(bookId) != null) { "Book not found" }
                 val name = uri.lastPathSegment ?: "cover.jpg"
                 val cover = getApplication<Application>().contentResolver.openInputStream(uri)?.use { bookFiles.saveCover(bookId, name, it) }
                     ?: error("Unable to open cover image")
@@ -554,59 +785,68 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rangeStart: Int?,
         rangeEnd: Int?,
         styleGuide: String,
+        seamlessAheadChapters: Int? = null,
         highQualityReview: Boolean? = null,
         onSuccess: () -> Unit = {}
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val existing = bookPlatformRepo.getTranslationProject(projectId) ?: return@launch
-            val updated = existing.copy(
-                providerId = providerId,
-                modelName = modelName,
-                translationMode = mode.name,
-                maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
-                rangeStart = rangeStart,
-                rangeEnd = rangeEnd,
-                styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
-                highQualityReview = highQualityReview ?: existing.highQualityReview,
-                updatedAt = System.currentTimeMillis()
-            )
-            bookPlatformRepo.updateTranslationProject(updated)
-            withContext(Dispatchers.Main) {
-                showMessage("翻译配置已保存")
-                onSuccess()
+            try {
+                val existing = bookPlatformRepo.getTranslationProject(projectId) ?: return@launch
+                val updated = existing.copy(
+                    providerId = providerId,
+                    modelName = modelName.trim().take(200),
+                    translationMode = mode.name,
+                    maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                    rangeStart = rangeStart,
+                    rangeEnd = rangeEnd,
+                    seamlessAheadChapters = (seamlessAheadChapters ?: existing.seamlessAheadChapters)
+                        .coerceIn(1, 50),
+                    styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
+                    highQualityReview = highQualityReview ?: existing.highQualityReview,
+                    updatedAt = System.currentTimeMillis()
+                )
+                bookPlatformRepo.updateTranslationProject(updated)
+                withContext(Dispatchers.Main) {
+                    showMessage("翻译配置已保存")
+                    onSuccess()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("保存翻译配置失败：${error.localizedMessage ?: "任务状态或参数无效"}")
+                }
             }
         }
     }
 
     fun upsertLexiconEntry(entry: LexiconEntryEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            bookPlatformRepo.upsertLexiconEntry(entry)
-            withContext(Dispatchers.Main) {
-                showMessage("专有术语已保存")
-            }
+            runCancellable { bookPlatformRepo.upsertLexiconEntry(entry) }
+                .onSuccess { withContext(Dispatchers.Main) { showMessage("专有术语已保存") } }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("保存术语失败：${error.localizedMessage ?: "术语格式无效或重复"}") } }
         }
     }
 
     fun deleteLexiconEntry(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            bookPlatformRepo.deleteLexiconEntry(id)
-            withContext(Dispatchers.Main) {
-                showMessage("专有术语已删除")
-            }
+            runCancellable { bookPlatformRepo.deleteLexiconEntry(id) }
+                .onSuccess { withContext(Dispatchers.Main) { showMessage("专有术语已删除") } }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("删除术语失败：${error.localizedMessage ?: "存储错误"}") } }
         }
     }
 
     fun confirmLexiconEntry(entry: LexiconEntryEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            bookPlatformRepo.updateLexiconEntry(
-                entry.copy(
-                    reviewStatus = ReviewStatus.CONFIRMED.name,
-                    updatedAt = System.currentTimeMillis()
+            runCancellable {
+                bookPlatformRepo.updateLexiconEntry(
+                    entry.copy(
+                        reviewStatus = ReviewStatus.CONFIRMED.name,
+                        updatedAt = System.currentTimeMillis()
+                    )
                 )
-            )
-            withContext(Dispatchers.Main) {
-                showMessage("术语已确认，将在后续翻译中生效")
-            }
+            }.onSuccess { withContext(Dispatchers.Main) { showMessage("术语已确认，将在后续翻译中生效") } }
+                .onFailure { error -> withContext(Dispatchers.Main) { showMessage("确认术语失败：${error.localizedMessage ?: "术语格式无效"}") } }
         }
     }
 
@@ -619,51 +859,57 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         onResult: (CandidateImportResult) -> Unit = {}
     ) {
         viewModelScope.launch(Dispatchers.IO) {
-            val result = db.withTransaction {
-                val candidate = db.lexiconCandidateAggregateDao().getById(candidateId)
-                    ?: return@withTransaction CandidateImportResult.Failed("Candidate not found")
-                if (candidate.state != LexiconCandidateState.ACTIVE.name) {
-                    return@withTransaction CandidateImportResult.Failed("Candidate is no longer active")
-                }
-                val review = LexiconCandidateVoting.review(candidate)
-                val existing = db.lexiconV2Dao().getAll(candidate.translationProjectId)
-                    .firstOrNull {
-                        it.reviewStatus == ReviewStatus.CONFIRMED.name &&
-                        LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) == candidate.normalizedSourceTerm
+            val result = try {
+                db.withTransaction {
+                    val candidate = db.lexiconCandidateAggregateDao().getById(candidateId)
+                        ?: return@withTransaction CandidateImportResult.Failed("Candidate not found")
+                    if (candidate.state != LexiconCandidateState.ACTIVE.name) {
+                        return@withTransaction CandidateImportResult.Failed("Candidate is no longer active")
                     }
-                if (existing != null && !overwrite) {
-                    return@withTransaction CandidateImportResult.Conflict(
-                        CandidateImportConflict(review, existing)
-                    )
-                }
-                val proposedTarget = targetTerm ?: review.winnerTargetTerm
-                val proposedCategory = category ?: review.winnerCategory
-                val proposedNotes = notes ?: review.winnerNotes
-                if (proposedTarget.isBlank() || !LexiconCandidateImportPlanner.isImportableCategory(proposedCategory)) {
-                    return@withTransaction CandidateImportResult.Failed("Candidate has no usable winner")
-                }
-                if (existing == null) {
-                    db.lexiconV2Dao().upsert(
-                        LexiconCandidateImportPlanner.createOfficialEntry(
-                            review = review,
-                            targetTerm = proposedTarget,
-                            category = proposedCategory,
-                            notes = proposedNotes
+                    val review = LexiconCandidateVoting.review(candidate)
+                    val existing = db.lexiconV2Dao().getAll(candidate.translationProjectId)
+                        .firstOrNull {
+                            it.reviewStatus == ReviewStatus.CONFIRMED.name &&
+                            LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) == candidate.normalizedSourceTerm
+                        }
+                    if (existing != null && !overwrite) {
+                        return@withTransaction CandidateImportResult.Conflict(
+                            CandidateImportConflict(review, existing)
                         )
-                    )
-                } else {
-                    db.lexiconV2Dao().update(
-                        LexiconCandidateImportPlanner.overwriteOfficialEntry(
-                            existing = existing,
-                            review = review,
-                            targetTerm = proposedTarget,
-                            category = proposedCategory,
-                            notes = proposedNotes
+                    }
+                    val proposedTarget = targetTerm ?: review.winnerTargetTerm
+                    val proposedCategory = category ?: review.winnerCategory
+                    val proposedNotes = notes ?: review.winnerNotes
+                    if (proposedTarget.isBlank() || !LexiconCandidateImportPlanner.isImportableCategory(proposedCategory)) {
+                        return@withTransaction CandidateImportResult.Failed("Candidate has no usable winner")
+                    }
+                    if (existing == null) {
+                        db.lexiconV2Dao().upsert(
+                            LexiconCandidateImportPlanner.createOfficialEntry(
+                                review = review,
+                                targetTerm = proposedTarget,
+                                category = proposedCategory,
+                                notes = proposedNotes
+                            )
                         )
-                    )
+                    } else {
+                        db.lexiconV2Dao().update(
+                            LexiconCandidateImportPlanner.overwriteOfficialEntry(
+                                existing = existing,
+                                review = review,
+                                targetTerm = proposedTarget,
+                                category = proposedCategory,
+                                notes = proposedNotes
+                            )
+                        )
+                    }
+                    db.lexiconCandidateAggregateDao().markImported(candidateId)
+                    CandidateImportResult.Imported(candidateId, overwritten = existing != null)
                 }
-                db.lexiconCandidateAggregateDao().markImported(candidateId)
-                CandidateImportResult.Imported(candidateId, overwritten = existing != null)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                CandidateImportResult.Failed(error.localizedMessage ?: "Glossary entry is invalid")
             }
             when (result) {
                 is CandidateImportResult.Imported -> com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
@@ -814,9 +1060,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         provider: ApiProviderEntity,
         targetLanguage: String = "zh",
         onProgress: (String) -> Unit = {},
-        onComplete: (Int) -> Unit = {}
+        onComplete: (Result<Int>) -> Unit = {}
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        val started = launchAuxiliaryAiJob("glossary-scan:$bookId") { control ->
             try {
                 val projectId = requireNotNull(targetProjectId) { "请先创建并选择一个翻译版本，再扫描术语" }
                 val book = bookPlatformRepo.getBook(bookId) ?: error("找不到目标书籍")
@@ -833,9 +1079,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (allChapters.isEmpty()) {
                     withContext(Dispatchers.Main) {
                         showMessage("所选范围内未找到章节")
-                        onComplete(0)
+                        onComplete(Result.success(0))
                     }
-                    return@launch
+                    return@launchAuxiliaryAiJob
                 }
                 withContext(Dispatchers.Main) {
                     onProgress("正在读取待扫描章节内容 (共 ${allChapters.size} 章)...")
@@ -855,6 +1101,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 var failedWindows = 0
                 var readableChapters = 0
                 allChapters.forEach { chapter ->
+                    if (control.isCancelled) throw CancellationException("Terminology scan cancelled")
                     val segments = db.bookDao().getLogicalSegments(chapter.id)
                     val editionChapter = db.bookDao().getEditionChapter(sourceEditionId, chapter.id)
                     if (editionChapter != null) {
@@ -869,6 +1116,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                             readableChapters++
                             val windows = splitTermScanWindows(chapterText)
                             windows.forEachIndexed { windowIndex, window ->
+                                if (control.isCancelled) throw CancellationException("Terminology scan cancelled")
                                 val label = if (chapterText.length <= TERM_SCAN_WINDOW_CHARS) {
                                     "第 ${chapter.chapterIndex} 章"
                                 } else {
@@ -883,7 +1131,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                         provider = provider,
                                         sourceLanguage = book.originalLanguage,
                                         targetLanguage = effectiveTargetLanguage,
-                                        existingTerms = existingConfirmedTerms
+                                        existingTerms = existingConfirmedTerms,
+                                        controlSignal = control
                                     )
                                 } catch (ce: CancellationException) {
                                     throw ce
@@ -897,6 +1146,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                                     )
                                     return@forEachIndexed
                                 }
+                                logAuxiliaryUsage(
+                                    operation = "TERM_EXTRACTION",
+                                    bookId = bookId,
+                                    provider = provider,
+                                    result = extraction.usage,
+                                    projectId = projectId,
+                                    chapterIndex = chapter.chapterIndex
+                                )
                                 if (!extraction.usage.isSuccess || extraction.parseError != null) {
                                     failedWindows++
                                     com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
@@ -962,9 +1219,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 if (readableChapters == 0) {
                     withContext(Dispatchers.Main) {
                         showMessage("未读取到章节文本，无法扫描")
-                        onComplete(0)
+                        onComplete(Result.success(0))
                     }
-                    return@launch
+                    return@launchAuxiliaryAiJob
+                }
+                if (failedWindows > 0) {
+                    val partialFailure = IllegalStateException(
+                        "术语扫描有 $failedWindows 个窗口失败，已保留成功窗口的候选证据"
+                    )
+                    com.breakyuna.noveltranslator.core.logger.SystemLogger.warn(
+                        "GLOSSARY_SCAN",
+                        "⚠️ 扫描未完整完成: processed=$readableChapters, candidates=$count, failedWindows=$failedWindows",
+                        projectId = projectId
+                    )
+                    withContext(Dispatchers.Main) {
+                        showMessage("术语扫描未完整完成：$failedWindows 个窗口失败，已保留成功窗口结果")
+                        onComplete(Result.failure(partialFailure))
+                    }
+                    return@launchAuxiliaryAiJob
                 }
                 com.breakyuna.noveltranslator.core.logger.SystemLogger.info(
                     "GLOSSARY_SCAN",
@@ -973,7 +1245,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 withContext(Dispatchers.Main) {
                     showMessage("专有术语扫描完成，共 $count 个待审核候选")
-                    onComplete(count)
+                    onComplete(Result.success(count))
                 }
             } catch (ce: CancellationException) {
                 // A cancelled scan keeps every aggregate persisted by completed windows.
@@ -984,12 +1256,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     "❌ 专有术语扫描失败: ${e.message}",
                     projectId = targetProjectId
                 )
-                val retainedCount = targetProjectId?.let { db.lexiconCandidateAggregateDao().getAllActive(it).size } ?: 0
                 withContext(Dispatchers.Main) {
                     showMessage("术语扫描失败: ${e.localizedMessage}")
-                    onComplete(retainedCount)
+                    onComplete(Result.failure(e))
                 }
             }
+        }
+        if (!started) {
+            showMessage("当前书籍已有术语扫描任务正在运行")
+            onComplete(Result.failure(IllegalStateException("当前书籍已有术语扫描任务正在运行")))
         }
     }
 
@@ -1006,12 +1281,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteBooksPermanently(bookIds: Set<Long>) {
         if (bookIds.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
-            bookIds.forEach { bookId ->
-                stopBookTranslations(bookId)
-                bookPlatformRepo.deletePermanently(bookId)
-            }
-            withContext(Dispatchers.Main) {
-                showMessage("已永久删除 ${bookIds.size} 本图书及相关文件")
+            try {
+                var deletedCount = 0
+                bookIds.forEach { bookId ->
+                    if (deleteBookAndData(bookId)) deletedCount++
+                }
+                withContext(Dispatchers.Main) {
+                    showMessage("已永久删除 $deletedCount/${bookIds.size} 本图书及相关文件")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("永久删除失败：${error.localizedMessage ?: "存储或任务状态错误"}")
+                }
             }
         }
     }
@@ -1040,30 +1323,130 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteBookPermanently(bookId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            stopBookTranslations(bookId)
-            bookPlatformRepo.deletePermanently(bookId)
+            try {
+                if (deleteBookAndData(bookId)) {
+                    withContext(Dispatchers.Main) { showMessage("已永久删除图书及相关文件") }
+                } else {
+                    withContext(Dispatchers.Main) { showMessage("该书籍正在删除，请稍后再试") }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("永久删除失败：${error.localizedMessage ?: "存储或任务状态错误"}")
+                }
+            }
         }
     }
 
-    /** Stops active jobs before deleting their Book rows and authoritative files. */
-    private suspend fun stopBookTranslations(bookId: Long) {
-        val projects = bookPlatformRepo.getTranslationProjects(bookId)
-        projects.forEach { project ->
-            val explicitJob = bookTranslationJobs[project.id]
-            val seamlessJob = seamlessJobs[project.id]
-            if (explicitJob?.isActive == true || seamlessJob?.isActive == true ||
-                project.state == "RUNNING" || project.state == "PAUSED"
-            ) {
-                bookTranslationScheduler.cancel(project.id)
+    fun deleteEdition(bookId: Long, editionId: Long, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var projectIds = emptySet<Long>()
+            val acquired = synchronized(translationJobRegistryLock) { deletingBooks.add(bookId) }
+            if (!acquired) {
+                showMessage("该书籍正在删除，请稍后再试")
+                return@launch
             }
-            bookTranslationJobs.remove(project.id)?.let { job ->
+            try {
+                // Install the book-wide guard before loading child projects. A progress callback
+                // or newly-created project must not slip into the deletion window.
+                val projects = bookPlatformRepo.getTranslationProjectsForEdition(editionId)
+                projectIds = projects.mapTo(linkedSetOf()) { it.id }
+                synchronized(translationJobRegistryLock) {
+                    deletingTranslationProjects.addAll(projectIds)
+                }
+                stopReaderProgressJobs(bookId)
+                stopAuxiliaryAiJobs(bookId)
+                projects.forEach(::stopTranslationProject)
+                bookPlatformRepo.deleteEdition(bookId, editionId)
+                withContext(Dispatchers.Main) {
+                    showMessage("译本及其翻译记录已删除")
+                    onSuccess()
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("删除译本失败：${error.localizedMessage ?: "存储或任务状态错误"}")
+                }
+            } finally {
+                synchronized(translationJobRegistryLock) {
+                    deletingTranslationProjects.removeAll(projectIds)
+                    deletingBooks.remove(bookId)
+                }
+            }
+        }
+    }
+
+    /** Stops active workers while a deletion guard blocks new callbacks, then removes DB/files. */
+    private suspend fun deleteBookAndData(bookId: Long): Boolean {
+        var projectIds = emptySet<Long>()
+        val acquired = synchronized(translationJobRegistryLock) { deletingBooks.add(bookId) }
+        if (!acquired) return false
+        try {
+            val projects = bookPlatformRepo.getTranslationProjects(bookId)
+            projectIds = projects.mapTo(linkedSetOf()) { it.id }
+            synchronized(translationJobRegistryLock) {
+                deletingTranslationProjects.addAll(projectIds)
+            }
+            stopReaderProgressJobs(bookId)
+            stopAuxiliaryAiJobs(bookId)
+            projects.forEach(::stopTranslationProject)
+            bookPlatformRepo.deletePermanently(bookId)
+            return true
+        } finally {
+            synchronized(translationJobRegistryLock) {
+                deletingTranslationProjects.removeAll(projectIds)
+                deletingBooks.remove(bookId)
+            }
+        }
+    }
+
+    private suspend fun stopReaderProgressJobs(bookId: Long) {
+        readerProgressJobs.remove(bookId)?.let { job ->
+            job.cancel()
+            job.join()
+        }
+        lastSeamlessChapter.remove(bookId)
+    }
+
+    /** Auxiliary scans read and write project-bound rows; wait for them before deleting a book. */
+    private suspend fun stopAuxiliaryAiJobs(bookId: Long) {
+        listOf("glossary-scan:$bookId", "chapter-split:$bookId").forEach { key ->
+            val (signal, job) = synchronized(auxiliaryAiRegistryLock) {
+                auxiliaryAiControls.remove(key) to auxiliaryAiJobs.remove(key)
+            }
+            // Mark the provider gate before cancelling the coroutine so retry/continuation logic
+            // cannot start another paid request while the worker is unwinding.
+            signal?.cancel()
+            job?.let {
                 job.cancel()
+            }
+            // The worker cancellation above releases the provider-call gate promptly; request
+            // cancellation still gives the gateway a durable signal before the row is removed.
+            signal?.requestCancel()
+            job?.let {
                 job.join()
             }
-            seamlessJobs.remove(project.id)?.let { job ->
-                job.cancel()
-                job.join()
-            }
+        }
+    }
+
+    private suspend fun stopTranslationProject(project: TranslationProjectV2Entity) {
+        val (explicitJob, seamlessJob) = synchronized(translationJobRegistryLock) {
+            bookTranslationJobs[project.id] to seamlessJobs[project.id]
+        }
+        if (explicitJob?.isActive == true || seamlessJob?.isActive == true ||
+            project.state == "RUNNING" || project.state == "PAUSED"
+        ) {
+            bookTranslationScheduler.cancel(project.id)
+        }
+        listOfNotNull(explicitJob, seamlessJob).distinct().forEach { job ->
+            job.cancel()
+            job.join()
+        }
+        synchronized(translationJobRegistryLock) {
+            explicitJob?.let { bookTranslationJobs.remove(project.id, it) }
+            seamlessJob?.let { seamlessJobs.remove(project.id, it) }
         }
     }
 
@@ -1080,26 +1463,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun previewAgentBookChapterSplit(
         bookId: Long,
         provider: ApiProviderEntity,
-        onPreview: (List<ChapterSplitPreview>) -> Unit
+        onPreview: (List<ChapterSplitPreview>) -> Unit,
+        onFinished: () -> Unit = {}
     ) {
         pendingChapterSplits.remove(bookId)
-        viewModelScope.launch(Dispatchers.IO) {
+        val started = launchAuxiliaryAiJob("chapter-split:$bookId") { control ->
             try {
                 val sourceFile = bookFiles.sourceDir(bookId)
                     .listFiles()
                     ?.filter { it.isFile && !it.name.startsWith(".") }
-                    ?.sortedBy { it.name.lowercase() }
+                    ?.sortedBy { it.name.lowercase(Locale.ROOT) }
                     ?.firstOrNull()
                     ?: error("找不到保留的原始文件")
                 require(sourceFile.extension.equals("txt", ignoreCase = true)) {
                     "EPUB 已由解析器完成章节识别；AI 章节识别目前只对 TXT 提供预览"
                 }
-                val fullText = TxtParser.openDetectedReader(sourceFile).use { it.readText() }
+                val fullText = TxtParser.openDetectedReader(sourceFile).use { reader ->
+                    val text = StringBuilder()
+                    val buffer = CharArray(16 * 1024)
+                    while (true) {
+                        val count = reader.read(buffer)
+                        if (count < 0) break
+                        text.append(buffer, 0, count)
+                        require(text.length <= ChapterSplitAgent.MAX_AI_SPLIT_CHARS) {
+                            "AI splitting is limited to 2,000,000 characters; use regex splitting for larger books"
+                        }
+                    }
+                    text.toString()
+                }
                 showMessage("AI 正在分析书籍章节结构...")
                 val parsed = chapterSplitAgent.analyzeAndSplit(
                     fullText = fullText,
                     provider = provider,
-                    onProgress = { completed, total -> showMessage("AI 章节识别进度 $completed/$total...") }
+                    onProgress = { completed, total -> showMessage("AI 章节识别进度 $completed/$total...") },
+                    onUsage = { result ->
+                        logAuxiliaryUsage(
+                            operation = "CHAPTER_SPLIT",
+                            bookId = bookId,
+                            provider = provider,
+                            result = result
+                        )
+                    },
+                    controlSignal = control
                 )
                 require(parsed.isNotEmpty()) { "AI 未识别出有效章节" }
                 pendingChapterSplits[bookId] = parsed
@@ -1110,13 +1515,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     showMessage("AI 已识别 ${parsed.size} 个候选章节，请确认后应用")
                 }
             } catch (cancelled: CancellationException) {
+                pendingChapterSplits.remove(bookId)
                 throw cancelled
             } catch (error: Throwable) {
                 pendingChapterSplits.remove(bookId)
                 withContext(Dispatchers.Main) {
                     showMessage("AI 章节识别失败：${error.localizedMessage ?: "输入或供应商错误"}")
                 }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Main) { onFinished() }
             }
+        }
+        if (!started) {
+            showMessage("当前书籍已有 AI 章节识别任务正在运行")
+            onFinished()
         }
     }
 
@@ -1174,19 +1586,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (provider.id == 0L) {
-                    val newId = providerRepo.insertProvider(provider)
-                    if (provider.isDefault) {
-                        providerRepo.setDefaultProvider(newId)
-                    }
+                    providerRepo.insertProvider(provider)
                 } else {
                     providerRepo.updateProvider(provider)
-                    if (provider.isDefault) {
-                        providerRepo.setDefaultProvider(provider.id)
-                    }
                 }
                 withContext(Dispatchers.Main) {
                     showMessage("API Provider \"${provider.name}\" saved.")
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (error: Exception) {
                 withContext(Dispatchers.Main) {
                     showMessage("Failed to save provider: ${error.localizedMessage ?: "storage error"}")
@@ -1197,18 +1605,34 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteProvider(providerId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            providerRepo.deleteProviderById(providerId)
-            withContext(Dispatchers.Main) {
-                showMessage("API Provider removed.")
+            try {
+                providerRepo.deleteProviderById(providerId)
+                withContext(Dispatchers.Main) {
+                    showMessage("API Provider removed.")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("Failed to remove provider: ${error.localizedMessage ?: "storage error"}")
+                }
             }
         }
     }
 
     fun setDefaultProvider(providerId: Long) {
         viewModelScope.launch(Dispatchers.IO) {
-            providerRepo.setDefaultProvider(providerId)
-            withContext(Dispatchers.Main) {
-                showMessage("Default provider updated.")
+            try {
+                providerRepo.setDefaultProvider(providerId)
+                withContext(Dispatchers.Main) {
+                    showMessage("Default provider updated.")
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("Failed to set default provider: ${error.localizedMessage ?: "storage error"}")
+                }
             }
         }
     }
@@ -1247,6 +1671,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         pendingChapterSplits.clear()
+        readerProgressJobs.clear()
+        auxiliaryAiControls.clear()
+        auxiliaryAiJobs.clear()
+        synchronized(translationJobRegistryLock) {
+            bookTranslationJobs.clear()
+            seamlessJobs.clear()
+            deletingBooks.clear()
+            deletingTranslationProjects.clear()
+        }
+        lastSeamlessChapter.clear()
         super.onCleared()
     }
 

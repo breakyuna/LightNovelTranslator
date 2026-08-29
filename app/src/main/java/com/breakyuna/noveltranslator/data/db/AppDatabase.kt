@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.data.db
 
 import android.content.Context
+import androidx.room.withTransaction
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
@@ -106,36 +107,41 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         private suspend fun seedDefaultProviders(database: AppDatabase) {
-            val dao = database.apiProviderDao()
-            if (dao.getProviderCount() != 0) return
-            dao.insertProvider(
-                ApiProviderEntity(
-                    name = "OpenAI (Official)",
-                    providerType = ProviderType.OPENAI_COMPATIBLE,
-                    baseUrl = "https://api.openai.com/v1",
-                    apiKey = "",
-                    selectedModel = "gpt-5.6-luna",
-                    inputPricePerMillion = 0.25,
-                    outputPricePerMillion = 2.00,
-                    currency = "USD",
-                    maxContextTokens = 32_768,
-                    isDefault = true
+            database.withTransaction {
+                val dao = database.apiProviderDao()
+                // The seed runs asynchronously when the singleton is first created. Recheck and
+                // insert atomically so a user-created provider cannot race this block and leave
+                // multiple defaults behind.
+                if (dao.getProviderCount() != 0) return@withTransaction
+                dao.insertProvider(
+                    ApiProviderEntity(
+                        name = "OpenAI (Official)",
+                        providerType = ProviderType.OPENAI_COMPATIBLE,
+                        baseUrl = "https://api.openai.com/v1",
+                        apiKey = "",
+                        selectedModel = "gpt-5.6-luna",
+                        inputPricePerMillion = 0.25,
+                        outputPricePerMillion = 2.00,
+                        currency = "USD",
+                        maxContextTokens = 32_768,
+                        isDefault = true
+                    )
                 )
-            )
-            dao.insertProvider(
-                ApiProviderEntity(
-                    name = "DeepSeek (Official)",
-                    providerType = ProviderType.DEEPSEEK,
-                    baseUrl = "https://api.deepseek.com/v1",
-                    apiKey = "",
-                    selectedModel = "deepseek-v4-flash",
-                    inputPricePerMillion = 0.14,
-                    outputPricePerMillion = 0.28,
-                    currency = "USD",
-                    maxContextTokens = 32_768,
-                    isDefault = false
+                dao.insertProvider(
+                    ApiProviderEntity(
+                        name = "DeepSeek (Official)",
+                        providerType = ProviderType.DEEPSEEK,
+                        baseUrl = "https://api.deepseek.com/v1",
+                        apiKey = "",
+                        selectedModel = "deepseek-v4-flash",
+                        inputPricePerMillion = 0.14,
+                        outputPricePerMillion = 0.28,
+                        currency = "USD",
+                        maxContextTokens = 32_768,
+                        isDefault = false
+                    )
                 )
-            )
+            }
         }
     }
 }

@@ -92,7 +92,10 @@ fun BookWorkbenchDetailScreen(
     // Active target edition selection (defaults to preferred reading edition or first translation edition)
     var selectedTargetEditionId by rememberSaveable(bookId) { mutableStateOf<Long?>(null) }
     LaunchedEffect(editions, book) {
-        if (selectedTargetEditionId == null && editions.isNotEmpty()) {
+        val selectedEditionStillExists = selectedTargetEditionId?.let { selectedId ->
+            editions.any { it.id == selectedId }
+        } == true
+        if (!selectedEditionStillExists && editions.isNotEmpty()) {
             val transEdition = editions.firstOrNull { it.type == EditionType.AI_TRANSLATION.name }
             val preferred = editions.firstOrNull { it.id == book?.preferredReadingEditionId }
             selectedTargetEditionId = preferred?.id ?: transEdition?.id ?: editions.last().id
@@ -128,6 +131,7 @@ fun BookWorkbenchDetailScreen(
     var chapterActionTarget by remember { mutableStateOf<LogicalChapterEntity?>(null) }
     var aiSplitProvider by remember(bookId) { mutableStateOf<ApiProviderEntity?>(null) }
     var aiSplitPreview by remember(bookId) { mutableStateOf<List<ChapterSplitPreview>?>(null) }
+    var aiSplitRunning by remember(bookId) { mutableStateOf(false) }
 
     val currentBook = book
     if (currentBook == null) {
@@ -148,6 +152,20 @@ fun BookWorkbenchDetailScreen(
             }
         }
         return
+    }
+
+    // The reader route accepts a logical chapter id, not an Edition id. Persist the selected
+    // Edition first, then open the reader at the saved position so the workbench selection is
+    // honored on both compact and wide layouts.
+    val openSelectedReader = {
+        val selectedEditionId = currentTargetEdition?.id
+        if (selectedEditionId == null) {
+            onOpenReader(currentBook.id, null)
+        } else {
+            viewModel.selectReadingEdition(currentBook.id, selectedEditionId) {
+                onOpenReader(currentBook.id, null)
+            }
+        }
     }
 
     Scaffold(
@@ -178,7 +196,7 @@ fun BookWorkbenchDetailScreen(
                     IconButton(onClick = { onOpenBookDetail(currentBook.id) }) {
                         Icon(Icons.Default.Info, "书籍详情")
                     }
-                    IconButton(onClick = { onOpenReader(currentBook.id, currentTargetEdition?.id) }) {
+                    IconButton(onClick = openSelectedReader) {
                         Icon(Icons.Default.MenuBook, "阅读译文")
                     }
                 },
@@ -264,7 +282,7 @@ fun BookWorkbenchDetailScreen(
                     onSelectEdition = { selectedTargetEditionId = it },
                     onCreateEdition = { showCreateEditionDialog = true },
                     onScanTerms = { showTermScannerDialog = true },
-                    onOpenReader = { onOpenReader(currentBook.id, currentTargetEdition?.id) },
+                    onOpenReader = openSelectedReader,
                     viewModel = viewModel
                 )
                 VerticalDivider()
@@ -350,6 +368,7 @@ fun BookWorkbenchDetailScreen(
             providers = allProviders,
             targetProjectId = currentProject?.id,
             onDismiss = { showTermScannerDialog = false },
+            onCancelScan = { viewModel.cancelGlossaryScan(currentBook.id) },
             onStartScan = { startCh, endCh, provider, targetLang, onProgress, onComplete ->
                 if (originalEdition != null) {
                     viewModel.scanGlossaryForBook(
@@ -361,8 +380,8 @@ fun BookWorkbenchDetailScreen(
                         provider = provider,
                         targetLanguage = targetLang,
                         onProgress = onProgress,
-                        onComplete = { count ->
-                            onComplete(count)
+                        onComplete = { result ->
+                            onComplete(result)
                         }
                     )
                 }
@@ -396,13 +415,32 @@ fun BookWorkbenchDetailScreen(
                 Button(
                     onClick = {
                         aiSplitProvider = null
-                        viewModel.previewAgentBookChapterSplit(currentBook.id, provider) { preview ->
-                            aiSplitPreview = preview
-                        }
+                        aiSplitPreview = null
+                        aiSplitRunning = true
+                        viewModel.previewAgentBookChapterSplit(
+                            bookId = currentBook.id,
+                            provider = provider,
+                            onPreview = { preview -> aiSplitPreview = preview },
+                            onFinished = { aiSplitRunning = false }
+                        )
                     }
                 ) { Text("开始识别") }
             },
             dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text("取消") } }
+        )
+    }
+
+    if (aiSplitRunning) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("正在识别章节边界") },
+            text = { Text("AI 正在读取原始 TXT 并分析章节结构，可以停止当前请求。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.cancelAgentBookChapterSplit(currentBook.id)
+                    aiSplitRunning = false
+                }) { Text("停止识别") }
+            }
         )
     }
 
@@ -1147,7 +1185,7 @@ private fun TasksAndControlTab(
                             )
                             StatBox(
                                 title = "预估费用",
-                                value = "$${String.format(java.util.Locale.US, "%.4f", run?.totalCost ?: 0.0)}"
+                                value = TokenCalculator.formatCost(run?.totalCost ?: 0.0, run?.currency ?: "USD")
                             )
                         }
 
@@ -1307,13 +1345,25 @@ private fun ModelStyleConfigurationCard(
     var isTestingProvider by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
     val activeProvider = providers.firstOrNull { it.id == selectedProviderId } ?: providers.firstOrNull()
+    LaunchedEffect(providers, project?.id, targetEdition?.id) {
+        val providerStillExists = selectedProviderId?.let { id -> providers.any { it.id == id } } == true
+        if (!providerStillExists) {
+            selectedProviderId = project?.providerId?.takeIf { id -> providers.any { it.id == id } }
+                ?: providers.firstOrNull()?.id
+        }
+        if (selectedModel.isBlank()) {
+            selectedModel = providers.firstOrNull { it.id == selectedProviderId }?.selectedModel
+                ?: providers.firstOrNull()?.selectedModel.orEmpty()
+        }
+    }
+    val canEdit = project?.state !in setOf("RUNNING", "PAUSED")
     val canCreateProject = project != null || (
         targetEdition != null &&
             originalEdition != null &&
             targetEdition.id != originalEdition.id
         )
     val canSave = targetEdition != null && canCreateProject &&
-        (activeProvider != null || selectedProviderId != null)
+        activeProvider != null
 
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -1349,7 +1399,7 @@ private fun ModelStyleConfigurationCard(
             } else {
                 ExposedDropdownMenuBox(
                     expanded = providerMenuExpanded,
-                    onExpandedChange = { providerMenuExpanded = !providerMenuExpanded }
+                    onExpandedChange = { if (canEdit) providerMenuExpanded = !providerMenuExpanded }
                 ) {
                     OutlinedTextField(
                         value = activeProvider?.let { "${it.name} (${it.providerType.displayName})" }.orEmpty(),
@@ -1358,7 +1408,8 @@ private fun ModelStyleConfigurationCard(
                         label = { Text("AI 供应商") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(providerMenuExpanded) },
                         modifier = Modifier.menuAnchor().fillMaxWidth(),
-                        singleLine = true
+                        singleLine = true,
+                        enabled = canEdit
                     )
                     ExposedDropdownMenu(
                         expanded = providerMenuExpanded,
@@ -1383,7 +1434,8 @@ private fun ModelStyleConfigurationCard(
                     onValueChange = { selectedModel = it.take(200) },
                     label = { Text("模型名称") },
                     modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    singleLine = true,
+                    enabled = canEdit
                 )
 
                 Row(
@@ -1464,6 +1516,7 @@ private fun ModelStyleConfigurationCard(
                                 else -> "文学出版级翻译，语句通顺优美，严格保持专有名词一致"
                             }
                         },
+                        enabled = canEdit,
                         label = { Text(preset, fontSize = 10.sp, maxLines = 1) }
                     )
                 }
@@ -1475,7 +1528,8 @@ private fun ModelStyleConfigurationCard(
                 label = { Text("文学风格指导与自定义提示词") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = if (compact) 2 else 3,
-                maxLines = if (compact) 4 else 6
+                maxLines = if (compact) 4 else 6,
+                enabled = canEdit
             )
 
             Row(
@@ -1498,7 +1552,7 @@ private fun ModelStyleConfigurationCard(
                 Switch(
                     checked = highQualityReview,
                     onCheckedChange = { highQualityReview = it },
-                    enabled = project?.state != "RUNNING"
+                    enabled = project?.state !in setOf("RUNNING", "PAUSED")
                 )
             }
 
@@ -1516,6 +1570,7 @@ private fun ModelStyleConfigurationCard(
                                 maxBatchChapters = project.maxBatchChapters,
                                 rangeStart = project.rangeStart,
                                 rangeEnd = project.rangeEnd,
+                                seamlessAheadChapters = project.seamlessAheadChapters,
                                 styleGuide = styleGuide,
                                 highQualityReview = highQualityReview
                             )
@@ -1535,7 +1590,7 @@ private fun ModelStyleConfigurationCard(
                         }
                     }
                 },
-                enabled = canSave,
+                enabled = canSave && canEdit,
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(vertical = 7.dp)
             ) {
@@ -1569,8 +1624,10 @@ private fun TaskScaleConfigurationCard(
     val rangeStart = rangeStartText.toIntOrNull()
     val rangeEnd = rangeEndText.toIntOrNull()
     val rangeIsValid = translationMode != TranslationMode.CHAPTER_RANGE.name ||
-        (rangeStart != null && rangeEnd != null && rangeStart > 0 && rangeEnd >= rangeStart)
-    val canEdit = project.state != "RUNNING"
+        (rangeStart != null && rangeEnd != null && rangeStart > 0 && rangeEnd >= rangeStart && rangeEnd <= totalChapters)
+    // The engine captures one immutable configuration snapshot for a run. Do not let a paused
+    // run appear editable because those changes would silently be ignored on resume.
+    val canEdit = project.state !in setOf("RUNNING", "PAUSED")
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1654,7 +1711,7 @@ private fun TaskScaleConfigurationCard(
                 }
                 if (!rangeIsValid) {
                     Text(
-                        "请输入有效章节范围，结束章节不能小于起始章节。",
+                        "请输入有效章节范围，结束章节不能小于起始章节且不能超过全书章节数。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -1684,7 +1741,7 @@ private fun TaskScaleConfigurationCard(
                 )
                 if (!canEdit) {
                     Text(
-                        "任务运行中暂不能修改参数，请先暂停任务；修改内容将在下一次启动时生效。",
+                        "任务运行中或已暂停时暂不能修改参数，请先终止任务；修改内容将在下一次启动时生效。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.tertiary
                     )
@@ -1708,6 +1765,7 @@ private fun TaskScaleConfigurationCard(
                         maxBatchChapters = batchSize,
                         rangeStart = if (mode == TranslationMode.CHAPTER_RANGE) rangeStart else null,
                         rangeEnd = if (mode == TranslationMode.CHAPTER_RANGE) rangeEnd else null,
+                        seamlessAheadChapters = project.seamlessAheadChapters,
                         styleGuide = project.styleGuide
                     )
                 },
@@ -2645,7 +2703,7 @@ private fun LogsAndHistoryTab(
                                         }
                                     }
                                     Text(
-                                        "完成 ${run.completedChapters} 章 · 消耗 ${TokenCalculator.formatTokenCount(run.promptTokens + run.completionTokens)} Tokens · 费用 $${String.format(java.util.Locale.US, "%.4f", run.totalCost)}",
+                                        "完成 ${run.completedChapters} 章 · 消耗 ${TokenCalculator.formatTokenCount(run.promptTokens + run.completionTokens)} Tokens · 费用 ${TokenCalculator.formatCost(run.totalCost, run.currency)}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -2694,7 +2752,7 @@ private fun LogsAndHistoryTab(
                                         )
                                     }
                                     Text(
-                                        "Tokens: Prompt ${log.promptTokens}, Completion ${log.completionTokens} · 预估费用: $${String.format(java.util.Locale.US, "%.5f", log.estimatedCost)}",
+                                        "Tokens: Prompt ${log.promptTokens}, Completion ${log.completionTokens} · 预估费用: ${TokenCalculator.formatCost(log.estimatedCost, selectedRun?.currency ?: "USD")}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -2926,7 +2984,8 @@ private fun TermScannerDialog(
     providers: List<ApiProviderEntity>,
     targetProjectId: Long?,
     onDismiss: () -> Unit,
-    onStartScan: (Int, Int, ApiProviderEntity, String, (String) -> Unit, (Int) -> Unit) -> Unit
+    onCancelScan: () -> Unit,
+    onStartScan: (Int, Int, ApiProviderEntity, String, (String) -> Unit, (Result<Int>) -> Unit) -> Unit
 ) {
     var startChText by remember { mutableStateOf("1") }
     var endChText by remember { mutableStateOf(minOf(10, totalChapters).toString()) }
@@ -2936,6 +2995,7 @@ private fun TermScannerDialog(
     var isScanning by remember { mutableStateOf(false) }
     var scanStatusMessage by remember { mutableStateOf("") }
     var scanCompletedCount by remember { mutableStateOf<Int?>(null) }
+    var scanErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val activeProvider = providers.firstOrNull { it.id == selectedProviderId } ?: providers.firstOrNull()
 
@@ -2975,6 +3035,26 @@ private fun TermScannerDialog(
                             "候选已保存观察证据；请在审核区确认后，才会进入正式翻译约束与 QA。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else if (scanErrorMessage != null) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
+                        Text(
+                            "扫描未完成",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            scanErrorMessage.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
                             textAlign = TextAlign.Center
                         )
                     }
@@ -3044,8 +3124,16 @@ private fun TermScannerDialog(
             }
         },
         confirmButton = {
-            if (scanCompletedCount != null) {
+            if (isScanning) {
+                TextButton(onClick = {
+                    onCancelScan()
+                    isScanning = false
+                    onDismiss()
+                }) { Text("停止扫描") }
+            } else if (scanCompletedCount != null) {
                 Button(onClick = onDismiss) { Text("完成") }
+            } else if (scanErrorMessage != null) {
+                Button(onClick = { scanErrorMessage = null }) { Text("返回") }
             } else if (!isScanning) {
                 Button(
                     onClick = {
@@ -3060,14 +3148,21 @@ private fun TermScannerDialog(
                                 activeProvider,
                                 targetLanguage,
                                 { scanStatusMessage = it },
-                                { count ->
+                                { result ->
                                     isScanning = false
-                                    scanCompletedCount = count
+                                    result.onSuccess { count ->
+                                        scanErrorMessage = null
+                                        scanCompletedCount = count
+                                    }.onFailure { error ->
+                                        scanCompletedCount = null
+                                        scanErrorMessage = error.localizedMessage?.takeIf { it.isNotBlank() }
+                                            ?: "请检查模型配置和网络后重试"
+                                    }
                                 }
                             )
                         }
                     },
-                    enabled = activeProvider != null && targetProjectId != null && totalChapters > 0
+                    enabled = activeProvider != null && sourceEdition != null && targetProjectId != null && totalChapters > 0
                 ) {
                     Text("开始扫描")
                 }

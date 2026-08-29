@@ -68,6 +68,15 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun parser_ignores_numeric_ids_that_do_not_fit_the_local_int_protocol() {
+        val parsed = TranslationProtocol.parse(
+            "<TRANSLATION><C id=\"999999999999999999999\"><S id=\"1\">ignored</S></C></TRANSLATION>"
+        )
+
+        assertTrue(parsed.chapters.isEmpty())
+    }
+
+    @Test
     fun parser_decodes_entities_in_one_pass_without_double_decoding_literals() {
         val parsed = TranslationProtocol.parse(
             "<TRANSLATION><C id=\"1\"><S id=\"1\">&amp;quot; &amp;amp; &lt;ok&gt;</S></C></TRANSLATION>"

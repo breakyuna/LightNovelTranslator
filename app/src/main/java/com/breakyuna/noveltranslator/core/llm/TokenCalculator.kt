@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.core.llm
 
+import java.util.Locale
 
 object TokenCalculator {
 
@@ -48,8 +49,8 @@ object TokenCalculator {
     }
 
     fun formatCost(cost: Double, currency: String = "USD"): String {
-        val normalized = currency.trim().uppercase()
-        val amount = String.format("%.4f", cost)
+        val normalized = currency.trim().uppercase(Locale.ROOT)
+        val amount = String.format(Locale.US, "%.4f", cost)
         return when (normalized) {
             "USD" -> "\$$amount"
             "CNY", "RMB" -> "¥$amount"
@@ -76,8 +77,8 @@ object TokenCalculator {
 
     fun formatTokenCount(tokens: Long): String {
         return when {
-            tokens >= 1_000_000 -> String.format("%.2fM", tokens / 1_000_000.0)
-            tokens >= 1_000 -> String.format("%.1fk", tokens / 1_000.0)
+            tokens >= 1_000_000 -> String.format(Locale.US, "%.2fM", tokens / 1_000_000.0)
+            tokens >= 1_000 -> String.format(Locale.US, "%.1fk", tokens / 1_000.0)
             else -> tokens.toString()
         }
     }

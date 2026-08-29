@@ -184,9 +184,9 @@ class RetryingLlmGateway(
                     operation = request.operation
                 )
             }
-            // A provider may return useful-looking text with finish_reason=length. Treat it as a
-            // failed response here so every workflow path (draft, repair, chunk and review) gets
-            // the same no-commit behavior instead of relying on individual parsers.
+            // A provider may return useful-looking text with finish_reason=length. Keep it
+            // non-successful and non-retryable so callers cannot blindly repeat a paid request;
+            // translation workflows may still recover a parseable prefix chapter-by-chapter.
             val normalizedResult = result.copy(
                 operation = request.operation,
                 isSuccess = result.isSuccess && !result.isTruncated,

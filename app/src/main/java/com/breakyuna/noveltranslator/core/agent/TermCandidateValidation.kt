@@ -56,6 +56,7 @@ object TermCandidateValidator {
         if (target.length > MAX_TARGET_TERM_LENGTH) return reject("suggested exceeds $MAX_TARGET_TERM_LENGTH characters")
         if (source.any { it.code < 32 || it.code == 127 }) return reject("original contains control characters")
         if (target.any { it.code < 32 || it.code == 127 }) return reject("suggested contains control characters")
+        if (cleanNotes.any { it.code < 32 || it.code == 127 }) return reject("notes contain control characters")
         if (source.none(Char::isLetterOrDigit)) return reject("original has no letters or digits")
         if (source.filter(Char::isLetterOrDigit).all(Char::isDigit)) return reject("original is numeric only")
         if (target.none(Char::isLetterOrDigit)) return reject("suggested has no letters or digits")

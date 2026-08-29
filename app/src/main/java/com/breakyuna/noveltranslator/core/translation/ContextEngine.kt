@@ -9,6 +9,7 @@ import com.breakyuna.noveltranslator.data.model.LexiconEntryPolicy
 import com.breakyuna.noveltranslator.data.model.StoryMemoryEntity
 import com.breakyuna.noveltranslator.data.model.TranslationProjectV2Entity
 import java.security.MessageDigest
+import java.util.Locale
 
 class ContextEngine(
     private val lexiconDao: LexiconV2Dao,
@@ -42,12 +43,12 @@ class ContextEngine(
         // bound, rerunning a range could inject a future chapter's metadata into an earlier one.
         val allStory = memoryDao.getStoryMemory(project.id)
             .filter { it.sourceChapterIndex < firstChapterIndex && it.lastUpdatedChapterIndex < firstChapterIndex }
-        val normalizedSource = sourceText.lowercase()
+        val normalizedSource = sourceText.lowercase(Locale.ROOT)
         val related = allStory.mapNotNull { memory ->
             val entities = memory.entities.split(',', ';', '|').map(String::trim)
                 .filter(String::isNotBlank)
-            val entityHits = entities.count { normalizedSource.contains(it.lowercase()) }
-            val factHit = memory.factKey.isNotBlank() && normalizedSource.contains(memory.factKey.lowercase())
+            val entityHits = entities.count { normalizedSource.contains(it.lowercase(Locale.ROOT)) }
+            val factHit = memory.factKey.isNotBlank() && normalizedSource.contains(memory.factKey.lowercase(Locale.ROOT))
             val recentHit = firstChapterIndex - memory.lastUpdatedChapterIndex in 0..3
             val score = entityHits * 4 + (if (factHit) 3 else 0) + (if (recentHit) 2 else 0)
             if (score == 0) null else score to memory

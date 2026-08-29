@@ -259,6 +259,9 @@ object LexiconEntryPolicy {
 
 object LexiconCandidateImportPlanner {
     private val importableCategories = LexiconCandidateVoting.aiCategories + TermCategory.CUSTOM.name
+    private const val MAX_SOURCE_TERM_LENGTH = 120
+    private const val MAX_TARGET_TERM_LENGTH = 160
+    private const val MAX_NOTES_LENGTH = 300
 
     fun isImportableCategory(category: String): Boolean =
         category.trim().uppercase(Locale.ROOT) in importableCategories
@@ -271,19 +274,21 @@ object LexiconCandidateImportPlanner {
         now: Long = System.currentTimeMillis()
     ): LexiconEntryEntity {
         val normalizedCategory = category.trim().uppercase(Locale.ROOT)
-        require(targetTerm.trim().isNotBlank()) { "Official glossary target must not be blank" }
+        val source = normalize(review.sourceTerm, MAX_SOURCE_TERM_LENGTH, "Official glossary source")
+        val target = normalize(targetTerm, MAX_TARGET_TERM_LENGTH, "Official glossary target")
+        val cleanNotes = normalizeOptional(notes, MAX_NOTES_LENGTH, "Official glossary notes")
         require(isImportableCategory(normalizedCategory)) { "Unsupported official glossary category: $category" }
         return LexiconEntryEntity(
             translationProjectId = review.aggregate.translationProjectId,
-            sourceTerm = review.sourceTerm,
-            targetTerm = targetTerm.trim(),
+            sourceTerm = source,
+            targetTerm = target,
             kind = if (normalizedCategory == TermCategory.SKILL.name || normalizedCategory == TermCategory.ITEM.name) {
                 LexiconKind.TERMINOLOGY.name
             } else {
                 LexiconKind.PROPER_NOUN.name
             },
             category = normalizedCategory,
-            notes = notes.trim(),
+            notes = cleanNotes,
             caseSensitive = review.aggregate.caseSensitive,
             source = LexiconSource.AI.name,
             reviewStatus = ReviewStatus.CONFIRMED.name,
@@ -301,14 +306,35 @@ object LexiconCandidateImportPlanner {
         now: Long = System.currentTimeMillis()
     ): LexiconEntryEntity {
         val normalizedCategory = category.trim().uppercase(Locale.ROOT)
-        require(targetTerm.trim().isNotBlank()) { "Official glossary target must not be blank" }
+        val target = normalize(targetTerm, MAX_TARGET_TERM_LENGTH, "Official glossary target")
+        val cleanNotes = normalizeOptional(notes, MAX_NOTES_LENGTH, "Official glossary notes")
         require(isImportableCategory(normalizedCategory)) { "Unsupported official glossary category: $category" }
         return existing.copy(
-            targetTerm = targetTerm.trim(),
+            targetTerm = target,
             category = normalizedCategory,
-            notes = notes.trim(),
+            notes = cleanNotes,
             updatedAt = now,
             reviewStatus = ReviewStatus.CONFIRMED.name
         )
+    }
+
+    private fun normalize(value: String, maxLength: Int, label: String): String {
+        val normalized = value.trim()
+        require(normalized.isNotBlank() && normalized.length <= maxLength) {
+            "$label must contain 1-$maxLength characters"
+        }
+        require(normalized.none { it.code < 32 || it.code == 127 }) {
+            "$label must not contain control characters"
+        }
+        return normalized
+    }
+
+    private fun normalizeOptional(value: String, maxLength: Int, label: String): String {
+        val normalized = value.trim()
+        require(normalized.length <= maxLength) { "$label must be at most $maxLength characters" }
+        require(normalized.none { it.code < 32 || it.code == 127 }) {
+            "$label must not contain control characters"
+        }
+        return normalized
     }
 }

@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.outlined.Autorenew
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -79,8 +78,6 @@ fun BookShelfScreen(
     // Dialogs for selection bottom bar actions
     var showCleanDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
-    var showGroupDialog by remember { mutableStateOf(false) }
-    var newGroupName by remember { mutableStateOf("") }
 
     val batchImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -432,21 +429,14 @@ fun BookShelfScreen(
                         horizontalArrangement = Arrangement.SpaceAround,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 1. 分组 (Group)
-                        BottomBarActionButton(
-                            icon = Icons.Outlined.DriveFileMove,
-                            label = "分组",
-                            onClick = { showGroupDialog = true }
-                        )
-
-                        // 2. 清理 (Clean / Archive)
+                        // 清理 (Clean / Archive)
                         BottomBarActionButton(
                             icon = Icons.Outlined.Autorenew,
                             label = "清理",
                             onClick = { showCleanDialog = true }
                         )
 
-                        // 3. 删除 (Delete)
+                        // 删除 (Delete)
                         BottomBarActionButton(
                             icon = Icons.Outlined.Delete,
                             label = "删除",
@@ -460,42 +450,6 @@ fun BookShelfScreen(
     }
 
     // Action Dialogs
-    if (showGroupDialog) {
-        AlertDialog(
-            onDismissRequest = { showGroupDialog = false },
-            title = { Text("图书分组 / 收纳") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("将选中的 ${selectedBookIds.size} 本图书归纳至指定文件夹或分类标签：")
-                    OutlinedTextField(
-                        value = newGroupName,
-                        onValueChange = { newGroupName = it },
-                        label = { Text("分组名称") },
-                        placeholder = { Text("例如：已读精选 / 日轻小说") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = newGroupName.isNotBlank(),
-                    onClick = {
-                        viewModel.showMessage("已将 ${selectedBookIds.size} 本图书加入「$newGroupName」分组")
-                        selectedBookIds = emptySet()
-                        showGroupDialog = false
-                        newGroupName = ""
-                    }
-                ) {
-                    Text("确认")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGroupDialog = false }) { Text("取消") }
-            }
-        )
-    }
-
     if (showCleanDialog) {
         AlertDialog(
             onDismissRequest = { showCleanDialog = false },
@@ -717,7 +671,12 @@ private fun BookCoverCard(
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            if (book.hasTranslationProject) "翻译中" else "已读0%",
+            when {
+                book.hasTranslationProject && strings.bookshelf == "Bookshelf" -> "Translation configured"
+                book.hasTranslationProject -> "已配置翻译"
+                strings.bookshelf == "Bookshelf" -> "Translation not configured"
+                else -> "未配置翻译"
+            },
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

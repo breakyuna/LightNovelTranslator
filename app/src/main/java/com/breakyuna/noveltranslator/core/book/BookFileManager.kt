@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.core.book
 import android.content.Context
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import java.util.UUID
 
 /** Book-centric authoritative storage. Runtime-derived context belongs in cacheDir only. */
@@ -38,7 +39,7 @@ class BookFileManager(private val context: Context) {
     }
 
     fun saveEditionChapter(bookId: Long, editionId: Long, chapterIndex: Int, title: String, text: String): String {
-        val fileName = "%04d_%s.txt".format(chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
+        val fileName = "%04d_%s.txt".format(Locale.US, chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
         atomicWrite(File(editionChaptersDir(bookId, editionId), fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
         return fileName
     }
@@ -46,6 +47,7 @@ class BookFileManager(private val context: Context) {
     /** Writes a new immutable chapter file for a translation revision. */
     fun saveEditionChapterVersion(bookId: Long, editionId: Long, chapterIndex: Int, title: String, text: String): String {
         val fileName = "%04d_%s_%s.txt".format(
+            Locale.US,
             chapterIndex,
             safeName(title).take(40).ifBlank { "chapter" },
             UUID.randomUUID().toString()
@@ -58,6 +60,10 @@ class BookFileManager(private val context: Context) {
         fileName?.let { File(editionChaptersDir(bookId, editionId), File(it).name).delete() }
     }
 
+    fun deleteEdition(bookId: Long, editionId: Long) {
+        File(bookDir(bookId), "editions/edition_$editionId").deleteRecursively()
+    }
+
     /** Creates a sibling staging directory for a full Edition rebuild. */
     fun createEditionChapterStagingDir(bookId: Long, editionId: Long): File {
         val parent = File(bookDir(bookId), "editions/edition_$editionId").apply { mkdirs() }
@@ -67,7 +73,7 @@ class BookFileManager(private val context: Context) {
     }
 
     fun saveStagedEditionChapter(stagingDir: File, chapterIndex: Int, title: String, text: String): String {
-        val fileName = "%04d_%s.txt".format(chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
+        val fileName = "%04d_%s.txt".format(Locale.US, chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
         atomicWrite(File(stagingDir, fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
         return fileName
     }
@@ -100,9 +106,20 @@ class BookFileManager(private val context: Context) {
     }
 
     fun saveCover(bookId: Long, originalName: String, input: java.io.InputStream): File {
-        val extension = File(originalName).extension.lowercase().takeIf { it in setOf("jpg", "jpeg", "png", "webp") } ?: "jpg"
+        val extension = File(originalName).extension.lowercase(Locale.ROOT)
+            .takeIf { it in setOf("jpg", "jpeg", "png", "webp") } ?: "jpg"
         val target = File(coverDir(bookId), "cover.$extension")
-        atomicWrite(target) { output -> input.copyTo(output) }
+        atomicWrite(target) { output ->
+            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+            var total = 0L
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count.toLong()
+                require(total <= MAX_COVER_BYTES) { "Cover image exceeds the 10 MB limit" }
+                output.write(buffer, 0, count)
+            }
+        }
         coverDir(bookId).listFiles()?.filter { it != target }?.forEach(File::delete)
         return target
     }
@@ -140,10 +157,17 @@ class BookFileManager(private val context: Context) {
 
     private fun safeName(name: String): String = File(name).name
         .replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
+        .map { if (it.code < 32 || it.code == 127) '_' else it }
+        .joinToString("")
         .trim().take(100)
 
     private fun ensured(file: File): File = file.apply { if (!exists()) mkdirs() }
 
     private fun editionChaptersPath(bookId: Long, editionId: Long): File =
         File(bookDir(bookId), "editions/edition_$editionId/chapters")
+
+    companion object {
+        const val MAX_IMPORT_BYTES = 100L * 1024L * 1024L
+        const val MAX_COVER_BYTES = 10L * 1024L * 1024L
+    }
 }

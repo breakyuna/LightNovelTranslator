@@ -67,12 +67,17 @@ interface BookDao {
 
     @Insert suspend fun insertEdition(edition: EditionEntity): Long
     @Update suspend fun updateEdition(edition: EditionEntity)
+    @Query("DELETE FROM editions WHERE id = :editionId")
+    suspend fun deleteEdition(editionId: Long)
 
     @Query("SELECT * FROM logical_chapters WHERE bookId = :bookId ORDER BY chapterIndex")
     fun observeChapters(bookId: Long): Flow<List<LogicalChapterEntity>>
 
     @Query("SELECT * FROM logical_chapters WHERE bookId = :bookId ORDER BY chapterIndex")
     suspend fun getChapters(bookId: Long): List<LogicalChapterEntity>
+
+    @Query("SELECT * FROM logical_chapters WHERE id = :chapterId")
+    suspend fun getLogicalChapter(chapterId: Long): LogicalChapterEntity?
 
     @Query("DELETE FROM logical_chapters WHERE bookId = :bookId")
     suspend fun deleteLogicalChaptersByBook(bookId: Long)
@@ -167,6 +172,18 @@ interface TranslationProjectV2Dao {
     @Query("SELECT * FROM translation_projects_v2 WHERE targetEditionId = :editionId ORDER BY createdAt DESC")
     fun observeByTargetEdition(editionId: Long): Flow<List<TranslationProjectV2Entity>>
 
+    @Query("SELECT * FROM translation_projects_v2 WHERE targetEditionId = :editionId ORDER BY createdAt DESC")
+    suspend fun getByTargetEdition(editionId: Long): List<TranslationProjectV2Entity>
+
+    @Query("SELECT * FROM translation_projects_v2 WHERE sourceEditionId = :editionId ORDER BY createdAt DESC")
+    suspend fun getBySourceEdition(editionId: Long): List<TranslationProjectV2Entity>
+
+    @Query("DELETE FROM translation_projects_v2 WHERE targetEditionId = :editionId")
+    suspend fun deleteByTargetEdition(editionId: Long)
+
+    @Query("DELETE FROM translation_projects_v2 WHERE bookId = :bookId")
+    suspend fun deleteByBook(bookId: Long)
+
     @Query("SELECT * FROM translation_projects_v2 WHERE id = :id")
     suspend fun get(id: Long): TranslationProjectV2Entity?
 
@@ -178,6 +195,9 @@ interface TranslationProjectV2Dao {
 
     @Query("UPDATE translation_projects_v2 SET state = :state, updatedAt = :now WHERE id = :id")
     suspend fun updateState(id: Long, state: String, now: Long = System.currentTimeMillis())
+
+    @Query("UPDATE translation_projects_v2 SET state = 'COMPLETED', updatedAt = :now WHERE id = :id AND state NOT IN ('CANCELLED', 'RUNNING', 'PAUSED')")
+    suspend fun completeIfNotActive(id: Long, now: Long = System.currentTimeMillis()): Int
 
     @Query("UPDATE translation_projects_v2 SET state = 'INTERRUPTED', updatedAt = :now WHERE state IN ('RUNNING', 'PAUSED')")
     suspend fun markInterrupted(now: Long = System.currentTimeMillis())

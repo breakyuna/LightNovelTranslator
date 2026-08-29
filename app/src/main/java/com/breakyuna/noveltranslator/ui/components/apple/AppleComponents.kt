@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.ui.theme.ButtonShape
 import com.breakyuna.noveltranslator.ui.theme.GroupedCardShape
 import com.breakyuna.noveltranslator.ui.theme.Spacing
+import java.util.Locale
 
 /**
  * Clean Apple-style Large Title Header
@@ -110,7 +111,7 @@ fun AppSection(
     Column(modifier = modifier.fillMaxWidth()) {
         if (!displayHeader.isNullOrBlank()) {
             Text(
-                text = displayHeader.uppercase(),
+                text = displayHeader.uppercase(Locale.ROOT),
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontWeight = FontWeight.SemiBold,
                     letterSpacing = 0.6.sp

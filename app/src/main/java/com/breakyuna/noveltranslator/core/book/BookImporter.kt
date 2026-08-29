@@ -8,6 +8,7 @@ import com.breakyuna.noveltranslator.data.db.AppDatabase
 import com.breakyuna.noveltranslator.data.model.*
 import java.io.File
 import java.security.MessageDigest
+import java.util.Locale
 
 data class AcquiredChapter(val title: String, val renderedText: String, val sourceUrl: String? = null)
 data class AcquiredBook(
@@ -29,6 +30,13 @@ class BookImporter(
     private val files: BookFileManager
 ) {
     private data class StagedChapter(val title: String, val fileName: String, val wordCount: Int)
+    private data class NormalizedAcquiredBook(
+        val title: String,
+        val author: String,
+        val coverPath: String?,
+        val language: String,
+        val chapters: List<AcquiredChapter>
+    )
 
     suspend fun import(
         fileName: String,
@@ -37,25 +45,29 @@ class BookImporter(
         customRegex: String? = null,
         cropTableOfContents: Boolean = false
     ): Long {
-        val isEpub = fileName.endsWith(".epub", true) || fileName.endsWith(".equb", true)
+        val isEpub = fileName.endsWith(".epub", true)
+        require(isEpub || fileName.endsWith(".txt", true)) {
+            "Unsupported book format; only .txt and .epub files are supported"
+        }
         val effectiveRegex = customRegex?.trim()?.takeIf(String::isNotBlank)
         if (!isEpub) effectiveRegex?.let(TxtParser::validateChapterRegex)
-        var title = fileName.substringBeforeLast('.').trim().ifBlank { "Imported novel" }
+        val normalizedLanguage = normalizeMetadata(originalLanguage, "Auto", 80)
+        var title = normalizeMetadata(fileName.substringBeforeLast('.'), "Imported novel", 300)
         var author = "Unknown"
         var coverPath: String? = null
         var temporaryBookId: Long? = null
         try {
-            val bookId = database.bookDao().insert(BookEntity(title = title, author = author, originalLanguage = originalLanguage))
+            val bookId = database.bookDao().insert(BookEntity(title = title, author = author, originalLanguage = normalizedLanguage))
             temporaryBookId = bookId
             val preservedSource = sourceFile.inputStream().use {
-                files.saveImportedSource(bookId, fileName, it, 100L * 1024L * 1024L)
+                files.saveImportedSource(bookId, fileName, it, BookFileManager.MAX_IMPORT_BYTES)
             }
             if (!isEpub) {
                 persistTxtStreaming(
                     bookId = bookId,
                     title = title,
                     author = author,
-                    originalLanguage = originalLanguage,
+                    originalLanguage = normalizedLanguage,
                     sourceFile = preservedSource,
                     customRegex = effectiveRegex,
                     cropTableOfContents = cropTableOfContents
@@ -86,7 +98,7 @@ class BookImporter(
                 title = title,
                 author = author,
                 coverPath = coverPath,
-                originalLanguage = originalLanguage,
+                originalLanguage = normalizedLanguage,
                 editionName = "Imported EPUB",
                 chapters = parsed.map { AcquiredChapter(it.title, it.content) }
             )
@@ -103,7 +115,7 @@ class BookImporter(
     /** Rebuilds the original Edition's logical chapters from its preserved source file. */
     suspend fun reSplit(
         bookId: Long,
-        regexPattern: String = TxtParser.REGEX_CHINESE,
+        regexPattern: String = "",
         cropTableOfContents: Boolean = false
     ): Int {
         val dao = database.bookDao()
@@ -123,13 +135,13 @@ class BookImporter(
         val sourceFile = files.sourceDir(bookId)
             .listFiles()
             ?.filter { it.isFile && !it.name.startsWith(".") }
-            ?.sortedBy { it.name.lowercase() }
+            ?.sortedBy { it.name.lowercase(Locale.ROOT) }
             ?.firstOrNull()
             ?: error("The preserved source file was not found")
 
-        val isEpub = sourceFile.extension.equals("epub", ignoreCase = true) ||
-            sourceFile.extension.equals("equb", ignoreCase = true)
-        val effectiveRegex = regexPattern.trim().ifBlank { TxtParser.REGEX_CHINESE }
+        val isEpub = sourceFile.extension.equals("epub", ignoreCase = true)
+        val effectiveRegex = regexPattern.trim().takeIf(String::isNotBlank)
+            ?: if (isEpub) TxtParser.REGEX_CHINESE else TxtParser.inferChapterRegex(sourceFile, book.originalLanguage)
         val progress = database.readerProgressDao().get(bookId)
         if (isEpub) {
             val chapters = EpubParser.parseEpubFile(
@@ -194,16 +206,28 @@ class BookImporter(
             while (chapters.hasNext()) {
                 val parsed = chapters.next()
                 chapterCount++
-                val title = parsed.title.trim().ifBlank { "Chapter $chapterCount" }
-                val fileName = files.saveStagedEditionChapter(stagingDir, chapterCount, title, parsed.content)
-                staged += StagedChapter(title, fileName, parsed.wordCount)
+                val normalized = normalizeChapter(
+                    AcquiredChapter(parsed.title, parsed.content),
+                    chapterCount
+                )
+                val fileName = files.saveStagedEditionChapter(
+                    stagingDir,
+                    chapterCount,
+                    normalized.title,
+                    normalized.renderedText
+                )
+                staged += StagedChapter(
+                    normalized.title,
+                    fileName,
+                    TxtParser.countWords(normalized.renderedText)
+                )
             }
             require(chapterCount > 0) { "No readable chapters were found" }
 
             // Swap files only after every chapter has been written successfully. If the DB
             // transaction fails, restore the previous directory before exposing the error.
             backupDir = files.swapEditionChapterDirectory(bookId, originalEdition.id, stagingDir)
-            return try {
+            val rebuiltCount = try {
                 database.withTransaction {
                     val dao = database.bookDao()
                     dao.deleteLogicalChaptersByBook(bookId)
@@ -241,37 +265,51 @@ class BookImporter(
                         )
                     )
                     chapterCount
-                }.also { files.finalizeEditionChapterSwap(backupDir) }
+                }
             } catch (error: Throwable) {
                 files.rollbackEditionChapterSwap(bookId, originalEdition.id, backupDir)
                 throw error
             }
+            // The database now points at the new directory. Cleanup must not roll the files back
+            // after a successful transaction, otherwise a cleanup failure would create a mismatch.
+            files.finalizeEditionChapterSwap(backupDir)
+            return rebuiltCount
         } finally {
             stagingDir.deleteRecursively()
         }
     }
 
     suspend fun importAcquired(book: AcquiredBook, language: String = "Auto"): Long {
-        require(book.chapters.isNotEmpty()) { "No readable chapters were found" }
+        val normalized = normalizeAcquiredBook(book, language)
         val bookId = database.bookDao().insert(
             BookEntity(
-                title = book.title,
-                author = book.author ?: "Unknown",
-                coverPath = book.coverPath,
-                originalLanguage = language
+                title = normalized.title,
+                author = normalized.author,
+                coverPath = null,
+                originalLanguage = normalized.language
             )
         )
         try {
-            val normalizedSource = book.chapters.joinToString("\n\n") { "${it.title}\n\n${it.renderedText}" }
-            files.saveImportedSource(bookId, "acquired_source.txt", normalizedSource.toByteArray(Charsets.UTF_8), 100L * 1024L * 1024L)
+            val storedCoverPath = normalized.coverPath?.let { sourcePath ->
+                val source = File(sourcePath).canonicalFile
+                require(source.isFile && source.length() <= BookFileManager.MAX_COVER_BYTES) {
+                    "Acquired cover image is missing or too large"
+                }
+                require(source.extension.lowercase(Locale.ROOT) in setOf("jpg", "jpeg", "png", "webp")) {
+                    "Acquired cover image must be JPG, PNG, or WebP"
+                }
+                source.inputStream().use { input -> files.saveCover(bookId, source.name, input).absolutePath }
+            }
+            val normalizedSource = normalized.chapters.joinToString("\n\n") { "${it.title}\n\n${it.renderedText}" }
+            files.saveImportedSource(bookId, "acquired_source.txt", normalizedSource.toByteArray(Charsets.UTF_8), BookFileManager.MAX_IMPORT_BYTES)
             persistNormalized(
                 bookId = bookId,
-                title = book.title,
-                author = book.author ?: "Unknown",
-                coverPath = book.coverPath,
-                originalLanguage = language,
+                title = normalized.title,
+                author = normalized.author,
+                coverPath = storedCoverPath,
+                originalLanguage = normalized.language,
                 editionName = book.acquisitionType.name,
-                chapters = book.chapters
+                chapters = normalized.chapters
             )
             return bookId
         } catch (error: Throwable) {
@@ -290,21 +328,27 @@ class BookImporter(
         editionName: String,
         chapters: List<AcquiredChapter>
     ) {
+        val normalizedTitle = normalizeMetadata(title, "Imported novel", 300)
+        val normalizedAuthor = normalizeMetadata(author, "Unknown", 300)
+        val normalizedLanguage = normalizeMetadata(originalLanguage, "Auto", 80)
+        val normalizedEditionName = normalizeMetadata(editionName, "Imported edition", 200)
+        val normalizedCoverPath = normalizeStoredCoverPath(bookId, coverPath)
+        val normalizedChapters = chapters.mapIndexed { index, chapter -> normalizeChapter(chapter, index + 1) }
         val editionId = database.withTransaction {
             database.bookDao().insertEdition(
                 EditionEntity(
                     bookId = bookId,
-                    name = editionName,
+                    name = normalizedEditionName,
                     type = EditionType.IMPORTED.name,
-                    language = originalLanguage,
+                    language = normalizedLanguage,
                     isComplete = false
                 )
             )
         }
-        chapters.forEachIndexed { index, chapter ->
+        normalizedChapters.forEachIndexed { index, chapter ->
             persistChapter(bookId, editionId, index + 1, chapter)
         }
-        finalizeImport(bookId, editionId, title, author, coverPath)
+        finalizeImport(bookId, editionId, normalizedTitle, normalizedAuthor, normalizedCoverPath)
     }
 
     private suspend fun persistTxtStreaming(
@@ -331,7 +375,8 @@ class BookImporter(
         TxtParser.openDetectedReader(sourceFile).use { reader ->
             val chapters = TxtParser.chapterSequence(
                 reader,
-                customRegex?.takeIf(String::isNotBlank) ?: TxtParser.REGEX_CHINESE,
+                customRegex?.takeIf(String::isNotBlank)
+                    ?: TxtParser.inferChapterRegex(sourceFile, originalLanguage),
                 cropTableOfContents = cropTableOfContents
             ).iterator()
             while (chapters.hasNext()) {
@@ -341,7 +386,13 @@ class BookImporter(
             }
         }
         require(chapterCount > 0) { "No readable chapters were found" }
-        finalizeImport(bookId, editionId, title, author, null)
+        finalizeImport(
+            bookId,
+            editionId,
+            normalizeMetadata(title, "Imported novel", 300),
+            normalizeMetadata(author, "Unknown", 300),
+            null
+        )
     }
 
     private suspend fun persistChapter(
@@ -350,16 +401,78 @@ class BookImporter(
         chapterIndex: Int,
         chapter: AcquiredChapter
     ) {
+        val normalized = normalizeChapter(chapter, chapterIndex)
         database.withTransaction {
             persistChapterInTransaction(
                 bookId = bookId,
                 editionId = editionId,
                 chapterIndex = chapterIndex,
-                title = chapter.title,
-                content = chapter.renderedText,
-                wordCount = chapter.renderedText.length
+                title = normalized.title,
+                content = normalized.renderedText,
+                wordCount = TxtParser.countWords(normalized.renderedText)
             )
         }
+    }
+
+    private fun normalizeAcquiredBook(book: AcquiredBook, language: String): NormalizedAcquiredBook {
+        val title = normalizeMetadata(book.title, "Imported novel", 300)
+        val author = normalizeMetadata(book.author, "Unknown", 300)
+        val normalizedLanguage = normalizeMetadata(language, "Auto", 80)
+        val coverPath = normalizeCoverPath(book.coverPath)
+        val chapters = book.chapters.mapIndexed { index, chapter -> normalizeChapter(chapter, index + 1) }
+        require(chapters.isNotEmpty()) { "No readable chapters were found" }
+        val source = chapters.joinToString("\n\n") { "${it.title}\n\n${it.renderedText}" }
+        require(source.toByteArray(Charsets.UTF_8).size.toLong() <= BookFileManager.MAX_IMPORT_BYTES) {
+            "Acquired book exceeds the 100 MB import limit"
+        }
+        return NormalizedAcquiredBook(
+            title = title,
+            author = author,
+            coverPath = coverPath,
+            language = normalizedLanguage,
+            chapters = chapters
+        )
+    }
+
+    private fun normalizeCoverPath(path: String?): String? {
+        val normalized = path?.trim()?.take(2_048)?.takeIf(String::isNotBlank)
+        require(normalized == null || normalized.none { it.code < 32 || it.code == 127 }) {
+            "Cover path contains unsupported control characters"
+        }
+        return normalized
+    }
+
+    private fun normalizeStoredCoverPath(bookId: Long, path: String?): String? {
+        val normalized = normalizeCoverPath(path) ?: return null
+        val cover = File(normalized).canonicalFile
+        val coverDir = files.coverDir(bookId).canonicalFile
+        require(
+            cover.isFile && cover.parentFile == coverDir && cover.nameWithoutExtension == "cover" &&
+                cover.extension.lowercase(Locale.ROOT) in setOf("jpg", "jpeg", "png", "webp")
+        ) {
+            "Cover path must point to a stored cover image"
+        }
+        return cover.absolutePath
+    }
+
+    private fun normalizeChapter(chapter: AcquiredChapter, index: Int): AcquiredChapter {
+        val title = normalizeMetadata(chapter.title, "Chapter $index", 300)
+        val content = chapter.renderedText.replace("\r\n", "\n").replace('\r', '\n')
+        require(content.isNotBlank()) { "Chapter $index has no readable text" }
+        require(isSafeImportedText(content)) { "Chapter $index contains unsupported control characters" }
+        return chapter.copy(title = title, renderedText = content)
+    }
+
+    private fun normalizeMetadata(value: String?, fallback: String, maxLength: Int): String {
+        val normalized = value?.trim()?.take(maxLength).orEmpty()
+        require(isSafeMetadataText(normalized)) { "Imported metadata contains unsupported control characters" }
+        return normalized.ifBlank { fallback }
+    }
+
+    private fun isSafeMetadataText(value: String): Boolean = value.none { it.code < 32 || it.code == 127 }
+
+    private fun isSafeImportedText(value: String): Boolean = value.none {
+        it.code == 0 || it.code == 127 || (it.code < 32 && it != '\n' && it != '\r' && it != '\t')
     }
 
     private suspend fun persistChapterInTransaction(

@@ -44,6 +44,7 @@ import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
+import java.util.Locale
 
 enum class SettingsSubPage(val title: String, val subtitle: String) {
     PROVIDERS("模型接口", "配置大模型 API 供应商与计费"),
@@ -737,7 +738,7 @@ private fun ProviderCardApple(
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
     AppGroupedSurface(
-        modifier = Modifier.testTag("provider_card_${provider.name.lowercase().replace(" ", "_")}"),
+        modifier = Modifier.testTag("provider_card_${provider.name.lowercase(Locale.ROOT).replace(" ", "_")}"),
         contentPadding = PaddingValues(16.dp)
     ) {
         // Top Header
@@ -843,7 +844,7 @@ private fun ProviderCardApple(
                 enabled = !isTesting,
                 shape = SmallControlShape,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                modifier = Modifier.testTag("test_provider_button_${provider.name.lowercase().replace(" ", "_")}")
+                modifier = Modifier.testTag("test_provider_button_${provider.name.lowercase(Locale.ROOT).replace(" ", "_")}")
             ) {
                 if (isTesting) {
                     CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
@@ -910,6 +911,8 @@ fun AddEditProviderDialog(
     var selectedModel by remember { mutableStateOf(provider?.selectedModel ?: initialPreset.defaultModel) }
     var inputPrice by remember { mutableStateOf(provider?.inputPricePerMillion?.toString() ?: initialPreset.defaultInputPrice.toString()) }
     var outputPrice by remember { mutableStateOf(provider?.outputPricePerMillion?.toString() ?: initialPreset.defaultOutputPrice.toString()) }
+    var currency by remember { mutableStateOf(provider?.currency ?: initialPreset.currency) }
+    var maxContextTokens by remember { mutableStateOf(provider?.maxContextTokens ?: initialPreset.defaultMaxContextTokens) }
     var isDefault by remember { mutableStateOf(provider?.isDefault ?: false) }
     var fetchedModels by remember { mutableStateOf(initialPreset.recommendedModels) }
     var modelSearch by remember { mutableStateOf("") }
@@ -922,13 +925,13 @@ fun AddEditProviderDialog(
         return provider?.copy(
             name = name.trim(), providerType = providerType, baseUrl = baseUrl.trim(), apiKey = apiKey.trim(),
             selectedModel = selectedModel.trim(), inputPricePerMillion = inPrice,
-            outputPricePerMillion = outPrice, currency = preset.currency,
-            maxContextTokens = preset.defaultMaxContextTokens, isDefault = isDefault
+            outputPricePerMillion = outPrice, currency = currency,
+            maxContextTokens = maxContextTokens, isDefault = isDefault
         ) ?: ApiProviderEntity(
             name = name.trim(), providerType = providerType, baseUrl = baseUrl.trim(), apiKey = apiKey.trim(),
             selectedModel = selectedModel.trim(), inputPricePerMillion = inPrice,
-            outputPricePerMillion = outPrice, currency = preset.currency,
-            maxContextTokens = preset.defaultMaxContextTokens, isDefault = isDefault
+            outputPricePerMillion = outPrice, currency = currency,
+            maxContextTokens = maxContextTokens, isDefault = isDefault
         )
     }
 
@@ -970,6 +973,8 @@ fun AddEditProviderDialog(
                                         selectedModel = candidate.defaultModel
                                         inputPrice = candidate.defaultInputPrice.toString()
                                         outputPrice = candidate.defaultOutputPrice.toString()
+                                        currency = candidate.currency
+                                        maxContextTokens = candidate.defaultMaxContextTokens
                                         fetchedModels = candidate.recommendedModels
                                         modelSearch = ""
                                         fetchMessage = null

@@ -255,8 +255,10 @@ object TranslationProtocol {
         }
         val chapters = Regex("<C\\s+id=\"?(\\d+)\"?[^>]*>([\\s\\S]*?)</C>", RegexOption.IGNORE_CASE)
             .findAll(translationBody)
-            .map { chapter ->
-                parseChapter(chapter.groupValues[1].toInt(), chapter.groupValues[2])
+            .mapNotNull { chapter ->
+                chapter.groupValues[1].toIntOrNull()?.let { chapterId ->
+                    parseChapter(chapterId, chapter.groupValues[2])
+                }
             }.toMutableList()
         if (translationMatch == null) {
             val lastOpen = Regex("<C\\s+id=\"?(\\d+)\"?[^>]*>", RegexOption.IGNORE_CASE).findAll(translationBody).lastOrNull()
@@ -286,11 +288,13 @@ object TranslationProtocol {
         val matches = Regex("<S\\s+id=\"?(\\d+)\"?[^>]*>([\\s\\S]*?)</S>", RegexOption.IGNORE_CASE)
             .findAll(body)
             .toList()
-        val duplicateIds = matches.groupingBy { it.groupValues[1].toInt() }.eachCount()
+        val validMatches = matches.mapNotNull { match ->
+            match.groupValues[1].toIntOrNull()?.let { id -> id to match }
+        }
+        val duplicateIds = validMatches.groupingBy { it.first }.eachCount()
             .filterValues { it > 1 }.keys
         val segments = linkedMapOf<Int, String>()
-        matches.forEach { match ->
-            val id = match.groupValues[1].toInt()
+        validMatches.forEach { (id, match) ->
             if (id !in segments) segments[id] = unescape(match.groupValues[2].trim())
         }
         return ParsedTranslationChapter(chapterId, segments, duplicateIds)

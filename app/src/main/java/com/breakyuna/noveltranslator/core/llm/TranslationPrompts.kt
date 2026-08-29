@@ -1,18 +1,32 @@
 package com.breakyuna.noveltranslator.core.llm
 
+import java.util.Locale
+
 /** Prompt templates for the two active AI agents: terminology discovery and chapter splitting. */
 object TranslationPrompts {
+    private const val MAX_EXISTING_TERM_CHARS = 6_000
+
     fun buildTermExtractionPrompt(
         textSample: String,
         sourceLanguage: String,
         targetLanguage: String,
         existingTerms: Collection<String> = emptyList()
     ): String {
-        val existing = existingTerms.asSequence()
-            .map { it.trim().take(120) }
-            .filter { it.isNotBlank() }
-            .take(300)
-            .joinToString(", ")
+        val existing = buildString {
+            val seen = mutableSetOf<String>()
+            existingTerms.asSequence()
+                .map { it.trim().take(120) }
+                .filter { it.isNotBlank() }
+                .take(300)
+                .forEach { term ->
+                    if (length >= MAX_EXISTING_TERM_CHARS) return@forEach
+                    if (!seen.add(term.lowercase(Locale.ROOT))) return@forEach
+                    val separator = if (isEmpty()) "" else ", "
+                    if (length + separator.length + term.length <= MAX_EXISTING_TERM_CHARS) {
+                        append(separator).append(term)
+                    }
+                }
+        }
         return """
 You are an expert novel editor and lore archivist. Analyze the novel excerpt and discover only terms that are genuinely useful as stable translation glossary entries.
 

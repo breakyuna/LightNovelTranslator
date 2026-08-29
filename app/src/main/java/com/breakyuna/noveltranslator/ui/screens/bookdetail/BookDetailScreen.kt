@@ -73,6 +73,7 @@ fun BookDetailScreen(
     onOpenEdition: (Long) -> Unit
 ) {
     val strings = platformUiStrings()
+    val english = strings.bookshelf == "Bookshelf"
     val window = rememberWindowSize()
     val book by viewModel.bookPlatformRepo.observeBook(bookId).collectAsState(initial = null)
     val editions by viewModel.bookPlatformRepo.observeEditions(bookId).collectAsState(initial = emptyList())
@@ -81,6 +82,7 @@ fun BookDetailScreen(
     var directoryExpanded by rememberSaveable(bookId) { mutableStateOf(false) }
     var showCreateTranslation by remember { mutableStateOf(false) }
     var exportEdition by remember { mutableStateOf<EditionEntity?>(null) }
+    var deleteEdition by remember { mutableStateOf<EditionEntity?>(null) }
     var showEditInfo by remember { mutableStateOf(false) }
     var showResplitDialog by remember { mutableStateOf(false) }
 
@@ -153,6 +155,7 @@ fun BookDetailScreen(
                                 strings = strings,
                                 onOpenEdition = onOpenEdition,
                                 onExport = { exportEdition = it },
+                                onDelete = { deleteEdition = it },
                                 onCreate = { showCreateTranslation = true }
                             )
                         }
@@ -215,6 +218,7 @@ fun BookDetailScreen(
                                 strings = strings,
                                 onOpenEdition = onOpenEdition,
                                 onExport = { exportEdition = it },
+                                onDelete = { deleteEdition = it },
                                 onCreate = { showCreateTranslation = true }
                             )
                             DirectoryPanel(
@@ -245,6 +249,32 @@ fun BookDetailScreen(
             text = { Text(strings.exportMessage) },
             confirmButton = { TextButton(onClick = { viewModel.exportEdition(bookId, edition.id, true); exportEdition = null }) { Text("EPUB") } },
             dismissButton = { TextButton(onClick = { viewModel.exportEdition(bookId, edition.id, false); exportEdition = null }) { Text("TXT") } }
+        )
+    }
+    deleteEdition?.let { edition ->
+        AlertDialog(
+            onDismissRequest = { deleteEdition = null },
+            title = { Text(if (english) "Delete Edition" else "删除译本") },
+            text = {
+                Text(
+                    if (english) {
+                        "Delete “${edition.name}” and its translation task, revisions and files? The original Edition will remain."
+                    } else {
+                        "确定删除“${edition.name}”及其翻译任务、修订记录和文件吗？原始版本不会受影响。"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteEdition(bookId, edition.id) {
+                            deleteEdition = null
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                ) { Text(if (english) "Delete" else "删除") }
+            },
+            dismissButton = { TextButton(onClick = { deleteEdition = null }) { Text(if (english) "Cancel" else "取消") } }
         )
     }
     if (showEditInfo && book != null) {
@@ -301,7 +331,7 @@ private fun BookHero(book: BookEntity?, strings: PlatformUiStrings, compact: Boo
 @Composable
 private fun EditionsPanel(
     editions: List<EditionEntity>, strings: PlatformUiStrings, onOpenEdition: (Long) -> Unit,
-    onExport: (EditionEntity) -> Unit, onCreate: () -> Unit, modifier: Modifier = Modifier
+    onExport: (EditionEntity) -> Unit, onDelete: (EditionEntity) -> Unit, onCreate: () -> Unit, modifier: Modifier = Modifier
 ) {
     ElevatedCard(modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
@@ -312,7 +342,18 @@ private fun EditionsPanel(
                     headlineContent = { Text(edition.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                     supportingContent = { Text("${edition.language} · ${editionTypeLabel(edition.type, strings)}${if (!edition.isComplete) " · ${strings.editionCreating}" else ""}") },
                     leadingContent = { Icon(if (edition.type == EditionType.AI_TRANSLATION.name) Icons.Default.Translate else Icons.Default.Article, null) },
-                    trailingContent = { IconButton(onClick = { onExport(edition) }) { Icon(Icons.Default.Download, strings.exportEdition) } }
+                    trailingContent = {
+                        Row {
+                            IconButton(onClick = { onExport(edition) }) {
+                                Icon(Icons.Default.Download, strings.exportEdition)
+                            }
+                            if (edition.type != EditionType.IMPORTED.name) {
+                                IconButton(onClick = { onDelete(edition) }) {
+                                    Icon(Icons.Default.DeleteOutline, "删除译本", tint = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
                 )
                 if (index != editions.lastIndex) HorizontalDivider(Modifier.padding(horizontal = 16.dp))
             }

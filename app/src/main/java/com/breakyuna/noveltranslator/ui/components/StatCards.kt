@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 
 @Composable
 fun MetricStatCard(
@@ -25,7 +26,7 @@ fun MetricStatCard(
     modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = modifier.testTag("metric_card_${title.lowercase().replace(" ", "_")}"),
+        modifier = modifier.testTag("metric_card_${title.lowercase(Locale.ROOT).replace(" ", "_")}"),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
     ) {

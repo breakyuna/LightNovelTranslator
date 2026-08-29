@@ -59,6 +59,7 @@ fun PlatformReaderScreen(
     val imageDirectory = remember(bookId) { viewModel.bookImagesDir(bookId) }
     var content by remember { mutableStateOf<List<ResolvedReaderSegment>>(emptyList()) }
     var requestedLogicalChapter by remember { mutableStateOf<Long?>(null) }
+    var pagerVisibleIndex by remember { mutableStateOf(0) }
     val targetLogical = initialLogicalChapterId ?: stored?.logicalChapterId
 
     LaunchedEffect(resolvedContent, listState.isScrollInProgress) {
@@ -90,7 +91,12 @@ fun PlatformReaderScreen(
             } else {
                 content.indexOfFirst { it.logicalSegmentId == stored?.logicalSegmentId || it.logicalChapterId == stored?.logicalChapterId }
             }.coerceAtLeast(0)
-            if (!listState.isScrollInProgress) listState.scrollToItem(index, stored?.segmentOffset ?: 0)
+            val scrollOffset = if (requested != null || initialLogicalChapterId != null) {
+                0
+            } else {
+                stored?.segmentOffset ?: 0
+            }
+            if (!listState.isScrollInProgress) listState.scrollToItem(index, scrollOffset)
             requestedLogicalChapter = null
         }
     }
@@ -148,7 +154,7 @@ fun PlatformReaderScreen(
                         expanded = window.isExpanded,
                         workbench = layoutMode == ReaderLayoutMode.WORKBENCH,
                         imageDirectory = imageDirectory,
-                        onSave = { viewModel.saveManualRevision(content[index].editionSegmentId, it) }
+                        onSave = { viewModel.saveManualRevision(row.editionSegmentId, it) }
                     )
                 }
             }
@@ -156,49 +162,88 @@ fun PlatformReaderScreen(
                 if (content.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (english) "No readable content" else "当前没有可读内容") }
                 } else {
-                val initialPage = if (initialLogicalChapterId != null) {
-                    content.indexOfFirst { it.logicalChapterId == initialLogicalChapterId }
-                } else {
-                    content.indexOfFirst { it.logicalSegmentId == stored?.logicalSegmentId || it.logicalChapterId == stored?.logicalChapterId }
-                }.coerceAtLeast(0)
-                val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { content.size })
-                LaunchedEffect(pagerState, content, displayMode, pagingMode, layoutMode, animation) {
-                    snapshotFlow { pagerState.currentPage }.distinctUntilChanged().collect { page ->
-                        content.getOrNull(page)?.let { row ->
-                            viewModel.saveReaderProgress(
-                                ReaderProgressEntity(bookId, stored?.preferredEditionId, row.logicalChapterId, row.logicalSegmentId, 0, displayMode.name, pagingMode.name, layoutMode.name, animation.name)
-                            )
+                    val initialPage = if (initialLogicalChapterId != null) {
+                        content.indexOfFirst { it.logicalChapterId == initialLogicalChapterId }
+                    } else {
+                        content.indexOfFirst { it.logicalSegmentId == stored?.logicalSegmentId || it.logicalChapterId == stored?.logicalChapterId }
+                    }.coerceAtLeast(0)
+                    val pagerState = rememberPagerState(initialPage = initialPage, pageCount = { content.size })
+                    LaunchedEffect(pagerState, content, initialLogicalChapterId, stored?.logicalChapterId, stored?.logicalSegmentId) {
+                        val requestedPage = if (initialLogicalChapterId != null) {
+                            content.indexOfFirst { it.logicalChapterId == initialLogicalChapterId }
+                        } else {
+                            content.indexOfFirst {
+                                it.logicalSegmentId == stored?.logicalSegmentId || it.logicalChapterId == stored?.logicalChapterId
+                            }
+                        }
+                        if (requestedPage >= 0 && requestedPage < content.size && pagerState.currentPage != requestedPage) {
+                            pagerState.scrollToPage(requestedPage)
                         }
                     }
-                }
-                val page: @Composable (Int) -> Unit = { index ->
-                    Box(
-                        Modifier.fillMaxSize().padding(top = 64.dp, bottom = 56.dp, start = 26.dp, end = 26.dp)
-                            .graphicsLayer {
-                                val offset = kotlin.math.abs((pagerState.currentPage - index) + pagerState.currentPageOffsetFraction)
-                                when (animation) {
-                                    PageAnimation.NONE -> Unit
-                                    PageAnimation.SLIDE -> Unit
-                                    PageAnimation.FADE -> alpha = (1f - offset).coerceIn(.25f, 1f)
-                                    PageAnimation.CURL -> rotationY = ((pagerState.currentPage - index) + pagerState.currentPageOffsetFraction) * 18f
-                                }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        content.getOrNull(index)?.let { ReaderUnit(it, true, displayMode, window.isExpanded, layoutMode == ReaderLayoutMode.WORKBENCH, imageDirectory) { text -> viewModel.saveManualRevision(it.editionSegmentId, text) } }
+                    LaunchedEffect(pagerState, content, displayMode, pagingMode, layoutMode, animation) {
+                        snapshotFlow { pagerState.currentPage }.distinctUntilChanged().collect { page ->
+                            pagerVisibleIndex = page
+                            content.getOrNull(page)?.let { row ->
+                                viewModel.saveReaderProgress(
+                                    ReaderProgressEntity(
+                                        bookId,
+                                        stored?.preferredEditionId,
+                                        row.logicalChapterId,
+                                        row.logicalSegmentId,
+                                        0,
+                                        displayMode.name,
+                                        pagingMode.name,
+                                        layoutMode.name,
+                                        animation.name
+                                    )
+                                )
+                            }
+                        }
                     }
-                }
-                if (pagingMode == PagingMode.HORIZONTAL) {
-                    HorizontalPager(state = pagerState) { index -> page(index) }
-                } else {
-                    VerticalPager(state = pagerState) { index -> page(index) }
-                }
+                    val page: @Composable (Int) -> Unit = { index ->
+                        Box(
+                            Modifier.fillMaxSize().padding(top = 64.dp, bottom = 56.dp, start = 26.dp, end = 26.dp)
+                                .graphicsLayer {
+                                    val offset = kotlin.math.abs((pagerState.currentPage - index) + pagerState.currentPageOffsetFraction)
+                                    when (animation) {
+                                        PageAnimation.NONE -> Unit
+                                        PageAnimation.SLIDE -> Unit
+                                        PageAnimation.FADE -> alpha = (1f - offset).coerceIn(.25f, 1f)
+                                        PageAnimation.CURL -> rotationY = ((pagerState.currentPage - index) + pagerState.currentPageOffsetFraction) * 18f
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            content.getOrNull(index)?.let { row ->
+                                ReaderUnit(
+                                    row,
+                                    true,
+                                    displayMode,
+                                    window.isExpanded,
+                                    layoutMode == ReaderLayoutMode.WORKBENCH,
+                                    imageDirectory
+                                ) { text -> viewModel.saveManualRevision(row.editionSegmentId, text) }
+                            }
+                        }
+                    }
+                    if (pagingMode == PagingMode.HORIZONTAL) {
+                        HorizontalPager(state = pagerState) { index -> page(index) }
+                    } else {
+                        VerticalPager(state = pagerState) { index -> page(index) }
+                    }
                 }
             }
         }
         if (controlsVisible) {
             TopAppBar(
-                title = { Text(content.getOrNull(listState.firstVisibleItemIndex)?.chapterTitle ?: if (english) "Reader" else "阅读") },
+                title = {
+                    val visibleIndex = if (pagingMode == PagingMode.CONTINUOUS) {
+                        listState.firstVisibleItemIndex
+                    } else {
+                        pagerVisibleIndex
+                    }
+                    Text(content.getOrNull(visibleIndex)?.chapterTitle ?: if (english) "Reader" else "阅读")
+                },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, strings.back) } },
                 actions = { IconButton(onClick = { settingsVisible = true }) { Icon(Icons.Default.Settings, if (english) "Reading settings" else "阅读设置") } },
                 modifier = Modifier.align(Alignment.TopCenter)

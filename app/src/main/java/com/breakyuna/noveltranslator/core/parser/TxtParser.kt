@@ -39,6 +39,8 @@ object TxtParser {
         // Try UTF-8
         try {
             val decoder = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
             decoder.decode(java.nio.ByteBuffer.wrap(bytes))
             return Pair(String(bytes, Charsets.UTF_8), Charsets.UTF_8)
         } catch (e: Exception) {
@@ -56,7 +58,9 @@ object TxtParser {
     /** Detects encoding from a bounded prefix so importing never materializes the whole file. */
     fun detectCharset(file: File, sampleBytes: Int = CHARSET_SAMPLE_BYTES): CharsetDetection {
         require(sampleBytes > 0)
-        val sample = ByteArray(sampleBytes)
+        // Read a few bytes beyond the bounded prefix so a UTF-8 code point split exactly at the
+        // sampling boundary is not mistaken for malformed GB18030/UTF-8 input.
+        val sample = ByteArray(sampleBytes + UTF8_LOOKAHEAD_BYTES)
         val count = file.inputStream().use { input ->
             var total = 0
             while (total < sample.size) {
@@ -94,8 +98,45 @@ object TxtParser {
         return BufferedReader(InputStreamReader(input, detection.charset), DEFAULT_BUFFER_SIZE)
     }
 
-    val REGEX_CHINESE = "(^\\s*第[0-9零一二两三四五六七八九十百千万]+[章回节卷集幕篇].*)"
-    val REGEX_ENGLISH = "(^\\s*(Chapter|CHAPTER|Section|SECTION|Book|BOOK|Prologue|PROLOGUE|Epilogue|EPILOGUE|Act|ACT)\\s*(\\d+|[IVXLCDM]+)?.*)"
+    /** Infers a safe built-in heading rule from a bounded prefix of a TXT file. */
+    fun inferChapterRegex(file: File, language: String = "Auto"): String {
+        val sample = openDetectedReader(file).use { reader ->
+            val builder = StringBuilder(INFERENCE_SAMPLE_CHARS)
+            val buffer = CharArray(DEFAULT_BUFFER_SIZE)
+            while (builder.length < INFERENCE_SAMPLE_CHARS) {
+                val count = reader.read(buffer, 0, minOf(buffer.size, INFERENCE_SAMPLE_CHARS - builder.length))
+                if (count < 0) break
+                builder.append(buffer, 0, count)
+            }
+            builder.toString()
+        }
+        return inferChapterRegex(sample, language)
+    }
+
+    /** Chooses only among conservative built-in rules; callers can still provide a custom regex. */
+    fun inferChapterRegex(sample: String, language: String = "Auto"): String {
+        val normalized = language.trim().lowercase(Locale.ROOT)
+        when {
+            normalized.contains("zh") || normalized.contains("chinese") -> return REGEX_CHINESE
+            normalized.contains("en") || normalized.contains("english") -> return REGEX_ENGLISH
+            normalized.contains("ja") || normalized.contains("japanese") -> return REGEX_JAPANESE
+            normalized.contains("ko") || normalized.contains("korean") -> return REGEX_KOREAN
+        }
+        return listOf(REGEX_CHINESE, REGEX_ENGLISH, REGEX_JAPANESE, REGEX_KOREAN, REGEX_MARKDOWN)
+            .map { candidate ->
+                val regex = Regex(candidate)
+                candidate to sample.lineSequence().count { line -> regex.matches(line.trim()) }
+            }
+            .maxByOrNull { it.second }
+            ?.takeIf { it.second > 0 }
+            ?.first
+            ?: REGEX_CHINESE
+    }
+
+    val REGEX_CHINESE = "(^\\s*第[0-9０-９零一二两三四五六七八九十百千万]+[章回節卷集幕篇].*)"
+    val REGEX_JAPANESE = "(^\\s*第[0-9０-９零一二三四五六七八九十百千万]+\\s*[話回章節編幕].*)"
+    val REGEX_KOREAN = "(^\\s*제\\s*[0-9０-９]+\\s*장.*)"
+    val REGEX_ENGLISH = "((?i:^\\s*(Chapter|Section|Book|Prologue|Epilogue|Act)\\s*(\\d+|[IVXLCDM]+)?.*))"
     val REGEX_MARKDOWN = "(^#{1,3}\\s+.*)"
 
     /** Validates a user-supplied chapter heading expression before any file work begins. */
@@ -182,7 +223,7 @@ object TxtParser {
         }
 
         // If no chapters were detected (single monolithic chapter), perform intelligent character chunking
-        if (chapters.size <= 1 && sourceText.length > fallbackChunkWords * 2) {
+        if (chapters.size <= 1 && countWords(sourceText) > fallbackChunkWords * 2) {
             return splitByParagraphChunks(sourceText, fallbackChunkWords)
         }
 
@@ -459,6 +500,9 @@ object TxtParser {
     }
 
     private const val CHARSET_SAMPLE_BYTES = 64 * 1024
+    // UTF-8 code points can occupy up to four bytes; keep the full maximum suffix.
+    private const val UTF8_LOOKAHEAD_BYTES = 4
+    private const val INFERENCE_SAMPLE_CHARS = 512 * 1024
     private const val MAX_REGEX_LENGTH = 500
     private const val MAX_TOC_SCAN_LINES = 6_000
     private const val MAX_TOC_LABEL_SCAN_LINES = 400

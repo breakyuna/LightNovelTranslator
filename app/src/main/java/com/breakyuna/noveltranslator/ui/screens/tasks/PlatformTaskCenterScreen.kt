@@ -38,6 +38,7 @@ import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import java.text.DateFormat
 import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,12 +87,14 @@ fun PlatformTaskCenterScreen(
     val totalBooksCount = allBooks.size
     val runningRunsCount = allRuns.count { it.state == "RUNNING" }
     val pausedRunsCount = allRuns.count { it.state == "PAUSED" }
-    val completedRunsCount = allRuns.count { it.state in setOf("COMPLETED", "SUCCESS") }
+    val completedRunsCount = allRuns.count {
+        it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS")
+    }
     val totalTokens = remember(allRuns) {
         allRuns.sumOf { it.promptTokens + it.completionTokens }
     }
-    val totalCost = remember(allRuns) {
-        allRuns.sumOf { it.totalCost }
+    val totalCostLabel = remember(allRuns) {
+        formatRunCostSummary(allRuns)
     }
 
     // Filtered books
@@ -110,7 +113,10 @@ fun PlatformTaskCenterScreen(
                 "RUNNING" -> bookRuns.any { it.state == "RUNNING" } || bookProjects.any { it.state == "RUNNING" }
                 "PAUSED" -> bookRuns.any { it.state == "PAUSED" } || bookProjects.any { it.state == "PAUSED" }
                 "COMPLETED" -> (bookRuns.isNotEmpty() || bookProjects.isNotEmpty()) &&
-                        bookRuns.all { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }
+                        (bookRuns.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
+                            bookProjects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
+                        bookRuns.none { it.state in setOf("RUNNING", "PAUSED") } &&
+                        bookProjects.none { it.state in setOf("RUNNING", "PAUSED") }
                 "NO_TASKS" -> bookProjects.isEmpty() && bookRuns.isEmpty()
                 else -> true
             }
@@ -239,7 +245,7 @@ fun PlatformTaskCenterScreen(
                     pausedTasks = pausedRunsCount,
                     completedTasks = completedRunsCount,
                     totalTokens = totalTokens,
-                    totalCost = totalCost,
+                    totalCostLabel = totalCostLabel,
                     modifier = Modifier
                         .fillMaxWidth()
                         .widthIn(max = 840.dp)
@@ -350,6 +356,7 @@ fun PlatformTaskCenterScreen(
     activeLogRunId?.let { runId ->
         LiveLogDialog(
             runId = runId,
+            currency = allRuns.firstOrNull { it.id == runId }?.currency ?: "USD",
             strings = strings,
             viewModel = viewModel,
             onDismiss = { activeLogRunId = null }
@@ -377,7 +384,7 @@ private fun WorkspaceMetricsBanner(
     pausedTasks: Int,
     completedTasks: Int,
     totalTokens: Long,
-    totalCost: Double,
+    totalCostLabel: String,
     modifier: Modifier = Modifier
 ) {
     ElevatedCard(
@@ -413,7 +420,7 @@ private fun WorkspaceMetricsBanner(
                     )
                 }
                 Text(
-                    "消耗: ${TokenCalculator.formatTokenCount(totalTokens)} Tokens · ${TokenCalculator.formatCost(totalCost, "USD")}",
+                    "消耗: ${TokenCalculator.formatTokenCount(totalTokens)} Tokens · $totalCostLabel",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -515,9 +522,13 @@ private fun BookWorkspaceUnitCard(
     val isRunning = runs.any { it.state == "RUNNING" } || projects.any { it.state == "RUNNING" }
     val isPaused = runs.any { it.state == "PAUSED" } || projects.any { it.state == "PAUSED" }
     val isCompleted = (runs.isNotEmpty() || projects.isNotEmpty()) &&
-            runs.all { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }
+            (projects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
+                runs.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
+            projects.none { it.state in setOf("RUNNING", "PAUSED") } &&
+            runs.none { it.state in setOf("RUNNING", "PAUSED") }
 
     val taskCount = projects.size.coerceAtLeast(runs.size)
+    val orphanedRuns = runs.filter { run -> projects.none { it.id == run.translationProjectId } }
 
     ElevatedCard(
         modifier = modifier,
@@ -836,31 +847,40 @@ private fun BookWorkspaceUnitCard(
                             }
                         }
                     } else {
-                        // Render each project & run
-                        projects.forEach { project ->
-                            val projectRun = runs.firstOrNull { it.translationProjectId == project.id }
-
-                            TranslationProjectTaskItem(
-                                project = project,
-                                run = projectRun,
-                                totalChapters = totalChaptersCount,
-                                strings = strings,
-                                viewModel = viewModel,
-                                onOpenEdition = { onOpenEdition(project.targetEditionId) },
-                                onOpenReader = { onOpenReader(null) },
-                                onViewLogs = { projectRun?.id?.let(onViewLogs) },
-                                onViewGlossary = { onViewGlossary(project.id) }
-                            )
-                        }
-
-                        // Also render any orphaned runs if exists
-                        runs.filter { run -> projects.none { it.id == run.translationProjectId } }.forEach { orphanedRun ->
-                            OrphanedTaskRunItem(
-                                run = orphanedRun,
-                                strings = strings,
-                                viewModel = viewModel,
-                                onViewLogs = { onViewLogs(orphanedRun.id) }
-                            )
+                        // Keep the potentially long project/run list lazy and bounded. This card
+                        // itself lives inside the workspace LazyColumn, so the nested list gets a
+                        // finite viewport instead of composing every historical run at once.
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 560.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            items(projects, key = { "project-${it.id}" }) { project ->
+                                val projectRun = runs.firstOrNull { it.translationProjectId == project.id }
+                                TranslationProjectTaskItem(
+                                    project = project,
+                                    run = projectRun,
+                                    totalChapters = totalChaptersCount,
+                                    strings = strings,
+                                    viewModel = viewModel,
+                                    onOpenEdition = { onOpenEdition(project.targetEditionId) },
+                                    onOpenReader = {
+                                        viewModel.selectReadingEdition(book.id, project.targetEditionId) {
+                                            onOpenReader(null)
+                                        }
+                                    },
+                                    onViewLogs = { projectRun?.id?.let(onViewLogs) },
+                                    onViewGlossary = { onViewGlossary(project.id) }
+                                )
+                            }
+                            items(orphanedRuns, key = { "run-${it.id}" }) { orphanedRun ->
+                                OrphanedTaskRunItem(
+                                    run = orphanedRun,
+                                    strings = strings,
+                                    onViewLogs = { onViewLogs(orphanedRun.id) }
+                                )
+                            }
                         }
                     }
                 }
@@ -872,6 +892,7 @@ private fun BookWorkspaceUnitCard(
 /**
  * 单个翻译任务/项目卡片
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TranslationProjectTaskItem(
     project: TranslationProjectV2Entity,
@@ -887,7 +908,11 @@ private fun TranslationProjectTaskItem(
     val currentState = run?.state ?: project.state
     val completedChapters = run?.completedChapters ?: 0
     val failedChapters = run?.failedChapters ?: 0
-    val progressFraction = if (totalChapters > 0) completedChapters.toFloat() / totalChapters else 0f
+    val progressFraction = if (totalChapters > 0) {
+        (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1028,7 +1053,11 @@ private fun TranslationProjectTaskItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // Secondary actions: logs, glossary
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                FlowRow(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
                     if (run != null) {
                         OutlinedButton(
                             onClick = onViewLogs,
@@ -1057,6 +1086,15 @@ private fun TranslationProjectTaskItem(
                         Icon(Icons.Default.MenuBook, null, Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("阅读译文", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = onOpenEdition,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(Icons.Default.OpenInNew, null, Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("译本详情", fontSize = 12.sp)
                     }
                 }
 
@@ -1113,7 +1151,6 @@ private fun TranslationProjectTaskItem(
 private fun OrphanedTaskRunItem(
     run: PlatformTranslationRunEntity,
     strings: PlatformUiStrings,
-    viewModel: AppViewModel,
     onViewLogs: () -> Unit
 ) {
     Surface(
@@ -1200,6 +1237,7 @@ private fun EmptyWorkspaceState(
 @Composable
 private fun LiveLogDialog(
     runId: Long,
+    currency: String,
     strings: PlatformUiStrings,
     viewModel: AppViewModel,
     onDismiss: () -> Unit
@@ -1253,7 +1291,7 @@ private fun LiveLogDialog(
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(batches, key = { it.id }) { batch ->
-                                BatchItem(batch, strings)
+                                BatchItem(batch, strings, currency)
                             }
                         }
                     }
@@ -1316,7 +1354,7 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
 }
 
 @Composable
-private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUiStrings) {
+private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUiStrings, currency: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -1344,7 +1382,7 @@ private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUi
                 )
             }
             Text(
-                "${TokenCalculator.formatTokenCount(batch.promptTokens + batch.completionTokens)} Tokens · ${TokenCalculator.formatCost(batch.cost, "USD")}",
+                "${TokenCalculator.formatTokenCount(batch.promptTokens + batch.completionTokens)} Tokens · ${TokenCalculator.formatCost(batch.cost, currency)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1353,6 +1391,21 @@ private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUi
                 Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
+}
+
+/**
+ * Run costs are recorded in the provider currency. Never add values from different currencies
+ * together; show one converted-looking total per currency until an exchange-rate service exists.
+ */
+private fun formatRunCostSummary(runs: List<PlatformTranslationRunEntity>): String {
+    val totalsByCurrency = runs
+        .groupBy { it.currency.trim().uppercase(Locale.ROOT).ifBlank { "UNKNOWN" } }
+        .mapValues { (_, rows) -> rows.sumOf { it.totalCost } }
+        .toSortedMap()
+    if (totalsByCurrency.isEmpty()) return TokenCalculator.formatCost(0.0, "USD")
+    return totalsByCurrency.entries.joinToString(" · ") { (currency, amount) ->
+        TokenCalculator.formatCost(amount, currency)
     }
 }
 
@@ -1606,7 +1659,7 @@ private fun statusIcon(state: String): androidx.compose.ui.graphics.vector.Image
 
 private fun localizedState(state: String, strings: PlatformUiStrings): String {
     val english = strings.bookshelf == "Bookshelf"
-    return if (english) state.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase)
+    return if (english) state.lowercase(Locale.ROOT).replace('_', ' ').replaceFirstChar(Char::uppercase)
     else when (state) {
         "QUEUED", "PENDING" -> "等待中"
         "RUNNING" -> "运行中"

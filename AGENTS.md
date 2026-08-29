@@ -43,7 +43,7 @@ app/src/main/java/com/breakyuna/noveltranslator/
 │   ├── llm/            # Provider、请求、重试和 Token
 │   ├── parser/         # TXT / EPUB 解析
 │   ├── translation/    # 新版书籍翻译 Engine、协议、上下文和 QA
-│   └── translator/     # 兼容的旧版翻译链路
+│   └── logger/         # 脱敏系统日志与运行审计
 ├── data/
 │   ├── db/             # Room Database 与 DAO
 │   ├── model/          # Entity、领域模型和轻量查询模型
@@ -120,7 +120,7 @@ rg -n "^(<<<<<<<|=======|>>>>>>>)" . -g '!**/build/**'
 ## 8. Room、文件与数据一致性
 
 - Room 保存关系、状态、进度、词表、Memory、Revision、任务和审计信息。
-- 正文、封面、EPUB 插图和导出文件保存到 `BookFileManager` / `ProjectFileManager` 管理的目录，不得把大段正文或二进制资源直接塞入普通 UI 状态。
+- 正文、封面、EPUB 插图和导出文件统一由 `BookFileManager` 管理，不得把大段正文或二进制资源直接塞入普通 UI 状态。
 - 阅读进度必须基于 `LogicalChapter` / `LogicalSegment`，不得以列表下标作为持久化身份。
 - 修改 Entity 时必须同步检查：
   1. `AppDatabase` 版本；
