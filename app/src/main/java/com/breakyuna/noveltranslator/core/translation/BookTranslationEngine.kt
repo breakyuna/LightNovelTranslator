@@ -22,7 +22,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Global scheduler: different books may run concurrently; every book is protected by one mutex.
- * A project processes batches strictly in order and commits each valid chapter independently.
+ * A project processes draft batches strictly in order and commits each valid chapter independently;
+ * an optional post-draft review pass runs only after the selected draft scope is complete.
  */
 class BookTranslationScheduler(
     private val engine: BookTranslationEngine,
@@ -58,6 +59,19 @@ class BookTranslationEngine(
         val completionTokens: Long
     )
 
+    private data class DraftReviewOutcome(
+        val chapter: ParsedTranslationChapter?,
+        val promptTokens: Long,
+        val completionTokens: Long,
+        val reason: String? = null
+    )
+
+    private companion object {
+        // Review batches share the run with translation batches while remaining easy to filter in
+        // the task center. Negative indexes are reserved for isolated translation retries.
+        const val POST_DRAFT_REVIEW_BATCH_OFFSET = 1_000_000
+    }
+
     private val books = database.bookDao()
     private val projects = database.translationProjectV2Dao()
     private val tasks = database.platformTaskDao()
@@ -68,21 +82,26 @@ class BookTranslationEngine(
     suspend fun projectBookId(projectId: Long): Long? = projects.get(projectId)?.bookId
 
     suspend fun pause(projectId: Long) {
-        controls.getOrPut(projectId) { ProjectControl() }.paused.set(true)
+        controls.getOrPut(projectId) { ProjectControl() }.requestPause()
         projects.updateState(projectId, "PAUSED")
         activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "PAUSED", updatedAt = System.currentTimeMillis())) } }
     }
 
     suspend fun resume(projectId: Long) {
-        controls.getOrPut(projectId) { ProjectControl() }.paused.set(false)
+        controls.getOrPut(projectId) { ProjectControl() }.resume()
         projects.updateState(projectId, "RUNNING")
         activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "RUNNING", updatedAt = System.currentTimeMillis())) } }
     }
 
     suspend fun cancel(projectId: Long) {
-        controls.getOrPut(projectId) { ProjectControl() }.cancelled.set(true)
+        controls.getOrPut(projectId) { ProjectControl() }.cancel()
         projects.updateState(projectId, "CANCELLED")
-        activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) } }
+        activeRuns[projectId]?.let { runId ->
+            tasks.getRunningBatches(runId).forEach { batch ->
+                tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+            }
+            tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
+        }
     }
 
     suspend fun runStrictlySerial(projectId: Long) {
@@ -94,11 +113,19 @@ class BookTranslationEngine(
         }
             ?: error("Translation project has no available provider")
         val targets = selectTargets(project)
-        if (targets.isEmpty()) {
-            SystemLogger.info("TRANSLATION", "项目 #${project.id} 所有章节已全部翻译完成，无需新批次。", projectId = project.id)
+        // If the draft already exists, enabling the option should still allow a one-time
+        // post-draft review. Only chapters without an active AI_POLISH revision are selected,
+        // so pressing run again does not pay for the same review repeatedly.
+        val reviewOnlyTargets = if (targets.isEmpty() && project.highQualityReview) {
+            selectReviewTargets(project)
+        } else {
+            emptyList()
+        }
+        if (targets.isEmpty() && reviewOnlyTargets.isEmpty()) {
+            SystemLogger.info("TRANSLATION", "项目 #${project.id} 所有章节已完成，暂无新的初稿或待审校章节。", projectId = project.id)
             return
         }
-        val control = controls.getOrPut(projectId) { ProjectControl() }.apply { paused.set(false); cancelled.set(false) }
+        val control = controls.getOrPut(projectId) { ProjectControl() }.apply { reset() }
         val runId = tasks.insertRun(
             PlatformTranslationRunEntity(
                 translationProjectId = project.id,
@@ -114,7 +141,7 @@ class BookTranslationEngine(
         projects.updateState(project.id, "RUNNING")
         SystemLogger.info(
             "TRANSLATION",
-            "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，共待翻译 ${targets.size} 个章节",
+            "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，待翻译 ${targets.size} 章，待二次审校 ${reviewOnlyTargets.size} 章",
             projectId = project.id
         )
         try {
@@ -125,21 +152,38 @@ class BookTranslationEngine(
                 val candidates = targets.drop(cursor).take(project.maxBatchChapters.coerceIn(1, 5))
                 val sourceChapters = candidates.mapIndexed { index, chapter -> loadSourceChapter(project, chapter, index + 1) }
                 val sourceTokens = sourceChapters.map { chapter -> chapter.segments.sumOf { TokenBudgetPlanner.estimate(it.text) } }
-                val combinedSource = sourceChapters.flatMap { it.segments }.joinToString("\n") { it.text }
-                val context = contextEngine.prepare(project, combinedSource, sourceChapters.first().chapterIndex)
-                val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
-                    "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
+                // Context matching is source-dependent, so choose the batch and build context in
+                // the same scope. This prevents future chapters from leaking glossary/story facts
+                // into a smaller batch after token planning shrinks the request.
+                var actual = sourceChapters.size
+                var selectedContext: ContextPackage? = null
+                var selectedBudget: TokenBudgetPlan? = null
+                while (true) {
+                    val considered = sourceChapters.take(actual)
+                    val candidateContext = prepareContext(project, considered)
+                    val fixedTokens = fixedContextTokens(candidateContext)
+                    val candidateBudget = TokenBudgetPlanner.plan(
+                        maxContextTokens = provider.maxContextTokens,
+                        userMaxBatchSize = project.maxBatchChapters,
+                        sourceTokenEstimates = sourceTokens.take(actual),
+                        fixedContextTokens = fixedTokens
+                    )
+                    selectedContext = candidateContext
+                    selectedBudget = candidateBudget
+                    if (candidateBudget.requiresSingleChapterChunking) {
+                        if (actual == 1) break
+                        actual = 1
+                        continue
+                    }
+                    val allowed = candidateBudget.actualBatchSize.coerceAtLeast(1).coerceAtMost(actual)
+                    if (allowed < actual) {
+                        actual = allowed
+                        continue
+                    }
+                    break
                 }
-                val fixedTokens = TokenBudgetPlanner.estimate(
-                    context.stablePrefix + context.recentContext + matchedGlossaryText
-                ) + 700
-                val budget = TokenBudgetPlanner.plan(
-                    maxContextTokens = provider.maxContextTokens,
-                    userMaxBatchSize = project.maxBatchChapters,
-                    sourceTokenEstimates = sourceTokens,
-                    fixedContextTokens = fixedTokens
-                )
-                val actual = if (budget.requiresSingleChapterChunking) 1 else budget.actualBatchSize.coerceAtLeast(1)
+                val context = selectedContext ?: error("Context planning produced no context")
+                val budget = selectedBudget ?: error("Token planning produced no budget")
                 val batchSources = sourceChapters.take(actual)
                 val batchId = tasks.insertBatch(
                     PlatformTranslationBatchEntity(
@@ -164,13 +208,34 @@ class BookTranslationEngine(
                 cursor += actual
                 batchIndex++
             }
+            val draftStageComplete = if (targets.isEmpty()) {
+                reviewOnlyTargets.isNotEmpty()
+            } else {
+                targets.all { hasCompleteDraft(project, it) }
+            }
+            if (project.highQualityReview && draftStageComplete) {
+                val reviewTargets = if (targets.isEmpty()) reviewOnlyTargets else selectReviewTargets(project)
+                if (reviewTargets.isNotEmpty()) {
+                    runPostDraftReview(project, provider, runId, reviewTargets, control)
+                }
+            } else if (project.highQualityReview && targets.isNotEmpty()) {
+                SystemLogger.warn(
+                    "AI_POLISH",
+                    "初稿仍有失败章节，暂不启动整本二次审校；完成初稿后可再次运行。",
+                    projectId = project.id
+                )
+            }
+            awaitCommitBoundary(project.id)
             val target = books.getEdition(project.targetEditionId)
             val allChapters = books.getChapters(project.bookId)
-            val editionComplete = allChapters.all { books.getEditionChapter(project.targetEditionId, it.id) != null }
+            val editionComplete = allChapters.all { hasCompleteDraft(project, it) }
+            awaitCommitBoundary(project.id)
             target?.let { books.updateEdition(it.copy(isComplete = editionComplete, updatedAt = System.currentTimeMillis())) }
             val run = tasks.getRun(runId)
             val finalState = if ((run?.failedChapters ?: 0) > 0) "COMPLETED_WITH_ERRORS" else "COMPLETED"
+            awaitCommitBoundary(project.id)
             projects.updateState(project.id, finalState)
+            awaitCommitBoundary(project.id)
             run?.let { tasks.updateRun(it.copy(state = finalState, updatedAt = System.currentTimeMillis())) }
             SystemLogger.info(
                 "TRANSLATION",
@@ -179,6 +244,9 @@ class BookTranslationEngine(
             )
         } catch (cancelled: CancellationException) {
             projects.updateState(project.id, "CANCELLED")
+            tasks.getRunningBatches(runId).forEach { batch ->
+                tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+            }
             tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
             SystemLogger.warn("TRANSLATION", "🛑 翻译任务已被用户取消", projectId = project.id)
         } catch (error: Throwable) {
@@ -231,9 +299,48 @@ class BookTranslationEngine(
         projects.updateState(projectId, "RUNNING")
     }
 
+    /** Checks the project gate after a provider call and immediately before any durable write. */
+    private suspend fun awaitCommitBoundary(projectId: Long) {
+        val control = controls[projectId] ?: throw CancellationException("Translation control is missing")
+        awaitBoundary(projectId, control)
+    }
+
+    private suspend fun prepareContext(
+        project: TranslationProjectV2Entity,
+        sources: List<ProtocolChapter>
+    ): ContextPackage {
+        require(sources.isNotEmpty()) { "Cannot build context for an empty chapter batch" }
+        val combinedSource = sources.flatMap { it.segments }.joinToString("\n") { it.originalText }
+        val previousTails = loadPreviousContextTails(project, sources.first().chapterIndex)
+        return contextEngine.prepare(
+            project = project,
+            sourceText = combinedSource,
+            firstChapterIndex = sources.first().chapterIndex,
+            previousChapterOriginalTail = previousTails.first,
+            previousChapterTranslationTail = previousTails.second
+        )
+    }
+
+    private fun fixedContextTokens(context: ContextPackage): Long {
+        val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
+            "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
+        }
+        val historyText = buildString {
+            append(context.relatedStoryMemory.joinToString("\n") { "${it.factKey}: ${it.factValue} [entities=${it.entities}]" })
+            append('\n').append(context.previousChapterOriginalTail)
+            append('\n').append(context.previousChapterTranslationTail)
+        }
+        return TokenBudgetPlanner.estimate(
+            context.stablePrefix + context.recentContext + historyText + matchedGlossaryText
+        ) + 700
+    }
+
     private suspend fun selectTargets(project: TranslationProjectV2Entity): List<LogicalChapterEntity> {
         val all = books.getChapters(project.bookId)
-        val remaining = all.filter { books.getEditionChapter(project.targetEditionId, it.id) == null }
+        // An EditionChapter row alone is not a durable draft-complete marker: a crash or an
+        // imported partial edition may leave the row without every logical segment. Reuse the
+        // same completeness predicate for draft selection and the post-draft gate.
+        val remaining = all.filter { !hasCompleteDraft(project, it) }
         return when (TranslationMode.valueOf(project.translationMode)) {
             TranslationMode.FULL_BOOK -> remaining
             TranslationMode.CHAPTER_RANGE -> remaining.filter {
@@ -245,6 +352,80 @@ class BookTranslationEngine(
                 val completed = all.size - remaining.size
                 val desiredEnd = if (completed == 0) 5 else currentIndex + project.seamlessAheadChapters.coerceAtLeast(1)
                 remaining.filter { it.chapterIndex <= desiredEnd }
+            }
+        }
+    }
+
+    /**
+     * Selects already translated chapters that still need the optional second pass. The review
+     * stage is intentionally idempotent: an active AI_POLISH revision is the durable marker that
+     * a chapter has completed the second pass.
+     */
+    private suspend fun selectReviewTargets(project: TranslationProjectV2Entity): List<LogicalChapterEntity> {
+        val all = books.getChapters(project.bookId)
+        val scoped = when (TranslationMode.valueOf(project.translationMode)) {
+            TranslationMode.FULL_BOOK -> all
+            TranslationMode.CHAPTER_RANGE -> all.filter {
+                it.chapterIndex in (project.rangeStart ?: 1)..(project.rangeEnd ?: Int.MAX_VALUE)
+            }
+            // Seamless translation deliberately reviews the completed ahead window, not chapters
+            // outside the user's current reading buffer.
+            TranslationMode.SEAMLESS -> {
+                val progress = database.readerProgressDao().get(project.bookId)
+                val currentIndex = all.firstOrNull { it.id == progress?.logicalChapterId }?.chapterIndex ?: 1
+                val desiredEnd = currentIndex + project.seamlessAheadChapters.coerceAtLeast(1)
+                all.filter { it.chapterIndex <= desiredEnd }
+            }
+        }
+        return scoped.filter { chapter ->
+            hasCompleteDraft(project, chapter) && !chapterHasActivePolish(project, chapter)
+        }
+    }
+
+    private suspend fun hasCompleteDraft(
+        project: TranslationProjectV2Entity,
+        chapter: LogicalChapterEntity
+    ): Boolean {
+        if (books.getEditionChapter(project.targetEditionId, chapter.id) == null) return false
+        val source = try {
+            loadSourceChapter(project, chapter, shortId = 1)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            return false
+        }
+        if (source.segments.isEmpty()) return false
+        val translated = loadTranslatedChapter(project, source) ?: return false
+        if (!source.segments.all { segment ->
+            !translated.segments[segment.shortId].isNullOrBlank()
+        }) return false
+        val mandatoryTerms = database.lexiconV2Dao().getConfirmed(project.id)
+            .filter(LexiconEntryPolicy::isEligibleForTranslation)
+        return DeterministicTranslationQa.validate(source, translated, mandatoryTerms).accepted
+    }
+
+    private suspend fun chapterHasActivePolish(
+        project: TranslationProjectV2Entity,
+        chapter: LogicalChapterEntity
+    ): Boolean {
+        val source = loadSourceChapter(project, chapter, shortId = 1)
+        if (source.segments.isEmpty()) return false
+        val targetChapter = books.getEditionChapter(project.targetEditionId, chapter.id) ?: return false
+        val targetSegments = books.getEditionSegments(targetChapter.id)
+        if (targetSegments.isEmpty()) return false
+        val targetById = targetSegments.associateBy { it.id }
+        val targetIds = targetSegments.mapTo(mutableSetOf()) { it.id }
+        val mappings = books.getMappings(source.segments.map { it.logicalSegmentId })
+            .filter { it.editionSegmentId in targetIds }
+            .groupBy { it.logicalSegmentId }
+        val revisionsBySegment = books.getActiveRevisions(targetIds.toList()).groupBy { it.editionSegmentId }
+        return source.segments.all { segment ->
+            mappings[segment.logicalSegmentId].orEmpty().any { mapping ->
+                val target = targetById[mapping.editionSegmentId] ?: return@any false
+                val revisions = revisionsBySegment[target.id].orEmpty()
+                val visibleText = revisions.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt })?.text
+                    ?: target.baseText
+                visibleText.isNotBlank() && revisions.any { it.revisionType == RevisionType.AI_POLISH.name }
             }
         }
     }
@@ -262,12 +443,86 @@ class BookTranslationEngine(
             .mapValues { (_, rows) -> rows.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt }) }
         val mappings = books.getMappings(logical.map { it.id }).groupBy { it.logicalSegmentId }
         val segments = logical.mapIndexed { index, item ->
-            val text = mappings[item.id].orEmpty().sortedBy { it.mappingOrder }
+            val rawText = mappings[item.id].orEmpty().sortedBy { it.mappingOrder }
                 .mapNotNull { mapping -> editionSegments[mapping.editionSegmentId]?.let { revisions[it.id]?.text ?: it.baseText } }
                 .joinToString("\n\n")
-            ProtocolSegment(index + 1, item.id, text)
+            val masked = TranslationTextProtection.protect(rawText)
+            ProtocolSegment(
+                shortId = index + 1,
+                logicalSegmentId = item.id,
+                text = masked.masked,
+                originalText = rawText,
+                protectedTokens = masked.tokens
+            )
         }
         return ProtocolChapter(shortId, chapter.id, chapter.chapterIndex, chapter.canonicalTitle, segments)
+    }
+
+    private suspend fun loadPreviousContextTails(
+        project: TranslationProjectV2Entity,
+        firstChapterIndex: Int
+    ): Pair<String, String> {
+        val previous = books.getChapters(project.bookId)
+            .filter { it.chapterIndex < firstChapterIndex }
+            .maxByOrNull { it.chapterIndex }
+            ?: return "" to ""
+        // Prefer the revision-resolved text so manual edits and glossary replacements are visible
+        // in continuity context; fall back to the chapter files for legacy/partially imported rows.
+        val previousSource = try {
+            loadSourceChapter(project, previous, shortId = 1)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Throwable) {
+            null
+        }
+        val original = previousSource?.segments
+            ?.joinToString("\n\n") { it.originalText }
+            ?.takeIf { it.isNotBlank() }
+            ?: books.getEditionChapter(project.sourceEditionId, previous.id)
+                ?.let { files.readEditionChapter(project.bookId, project.sourceEditionId, it.contentFileName) }
+                .orEmpty()
+        val translated = previousSource?.let { source ->
+            loadTranslatedChapter(project, source)?.segments
+                ?.values
+                ?.joinToString("\n\n")
+                ?.takeIf { it.isNotBlank() }
+        } ?: books.getEditionChapter(project.targetEditionId, previous.id)
+            ?.let { files.readEditionChapter(project.bookId, project.targetEditionId, it.contentFileName) }
+            .orEmpty()
+        return original.takeLast(900) to translated.takeLast(900)
+    }
+
+    /** Reconstruct the currently visible target text from EditionSegment revisions. */
+    private suspend fun loadTranslatedChapter(
+        project: TranslationProjectV2Entity,
+        source: ProtocolChapter
+    ): ParsedTranslationChapter? {
+        val targetChapter = books.getEditionChapter(project.targetEditionId, source.logicalChapterId) ?: return null
+        val targetSegments = books.getEditionSegments(targetChapter.id)
+        if (targetSegments.isEmpty()) return null
+        val targetById = targetSegments.associateBy { it.id }
+        val targetIds = targetById.keys
+        val mappings = books.getMappings(source.segments.map { it.logicalSegmentId })
+            .filter { it.editionSegmentId in targetIds }
+            .groupBy { it.logicalSegmentId }
+        val revisionsByTarget = books.getActiveRevisions(targetIds.toList())
+            .groupBy { it.editionSegmentId }
+            .mapValues { (_, rows) ->
+                rows.maxWithOrNull(compareBy<SegmentRevisionEntity> { it.priority }.thenBy { it.createdAt })
+            }
+        val segments = linkedMapOf<Int, String>()
+        source.segments.forEach { sourceSegment ->
+            val text = mappings[sourceSegment.logicalSegmentId].orEmpty()
+                .sortedBy { it.mappingOrder }
+                .mapNotNull { mapping ->
+                    targetById[mapping.editionSegmentId]?.let { targetSegment ->
+                        revisionsByTarget[targetSegment.id]?.text ?: targetSegment.baseText
+                    }
+                }
+                .joinToString("\n\n")
+            segments[sourceSegment.shortId] = text
+        }
+        return ParsedTranslationChapter(shortId = source.shortId, segments = segments)
     }
 
     private suspend fun translateBatch(
@@ -276,7 +531,8 @@ class BookTranslationEngine(
         runId: Long,
         batchId: Long,
         context: ContextPackage,
-        sources: List<ProtocolChapter>
+        sources: List<ProtocolChapter>,
+        allowChapterIsolation: Boolean = true
     ) {
         val cacheHint = prepareCache(project, provider, context)
         val firstIndex = sources.first().chapterIndex
@@ -300,13 +556,93 @@ class BookTranslationEngine(
                 temperature = provider.temperature,
                 maxTokens = outputLimit(provider.maxContextTokens),
                 operation = "BOOK_TRANSLATION",
-                promptCacheHint = cacheHint
+                promptCacheHint = cacheHint,
+                controlSignal = controls[project.id]?.signal
             )
         val result = gateway.executeCompletion(request)
         recordUsage(runId, batchId, provider, request, result)
-        check(result.isSuccess) {
-            SystemLogger.error("LLM_API", "❌ 模型调用失败: ${result.errorMessage}", projectId = project.id, chapterIndex = firstIndex)
-            result.errorMessage ?: "Translation request failed"
+        awaitCommitBoundary(project.id)
+        if (!result.isSuccess || result.isTruncated) {
+            val failure = result.errorMessage ?: "Translation request failed"
+            SystemLogger.error("LLM_API", "❌ 模型调用失败: $failure", projectId = project.id, chapterIndex = firstIndex)
+            val requestCost = TokenCalculator.calculateCost(
+                result.promptTokens,
+                result.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            val isolationCategories = setOf(
+                LlmErrorCategory.CONTEXT_OVERFLOW,
+                LlmErrorCategory.EMPTY_RESPONSE,
+                LlmErrorCategory.PARSE_ERROR,
+                LlmErrorCategory.TRUNCATED_OUTPUT
+            )
+            val effectiveCategory = result.errorCategory
+                ?: if (result.isTruncated) LlmErrorCategory.TRUNCATED_OUTPUT else null
+            if (allowChapterIsolation && sources.size > 1 && effectiveCategory?.let { it in isolationCategories } == true) {
+                // A multi-chapter request can fail because of one malformed/oversized chapter.
+                // Keep the parent batch as an audit record, then retry each chapter independently.
+                tasks.updateBatch(
+                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                        state = "PARTIAL",
+                        promptTokens = result.promptTokens,
+                        completionTokens = result.completionTokens,
+                        cost = requestCost,
+                        errorMessage = "批次请求失败，已按章节隔离重试: $failure"
+                    )
+                )
+                var isolatedFailure = false
+                sources.forEach { source ->
+                    val isolatedBatchId = tasks.insertBatch(
+                        PlatformTranslationBatchEntity(
+                            runId = runId,
+                            // Negative indexes are reserved for children created by isolation and
+                            // cannot collide with the normal zero-based scheduler indexes.
+                            batchIndex = (-source.chapterIndex.toLong() - 1L)
+                                .coerceIn(Int.MIN_VALUE.toLong(), -1L).toInt(),
+                            firstChapterIndex = source.chapterIndex,
+                            lastChapterIndex = source.chapterIndex,
+                            state = "RUNNING",
+                            errorMessage = "isolated retry from batch #$batchId"
+                        )
+                    )
+                    translateBatch(
+                        project = project,
+                        provider = provider,
+                        runId = runId,
+                        batchId = isolatedBatchId,
+                        context = prepareContext(project, listOf(source)),
+                        sources = listOf(source),
+                        allowChapterIsolation = false
+                    )
+                    val childState = tasks.getBatch(isolatedBatchId)?.state
+                    isolatedFailure = isolatedFailure || childState == "FAILED" || childState == "PARTIAL"
+                }
+                tasks.getBatch(batchId)?.let { parent ->
+                    tasks.updateBatch(
+                        parent.copy(
+                            state = if (isolatedFailure) "PARTIAL" else "COMPLETED",
+                            errorMessage = if (isolatedFailure) {
+                                "批次已隔离重试，仍有章节失败: $failure"
+                            } else {
+                                null
+                            }
+                        )
+                    )
+                }
+            } else {
+                tasks.updateBatch(
+                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                        state = "FAILED",
+                        promptTokens = result.promptTokens,
+                        completionTokens = result.completionTokens,
+                        cost = requestCost,
+                        errorMessage = failure
+                    )
+                )
+                updateRunCounters(runId, completed = 0, failed = sources.size)
+            }
+            return
         }
         val initialCost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
         SystemLogger.info(
@@ -316,17 +652,20 @@ class BookTranslationEngine(
             chapterIndex = firstIndex
         )
         val parsed = TranslationProtocol.parse(result.text)
+        val completeParsed = parsed.takeUnless { it.isTruncated }
         val mandatoryTerms = context.matchedLexicon
         var failed = 0
         var totalPromptTokens = result.promptTokens
         var totalCompletionTokens = result.completionTokens
+        val successfulSources = mutableListOf<ProtocolChapter>()
         sources.forEach { source ->
-            var translated = parsed.chapters.firstOrNull { it.shortId == source.shortId }
+            val matchingChapters = completeParsed?.chapters.orEmpty().filter { it.shortId == source.shortId }
+            var translated = matchingChapters.singleOrNull()?.let { restoreProtectedChapter(source, it) }
             var qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
             if (!qa.accepted) {
                 SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动一次自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_TRIGGERED", qa.problems)
-                val repair = repairChapter(project, provider, runId, batchId, context, source, translated)
+                val repair = repairChapter(project, provider, runId, batchId, context, source, translated, qa.problems)
                 translated = repair.chapter
                 totalPromptTokens += repair.promptTokens
                 totalCompletionTokens += repair.completionTokens
@@ -339,7 +678,9 @@ class BookTranslationEngine(
                 chapterIndex = source.chapterIndex
             )
             if (qa.accepted && translated != null) {
+                awaitCommitBoundary(project.id)
                 commitChapter(project, source, translated)
+                successfulSources += source
                 SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
             } else {
                 failed++
@@ -347,7 +688,7 @@ class BookTranslationEngine(
                 SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
             }
         }
-        applyMetadata(project, sources, parsed.metaJson)
+        if (successfulSources.isNotEmpty()) applyMetadata(project, successfulSources, completeParsed?.metaJson)
         val totalCost = TokenCalculator.calculateCost(
             totalPromptTokens,
             totalCompletionTokens,
@@ -371,6 +712,265 @@ class BookTranslationEngine(
         )
     }
 
+    /**
+     * Runs only after the selected draft scope is complete. A failed review never invalidates a
+     * valid draft: the original chapter remains the active text and the request is retained in
+     * the normal request-audit stream with operation=BOOK_POLISH.
+     */
+    private suspend fun runPostDraftReview(
+        project: TranslationProjectV2Entity,
+        provider: ApiProviderEntity,
+        runId: Long,
+        chapters: List<LogicalChapterEntity>,
+        control: ProjectControl
+    ) {
+        SystemLogger.info(
+            "AI_POLISH",
+            "📝 初稿范围已完成，开始二次审校 ${chapters.size} 章（默认关闭的可选阶段）",
+            projectId = project.id
+        )
+        chapters.forEachIndexed { offset, logicalChapter ->
+            awaitBoundary(project.id, control)
+            val batchId = tasks.insertBatch(
+                PlatformTranslationBatchEntity(
+                    runId = runId,
+                    batchIndex = POST_DRAFT_REVIEW_BATCH_OFFSET + offset,
+                    firstChapterIndex = logicalChapter.chapterIndex,
+                    lastChapterIndex = logicalChapter.chapterIndex,
+                    state = "RUNNING",
+                    errorMessage = "post-draft AI review"
+                )
+            )
+            val source = loadSourceChapter(project, logicalChapter, shortId = 1)
+            val current = loadTranslatedChapter(project, source)
+            val mandatoryTerms = database.lexiconV2Dao().getConfirmed(project.id)
+                .filter { LexiconEntryPolicy.isEligibleForTranslation(it) }
+            val baseQa = DeterministicTranslationQa.validate(source, current, mandatoryTerms)
+            if (current == null || !baseQa.accepted) {
+                val reason = if (current == null) {
+                    "找不到完整初稿，跳过二次审校"
+                } else {
+                    "初稿未通过基线 QA，跳过二次审校: ${baseQa.problems.distinct().joinToString()}"
+                }
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "AI_POLISH_SKIPPED_BASE_QA", listOf(reason))
+                tasks.getBatch(batchId)?.let {
+                    tasks.updateBatch(it.copy(state = "PARTIAL", errorMessage = reason))
+                }
+                updateRunCounters(runId, completed = 0, failed = 1)
+                return@forEachIndexed
+            }
+            val currentDraft = current ?: return@forEachIndexed
+
+            val previousTails = loadPreviousContextTails(project, source.chapterIndex)
+            val context = contextEngine.prepare(
+                project = project,
+                sourceText = source.segments.joinToString("\n") { it.originalText },
+                firstChapterIndex = source.chapterIndex,
+                previousChapterOriginalTail = previousTails.first,
+                previousChapterTranslationTail = previousTails.second
+            )
+            val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
+                "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
+            }
+            val historyText = buildString {
+                append(context.relatedStoryMemory.joinToString("\n") { "${it.factKey}: ${it.factValue} [entities=${it.entities}]" })
+                append('\n').append(context.previousChapterOriginalTail)
+                append('\n').append(context.previousChapterTranslationTail)
+            }
+            val fixedTokens = TokenBudgetPlanner.estimate(
+                context.stablePrefix + context.recentContext + historyText + matchedGlossaryText
+            ) + 700
+            val reviewTokens = source.segments.sumOf { segment ->
+                TokenBudgetPlanner.estimate(segment.text) +
+                    TokenBudgetPlanner.estimate(currentDraft.segments[segment.shortId].orEmpty())
+            }
+            val budget = TokenBudgetPlanner.plan(
+                maxContextTokens = provider.maxContextTokens,
+                userMaxBatchSize = 1,
+                sourceTokenEstimates = listOf(reviewTokens),
+                fixedContextTokens = fixedTokens
+            )
+            if (budget.requiresSingleChapterChunking || budget.actualBatchSize < 1) {
+                val reason = "章节过长，无法在单次二次审校预算内安全处理，已保留初稿"
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "AI_POLISH_SKIPPED_BUDGET", listOf(reason))
+                tasks.getBatch(batchId)?.let {
+                    tasks.updateBatch(it.copy(state = "PARTIAL", errorMessage = reason))
+                }
+                updateRunCounters(runId, completed = 0, failed = 1)
+                SystemLogger.warn("AI_POLISH", reason, projectId = project.id, chapterIndex = source.chapterIndex)
+                return@forEachIndexed
+            }
+
+            // Re-check immediately before the paid second-pass request so a pause/cancel issued
+            // while QA or prompt assembly was running cannot start another call.
+            awaitBoundary(project.id, control)
+            val outcome = polishChapter(project, provider, runId, batchId, context, source, currentDraft, mandatoryTerms)
+            if (outcome.chapter != null) {
+                awaitCommitBoundary(project.id)
+                commitChapter(project, source, outcome.chapter, RevisionType.AI_POLISH)
+                SystemLogger.info(
+                    "AI_POLISH",
+                    "✨ 初稿完成后已提交第 ${source.chapterIndex} 章二次审校结果",
+                    projectId = project.id,
+                    chapterIndex = source.chapterIndex
+                )
+            } else {
+                val reason = outcome.reason ?: "二次审校未返回可用结果，已保留初稿"
+                recordQaDiagnostic(runId, batchId, source.chapterIndex, "AI_POLISH_FALLBACK", listOf(reason))
+                SystemLogger.warn("AI_POLISH", reason, projectId = project.id, chapterIndex = source.chapterIndex)
+                updateRunCounters(runId, completed = 0, failed = 1)
+            }
+            awaitCommitBoundary(project.id)
+            val cost = TokenCalculator.calculateCost(
+                outcome.promptTokens,
+                outcome.completionTokens,
+                provider.inputPricePerMillion,
+                provider.outputPricePerMillion
+            )
+            tasks.getBatch(batchId)?.let {
+                tasks.updateBatch(
+                    it.copy(
+                        state = if (outcome.chapter != null) "COMPLETED" else "PARTIAL",
+                        promptTokens = outcome.promptTokens,
+                        completionTokens = outcome.completionTokens,
+                        cost = cost,
+                        errorMessage = outcome.reason
+                    )
+                )
+            }
+        }
+        SystemLogger.info(
+            "AI_POLISH",
+            "✅ 二次审校阶段处理完毕，失败结果均保留原初稿",
+            projectId = project.id
+        )
+    }
+
+    private suspend fun polishChapter(
+        project: TranslationProjectV2Entity,
+        provider: ApiProviderEntity,
+        runId: Long,
+        batchId: Long,
+        context: ContextPackage,
+        source: ProtocolChapter,
+        current: ParsedTranslationChapter,
+        mandatoryTerms: List<LexiconEntryEntity>
+    ): DraftReviewOutcome {
+        val request = LlmRequest(
+            provider = provider,
+            systemPrompt = TranslationProtocol.polishSystemPrompt(project.sourceLanguage, project.targetLanguage),
+            userPrompt = TranslationProtocol.polishUserPrompt(context, source, current),
+            // A second pass should be conservative even when the translation temperature is
+            // configured higher for literary variation.
+            temperature = provider.temperature.coerceAtMost(0.35f),
+            maxTokens = outputLimit(provider.maxContextTokens),
+            operation = "BOOK_POLISH",
+            promptCacheHint = prepareCache(project, provider, context),
+            controlSignal = controls[project.id]?.signal
+        )
+        val result = try {
+            gateway.executeCompletion(request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            LlmResult(
+                text = "",
+                promptTokens = 0,
+                completionTokens = 0,
+                isSuccess = false,
+                errorCategory = LlmErrorCategory.UNKNOWN,
+                errorMessage = error.localizedMessage ?: error.javaClass.simpleName,
+                operation = request.operation
+            )
+        }
+        recordUsage(runId, batchId, provider, request, result)
+        awaitCommitBoundary(project.id)
+        if (!result.isSuccess || result.isTruncated) {
+            return DraftReviewOutcome(
+                chapter = null,
+                promptTokens = result.promptTokens,
+                completionTokens = result.completionTokens,
+                reason = "二次审校模型调用失败: ${result.errorMessage ?: result.errorCategory ?: "unknown"}"
+            )
+        }
+        val parsed = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
+        val candidate = parsed
+            ?.takeUnless { result.isTruncated || it.isTruncated }
+            ?.chapters
+            ?.singleOrNull()
+            ?.takeIf { it.shortId == source.shortId }
+            ?.let { restoreProtectedChapter(source, it) }
+        if (candidate == null) {
+            return DraftReviewOutcome(
+                chapter = null,
+                promptTokens = result.promptTokens,
+                completionTokens = result.completionTokens,
+                reason = "二次审校响应缺少严格匹配的 Chapter/Segment 结构"
+            )
+        }
+        val qa = DeterministicTranslationQa.validate(source, candidate, mandatoryTerms)
+        if (!qa.accepted) {
+            return DraftReviewOutcome(
+                chapter = null,
+                promptTokens = result.promptTokens,
+                completionTokens = result.completionTokens,
+                reason = "二次审校结果未通过 QA: ${qa.problems.distinct().joinToString()}"
+            )
+        }
+        val rewriteProblems = polishChangeProblems(current, candidate)
+        if (rewriteProblems.isNotEmpty()) {
+            return DraftReviewOutcome(
+                chapter = null,
+                promptTokens = result.promptTokens,
+                completionTokens = result.completionTokens,
+                reason = "二次审校疑似重写初稿，已保留初稿: ${rewriteProblems.joinToString()}"
+            )
+        }
+        return DraftReviewOutcome(candidate, result.promptTokens, result.completionTokens)
+    }
+
+    /** Conservative guard against a copy-editor call silently becoming a fresh translation. */
+    private fun polishChangeProblems(
+        current: ParsedTranslationChapter,
+        candidate: ParsedTranslationChapter
+    ): List<String> {
+        val problems = mutableListOf<String>()
+        if (candidate.segments.keys != current.segments.keys) {
+            problems += "segment ids changed"
+            return problems
+        }
+        current.segments.forEach { (segmentId, oldText) ->
+            val newText = candidate.segments[segmentId].orEmpty()
+            if (oldText.isBlank() || newText.isBlank()) return@forEach
+            val oldLength = oldText.codePointCount(0, oldText.length).coerceAtLeast(1)
+            val newLength = newText.codePointCount(0, newText.length).coerceAtLeast(1)
+            val ratio = newLength.toDouble() / oldLength
+            if (ratio < 0.45 || ratio > 2.20) {
+                problems += "segment $segmentId length changed too much"
+                return@forEach
+            }
+            val oldLines = oldText.count { it == '\n' }
+            val newLines = newText.count { it == '\n' }
+            if (kotlin.math.abs(oldLines - newLines) > maxOf(2, oldLines / 2)) {
+                problems += "segment $segmentId paragraph boundaries changed"
+                return@forEach
+            }
+            val oldShingles = textShingles(oldText)
+            val newShingles = textShingles(newText)
+            if (oldShingles.size >= 8) {
+                val overlap = oldShingles.intersect(newShingles).size.toDouble() / oldShingles.size
+                if (overlap < 0.08) problems += "segment $segmentId has insufficient draft overlap"
+            }
+        }
+        return problems.distinct()
+    }
+
+    private fun textShingles(text: String): Set<String> {
+        val normalized = text.filterNot(Char::isWhitespace)
+        if (normalized.length < 2) return setOf(normalized)
+        return normalized.windowed(size = 2, step = 1).toSet()
+    }
+
     private suspend fun repairChapter(
         project: TranslationProjectV2Entity,
         provider: ApiProviderEntity,
@@ -378,30 +978,55 @@ class BookTranslationEngine(
         batchId: Long,
         context: ContextPackage,
         source: ProtocolChapter,
-        partial: ParsedTranslationChapter?
+        partial: ParsedTranslationChapter?,
+        problems: List<String> = emptyList(),
+        previousChunkTranslationTail: String = ""
     ): ChapterRepairOutcome {
         val missing = source.segments.filter { partial?.segments?.containsKey(it.shortId) != true }
-        val retrySource = if (missing.isNotEmpty() && partial != null) source.copy(segments = missing) else source
+        val hasDuplicateIds = partial?.duplicateSegmentIds?.isNotEmpty() == true
+        // Duplicate IDs cannot be repaired by filling only missing segments: request the complete
+        // chapter so a clean response can replace the malformed structure atomically.
+        val retrySource = if (missing.isNotEmpty() && partial != null && !hasDuplicateIds) {
+            source.copy(segments = missing)
+        } else {
+            source
+        }
         val request = LlmRequest(
                 provider,
                 TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
-                TranslationProtocol.userPrompt(context, listOf(retrySource)),
+                TranslationProtocol.repairUserPrompt(context, listOf(retrySource), problems, previousChunkTranslationTail),
                 provider.temperature,
                 outputLimit(provider.maxContextTokens),
                 "CHAPTER_REPAIR",
-                prepareCache(project, provider, context)
+                prepareCache(project, provider, context),
+                controls[project.id]?.signal
             )
         val retry = gateway.executeCompletion(request)
         recordUsage(runId, batchId, provider, request, retry)
-        if (!retry.isSuccess) return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
-        val repaired = TranslationProtocol.parse(retry.text).chapters.firstOrNull()
+        awaitCommitBoundary(project.id)
+        if (!retry.isSuccess || retry.isTruncated) return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
+        val repairedResponse = runCatching { TranslationProtocol.parse(retry.text) }.getOrNull()
+        val repaired = repairedResponse
+            ?.takeUnless { it.isTruncated }
+            ?.chapters
+            ?.filter { it.shortId == source.shortId }
+            ?.singleOrNull()
+            ?.let { restoreProtectedChapter(source, it) }
             ?: return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
         if (partial == null) return ChapterRepairOutcome(repaired, retry.promptTokens, retry.completionTokens)
         val merged = source.segments.mapNotNull { segment ->
             (repaired.segments[segment.shortId] ?: partial.segments[segment.shortId])?.let { segment.shortId to it }
         }.toMap(LinkedHashMap())
+        val repairedCoversSource = source.segments.all { it.shortId in repaired.segments }
         return ChapterRepairOutcome(
-            chapter = partial.copy(segments = merged),
+            chapter = partial.copy(
+                segments = merged,
+                duplicateSegmentIds = if (repairedCoversSource) {
+                    repaired.duplicateSegmentIds
+                } else {
+                    partial.duplicateSegmentIds + repaired.duplicateSegmentIds
+                }
+            ),
             promptTokens = retry.promptTokens,
             completionTokens = retry.completionTokens
         )
@@ -442,20 +1067,67 @@ class BookTranslationEngine(
         val translated = linkedMapOf<Int, String>()
         var prompt = 0L
         var completion = 0L
+        var previousChunkTranslationTail = ""
         groups.forEach { group ->
             val chunkSource = source.copy(segments = group)
-            val request = LlmRequest(provider, TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage), TranslationProtocol.userPrompt(context, listOf(chunkSource)), provider.temperature, outputLimit(provider.maxContextTokens), "OVERSIZED_CHAPTER_CHUNK", prepareCache(project, provider, context))
+            val request = LlmRequest(
+                provider,
+                TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
+                TranslationProtocol.userPrompt(context, listOf(chunkSource), previousChunkTranslationTail),
+                provider.temperature,
+                outputLimit(provider.maxContextTokens),
+                "OVERSIZED_CHAPTER_CHUNK",
+                prepareCache(project, provider, context),
+                controls[project.id]?.signal
+            )
             val result = gateway.executeCompletion(request)
             recordUsage(runId, batchId, provider, request, result)
+            awaitCommitBoundary(project.id)
             prompt += result.promptTokens
             completion += result.completionTokens
-            check(result.isSuccess) { result.errorMessage ?: "Oversized chapter chunk failed" }
+            if (!result.isSuccess || result.isTruncated) {
+                val failure = result.errorMessage ?: "Oversized chapter chunk failed"
+                val cost = TokenCalculator.calculateCost(
+                    prompt,
+                    completion,
+                    provider.inputPricePerMillion,
+                    provider.outputPricePerMillion
+                )
+                tasks.updateBatch(
+                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                        state = "FAILED",
+                        promptTokens = prompt,
+                        completionTokens = completion,
+                        cost = cost,
+                        errorMessage = failure
+                    )
+                )
+                updateRunCounters(runId, completed = 0, failed = 1)
+                SystemLogger.error("LLM_API", "❌ 超大章节分块调用失败: $failure", projectId = project.id, chapterIndex = source.chapterIndex)
+                return
+            }
             val mandatoryTerms = context.matchedLexicon
-            var parsed = TranslationProtocol.parse(result.text).chapters.firstOrNull()
+            val parsedResponse = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
+            var parsed = parsedResponse
+                ?.takeUnless { it.isTruncated }
+                ?.chapters
+                ?.filter { it.shortId == chunkSource.shortId }
+                ?.singleOrNull()
+                ?.let { restoreProtectedChapter(chunkSource, it) }
             var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
             if (!qa.accepted) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
-                val repair = repairChapter(project, provider, runId, batchId, context, chunkSource, parsed)
+                val repair = repairChapter(
+                    project,
+                    provider,
+                    runId,
+                    batchId,
+                    context,
+                    chunkSource,
+                    parsed,
+                    qa.problems,
+                    previousChunkTranslationTail
+                )
                 parsed = repair.chapter
                 prompt += repair.promptTokens
                 completion += repair.completionTokens
@@ -477,13 +1149,16 @@ class BookTranslationEngine(
                         errorMessage = qa.problems.joinToString()
                     )
                 )
-                error(qa.problems.joinToString())
+                updateRunCounters(runId, completed = 0, failed = 1)
+                return
             }
             val validated = parsed ?: error("QA accepted a missing parsed chunk")
             validated.segments.forEach { (id, text) ->
                 translated[id] = translated[id].orEmpty() + text
             }
+            previousChunkTranslationTail = validated.segments.values.joinToString("\n").takeLast(900)
         }
+        awaitCommitBoundary(project.id)
         commitChapter(project, source, ParsedTranslationChapter(source.shortId, translated))
         tasks.updateBatch(
             (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
@@ -503,7 +1178,12 @@ class BookTranslationEngine(
         updateRunCounters(runId, 1, 0)
     }
 
-    private suspend fun commitChapter(project: TranslationProjectV2Entity, source: ProtocolChapter, translated: ParsedTranslationChapter) {
+    private suspend fun commitChapter(
+        project: TranslationProjectV2Entity,
+        source: ProtocolChapter,
+        translated: ParsedTranslationChapter,
+        revisionType: RevisionType = RevisionType.AI_TRANSLATION
+    ) {
         val joined = source.segments.joinToString("\n\n") { translated.segments[it.shortId].orEmpty() }
         val fileName = files.saveEditionChapter(project.bookId, project.targetEditionId, source.chapterIndex, source.title, joined)
         database.withTransaction {
@@ -541,8 +1221,15 @@ class BookTranslationEngine(
             source.segments.forEach { segment ->
                 val text = translated.segments[segment.shortId] ?: return@forEach
                 val existingId = existingByLogical[segment.logicalSegmentId]
+                val revisionTypeName = revisionType.name
                 if (existingId != null) {
-                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = existingId, revisionType = RevisionType.AI_TRANSLATION.name, text = text))
+                    // A new translation invalidates the previous second-pass marker. Likewise,
+                    // repeated review calls replace the previous AI_POLISH revision without
+                    // touching manual or confirmed glossary revisions.
+                    books.getActiveRevisions(listOf(existingId))
+                        .filter { it.revisionType == RevisionType.AI_POLISH.name }
+                        .forEach { books.deactivateRevision(it.id) }
+                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = existingId, revisionType = revisionTypeName, text = text))
                 } else {
                     val segmentId = books.insertEditionSegments(
                         listOf(
@@ -555,7 +1242,7 @@ class BookTranslationEngine(
                         )
                     ).single()
                     books.insertMappings(listOf(EditionSegmentMappingEntity(segment.logicalSegmentId, segmentId)))
-                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = segmentId, revisionType = RevisionType.AI_TRANSLATION.name, text = text))
+                    books.insertRevision(SegmentRevisionEntity(editionSegmentId = segmentId, revisionType = revisionTypeName, text = text))
                 }
             }
         }
@@ -603,7 +1290,7 @@ class BookTranslationEngine(
                 SystemLogger.info("MEMORY", "🧠 随进度更新故事记忆: [${delta.key}] = ${delta.value}", projectId = project.id, chapterIndex = sources.first().chapterIndex)
             }
         }
-        val metadataSource = sources.flatMap { it.segments }.joinToString("\n") { it.text }
+        val metadataSource = sources.flatMap { it.segments }.joinToString("\n") { it.originalText }
         val confirmedSourceTerms = database.lexiconV2Dao().getAll(project.id)
             .filter { it.reviewStatus == ReviewStatus.CONFIRMED.name }
             .mapTo(mutableSetOf()) { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
@@ -641,11 +1328,11 @@ class BookTranslationEngine(
         metadataCandidates.groupBy { candidate ->
             sources.firstOrNull { chapter ->
                 chapter.segments.any { segment ->
-                    segment.text.contains(candidate.originalTerm, ignoreCase = true)
+                    segment.originalText.contains(candidate.originalTerm, ignoreCase = true)
                 }
             } ?: sources.first()
         }.forEach { (chapter, candidates) ->
-            val chapterSource = chapter.segments.joinToString("\n") { it.text }
+            val chapterSource = chapter.segments.joinToString("\n") { it.originalText }
             val aggregation = lexiconCandidateAggregator.observeWindow(
                 projectId = project.id,
                 chapterIndex = chapter.chapterIndex,
@@ -681,7 +1368,9 @@ class BookTranslationEngine(
         }.ifBlank { null } else null
         tasks.insertRequestLog(
             PlatformRequestLogEntity(
-                runId = runId, batchId = batchId, operation = result.operation,
+                // The request is the source of truth even for a lightweight/custom gateway that
+                // returns the default LlmResult operation.
+                runId = runId, batchId = batchId, operation = request.operation,
                 attemptCount = result.attempts.size.coerceAtLeast(1), promptTokens = result.promptTokens,
                 completionTokens = result.completionTokens, estimatedCost = cost, durationMs = result.durationMs,
                 finishReason = result.finishReason, errorCategory = result.errorCategory?.name,
@@ -769,16 +1458,68 @@ class BookTranslationEngine(
                 val openImage = remaining.lastIndexOf("[IMG:", startIndex = cut - 1)
                 val closeImage = remaining.lastIndexOf(']', startIndex = cut - 1)
                 if (openImage > closeImage && openImage > 0) cut = openImage
+                val markerPrefix = "__LNT_PROTECTED_"
+                val openMarker = remaining.lastIndexOf(markerPrefix, startIndex = cut - 1)
+                if (openMarker >= 0) {
+                    val closeMarker = remaining.indexOf("__", startIndex = openMarker + markerPrefix.length)
+                    if (closeMarker >= cut) {
+                        cut = if (openMarker > 0) openMarker else (closeMarker + 2).coerceAtMost(remaining.length)
+                    }
+                }
             }
-            pieces += segment.copy(text = remaining.substring(0, cut))
+            val maskedPiece = remaining.substring(0, cut)
+            val pieceTokens = segment.protectedTokens.filter { maskedPiece.contains(it.marker) }
+            pieces += segment.copy(
+                text = maskedPiece,
+                originalText = TranslationTextProtection.restore(maskedPiece, pieceTokens),
+                protectedTokens = pieceTokens
+            )
             remaining = remaining.substring(cut)
         }
         return pieces
     }
 
+    private fun restoreProtectedChapter(
+        source: ProtocolChapter,
+        translated: ParsedTranslationChapter?
+    ): ParsedTranslationChapter? {
+        if (translated == null) return null
+        val sourceById = source.segments.associateBy { it.shortId }
+        val restored = translated.segments.mapValues { (shortId, text) ->
+            val segment = sourceById[shortId]
+            if (segment == null) text else TranslationTextProtection.restore(text, segment.protectedTokens)
+        }
+        return translated.copy(segments = restored)
+    }
+
     private fun outputLimit(context: Int): Int = (context * 0.42).toInt().coerceIn(1024, 16_384)
 
-    private data class ProjectControl(val paused: AtomicBoolean = AtomicBoolean(false), val cancelled: AtomicBoolean = AtomicBoolean(false))
+    private data class ProjectControl(
+        val paused: AtomicBoolean = AtomicBoolean(false),
+        val cancelled: AtomicBoolean = AtomicBoolean(false),
+        val signal: TranslationControlSignal = TranslationControlSignal()
+    ) {
+        fun requestPause() {
+            paused.set(true)
+            signal.requestPause()
+        }
+
+        fun resume() {
+            paused.set(false)
+            signal.resume()
+        }
+
+        fun cancel() {
+            cancelled.set(true)
+            signal.cancel()
+        }
+
+        fun reset() {
+            paused.set(false)
+            cancelled.set(false)
+            signal.reset()
+        }
+    }
 }
 
 private data class MetadataChapter(val chapterId: Int?, val chapterIndex: Int?, val summary: String, val entities: String, val stateChanges: String, val newFacts: String, val unresolvedThreads: String)
@@ -792,7 +1533,11 @@ private object MetadataParser {
     )
 
     fun parse(json: String): TranslationMetadata {
-        val root = adapter.fromJson(json).orEmpty()
+        val normalized = json.trim()
+            .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s*```$"), "")
+            .trim()
+        val root = adapter.fromJson(normalized).orEmpty()
         fun list(key: String) = root[key] as? List<*> ?: emptyList<Any?>()
         fun map(value: Any?) = value as? Map<*, *> ?: emptyMap<Any?, Any?>()
         fun str(row: Map<*, *>, key: String) = when (val value = row[key]) {

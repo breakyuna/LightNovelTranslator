@@ -62,14 +62,18 @@
                               ↓
                     Translation Scheduler
                               ↓
-                     Translation Engine
+                    Translation Engine
                               ↓
-                        QA / Revision
+                      Draft QA / Revision
+                              ↓
+                Optional post-draft AI review / polish
                               ↓
                     Translation Edition
                               ↓
                             Reader
 ```
+
+导入阶段先由 TXT / EPUB 解析器（或用户在 V2 工作台主动调用的 AI Chapter Split Agent）识别章节并建立稳定的 LogicalChapter / LogicalSegment，AI 结果必须先展示候选列表并经用户确认后才持久化，随后才允许 TranslationProject 选择范围。章节识别 Agent 只能返回可在原文中定位的标题与首句，不能改写或替换原文；EPUB 继续以解析器目录为准。
 
 关键关系：
 
@@ -171,6 +175,8 @@ Segment 映射必须允许：
 ```text
 AI_TRANSLATION
     ↓
+AI_POLISH
+    ↓
 LEXICON_REPLACEMENT
     ↓
 MANUAL_EDIT
@@ -183,6 +189,7 @@ MANUAL_EDIT
 ```text
 MANUAL_EDIT
 > USER_CONFIRMED_REPLACEMENT
+> AI_POLISH
 > AI_TRANSLATION
 > AUTO_REPAIR
 ```
@@ -734,7 +741,9 @@ ContextSnapshot 固定一段时间使用的：
 单本书严格串行：
 
 ```text
-Batch N
+导入 / 章节识别
+  ↓
+Draft Batch N
   ↓
 Context Preparation
   ↓
@@ -748,8 +757,14 @@ Translation API
   ↓
 逐章应用 ChapterMemory / StoryMemoryDelta / LexiconCandidate
   ↓
-Batch N+1
+Draft scope complete?
+  ├─ 否 → Draft Batch N+1
+  └─ 是 → Optional post-draft AI review / polish
+                    ↓
+               AI_POLISH Revision
 ```
+
+二次审校是工程级可选阶段而非逐章即时回调：只有当前翻译范围的所有章节都存在完整初稿并通过基线 QA 后才开始。审校失败、结构异常、QA 拒绝或预算不足时保留初稿并记录可追踪原因；人工编辑和已确认术语替换的 Revision 优先级高于 `AI_POLISH`。
 
 如果 Translation 成功但 Memory 部分失败：
 

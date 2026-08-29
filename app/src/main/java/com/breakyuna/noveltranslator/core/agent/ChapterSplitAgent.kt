@@ -1,9 +1,9 @@
 package com.breakyuna.noveltranslator.core.agent
 
 import com.breakyuna.noveltranslator.core.llm.LlmGateway
+import com.breakyuna.noveltranslator.core.llm.LlmRequest
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
-import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
@@ -30,14 +30,17 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
             val windowEnd = minOf(fullText.length, windowStart + WINDOW_CHARS)
             val window = fullText.substring(windowStart, windowEnd)
             val result = llmClient.executeCompletion(
-                provider = provider,
-                systemPrompt = "You are an expert novel structuring assistant. Output valid JSON only.",
-                userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(window),
-                temperature = 0.2f,
-                maxTokens = 3000
+                LlmRequest(
+                    provider = provider,
+                    systemPrompt = "You are an expert novel-structuring assistant. Output valid JSON only.",
+                    userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(window),
+                    temperature = 0.2f,
+                    maxTokens = 3000,
+                    operation = "CHAPTER_SPLIT"
+                )
             )
             onUsage?.invoke(result)
-            require(result.isSuccess && result.text.isNotBlank()) {
+            require(result.isSuccess && !result.isTruncated && result.text.isNotBlank()) {
                 "AI splitter window ${completedWindows + 1}/$totalWindows failed: ${result.errorMessage ?: "empty response"}"
             }
             val parsedMarkers = parseMarkers(result.text)
@@ -71,7 +74,10 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
     }
 
     private fun parseMarkers(raw: String): List<Pair<String, String>>? = runCatching {
-        val cleaned = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val cleaned = raw.trim()
+            .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s*```$"), "")
+            .trim()
         val array = JSONArray(cleaned)
         buildList {
             for (i in 0 until array.length()) {

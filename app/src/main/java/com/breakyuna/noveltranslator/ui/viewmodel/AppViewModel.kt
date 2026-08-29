@@ -40,6 +40,7 @@ import android.content.Context
 import android.provider.OpenableColumns
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -140,6 +141,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         debugEnabled = { _debugModeEnabled.value }
     )
     private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
+    private val bookTranslationJobs = ConcurrentHashMap<Long, Job>()
     private val seamlessJobs = ConcurrentHashMap<Long, Job>()
     private val lastSeamlessChapter = ConcurrentHashMap<Long, Long?>()
 
@@ -608,6 +610,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rangeEnd: Int? = null,
         seamlessAheadChapters: Int = 5,
         styleGuide: String = "保持文学韵味与专有名词一致性",
+        highQualityReview: Boolean = false,
         startImmediately: Boolean = true
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -623,15 +626,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     rangeStart = rangeStart,
                     rangeEnd = rangeEnd,
                     seamlessAheadChapters = seamlessAheadChapters,
-                    styleGuide = styleGuide
+                    styleGuide = styleGuide,
+                    highQualityReview = highQualityReview
                 )
             }.onSuccess { projectId ->
                 showMessage("Edition 翻译任务已配置")
                 if (startImmediately && providerId != null) {
-                    viewModelScope.launch(Dispatchers.IO) {
-                        runCatching { bookTranslationScheduler.run(projectId) }
-                            .onFailure { showMessage("翻译任务失败：${it.localizedMessage}") }
-                    }
+                    launchBookTranslation(projectId, "翻译任务失败")
                 }
             }.onFailure { showMessage("配置翻译失败：${it.localizedMessage}") }
         }
@@ -648,10 +649,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun bookImagesDir(bookId: Long): File = bookFiles.sharedImagesDir(bookId)
 
     fun runBookTranslation(projectId: Long) {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { bookTranslationScheduler.run(projectId) }
-                .onFailure { showMessage("翻译任务失败：${it.localizedMessage}") }
-        }
+        launchBookTranslation(projectId, "翻译任务失败")
     }
 
     fun pauseBookTranslation(projectId: Long) {
@@ -663,7 +661,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelBookTranslation(projectId: Long) {
-        viewModelScope.launch(Dispatchers.IO) { bookTranslationScheduler.cancel(projectId) }
+        viewModelScope.launch(Dispatchers.IO) {
+            bookTranslationScheduler.cancel(projectId)
+            bookTranslationJobs[projectId]?.cancel()
+            seamlessJobs.remove(projectId)?.cancel()
+        }
+    }
+
+    private fun launchBookTranslation(projectId: Long, failureLabel: String) {
+        if (bookTranslationJobs[projectId] != null) return
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                bookTranslationScheduler.run(projectId)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("$failureLabel：${error.localizedMessage ?: "未知错误"}")
+                }
+            } finally {
+                bookTranslationJobs.remove(projectId)
+            }
+        }
+        bookTranslationJobs[projectId] = job
+        job.start()
     }
 
     fun saveReaderProgress(progress: ReaderProgressEntity) {
@@ -753,6 +774,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         rangeStart: Int?,
         rangeEnd: Int?,
         styleGuide: String,
+        highQualityReview: Boolean? = null,
         onSuccess: () -> Unit = {}
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -765,6 +787,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 rangeStart = rangeStart,
                 rangeEnd = rangeEnd,
                 styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
+                highQualityReview = highQualityReview ?: existing.highQualityReview,
                 updatedAt = System.currentTimeMillis()
             )
             bookPlatformRepo.updateTranslationProject(updated)
@@ -1447,6 +1470,59 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 withContext(Dispatchers.Main) {
             showMessage("AI chapter split failed: ${e.localizedMessage ?: "provider or input error"}")
+                }
+            }
+        }
+    }
+
+    /** Produces a V2 chapter-split preview without mutating the imported book. */
+    fun previewAgentBookChapterSplit(
+        bookId: Long,
+        provider: ApiProviderEntity,
+        onPreview: (List<ParsedChapter>) -> Unit
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val sourceFile = bookFiles.sourceDir(bookId)
+                    .listFiles()
+                    ?.filter { it.isFile && !it.name.startsWith(".") }
+                    ?.sortedBy { it.name.lowercase() }
+                    ?.firstOrNull()
+                    ?: error("找不到保留的原始文件")
+                require(sourceFile.extension.equals("txt", ignoreCase = true)) {
+                    "EPUB 已由解析器完成章节识别；AI 章节识别目前只对 TXT 提供预览"
+                }
+                val fullText = TxtParser.openDetectedReader(sourceFile).use { it.readText() }
+                showMessage("AI 正在分析书籍章节结构...")
+                val parsed = chapterSplitAgent.analyzeAndSplit(
+                    fullText = fullText,
+                    provider = provider,
+                    onProgress = { completed, total -> showMessage("AI 章节识别进度 $completed/$total...") }
+                )
+                require(parsed.isNotEmpty()) { "AI 未识别出有效章节" }
+                withContext(Dispatchers.Main) {
+                    onPreview(parsed)
+                    showMessage("AI 已识别 ${parsed.size} 个候选章节，请确认后应用")
+                }
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("AI 章节识别失败：${error.localizedMessage ?: "输入或供应商错误"}")
+                }
+            }
+        }
+    }
+
+    /** Applies a user-confirmed V2 chapter-split preview atomically. */
+    fun applyAgentBookChapterSplit(bookId: Long, chapters: List<ParsedChapter>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val count = bookImporter.applyAiChapterSplit(bookId, chapters)
+                withContext(Dispatchers.Main) {
+                    showMessage("已应用 AI 章节识别结果，共 $count 章")
+                }
+            } catch (error: Throwable) {
+                withContext(Dispatchers.Main) {
+                    showMessage("应用 AI 章节识别失败：${error.localizedMessage ?: "存储或版本状态错误"}")
                 }
             }
         }

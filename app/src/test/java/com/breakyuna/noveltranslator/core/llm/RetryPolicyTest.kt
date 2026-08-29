@@ -141,4 +141,37 @@ class RetryPolicyTest {
         assertEquals(1, result.attempts.size)
         assertFalse(result.isSuccess)
     }
+
+    @Test
+    fun perRequestCancellationStopsBeforeTheFirstPhysicalRequest() = runTest {
+        val signal = TranslationControlSignal().also { it.cancel() }
+        val fake = FakeLlmGateway(ArrayDeque(listOf(LlmResult("must not run", 1, 1, true))))
+        val error = runCatching {
+            RetryingLlmGateway(fake).executeCompletion(
+                LlmRequest(provider(), "", "", controlSignal = signal)
+            )
+        }.exceptionOrNull()
+
+        assertTrue(error is kotlinx.coroutines.CancellationException)
+        assertEquals(0, fake.calls)
+    }
+
+    @Test
+    fun truncatedSuccessIsNormalizedToARejectedResponse() = runTest {
+        val fake = FakeLlmGateway(ArrayDeque(listOf(
+            LlmResult(
+                text = "partial",
+                promptTokens = 1,
+                completionTokens = 2,
+                isSuccess = true,
+                isTruncated = true,
+                finishReason = "length"
+            )
+        )))
+        val result = RetryingLlmGateway(fake).executeCompletion(LlmRequest(provider(), "", ""))
+
+        assertFalse(result.isSuccess)
+        assertEquals(LlmErrorCategory.TRUNCATED_OUTPUT, result.errorCategory)
+        assertEquals(1, fake.calls)
+    }
 }

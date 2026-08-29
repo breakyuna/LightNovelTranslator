@@ -1330,8 +1330,9 @@ private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUi
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
+                val batchLabel = if (batch.batchIndex >= 1_000_000) "二次审校" else "#${batch.batchIndex}"
                 Text(
-                    "#${batch.batchIndex} · ${strings.chapterNumber(batch.firstChapterIndex)}–${batch.lastChapterIndex}",
+                    "$batchLabel · ${strings.chapterNumber(batch.firstChapterIndex)}–${batch.lastChapterIndex}",
                     fontWeight = FontWeight.Bold,
                     style = MaterialTheme.typography.bodyMedium
                 )

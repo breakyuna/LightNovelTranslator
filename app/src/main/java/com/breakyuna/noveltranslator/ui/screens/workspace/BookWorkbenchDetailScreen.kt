@@ -45,6 +45,7 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
+import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
@@ -126,6 +127,8 @@ fun BookWorkbenchDetailScreen(
     var showTermScannerDialog by rememberSaveable { mutableStateOf(false) }
     var showAddTermDialog by rememberSaveable { mutableStateOf(false) }
     var chapterActionTarget by remember { mutableStateOf<LogicalChapterEntity?>(null) }
+    var aiSplitProvider by remember(bookId) { mutableStateOf<ApiProviderEntity?>(null) }
+    var aiSplitPreview by remember(bookId) { mutableStateOf<List<ParsedChapter>?>(null) }
 
     val currentBook = book
     if (currentBook == null) {
@@ -204,8 +207,10 @@ fun BookWorkbenchDetailScreen(
                                 project = currentProject,
                                 run = latestRun,
                                 systemLogs = systemLogs,
+                                providers = allProviders,
                                 viewModel = viewModel,
                                 onScanTerms = { showTermScannerDialog = true },
+                                onRequestAiSplit = { aiSplitProvider = it },
                                 onSelectChapterAction = { chapterActionTarget = it }
                             )
                         }
@@ -374,6 +379,62 @@ fun BookWorkbenchDetailScreen(
                 viewModel.upsertLexiconEntry(entry)
                 showAddTermDialog = false
             }
+        )
+    }
+
+    if (aiSplitProvider != null) {
+        val provider = aiSplitProvider!!
+        AlertDialog(
+            onDismissRequest = { aiSplitProvider = null },
+            title = { Text("AI 识别章节边界") },
+            text = {
+                Text(
+                    "AI 将读取保留的 TXT 原文，识别完成后自动重建原版的 LogicalChapter 与 Segment。" +
+                        "此操作要求尚未创建翻译版本，且不会改写原文内容。"
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        aiSplitProvider = null
+                        viewModel.previewAgentBookChapterSplit(currentBook.id, provider) { preview ->
+                            aiSplitPreview = preview
+                        }
+                    }
+                ) { Text("开始识别") }
+            },
+            dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text("取消") } }
+        )
+    }
+
+    aiSplitPreview?.let { preview ->
+        AlertDialog(
+            onDismissRequest = { aiSplitPreview = null },
+            title = { Text("确认章节识别结果（${preview.size} 章）") },
+            text = {
+                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                    items(preview.take(80), key = { it.index }) { chapter ->
+                        Text(
+                            "${chapter.index}. ${chapter.title}",
+                            modifier = Modifier.padding(vertical = 3.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (preview.size > 80) {
+                        item { Text("其余 ${preview.size - 80} 章省略显示…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        aiSplitPreview = null
+                        viewModel.applyAgentBookChapterSplit(currentBook.id, preview)
+                    }
+                ) { Text("确认并应用") }
+            },
+            dismissButton = { TextButton(onClick = { aiSplitPreview = null }) { Text("放弃") } }
         )
     }
 
@@ -729,7 +790,7 @@ private fun WideWorkspaceHeader(
                     color = when (project?.state) {
                         "RUNNING" -> MaterialTheme.colorScheme.primary
                         "PAUSED" -> MaterialTheme.colorScheme.tertiary
-                        "FAILED" -> MaterialTheme.colorScheme.error
+                        "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
                         else -> MaterialTheme.colorScheme.surfaceVariant
                     },
                     modifier = Modifier.size(9.dp)
@@ -926,14 +987,17 @@ private fun TasksAndControlTab(
     project: TranslationProjectV2Entity?,
     run: PlatformTranslationRunEntity?,
     systemLogs: List<SystemLogEntry>,
+    providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
     onScanTerms: () -> Unit,
+    onRequestAiSplit: (ApiProviderEntity) -> Unit,
     onSelectChapterAction: (LogicalChapterEntity) -> Unit
 ) {
     val totalChapters = chapters.size
     val completedChapters = run?.completedChapters ?: 0
     val progress = if (totalChapters > 0) (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f) else 0f
     val currentState = project?.state ?: run?.state ?: "IDLE"
+    val reviewRunning = project?.highQualityReview == true && currentState == "RUNNING" && completedChapters >= totalChapters
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -963,6 +1027,16 @@ private fun TasksAndControlTab(
                             textAlign = TextAlign.Center,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        val splitProvider = providers.firstOrNull()
+                        OutlinedButton(
+                            onClick = { splitProvider?.let(onRequestAiSplit) },
+                            enabled = splitProvider != null && targetEdition?.type != EditionType.AI_TRANSLATION.name,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, null, Modifier.size(17.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("AI 识别 TXT 章节边界")
+                        }
                     }
                 }
             }
@@ -991,7 +1065,7 @@ private fun TasksAndControlTab(
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    "模型: ${project.modelName.ifBlank { "默认模型" }} · 模式: ${project.translationMode}",
+                                    "模型: ${project.modelName.ifBlank { "默认模型" }} · 模式: ${project.translationMode} · 二次审校: ${if (project.highQualityReview) "开" else "关"}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1002,7 +1076,7 @@ private fun TasksAndControlTab(
                                     "RUNNING" -> MaterialTheme.colorScheme.primary
                                     "PAUSED" -> MaterialTheme.colorScheme.tertiary
                                     "COMPLETED" -> Color(0xFF2E7D32)
-                                    "FAILED" -> MaterialTheme.colorScheme.error
+                                    "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
                                     else -> MaterialTheme.colorScheme.surfaceVariant
                                 }
                             ) {
@@ -1012,11 +1086,12 @@ private fun TasksAndControlTab(
                                         "PAUSED" -> "已暂停"
                                         "COMPLETED" -> "已完成"
                                         "FAILED" -> "异常中断"
+                                        "COMPLETED_WITH_ERRORS" -> "完成但有错误"
                                         else -> "待绪"
                                     },
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (currentState in listOf("RUNNING", "COMPLETED", "FAILED")) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (currentState in listOf("RUNNING", "COMPLETED", "FAILED", "COMPLETED_WITH_ERRORS")) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -1029,7 +1104,7 @@ private fun TasksAndControlTab(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    "进度: $completedChapters / $totalChapters 章",
+                                    if (reviewRunning) "初稿已完成，正在二次审校" else "进度: $completedChapters / $totalChapters 章",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium
                                 )
@@ -1125,7 +1200,9 @@ private fun TasksAndControlTab(
                                     }
                                 }
                             }
+
                         }
+
                     }
                 }
             }
@@ -1216,6 +1293,9 @@ private fun ModelStyleConfigurationCard(
     }
     var styleGuide by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
         mutableStateOf(project?.styleGuide?.ifBlank { "保持文学韵味与专有名词一致性" } ?: "保持文学韵味与专有名词一致性")
+    }
+    var highQualityReview by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
+        mutableStateOf(project?.highQualityReview ?: false)
     }
     var providerMenuExpanded by remember { mutableStateOf(false) }
     var isTestingProvider by remember { mutableStateOf(false) }
@@ -1392,6 +1472,30 @@ private fun ModelStyleConfigurationCard(
                 maxLines = if (compact) 4 else 6
             )
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("初稿完成后 AI 二次审校 / 润色", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (highQualityReview) {
+                            "整段初稿完成后执行一次；失败或超长会自动保留初稿。"
+                        } else {
+                            "默认关闭；开启后每章会增加一次模型调用，仅在初稿完成并通过 QA 后执行。"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = highQualityReview,
+                    onCheckedChange = { highQualityReview = it },
+                    enabled = project?.state != "RUNNING"
+                )
+            }
+
             Button(
                 onClick = {
                     if (targetEdition != null) {
@@ -1406,7 +1510,8 @@ private fun ModelStyleConfigurationCard(
                                 maxBatchChapters = project.maxBatchChapters,
                                 rangeStart = project.rangeStart,
                                 rangeEnd = project.rangeEnd,
-                                styleGuide = styleGuide
+                                styleGuide = styleGuide,
+                                highQualityReview = highQualityReview
                             )
                         } else if (originalEdition != null) {
                             viewModel.configureEditionTranslation(
@@ -1418,6 +1523,7 @@ private fun ModelStyleConfigurationCard(
                                 mode = TranslationMode.FULL_BOOK,
                                 maxBatchChapters = 1,
                                 styleGuide = styleGuide,
+                                highQualityReview = highQualityReview,
                                 startImmediately = false
                             )
                         }
@@ -1708,7 +1814,7 @@ private fun LiveProcessLogCard(
             val matchProject = projectId == null || entry.projectId == null || entry.projectId == projectId
             val matchTag = when (selectedTagFilter) {
                 "ALL" -> true
-                "TRANSLATION" -> entry.tag in listOf("TRANSLATION", "BATCH")
+                "TRANSLATION" -> entry.tag in listOf("TRANSLATION", "BATCH", "AI_POLISH")
                 "LLM_API" -> entry.tag in listOf("LLM_API", "API_REQ", "API_RESP")
                 "GLOSSARY" -> entry.tag in listOf("GLOSSARY", "GLOSSARY_SCAN", "MEMORY")
                 "QA_CHECK" -> entry.tag in listOf("QA_CHECK", "STORAGE")
@@ -1874,6 +1980,7 @@ private fun LiveProcessLogCard(
                                 }
                             }
                         }
+
                     }
                 }
             }

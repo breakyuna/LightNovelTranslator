@@ -6,7 +6,7 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 
 enum class EditionType { IMPORTED, AI_TRANSLATION, MANUAL, WEB_CAPTURE }
-enum class RevisionType { AI_TRANSLATION, AUTO_REPAIR, LEXICON_REPLACEMENT, USER_CONFIRMED_REPLACEMENT, MANUAL_EDIT }
+enum class RevisionType { AI_TRANSLATION, AI_POLISH, AUTO_REPAIR, LEXICON_REPLACEMENT, USER_CONFIRMED_REPLACEMENT, MANUAL_EDIT }
 enum class LexiconKind { PROPER_NOUN, TERMINOLOGY }
 enum class LexiconSource { AI, MANUAL, IMPORTED }
 enum class ReviewStatus { CANDIDATE, CONFIRMED }
@@ -147,6 +147,7 @@ data class SegmentRevisionEntity(
 fun revisionPriority(type: String): Int = when (type) {
     RevisionType.MANUAL_EDIT.name -> 400
     RevisionType.USER_CONFIRMED_REPLACEMENT.name, RevisionType.LEXICON_REPLACEMENT.name -> 300
+    RevisionType.AI_POLISH.name -> 210
     RevisionType.AI_TRANSLATION.name -> 200
     RevisionType.AUTO_REPAIR.name -> 100
     else -> 0
@@ -171,7 +172,7 @@ data class TranslationProjectV2Entity(
     val providerId: Long?,
     val modelName: String = "",
     val styleGuide: String = "Literary Novel",
-    val promptProtocolVersion: Int = 1,
+    val promptProtocolVersion: Int = 2,
     val translationMode: String = TranslationMode.FULL_BOOK.name,
     val maxBatchChapters: Int = 1,
     val seamlessAheadChapters: Int = 5,

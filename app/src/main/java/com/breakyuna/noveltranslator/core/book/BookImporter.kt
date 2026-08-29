@@ -151,6 +151,31 @@ class BookImporter(
         }
     }
 
+    /**
+     * Applies an explicitly confirmed AI chapter-split result to the original Edition.
+     * Translation Editions must not exist because rebuilding LogicalChapter IDs would invalidate
+     * their mappings; callers should show the returned preview and ask for confirmation first.
+     */
+    suspend fun applyAiChapterSplit(bookId: Long, chapters: List<ParsedChapter>): Int {
+        require(chapters.isNotEmpty()) { "AI splitter returned no chapters" }
+        val dao = database.bookDao()
+        val book = dao.getBook(bookId) ?: error("Book not found")
+        val primaryEditionId = book.primaryEditionId ?: error("The book has no original Edition")
+        val originalEdition = dao.getEdition(primaryEditionId)
+            ?: error("The original Edition was not found")
+        require(originalEdition.bookId == bookId && originalEdition.type == EditionType.IMPORTED.name) {
+            "Only the original imported Edition can be re-split"
+        }
+        require(dao.getEditions(bookId).all { it.id == originalEdition.id }) {
+            "Please remove translation Editions before applying an AI chapter split"
+        }
+        val progress = database.readerProgressDao().get(bookId)
+        val normalized = chapters.mapIndexed { index, chapter ->
+            chapter.copy(index = index + 1, title = chapter.title.trim().ifBlank { "Chapter ${index + 1}" })
+        }
+        return rebuildOriginalEdition(bookId, originalEdition, normalized.iterator(), progress)
+    }
+
     private suspend fun rebuildOriginalEdition(
         bookId: Long,
         originalEdition: EditionEntity,

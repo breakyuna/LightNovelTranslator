@@ -37,7 +37,9 @@ data class LlmRequest(
     val temperature: Float? = null,
     val maxTokens: Int? = null,
     val operation: String = "TRANSLATION",
-    val promptCacheHint: PromptCacheHint? = null
+    val promptCacheHint: PromptCacheHint? = null,
+    /** Optional per-project gate; legacy callers may continue using the gateway-wide signal. */
+    val controlSignal: TranslationControlSignal? = null
 )
 
 data class PromptCacheHint(
@@ -74,7 +76,7 @@ fun interface DelayProvider {
     suspend fun delayFor(milliseconds: Long)
 }
 
-/** Shared signal that prevents retry/continuation code from starting a new paid request after pause. */
+/** Signal that prevents retry/continuation code from starting a new paid request after pause. */
 class TranslationControlSignal {
     private val paused = AtomicBoolean(false)
     private val cancelled = AtomicBoolean(false)
@@ -134,8 +136,26 @@ class RetryingLlmGateway(
 ) : LlmGateway {
     override suspend fun executeCompletion(request: LlmRequest): LlmResult {
         val attempts = mutableListOf<LlmAttempt>()
+        val signal = request.controlSignal ?: controlSignal
         var attemptNumber = 1
         while (true) {
+            if (signal?.isCancelled == true) {
+                throw kotlinx.coroutines.CancellationException("Translation cancelled")
+            }
+            // Pausing before a call is intentionally fail-fast. The workflow boundary will wait
+            // for resume, while this lower layer must never start a paid request during a pause.
+            if (signal?.isPaused == true) {
+                return LlmResult(
+                    text = "",
+                    promptTokens = attempts.sumOf { it.result.promptTokens },
+                    completionTokens = attempts.sumOf { it.result.completionTokens },
+                    isSuccess = false,
+                    errorCategory = LlmErrorCategory.CANCELLED,
+                    errorMessage = "Translation paused before request",
+                    operation = request.operation,
+                    attempts = attempts.toList()
+                )
+            }
             val result = try {
                 delegate.executeCompletion(request)
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -152,7 +172,20 @@ class RetryingLlmGateway(
                     operation = request.operation
                 )
             }
-            val normalizedResult = result.copy(operation = request.operation)
+            // A provider may return useful-looking text with finish_reason=length. Treat it as a
+            // failed response here so every workflow path (draft, repair, chunk and review) gets
+            // the same no-commit behavior instead of relying on individual parsers.
+            val normalizedResult = result.copy(
+                operation = request.operation,
+                isSuccess = result.isSuccess && !result.isTruncated,
+                errorCategory = if (result.isTruncated) LlmErrorCategory.TRUNCATED_OUTPUT else result.errorCategory,
+                retryable = result.retryable && !result.isTruncated,
+                errorMessage = if (result.isTruncated && result.errorMessage.isNullOrBlank()) {
+                    "Provider response was truncated (${result.finishReason ?: "length"})"
+                } else {
+                    result.errorMessage
+                }
+            )
             attempts += LlmAttempt(attemptNumber, normalizedResult)
             val decision = RetryPolicy.decide(normalizedResult, attemptNumber)
             if (normalizedResult.isSuccess || !decision.retry) {
@@ -163,7 +196,7 @@ class RetryingLlmGateway(
                     attempts = attempts.toList()
                 )
             }
-            if (!waitForRetry(decision.delayMs)) {
+            if (!waitForRetry(decision.delayMs, signal)) {
                 return normalizedResult.copy(
                     promptTokens = attempts.sumOf { it.result.promptTokens },
                     completionTokens = attempts.sumOf { it.result.completionTokens },
@@ -175,20 +208,21 @@ class RetryingLlmGateway(
         }
     }
 
-    private suspend fun waitForRetry(delayMs: Long): Boolean {
-        if (controlSignal == null) {
+    private suspend fun waitForRetry(delayMs: Long, signal: TranslationControlSignal?): Boolean {
+        if (signal == null) {
             delayProvider.delayFor(delayMs)
             return true
         }
         var remaining = delayMs
         while (remaining > 0) {
-            if (controlSignal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
-            if (controlSignal.isPaused) return false
+            if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
+            if (signal.isPaused) return false
             val slice = min(250L, remaining)
             delayProvider.delayFor(slice)
             remaining -= slice
         }
-        return !controlSignal.isPaused
+        if (signal.isCancelled) throw kotlinx.coroutines.CancellationException("Translation cancelled")
+        return !signal.isPaused
     }
 
     override suspend fun fetchAvailableModels(provider: ApiProviderEntity): Result<List<String>> =

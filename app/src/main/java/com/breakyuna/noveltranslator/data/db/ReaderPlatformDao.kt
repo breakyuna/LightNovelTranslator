@@ -298,6 +298,9 @@ interface PlatformTaskDao {
     @Query("SELECT * FROM platform_translation_batches WHERE id = :id")
     suspend fun getBatch(id: Long): PlatformTranslationBatchEntity?
 
+    @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId AND state = 'RUNNING'")
+    suspend fun getRunningBatches(runId: Long): List<PlatformTranslationBatchEntity>
+
     @Insert suspend fun insertRun(run: PlatformTranslationRunEntity): Long
     @Update suspend fun updateRun(run: PlatformTranslationRunEntity)
     @Insert suspend fun insertBatch(batch: PlatformTranslationBatchEntity): Long

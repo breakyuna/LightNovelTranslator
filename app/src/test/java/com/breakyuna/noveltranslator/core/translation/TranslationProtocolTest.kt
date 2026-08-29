@@ -2,6 +2,8 @@ package com.breakyuna.noveltranslator.core.translation
 
 import com.breakyuna.noveltranslator.data.model.LexiconEntryEntity
 import com.breakyuna.noveltranslator.data.model.LexiconKind
+import com.breakyuna.noveltranslator.data.model.RevisionType
+import com.breakyuna.noveltranslator.data.model.revisionPriority
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -36,6 +38,27 @@ class TranslationProtocolTest {
         assertEquals(2, parsed.chapters.size)
         assertEquals("乙", parsed.chapters[0].segments[2])
         assertEquals("{\"chapterMemory\":[]}", parsed.metaJson)
+    }
+
+    @Test
+    fun parser_records_duplicate_segment_ids_for_repair() {
+        val parsed = TranslationProtocol.parse(
+            """
+            <TRANSLATION><C id="1"><S id="1">甲</S><S id="1">乙</S></C></TRANSLATION>
+            """.trimIndent()
+        )
+
+        assertEquals(setOf(1), parsed.chapters.single().duplicateSegmentIds)
+        assertEquals("甲", parsed.chapters.single().segments[1])
+    }
+
+    @Test
+    fun parser_decodes_entities_in_one_pass_without_double_decoding_literals() {
+        val parsed = TranslationProtocol.parse(
+            "<TRANSLATION><C id=\"1\"><S id=\"1\">&amp;quot; &amp;amp; &lt;ok&gt;</S></C></TRANSLATION>"
+        )
+
+        assertEquals("&quot; &amp; <ok>", parsed.chapters.single().segments[1])
     }
 
     @Test
@@ -114,6 +137,75 @@ class TranslationProtocolTest {
         )
 
         assertTrue(DeterministicTranslationQa.validate(source, translated, listOf(term)).accepted)
+    }
+
+    @Test
+    fun deterministicQa_doesNotRejectLocalizedNumberWords_withoutDigits() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "He waited 12 days."))
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "他等了十二天。"))
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+
+        assertTrue(result.accepted)
+        assertTrue(result.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" })
+    }
+
+    @Test
+    fun deterministicQa_recognizesUnicodeDigits() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "等待１２天。"))
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "等待１２天。"))
+
+        assertTrue(DeterministicTranslationQa.validate(source, translated).accepted)
+    }
+
+    @Test
+    fun polishPrompt_keepsSourceAndCurrentTranslationSeparateAndMasksProtectedText() {
+        val sourceText = "Alice raised her sword [IMG:hero.png]."
+        val protected = TranslationTextProtection.protect(sourceText)
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, protected.masked, sourceText, protected.tokens)
+            )
+        )
+        val current = ParsedTranslationChapter(1, mapOf(1 to "爱丽丝举起了剑 [IMG:hero.png]。"))
+        val context = ContextPackage(
+            stablePrefix = "Protocol version: 2",
+            matchedLexicon = emptyList(),
+            relatedStoryMemory = emptyList(),
+            recentContext = "",
+            fingerprint = "test"
+        )
+
+        val prompt = TranslationProtocol.polishUserPrompt(context, source, current)
+
+        assertTrue(prompt.contains("[SOURCE]"))
+        assertTrue(prompt.contains("[CURRENT_TRANSLATION]"))
+        assertTrue(prompt.contains("__LNT_PROTECTED_0__"))
+        assertTrue(TranslationProtocol.polishSystemPrompt("English", "Chinese").contains("not a fresh translation"))
+    }
+
+    @Test
+    fun aiPolishRevision_keepsAiPriorityAndIsRecognizedByRevisionPriority() {
+        assertEquals(200, revisionPriority(RevisionType.AI_TRANSLATION.name))
+        assertEquals(210, revisionPriority(RevisionType.AI_POLISH.name))
+        assertTrue(revisionPriority(RevisionType.MANUAL_EDIT.name) > revisionPriority(RevisionType.AI_POLISH.name))
+        assertTrue(RevisionType.AI_POLISH.name in RevisionType.values().map { it.name })
     }
 
     @Test
