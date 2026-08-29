@@ -1357,7 +1357,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 stopReaderProgressJobs(bookId)
                 stopAuxiliaryAiJobs(bookId)
-                projects.forEach(::stopTranslationProject)
+                for (project in projects) stopTranslationProject(project)
                 bookPlatformRepo.deleteEdition(bookId, editionId)
                 withContext(Dispatchers.Main) {
                     showMessage("译本及其翻译记录已删除")
@@ -1391,7 +1391,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             stopReaderProgressJobs(bookId)
             stopAuxiliaryAiJobs(bookId)
-            projects.forEach(::stopTranslationProject)
+            for (project in projects) stopTranslationProject(project)
             bookPlatformRepo.deletePermanently(bookId)
             return true
         } finally {
