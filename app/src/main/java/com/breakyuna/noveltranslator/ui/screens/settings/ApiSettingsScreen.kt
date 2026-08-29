@@ -429,7 +429,7 @@ fun ApiSettingsScreen(
                                     }
                                 }
                             } else {
-                                items(providers, key = { it.id }) { provider ->
+                                items(providers, key = { "provider_${it.id}" }) { provider ->
                                     ProviderCardApple(
                                         provider = provider,
                                         isTesting = testingProviderId == provider.id,
@@ -604,7 +604,7 @@ fun ApiSettingsScreen(
                                     }
                                 }
                             } else {
-                                items(visibleLogs, key = { it.id }) { log ->
+                                items(visibleLogs, key = { "log_${it.id}" }) { log ->
                                     AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
                                         val isExpanded = expandedLogId == log.id
                                         val levelColor = when (log.level) {

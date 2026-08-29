@@ -62,7 +62,7 @@ fun ReadingHistoryScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                items(history, key = ReadingHistoryItem::bookId) { item ->
+                items(history, key = { "history_${it.bookId}" }) { item ->
                     ReadingHistoryCard(item, english, onContinueReading, onOpenBook)
                 }
             }

@@ -64,7 +64,7 @@ interface ApiProviderDao {
         return true
     }
 
-    /** Repairs databases written by an older screen that could leave zero or several defaults. */
+    /** Repairs databases that could leave zero or several defaults. */
     @Transaction
     suspend fun repairDefaultProvider(): Long? {
         val providers = getAllProvidersOnce()

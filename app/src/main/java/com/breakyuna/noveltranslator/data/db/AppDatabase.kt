@@ -45,9 +45,7 @@ class Converters {
 /**
  * Database for the current reader/translation platform only.
  *
- * The pre-platform project/chapter/translation tables were intentionally removed.  The beta
- * schema is recreated under a new database name so stale tables cannot leak back into
- * the active runtime or be mistaken for the V2 workflow.
+ * The beta schema is created under a unified database name to manage all domain logic securely.
  */
 @Database(
     entities = [

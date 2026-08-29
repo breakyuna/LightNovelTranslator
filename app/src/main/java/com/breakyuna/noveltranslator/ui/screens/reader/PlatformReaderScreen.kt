@@ -290,7 +290,7 @@ private fun ReaderWorkbenchSidebar(
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text(strings.tableOfContents, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-            items(chapters, key = { it.id }) { chapter ->
+            items(chapters, key = { "chapter_${it.id}" }) { chapter ->
                 ListItem(
                     modifier = Modifier.clickable { onChapter(chapter.id) },
                     headlineContent = { Text(chapter.canonicalTitle, maxLines = 2) },

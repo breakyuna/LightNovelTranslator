@@ -424,8 +424,7 @@ class BookPlatformRepository(
                 progressDao.upsert(currentProgress.copy(preferredEditionId = fallback, updatedAt = System.currentTimeMillis()))
             }
             // Remove target-bound projects explicitly before the Edition row. This makes the
-            // dependent runs, glossary, memory, and cache cleanup deterministic even if a user
-            // opens a database created by an older schema whose foreign-key actions differ.
+            // dependent runs, glossary, memory, and cache cleanup deterministic.
             projects.deleteByTargetEdition(editionId)
             books.deleteEdition(editionId)
             edition
@@ -493,9 +492,8 @@ class BookPlatformRepository(
     suspend fun deletePermanently(bookId: Long) {
         database.withTransaction {
             // Delete project rows explicitly before the book/Edition cascade. The current schema
-            // also declares cascading foreign keys, but the explicit order keeps cleanup safe for
-            // databases upgraded from an older schema and makes all child rows observable as one
-            // transaction.
+            // also declares cascading foreign keys, but the explicit order keeps cleanup predictable
+            // and makes all child rows observable as one transaction.
             projects.deleteByBook(bookId)
             books.deletePermanently(bookId)
         }

@@ -445,7 +445,7 @@ private fun WideDirectoryPanel(
                     .fillMaxSize()
                     .weight(1f)
             ) {
-                items(filteredChapters, key = { it.id }) { chapter ->
+                items(filteredChapters, key = { "chapter_${it.id}" }) { chapter ->
                     ListItem(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
@@ -498,7 +498,7 @@ private fun DirectoryPanel(
             if (expanded) {
                 HorizontalDivider()
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 520.dp)) {
-                    items(chapters, key = { it.id }) { chapter ->
+                    items(chapters, key = { "chapter_${it.id}" }) { chapter ->
                         ListItem(
                             modifier = Modifier.clickable { onReadChapter(chapter.id) },
                             headlineContent = { Text(chapter.canonicalTitle, maxLines = 2, overflow = TextOverflow.Ellipsis) },

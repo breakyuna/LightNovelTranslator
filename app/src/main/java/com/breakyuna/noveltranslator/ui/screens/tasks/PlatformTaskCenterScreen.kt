@@ -299,7 +299,7 @@ fun PlatformTaskCenterScreen(
                     )
                 }
             } else {
-                items(filteredBooks, key = { it.id }) { book ->
+                items(filteredBooks, key = { "book_${it.id}" }) { book ->
                     val bookProjects = allProjects.filter { it.bookId == book.id }
                     val bookRuns = allRuns.filter { it.bookId == book.id }
                     val isExpanded = expandedBookIds[book.id] == true
@@ -1278,7 +1278,7 @@ private fun LiveLogDialog(
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(logs.take(40), key = { it.id }) { log ->
+                            items(logs.take(40), key = { "log_${it.id}" }) { log ->
                                 RequestLogItem(log, strings)
                             }
                         }
@@ -1290,7 +1290,7 @@ private fun LiveLogDialog(
                         }
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(batches, key = { it.id }) { batch ->
+                            items(batches, key = { "batch_${it.id}" }) { batch ->
                                 BatchItem(batch, strings, currency)
                             }
                         }
@@ -1452,7 +1452,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(lexicon, key = { it.id }) { item ->
+                                items(lexicon, key = { "lexicon_${it.id}" }) { item ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1476,7 +1476,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(chapterMemory, key = { it.id }) { mem ->
+                                items(chapterMemory, key = { "chapter_memory_${it.id}" }) { mem ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1498,7 +1498,7 @@ private fun GlossaryMemoryDialog(
                             }
                         } else {
                             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(storyMemory, key = { it.id }) { fact ->
+                                items(storyMemory, key = { "story_memory_${it.id}" }) { fact ->
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),

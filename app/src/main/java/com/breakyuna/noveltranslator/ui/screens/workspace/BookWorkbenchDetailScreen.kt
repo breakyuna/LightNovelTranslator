@@ -453,7 +453,7 @@ fun BookWorkbenchDetailScreen(
             title = { Text("确认章节识别结果（${preview.size} 章）") },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
-                    items(preview.take(80), key = { it.index }) { chapter ->
+                    items(preview.take(80), key = { "preview_${it.index}" }) { chapter ->
                         Text(
                             "${chapter.index}. ${chapter.title}",
                             modifier = Modifier.padding(vertical = 3.dp),
@@ -1815,7 +1815,7 @@ private fun ChapterStatusMatrix(
             verticalArrangement = Arrangement.spacedBy(cellSpacing),
             userScrollEnabled = false
         ) {
-            items(chapters, key = { it.id }) { chapter ->
+            items(chapters, key = { "chapter_${it.id}" }) { chapter ->
                 val isDone = chapter.chapterIndex <= completedChapters
                 Surface(
                     modifier = Modifier
@@ -1994,7 +1994,7 @@ private fun LiveProcessLogCard(
                             .padding(8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        items(filteredLogs, key = { it.id }) { log ->
+                        items(filteredLogs, key = { "log_${it.id}" }) { log ->
                             val color = when (log.level) {
                                 LogLevel.ERROR -> Color(0xFFFF5252)
                                 LogLevel.WARN -> Color(0xFFFFD740)
@@ -2242,7 +2242,7 @@ private fun GlossaryManagementTab(
                     }
                 }
             }
-            items(candidateReviews, key = { it.id }) { review ->
+            items(candidateReviews, key = { "review_${it.id}" }) { review ->
                 LexiconCandidateCard(
                     review = review,
                     selected = review.id in selectedCandidateIds,
