@@ -3,11 +3,11 @@ package com.breakyuna.noveltranslator.ui.screens.reader
 import android.icu.text.Transliterator
 
 private val simplifiedToTraditional by lazy {
-    Transliterator.getInstance("Simplified-Traditional")
+    Transliterator.getInstance("Simplified-Traditional", Transliterator.FORWARD)
 }
 
 private val traditionalToSimplified by lazy {
-    Transliterator.getInstance("Traditional-Simplified")
+    Transliterator.getInstance("Traditional-Simplified", Transliterator.FORWARD)
 }
 
 /** Converts only rendered text; image markers are split before this function is called. */
