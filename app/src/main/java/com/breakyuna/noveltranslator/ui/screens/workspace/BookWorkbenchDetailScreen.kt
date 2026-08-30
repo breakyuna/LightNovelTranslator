@@ -227,6 +227,7 @@ fun BookWorkbenchDetailScreen(
                                 chapters = chapters,
                                 targetEdition = currentTargetEdition,
                                 project = currentProject,
+                                promptProfile = promptProfile,
                                 run = latestRun,
                                 systemLogs = systemLogs,
                                 providers = allProviders,
@@ -1045,6 +1046,7 @@ private fun TasksAndControlTab(
     chapters: List<LogicalChapterEntity>,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
+    promptProfile: PromptProfileEntity?,
     run: PlatformTranslationRunEntity?,
     systemLogs: List<SystemLogEntry>,
     providers: List<ApiProviderEntity>,
@@ -1075,6 +1077,7 @@ private fun TasksAndControlTab(
                         editions = editions,
                         targetEdition = targetEdition,
                         project = null,
+                        promptProfile = promptProfile,
                         providers = providers,
                         viewModel = viewModel,
                         compact = false
@@ -1326,6 +1329,7 @@ private fun TasksAndControlTab(
                     editions = editions,
                     targetEdition = targetEdition,
                     project = project,
+                    promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
                     compact = false
