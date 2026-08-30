@@ -876,7 +876,7 @@ private fun WorkbenchHeroSummary(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
             val showConfigBesideBook = maxWidth >= 720.dp
             if (showConfigBesideBook) {
@@ -906,27 +906,14 @@ private fun WorkbenchHeroSummary(
                     )
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BookHeroSummary(
-                        book = book,
-                        editions = editions,
-                        selectedEdition = selectedEdition,
-                        onSelectEdition = onSelectEdition,
-                        onCreateEdition = onCreateEdition,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    ModelStyleConfigurationCard(
-                        book = book,
-                        editions = editions,
-                        targetEdition = selectedEdition,
-                        project = project,
-                        promptProfile = promptProfile,
-                        providers = providers,
-                        viewModel = viewModel,
-                        compact = false,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                BookHeroSummary(
+                    book = book,
+                    editions = editions,
+                    selectedEdition = selectedEdition,
+                    onSelectEdition = onSelectEdition,
+                    onCreateEdition = onCreateEdition,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }

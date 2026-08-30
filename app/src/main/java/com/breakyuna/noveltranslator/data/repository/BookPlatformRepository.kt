@@ -39,6 +39,7 @@ class BookPlatformRepository(
     val shelf: Flow<List<ShelfBook>> = books.observeShelf()
     val allBooks: Flow<List<BookEntity>> = books.observeAllBooks()
     val hiddenBooks: Flow<List<BookEntity>> = books.observeHiddenBooks()
+    val allEditions: Flow<List<EditionEntity>> = books.observeAllEditions()
     val allTranslationProjects: Flow<List<TranslationProjectV2Entity>> = projects.observeAll()
 
     fun observeBook(bookId: Long) = books.observeBook(bookId)

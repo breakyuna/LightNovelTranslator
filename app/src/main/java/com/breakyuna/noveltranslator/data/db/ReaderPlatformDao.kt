@@ -56,6 +56,12 @@ interface BookDao {
     @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
     fun observeEditions(bookId: Long): Flow<List<EditionEntity>>
 
+    @Query("SELECT * FROM editions ORDER BY createdAt")
+    fun observeAllEditions(): Flow<List<EditionEntity>>
+
+    @Query("SELECT * FROM editions ORDER BY createdAt")
+    suspend fun getAllEditions(): List<EditionEntity>
+
     @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
     suspend fun getEditions(bookId: Long): List<EditionEntity>
 

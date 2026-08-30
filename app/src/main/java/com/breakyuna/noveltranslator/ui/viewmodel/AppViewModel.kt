@@ -44,6 +44,13 @@ import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
+data class BatchImportProgress(
+    val isImporting: Boolean = false,
+    val total: Int = 0,
+    val completed: Int = 0,
+    val currentBookName: String? = null
+)
+
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AppViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -135,6 +142,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Full split bodies stay outside Compose state until the user explicitly confirms them. */
     private val pendingChapterSplits = ConcurrentHashMap<Long, List<ParsedChapter>>()
 
+    private val _batchImportProgress = MutableStateFlow<BatchImportProgress?>(null)
+    val batchImportProgress: StateFlow<BatchImportProgress?> = _batchImportProgress.asStateFlow()
+
     val shelfBooks: StateFlow<List<ShelfBook>> = bookPlatformRepo.shelf
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val readingHistory: StateFlow<List<ReadingHistoryItem>> = db.readerProgressDao().observeHistory()
@@ -142,6 +152,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val hiddenBooks: StateFlow<List<BookEntity>> = bookPlatformRepo.hiddenBooks
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val allPlatformBooks: StateFlow<List<BookEntity>> = bookPlatformRepo.allBooks
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val allPlatformEditions: StateFlow<List<EditionEntity>> = bookPlatformRepo.allEditions
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val platformTranslationProjects: StateFlow<List<TranslationProjectV2Entity>> = bookPlatformRepo.allTranslationProjects
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -215,10 +227,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (uris.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             val app = getApplication<Application>()
-            var successCount = 0
-            var failCount = 0
+            data class ImportCandidate(val uri: android.net.Uri, val fileName: String)
+            val candidates = mutableListOf<ImportCandidate>()
             var skippedCount = 0
-            val errors = mutableListOf<String>()
 
             for (uri in uris) {
                 val fileName = app.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
@@ -230,42 +241,86 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     skippedCount++
                     continue
                 }
+                candidates.add(ImportCandidate(uri, fileName))
+            }
 
-                val temp = File.createTempFile("book_import_", ".tmp", app.cacheDir)
-                try {
-                    app.contentResolver.openInputStream(uri)?.use { input ->
-                        copyImportToTemp(input, temp)
-                    } ?: error("无法读取所选文件")
-                    bookImporter.import(
-                        fileName = fileName,
-                        sourceFile = temp,
-                        originalLanguage = originalLanguage,
-                        customRegex = customRegex,
-                        cropTableOfContents = cropTableOfContents
-                    )
-                    successCount++
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    failCount++
-                    errors.add("$fileName: ${error.localizedMessage}")
-                } finally {
-                    temp.delete()
+            if (candidates.isEmpty()) {
+                withContext(Dispatchers.Main) {
+                    if (skippedCount > 0) {
+                        showMessage("导入忽略：仅支持 .txt 与 .epub 格式文件")
+                    }
+                }
+                return@launch
+            }
+
+            val total = candidates.size
+            var completedCount = 0
+            val successCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val failCount = java.util.concurrent.atomic.AtomicInteger(0)
+            val errors = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+            _batchImportProgress.value = BatchImportProgress(
+                isImporting = true,
+                total = total,
+                completed = 0,
+                currentBookName = candidates.firstOrNull()?.fileName
+            )
+
+            // Concurrency bounded to 3 parallel imports (optimal for mobile IO & SQLite WAL)
+            val parallelDispatcher = Dispatchers.IO.limitedParallelism(3)
+
+            kotlinx.coroutines.coroutineScope {
+                candidates.map { candidate ->
+                    launch(parallelDispatcher) {
+                        val temp = File.createTempFile("book_import_", ".tmp", app.cacheDir)
+                        try {
+                            app.contentResolver.openInputStream(candidate.uri)?.use { input ->
+                                copyImportToTemp(input, temp)
+                            } ?: error("无法读取所选文件")
+                            bookImporter.import(
+                                fileName = candidate.fileName,
+                                sourceFile = temp,
+                                originalLanguage = originalLanguage,
+                                customRegex = customRegex,
+                                cropTableOfContents = cropTableOfContents
+                            )
+                            successCount.incrementAndGet()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Throwable) {
+                            failCount.incrementAndGet()
+                            errors.add("${candidate.fileName}: ${error.localizedMessage}")
+                        } finally {
+                            temp.delete()
+                            val currentDone = synchronized(candidates) {
+                                ++completedCount
+                            }
+                            _batchImportProgress.value = BatchImportProgress(
+                                isImporting = currentDone < total,
+                                total = total,
+                                completed = currentDone,
+                                currentBookName = candidate.fileName
+                            )
+                        }
+                    }
                 }
             }
 
+            _batchImportProgress.value = null
+
+            val sCount = successCount.get()
+            val fCount = failCount.get()
+
             withContext(Dispatchers.Main) {
-                if (skippedCount > 0 && successCount == 0 && failCount == 0) {
-                    showMessage("导入忽略：仅支持 .txt 与 .epub 格式文件")
-                } else if (failCount == 0) {
-                    val msg = if (successCount == 1) "已成功加入书架" else "成功批量导入 $successCount 本图书"
+                if (fCount == 0) {
+                    val msg = if (sCount == 1) "已成功加入书架" else "成功批量导入 $sCount 本图书"
                     if (skippedCount > 0) {
                         showMessage("$msg (已自动过滤 $skippedCount 个非 txt/epub 文件)")
                     } else {
                         showMessage(msg)
                     }
-                } else if (successCount > 0) {
-                    showMessage("成功导入 $successCount 本，失败 $failCount 本")
+                } else if (sCount > 0) {
+                    showMessage("成功导入 $sCount 本，失败 $fCount 本")
                 } else {
                     showMessage("导入失败：${errors.firstOrNull() ?: "未知错误"}")
                 }
@@ -334,17 +389,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Copies picker content with the same hard limit enforced by the normalized importer. */
     private fun copyImportToTemp(input: java.io.InputStream, target: File) {
-        target.outputStream().use { output ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            var total = 0L
-            while (true) {
-                val count = input.read(buffer)
-                if (count < 0) break
-                total += count.toLong()
-                require(total <= BookFileManager.MAX_IMPORT_BYTES) {
-                    "File exceeds the 100 MB import limit"
+        target.outputStream().buffered(64 * 1024).use { output ->
+            input.buffered(64 * 1024).use { bufInput ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0L
+                while (true) {
+                    val count = bufInput.read(buffer)
+                    if (count < 0) break
+                    total += count.toLong()
+                    require(total <= BookFileManager.MAX_IMPORT_BYTES) {
+                        "File exceeds the 100 MB import limit"
+                    }
+                    output.write(buffer, 0, count)
                 }
-                output.write(buffer, 0, count)
             }
         }
     }

@@ -98,8 +98,47 @@ object TxtParser {
         return BufferedReader(InputStreamReader(input, detection.charset), DEFAULT_BUFFER_SIZE)
     }
 
+    /**
+     * Performs offline deterministic chapter structure detection on a TXT file
+     */
+    fun detectStructure(file: File, customRegex: String? = null): ChapterDetectionResult {
+        return openDetectedReader(file).use { reader ->
+            ChapterStructureDetector.detect(reader, customRegex, file.length())
+        }
+    }
+
+    /**
+     * Performs offline deterministic chapter structure detection on an in-memory string
+     */
+    fun detectStructure(fullText: String, customRegex: String? = null): ChapterDetectionResult {
+        return ChapterStructureDetector.detect(fullText, customRegex)
+    }
+
+    /**
+     * Performs offline deterministic chapter structure detection on a reader stream
+     */
+    fun detectStructure(
+        reader: BufferedReader,
+        customRegex: String? = null,
+        totalEstimatedChars: Long = -1L
+    ): ChapterDetectionResult {
+        return ChapterStructureDetector.detect(reader, customRegex, totalEstimatedChars)
+    }
+
     /** Infers a safe built-in heading rule from a bounded prefix of a TXT file. */
     fun inferChapterRegex(file: File, language: String = "Auto"): String {
+        val detection = runCatching { detectStructure(file) }.getOrNull()
+        if (detection != null && detection.headings.isNotEmpty() && detection.confidence >= 65f) {
+            val first = detection.headings.first()
+            return when (first.patternType) {
+                ChapterPatternType.CHINESE_NUMBERED -> REGEX_CHINESE
+                ChapterPatternType.KOREAN_NUMBERED -> REGEX_KOREAN
+                ChapterPatternType.JAPANESE_NUMBERED -> REGEX_JAPANESE
+                ChapterPatternType.ENGLISH_NUMBERED -> REGEX_ENGLISH
+                ChapterPatternType.MARKDOWN_HEADING -> REGEX_MARKDOWN
+                else -> REGEX_CHINESE
+            }
+        }
         val sample = openDetectedReader(file).use { reader ->
             val builder = StringBuilder(INFERENCE_SAMPLE_CHARS)
             val buffer = CharArray(DEFAULT_BUFFER_SIZE)
@@ -122,6 +161,18 @@ object TxtParser {
             normalized.contains("ja") || normalized.contains("japanese") -> return REGEX_JAPANESE
             normalized.contains("ko") || normalized.contains("korean") -> return REGEX_KOREAN
         }
+        val detection = runCatching { ChapterStructureDetector.detect(sample) }.getOrNull()
+        if (detection != null && detection.headings.isNotEmpty() && detection.confidence >= 65f) {
+            val first = detection.headings.first()
+            return when (first.patternType) {
+                ChapterPatternType.CHINESE_NUMBERED -> REGEX_CHINESE
+                ChapterPatternType.KOREAN_NUMBERED -> REGEX_KOREAN
+                ChapterPatternType.JAPANESE_NUMBERED -> REGEX_JAPANESE
+                ChapterPatternType.ENGLISH_NUMBERED -> REGEX_ENGLISH
+                ChapterPatternType.MARKDOWN_HEADING -> REGEX_MARKDOWN
+                else -> REGEX_CHINESE
+            }
+        }
         return listOf(REGEX_CHINESE, REGEX_ENGLISH, REGEX_JAPANESE, REGEX_KOREAN, REGEX_MARKDOWN)
             .map { candidate ->
                 val regex = Regex(candidate)
@@ -133,9 +184,9 @@ object TxtParser {
             ?: REGEX_CHINESE
     }
 
-    val REGEX_CHINESE = "(^\\s*第[0-9０-９零一二两三四五六七八九十百千万]+[章回節卷集幕篇].*)"
-    val REGEX_JAPANESE = "(^\\s*第[0-9０-９零一二三四五六七八九十百千万]+\\s*[話回章節編幕].*)"
-    val REGEX_KOREAN = "(^\\s*제\\s*[0-9０-９]+\\s*장.*)"
+    val REGEX_CHINESE = "(^\\s*第[0-9０-９零一二两三四五六七八九十百千万]+[章回節节話话卷集幕篇].*)"
+    val REGEX_JAPANESE = "(^\\s*第[0-9０-９零一二三四五六七八九十百千万]+[話回章節編幕].*)"
+    val REGEX_KOREAN = "(^\\s*(?:제\\s*[0-9０-９]+\\s*장|[0-9０-９]+\\s*화).*)"
     val REGEX_ENGLISH = "((?i:^\\s*(Chapter|Section|Book|Prologue|Epilogue|Act)\\s*(\\d+|[IVXLCDM]+)?.*))"
     val REGEX_MARKDOWN = "(^#{1,3}\\s+.*)"
 
@@ -177,6 +228,10 @@ object TxtParser {
     ): List<ParsedChapter> {
         validateChapterRegex(regexPattern)
         val pattern = Regex(regexPattern)
+        val isCustom = regexPattern != REGEX_CHINESE && regexPattern != REGEX_ENGLISH && regexPattern != REGEX_JAPANESE && regexPattern != REGEX_KOREAN && regexPattern != REGEX_MARKDOWN
+        val matchesHeading: (String) -> Boolean = { trimmed ->
+            pattern.matches(trimmed) || (isCustom && pattern.find(trimmed)?.range?.first == 0)
+        }
         val sourceText = if (cropTableOfContents) {
             cropLeadingTableOfContents(fullText, pattern)
         } else {
@@ -191,7 +246,7 @@ object TxtParser {
 
         for (line in lines) {
             val trimmed = line.trim()
-            if (trimmed.isNotEmpty() && pattern.matches(trimmed)) {
+            if (trimmed.isNotEmpty() && matchesHeading(trimmed)) {
                 if (currentContent.isNotBlank()) {
                     val contentStr = currentContent.toString().trim()
                     chapters.add(
@@ -243,6 +298,10 @@ object TxtParser {
         validateChapterRegex(regexPattern)
         require(fallbackChunkWords > 0)
         val pattern = Regex(regexPattern)
+        val isCustom = regexPattern != REGEX_CHINESE && regexPattern != REGEX_ENGLISH && regexPattern != REGEX_JAPANESE && regexPattern != REGEX_KOREAN && regexPattern != REGEX_MARKDOWN
+        val matchesHeading: (String) -> Boolean = { trimmed ->
+            pattern.matches(trimmed) || (isCustom && pattern.find(trimmed)?.range?.first == 0)
+        }
         var currentTitle = "Preface / Prologue"
         var currentContent = StringBuilder()
         var currentWordCount = 0
@@ -282,7 +341,7 @@ object TxtParser {
         for (chunk in chunks) {
             val line = chunk.text
             val trimmed = line.trim()
-            if (chunk.canBeHeading && trimmed.isNotEmpty() && pattern.matches(trimmed)) {
+            if (chunk.canBeHeading && trimmed.isNotEmpty() && matchesHeading(trimmed)) {
                 val completedTitle = if (headingPart > 1) "$currentTitle (Part $headingPart)" else currentTitle
                 val completed = drain(completedTitle)
                 if (completed != null) yield(completed)

@@ -4,10 +4,12 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,6 +56,7 @@ fun PlatformTaskCenterScreen(
     val strings = platformUiStrings()
     val window = rememberWindowSize()
     val allBooks by viewModel.allPlatformBooks.collectAsState()
+    val allEditions by viewModel.allPlatformEditions.collectAsState()
     val allProjects by viewModel.platformTranslationProjects.collectAsState()
     val allRuns by viewModel.platformTaskRuns.collectAsState()
 
@@ -75,7 +78,7 @@ fun PlatformTaskCenterScreen(
 
     // Filter & Search states
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    var filterStatus by rememberSaveable { mutableStateOf("ALL") } // ALL, RUNNING, PAUSED, COMPLETED, NO_TASKS
+    var filterStatus by rememberSaveable { mutableStateOf("ALL") } // ALL, RUNNING, PAUSED, COMPLETED
     var showSearchBar by rememberSaveable { mutableStateOf(false) }
 
     // Dialog states
@@ -83,23 +86,26 @@ fun PlatformTaskCenterScreen(
     var activeLogRunId by remember { mutableStateOf<Long?>(null) }
     var activeGlossaryProjectId by remember { mutableStateOf<Long?>(null) }
 
+    // Books that have at least one translation edition or translation project
+    val booksWithTranslations = remember(allBooks, allEditions, allProjects) {
+        allBooks.filter { book ->
+            val hasTranslationEdition = allEditions.any { it.bookId == book.id && it.type != EditionType.IMPORTED.name }
+            val hasTranslationProject = allProjects.any { it.bookId == book.id }
+            hasTranslationEdition || hasTranslationProject
+        }
+    }
+
     // Computed overview statistics
-    val totalBooksCount = allBooks.size
+    val totalTranslationBooksCount = booksWithTranslations.size
     val runningRunsCount = allRuns.count { it.state == "RUNNING" }
     val pausedRunsCount = allRuns.count { it.state == "PAUSED" }
     val completedRunsCount = allRuns.count {
         it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS")
     }
-    val totalTokens = remember(allRuns) {
-        allRuns.sumOf { it.promptTokens + it.completionTokens }
-    }
-    val totalCostLabel = remember(allRuns) {
-        formatRunCostSummary(allRuns)
-    }
 
     // Filtered books
-    val filteredBooks = remember(allBooks, allProjects, allRuns, searchQuery, filterStatus) {
-        allBooks.filter { book ->
+    val filteredBooks = remember(booksWithTranslations, allProjects, allRuns, searchQuery, filterStatus) {
+        booksWithTranslations.filter { book ->
             val matchesSearch = searchQuery.isBlank() ||
                     book.title.contains(searchQuery, ignoreCase = true) ||
                     book.author.contains(searchQuery, ignoreCase = true)
@@ -117,7 +123,6 @@ fun PlatformTaskCenterScreen(
                             bookProjects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
                         bookRuns.none { it.state in setOf("RUNNING", "PAUSED") } &&
                         bookProjects.none { it.state in setOf("RUNNING", "PAUSED") }
-                "NO_TASKS" -> bookProjects.isEmpty() && bookRuns.isEmpty()
                 else -> true
             }
         }
@@ -131,7 +136,7 @@ fun PlatformTaskCenterScreen(
         if (initialBookId != null && initialBookId > 0) {
             val targetIdx = filteredBooks.indexOfFirst { it.id == initialBookId }
             if (targetIdx >= 0) {
-                listState.animateScrollToItem(targetIdx + 1) // +1 for stats header item
+                listState.animateScrollToItem(targetIdx)
             }
         }
     }
@@ -237,39 +242,25 @@ fun PlatformTaskCenterScreen(
                 }
             }
 
-            // 2. Metrics Overview Header Card
-            item {
-                WorkspaceMetricsBanner(
-                    totalBooks = totalBooksCount,
-                    runningTasks = runningRunsCount,
-                    pausedTasks = pausedRunsCount,
-                    completedTasks = completedRunsCount,
-                    totalTokens = totalTokens,
-                    totalCostLabel = totalCostLabel,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 840.dp)
-                )
-            }
-
-            // 3. Filter Chips Row
+            // 2. Filter Chips Row
             item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .widthIn(max = 840.dp),
+                        .widthIn(max = 840.dp)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilterChip(
                         selected = filterStatus == "ALL",
                         onClick = { filterStatus = "ALL" },
-                        label = { Text("全部 (${allBooks.size})") }
+                        label = { Text("全部 ($totalTranslationBooksCount)", maxLines = 1) }
                     )
                     FilterChip(
                         selected = filterStatus == "RUNNING",
                         onClick = { filterStatus = "RUNNING" },
-                        label = { Text("翻译中 ($runningRunsCount)") },
+                        label = { Text("翻译中 ($runningRunsCount)", maxLines = 1) },
                         leadingIcon = if (filterStatus == "RUNNING") {
                             { Icon(Icons.Default.Sync, null, Modifier.size(14.dp)) }
                         } else null
@@ -277,21 +268,21 @@ fun PlatformTaskCenterScreen(
                     FilterChip(
                         selected = filterStatus == "PAUSED",
                         onClick = { filterStatus = "PAUSED" },
-                        label = { Text("已暂停 ($pausedRunsCount)") }
+                        label = { Text("已暂停 ($pausedRunsCount)", maxLines = 1) }
                     )
                     FilterChip(
                         selected = filterStatus == "COMPLETED",
                         onClick = { filterStatus = "COMPLETED" },
-                        label = { Text("已完成 ($completedRunsCount)") }
+                        label = { Text("已完成 ($completedRunsCount)", maxLines = 1) }
                     )
                 }
             }
 
-            // 4. Books List (Books as Units with Expandable Tasks)
+            // 3. Books List (Books as Units with Expandable Tasks)
             if (filteredBooks.isEmpty()) {
                 item {
                     EmptyWorkspaceState(
-                        hasAnyBooks = allBooks.isNotEmpty(),
+                        hasAnyBooks = booksWithTranslations.isNotEmpty(),
                         strings = strings,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -371,127 +362,6 @@ fun PlatformTaskCenterScreen(
             viewModel = viewModel,
             onDismiss = { activeGlossaryProjectId = null }
         )
-    }
-}
-
-/**
- * 顶部概览指标卡片
- */
-@Composable
-private fun WorkspaceMetricsBanner(
-    totalBooks: Int,
-    runningTasks: Int,
-    pausedTasks: Int,
-    completedTasks: Int,
-    totalTokens: Long,
-    totalCostLabel: String,
-    modifier: Modifier = Modifier
-) {
-    ElevatedCard(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.DashboardCustomize,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "工作台概览",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    "消耗: ${TokenCalculator.formatTokenCount(totalTokens)} Tokens · $totalCostLabel",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                MetricItem(
-                    label = "图书总数",
-                    value = totalBooks.toString(),
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "运行中任务",
-                    value = runningTasks.toString(),
-                    color = if (runningTasks > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    highlight = runningTasks > 0,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "已暂停",
-                    value = pausedTasks.toString(),
-                    color = if (pausedTasks > 0) Color(0xFFF57C00) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "已完成",
-                    value = completedTasks.toString(),
-                    color = if (completedTasks > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricItem(
-    label: String,
-    value: String,
-    color: Color,
-    highlight: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = if (highlight) color.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-        }
     }
 }
 

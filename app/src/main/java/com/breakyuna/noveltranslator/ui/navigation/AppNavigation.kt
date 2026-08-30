@@ -58,12 +58,21 @@ fun AppNavigation(
 
     // Top-Level navigation handler
     val onNavigateToTopLevel: (TopLevelDestination) -> Unit = { destination ->
-        navController.navigate(destination.route) {
-            popUpTo(navController.graph.findStartDestination().id) {
-                saveState = true
+        if (destination == TopLevelDestination.BOOKSHELF) {
+            navController.navigate(destination.route) {
+                popUpTo(AppDestination.Bookshelf.route) {
+                    inclusive = false
+                }
+                launchSingleTop = true
             }
-            launchSingleTop = true
-            restoreState = true
+        } else {
+            navController.navigate(destination.route) {
+                popUpTo(navController.graph.findStartDestination().id) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
         }
     }
 
