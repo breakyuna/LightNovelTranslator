@@ -219,6 +219,8 @@ fun BookWorkbenchDetailScreen(
                     when (selectedTab) {
                         WorkbenchTab.TASKS -> {
                             TasksAndControlTab(
+                                book = currentBook,
+                                editions = editions,
                                 chapters = chapters,
                                 targetEdition = currentTargetEdition,
                                 project = currentProject,
@@ -226,7 +228,9 @@ fun BookWorkbenchDetailScreen(
                                 systemLogs = systemLogs,
                                 providers = allProviders,
                                 viewModel = viewModel,
+                                onCreateEdition = { showCreateEditionDialog = true },
                                 onScanTerms = { showTermScannerDialog = true },
+                                onOpenReader = openSelectedReader,
                                 onRequestAiSplit = { aiSplitProvider = it },
                                 onSelectChapterAction = { chapterActionTarget = it }
                             )
@@ -301,13 +305,10 @@ fun BookWorkbenchDetailScreen(
                     .fillMaxSize()
                     .padding(padding)
             ) {
-                WorkbenchHeroCard(
+                WorkbenchHeroSummary(
                     book = currentBook,
                     editions = editions,
                     selectedEdition = currentTargetEdition,
-                    project = currentProject,
-                    providers = allProviders,
-                    viewModel = viewModel,
                     onSelectEdition = { selectedTargetEditionId = it },
                     onCreateEdition = { showCreateEditionDialog = true }
                 )
@@ -846,13 +847,10 @@ private fun WideWorkspaceHeader(
 }
 
 @Composable
-private fun WorkbenchHeroCard(
+private fun WorkbenchHeroSummary(
     book: BookEntity,
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
-    project: TranslationProjectV2Entity?,
-    providers: List<ApiProviderEntity>,
-    viewModel: AppViewModel,
     onSelectEdition: (Long) -> Unit,
     onCreateEdition: () -> Unit
 ) {
@@ -860,60 +858,16 @@ private fun WorkbenchHeroCard(
         color = MaterialTheme.colorScheme.surfaceContainer,
         modifier = Modifier.fillMaxWidth()
     ) {
-        BoxWithConstraints(
+        BookHeroSummary(
+            book = book,
+            editions = editions,
+            selectedEdition = selectedEdition,
+            onSelectEdition = onSelectEdition,
+            onCreateEdition = onCreateEdition,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-        ) {
-            val showConfigBesideBook = maxWidth >= 720.dp
-            if (showConfigBesideBook) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    BookHeroSummary(
-                        book = book,
-                        editions = editions,
-                        selectedEdition = selectedEdition,
-                        onSelectEdition = onSelectEdition,
-                        onCreateEdition = onCreateEdition,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ModelStyleConfigurationCard(
-                        book = book,
-                        editions = editions,
-                        targetEdition = selectedEdition,
-                        project = project,
-                        providers = providers,
-                        viewModel = viewModel,
-                        compact = false,
-                        modifier = Modifier.widthIn(min = 300.dp, max = 420.dp)
-                    )
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BookHeroSummary(
-                        book = book,
-                        editions = editions,
-                        selectedEdition = selectedEdition,
-                        onSelectEdition = onSelectEdition,
-                        onCreateEdition = onCreateEdition,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    ModelStyleConfigurationCard(
-                        book = book,
-                        editions = editions,
-                        targetEdition = selectedEdition,
-                        project = project,
-                        providers = providers,
-                        viewModel = viewModel,
-                        compact = false,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        )
     }
 }
 
@@ -1026,6 +980,8 @@ private fun BookHeroSummary(
 
 @Composable
 private fun TasksAndControlTab(
+    book: BookEntity,
+    editions: List<EditionEntity>,
     chapters: List<LogicalChapterEntity>,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
@@ -1033,7 +989,9 @@ private fun TasksAndControlTab(
     systemLogs: List<SystemLogEntry>,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
+    onCreateEdition: () -> Unit,
     onScanTerms: () -> Unit,
+    onOpenReader: () -> Unit,
     onRequestAiSplit: (ApiProviderEntity) -> Unit,
     onSelectChapterAction: (LogicalChapterEntity) -> Unit
 ) {
@@ -1049,37 +1007,66 @@ private fun TasksAndControlTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         if (targetEdition == null || project == null) {
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
+            val isAiTranslationEdition = targetEdition?.type == EditionType.AI_TRANSLATION.name
+            if (isAiTranslationEdition && targetEdition != null) {
+                item {
+                    ModelStyleConfigurationCard(
+                        book = book,
+                        editions = editions,
+                        targetEdition = targetEdition,
+                        project = null,
+                        providers = providers,
+                        viewModel = viewModel,
+                        compact = false
+                    )
+                }
+            } else {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
                     ) {
-                        Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
-                        Text(
-                            "当前版本尚未配置翻译任务",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            "请在上方模型配置卡中选择供应商、模型并保存任务；保存后可在本页直接调整翻译范围与批处理规模。",
-                            style = MaterialTheme.typography.bodySmall,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val splitProvider = providers.firstOrNull()
-                        OutlinedButton(
-                            onClick = { splitProvider?.let(onRequestAiSplit) },
-                            enabled = splitProvider != null && targetEdition?.type != EditionType.AI_TRANSLATION.name,
-                            modifier = Modifier.fillMaxWidth()
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(Icons.Default.AutoAwesome, null, Modifier.size(17.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("AI 识别 TXT 章节边界")
+                            Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+                            Text(
+                                if (targetEdition == null) "未选择版本" else "当前选中为“${targetEdition.name}”（原版）",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "大模型翻译需要基于新建的 AI 译本工程。点击下方按钮新建 AI 译本以配置模型与翻译参数。",
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = onCreateEdition,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.AddCircleOutline, null, Modifier.size(17.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("新建 AI 译本")
+                                }
+                                val splitProvider = providers.firstOrNull()
+                                if (splitProvider != null && targetEdition?.type != EditionType.AI_TRANSLATION.name) {
+                                    OutlinedButton(
+                                        onClick = { onRequestAiSplit(splitProvider) },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(Icons.Default.AutoAwesome, null, Modifier.size(17.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("AI 识别章节")
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1102,7 +1089,7 @@ private fun TasksAndControlTab(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     "翻译任务运行状态",
                                     style = MaterialTheme.typography.titleMedium,
@@ -1236,7 +1223,7 @@ private fun TasksAndControlTab(
                                 else -> {
                                     Button(
                                         onClick = { viewModel.runBookTranslation(project.id) },
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier.weight(1f)
                                     ) {
                                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
@@ -1244,11 +1231,45 @@ private fun TasksAndControlTab(
                                     }
                                 }
                             }
-
                         }
 
+                        // Quick actions row: Scan terms, Read
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onScanTerms,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Spellcheck, null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("扫描术语", maxLines = 1)
+                            }
+                            OutlinedButton(
+                                onClick = onOpenReader,
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text("阅读译文", maxLines = 1)
+                            }
+                        }
                     }
                 }
+            }
+
+            // Model & Style Configuration Card
+            item {
+                ModelStyleConfigurationCard(
+                    book = book,
+                    editions = editions,
+                    targetEdition = targetEdition,
+                    project = project,
+                    providers = providers,
+                    viewModel = viewModel,
+                    compact = false
+                )
             }
 
             item {
