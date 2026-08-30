@@ -3112,6 +3112,7 @@ private fun LogsAndHistoryTab(
                         }
                     } else {
                         items(requestLogs, key = { "req_${it.id}" }) { log ->
+                            val status = requestLogStatus(log)
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp),
@@ -3124,8 +3125,13 @@ private fun LogsAndHistoryTab(
                                     ) {
                                         Text(log.operation, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                                         Text(
-                                            if (log.isSuccess) "成功 (${log.durationMs}ms)" else "失败",
-                                            color = if (log.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                            when (status) {
+                                                RequestLogStatus.SUCCESS -> "成功 (${log.durationMs}ms)"
+                                                RequestLogStatus.WARNING -> "需修复"
+                                                RequestLogStatus.INFO -> "信息"
+                                                RequestLogStatus.FAILURE -> "失败"
+                                            },
+                                            color = requestLogStatusColor(status),
                                             style = MaterialTheme.typography.labelSmall
                                         )
                                     }
@@ -3135,7 +3141,7 @@ private fun LogsAndHistoryTab(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     if (!log.errorMessage.isNullOrBlank()) {
-                                        Text(log.errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                        Text(log.errorMessage, color = requestLogStatusColor(status), style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -3220,6 +3226,7 @@ private fun DebugDiagnosticsTab(
             item { Text("此任务没有 Debug API 内容；可能是在开启 Debug 模式之前执行的。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
             items(requestLogs, key = { "debug_req_${it.id}" }) { log ->
+                val status = requestLogStatus(log)
                 val expanded = expandedLogId == log.id
                 val detail by produceState<PlatformRequestLogEntity?>(initialValue = null, log.id, expanded) {
                     if (expanded) value = viewModel.getRequestLogDetail(log.id)
@@ -3228,11 +3235,24 @@ private fun DebugDiagnosticsTab(
                     Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(log.operation, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Text(if (log.isSuccess) "成功" else "失败", color = if (log.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
+                            Text(
+                                when (status) {
+                                    RequestLogStatus.SUCCESS -> "成功"
+                                    RequestLogStatus.WARNING -> "需修复"
+                                    RequestLogStatus.INFO -> "信息"
+                                    RequestLogStatus.FAILURE -> "失败"
+                                },
+                                color = requestLogStatusColor(status)
+                            )
                         }
                         Text("耗时 ${log.durationMs}ms · 尝试 ${log.attemptCount} 次 · ${log.promptTokens + log.completionTokens} Tokens", style = MaterialTheme.typography.bodySmall)
-                        if (!log.isSuccess) {
-                            Text("失败原因：${debugFailureExplanation(log)}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        if (status != RequestLogStatus.SUCCESS) {
+                            Text(
+                                if (status == RequestLogStatus.WARNING) "诊断：${debugFailureExplanation(log)}"
+                                else "失败原因：${debugFailureExplanation(log)}",
+                                color = requestLogStatusColor(status),
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                         if (expanded) {
                             DebugTextBlock("重试轨迹", detail?.attemptTrace)
@@ -3272,6 +3292,26 @@ private fun debugFailureExplanation(log: PlatformRequestLogSummary): String = wh
     LlmErrorCategory.QUALITY_REJECTED.name -> "QA 校验发现缺段、图片标记变化、术语不一致或异常内容：${log.errorMessage.orEmpty()}"
     LlmErrorCategory.NETWORK_UNAVAILABLE.name, LlmErrorCategory.TIMEOUT.name -> "网络连接或请求超时，自动重试后仍未成功。${log.errorMessage.orEmpty()}"
     else -> log.errorMessage ?: log.errorCategory ?: "未返回更具体的失败信息"
+}
+
+private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
+    // Older rows predate the status column. Infer repair diagnostics from their operation name so
+    // an existing QA_REPAIR_TRIGGERED record does not remain a red failure after migration.
+    if (log.operation.contains("TRIGGERED", ignoreCase = true) ||
+        log.operation.contains("SKIPPED", ignoreCase = true) ||
+        log.operation.contains("FALLBACK", ignoreCase = true)
+    ) return RequestLogStatus.WARNING
+    val parsed = runCatching { RequestLogStatus.valueOf(log.status) }.getOrNull()
+    return if (parsed == RequestLogStatus.SUCCESS && !log.isSuccess) RequestLogStatus.FAILURE
+    else parsed ?: if (log.isSuccess) RequestLogStatus.SUCCESS else RequestLogStatus.FAILURE
+}
+
+@Composable
+private fun requestLogStatusColor(status: RequestLogStatus): Color = when (status) {
+    RequestLogStatus.SUCCESS -> Color(0xFF2E7D32)
+    RequestLogStatus.WARNING -> Color(0xFFFFA000)
+    RequestLogStatus.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    RequestLogStatus.FAILURE -> MaterialTheme.colorScheme.error
 }
 
 // Dialogs

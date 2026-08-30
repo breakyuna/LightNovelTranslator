@@ -114,11 +114,23 @@ object TranslationProtocol {
         styleGuide: String,
         fallback: String = systemPrompt(sourceLanguage, targetLanguage)
     ): String {
-        return template.trim().ifBlank { fallback }
-            .replace(SOURCE_LANGUAGE_PLACEHOLDER, sourceLanguage)
-            .replace(TARGET_LANGUAGE_PLACEHOLDER, targetLanguage)
-            .replace(STYLE_GUIDE_PLACEHOLDER, styleGuide)
+        val rendered = template.trim().ifBlank { fallback }
+            .replace(SOURCE_LANGUAGE_PLACEHOLDER, escape(sourceLanguage))
+            .replace(TARGET_LANGUAGE_PLACEHOLDER, escape(targetLanguage))
+            .replace(STYLE_GUIDE_PLACEHOLDER, escape(styleGuide.take(2_000)))
+        // User-editable templates remain supported, but these protocol invariants cannot be
+        // removed by deleting text from the editor. Keeping them at the end also makes the final
+        // rendered prompt auditable in Debug mode.
+        return rendered + "\n\n" + nonNegotiableProtocolRules()
     }
+
+    private fun nonNegotiableProtocolRules(): String = """
+        [NON_NEGOTIABLE_PROTOCOL]
+        Translate every supplied segment completely and return only the protocol response.
+        Preserve each Chapter and Segment ID exactly once and in source order; never merge, split,
+        reorder, omit, duplicate, or return empty segments. Preserve protected markers byte-for-byte,
+        XML-escape text inside S elements, and do not output explanations outside TRANSLATION/META.
+    """.trimIndent()
 
     fun renderUserPromptTemplate(template: String, body: String): String {
         val normalized = template.trim()
@@ -432,11 +444,12 @@ object TokenBudgetPlanner {
         fixedContextTokens: Long,
         outputRatio: Double = 1.35,
         metaReserve: Long = 800,
-        safetyRatio: Double = 0.12
+        safetyRatio: Double = 0.12,
+        fixedOutputTokens: Long = 0
     ): TokenBudgetPlan {
         require(userMaxBatchSize in 1..5)
         val safety = (maxContextTokens * safetyRatio).toLong().coerceAtLeast(512)
-        val available = (maxContextTokens.toLong() - fixedContextTokens - metaReserve - safety).coerceAtLeast(0)
+        val available = (maxContextTokens.toLong() - fixedContextTokens - metaReserve - fixedOutputTokens - safety).coerceAtLeast(0)
         var used = 0L
         var accepted = 0
         for (source in sourceTokenEstimates.take(userMaxBatchSize)) {
@@ -468,6 +481,15 @@ data class QaResult(
     val problems: List<String>,
     val glossaryStatus: GlossaryQaStatus = GlossaryQaStatus.NONE,
     val issues: List<QaIssue> = emptyList()
+)
+
+enum class QaRepairMode { LOCAL_SEGMENTS, FULL_CHAPTER }
+
+/** The smallest safe unit that a repair request may resend. */
+data class QaRepairScope(
+    val mode: QaRepairMode,
+    val segmentIds: Set<Int> = emptySet(),
+    val reasons: List<String> = emptyList()
 )
 
 object DeterministicTranslationQa {
@@ -571,6 +593,59 @@ object DeterministicTranslationQa {
             glossaryStatus = glossaryStatus(activeGlossary, source, translated),
             issues = issues.distinct()
         )
+    }
+
+    fun repairScope(
+        source: ProtocolChapter,
+        translated: ParsedTranslationChapter?,
+        qa: QaResult,
+        mandatoryTerms: List<LexiconEntryEntity> = emptyList()
+    ): QaRepairScope {
+        val reasons = qa.problems.distinct()
+        if (translated == null) {
+            return QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = reasons)
+        }
+
+        val expected = source.segments.mapTo(linkedSetOf<Int>()) { it.shortId }
+        val actual = translated.segments.keys
+        if (translated.duplicateSegmentIds.isNotEmpty() || actual.any { it !in expected }) {
+            return QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = reasons)
+        }
+
+        val globalFullChapterCodes = setOf(
+            "STRUCTURE_MISSING_CHAPTER",
+            "REPEATED_TRANSLATED_SEGMENTS"
+        )
+        if (qa.issues.any { it.code in globalFullChapterCodes }) {
+            return QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = reasons)
+        }
+
+        val affected = linkedSetOf<Int>()
+        expected.filterNot { it in actual }.forEach(affected::add)
+        qa.issues.mapNotNull { it.segmentId }.forEach(affected::add)
+
+        // GLOSSARY_MISSING is reported at chapter level because a target term may legitimately
+        // move across punctuation. For repair, resend every source segment where the confirmed
+        // source term is present and the local target does not contain it.
+        mandatoryTerms
+            .filter(LexiconEntryPolicy::isEligibleForTranslation)
+            .distinctBy { LexiconCandidateVoting.normalizeSourceTerm(it.sourceTerm) }
+            .forEach { entry ->
+                source.segments.forEach { segment ->
+                    if (LexiconTermMatcher.matchesSource(entry, segment.originalText) &&
+                        !LexiconTermMatcher.matchesTarget(entry, translated.segments[segment.shortId].orEmpty())
+                    ) {
+                        affected += segment.shortId
+                    }
+                }
+            }
+
+        if (affected.isEmpty()) {
+            // A newly added QA rule must never silently skip a repair just because it forgot to
+            // attach a segment id. The safe fallback is one bounded chapter retry.
+            return QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = reasons)
+        }
+        return QaRepairScope(QaRepairMode.LOCAL_SEGMENTS, affected, reasons)
     }
 
     private fun glossaryStatus(

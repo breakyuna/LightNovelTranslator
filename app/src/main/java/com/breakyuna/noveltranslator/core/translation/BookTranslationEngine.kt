@@ -70,7 +70,8 @@ class BookTranslationEngine(
     private data class ChapterRepairOutcome(
         val chapter: ParsedTranslationChapter?,
         val promptTokens: Long,
-        val completionTokens: Long
+        val completionTokens: Long,
+        val metaJson: String? = null
     )
 
     private data class DraftReviewOutcome(
@@ -84,6 +85,11 @@ class BookTranslationEngine(
         // Review batches share the run with translation batches while remaining easy to filter in
         // the task center. Negative indexes are reserved for isolated translation retries.
         const val POST_DRAFT_REVIEW_BATCH_OFFSET = 1_000_000
+        // A chapter with hundreds of XML Segment tags is structurally difficult even when its
+        // text fits the provider context window. Keep the normal one-request path for ordinary
+        // chapters, but partition dense chapters before the model starts dropping IDs.
+        const val MAX_PROTOCOL_SEGMENTS_PER_REQUEST = 48
+        const val MIN_REQUEST_OUTPUT_TOKENS = 1_024
         val TERMINAL_PROJECT_STATES = setOf("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
     }
 
@@ -248,15 +254,34 @@ class BookTranslationEngine(
                 while (true) {
                     val considered = sourceChapters.take(actual)
                     val candidateContext = prepareContext(project, considered)
-                    val fixedTokens = fixedContextTokens(candidateContext)
+                    // Budget the final rendered request, including the editable Prompt Profile,
+                    // protocol tags and the non-removable system rules. The old estimate only
+                    // counted ContextPackage fields and could silently under-budget large custom
+                    // templates or dense Segment lists.
+                    val sourcePayloadTokens = sourceTokens.take(actual).sum()
+                    val fixedTokens = exactFixedContextTokens(
+                        project = project,
+                        promptProfile = promptProfile,
+                        context = candidateContext,
+                        sources = considered,
+                        sourcePayloadTokens = sourcePayloadTokens
+                    )
                     val candidateBudget = TokenBudgetPlanner.plan(
                         maxContextTokens = provider.maxContextTokens,
                         userMaxBatchSize = project.maxBatchChapters,
                         sourceTokenEstimates = sourceTokens.take(actual),
-                        fixedContextTokens = fixedTokens
+                        fixedContextTokens = fixedTokens,
+                        fixedOutputTokens = protocolOutputOverhead(considered)
                     )
                     selectedContext = candidateContext
                     selectedBudget = candidateBudget
+                    // translateOversizedChapter operates on exactly one chapter. Shrink a mixed
+                    // batch before leaving the planner loop so a dense later chapter cannot be
+                    // skipped when the caller advances the cursor by `actual`.
+                    if (considered.size > 1 && considered.any { it.segments.size > MAX_PROTOCOL_SEGMENTS_PER_REQUEST }) {
+                        actual = 1
+                        continue
+                    }
                     if (candidateBudget.requiresSingleChapterChunking) {
                         if (actual == 1) break
                         actual = 1
@@ -287,7 +312,7 @@ class BookTranslationEngine(
                     projectId = project.id,
                     chapterIndex = batchSources.first().chapterIndex
                 )
-                if (budget.requiresSingleChapterChunking) {
+                if (budget.requiresSingleChapterChunking || batchSources.any { it.segments.size > MAX_PROTOCOL_SEGMENTS_PER_REQUEST }) {
                     translateOversizedChapter(
                         project,
                         provider,
@@ -375,7 +400,8 @@ class BookTranslationEngine(
                         durationMs = 0,
                         errorCategory = error::class.simpleName ?: "UNEXPECTED_ERROR",
                         errorMessage = failureReport,
-                        isSuccess = false
+                        isSuccess = false,
+                        status = RequestLogStatus.FAILURE.name
                     )
                 )
                 SystemLogger.error("TRANSLATION", "❌ 翻译任务异常终止: ${error.message}", details = failureReport, projectId = project.id)
@@ -461,18 +487,80 @@ class BookTranslationEngine(
         )
     }
 
-    private fun fixedContextTokens(context: ContextPackage): Long {
-        val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
-            "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
+    private fun exactFixedContextTokens(
+        project: TranslationProjectV2Entity,
+        promptProfile: PromptProfileDraft,
+        context: ContextPackage,
+        sources: List<ProtocolChapter>,
+        sourcePayloadTokens: Long
+    ): Long {
+        val system = TranslationProtocol.translationSystemPrompt(
+            promptProfile,
+            project.sourceLanguage,
+            project.targetLanguage,
+            project.styleGuide
+        )
+        val user = TranslationProtocol.translationUserPrompt(promptProfile, context, sources)
+        return (TokenBudgetPlanner.estimate(system + user) - sourcePayloadTokens).coerceAtLeast(0)
+    }
+
+    /** Counts structural output tokens separately from the text expansion ratio. */
+    private fun protocolOutputOverhead(sources: List<ProtocolChapter>): Long {
+        val shape = buildString {
+            append("<TRANSLATION>\n")
+            sources.forEach { chapter ->
+                append("<C id=\"").append(chapter.shortId).append("\">\n")
+                chapter.segments.forEach { segment ->
+                    append("<S id=\"").append(segment.shortId).append("\"></S>\n")
+                }
+                append("</C>\n")
+            }
+            append("</TRANSLATION>\n<META>{}</META>")
         }
-        val historyText = buildString {
-            append(context.relatedStoryMemory.joinToString("\n") { "${it.factKey}: ${it.factValue} [entities=${it.entities}]" })
-            append('\n').append(context.previousChapterOriginalTail)
-            append('\n').append(context.previousChapterTranslationTail)
+        return TokenBudgetPlanner.estimate(shape)
+    }
+
+    private fun dynamicOutputLimit(provider: ApiProviderEntity, systemPrompt: String, userPrompt: String): Int {
+        val promptTokens = TokenBudgetPlanner.estimate(systemPrompt + userPrompt)
+        val safety = (provider.maxContextTokens * 0.12).toLong().coerceAtLeast(512)
+        val remaining = (provider.maxContextTokens.toLong() - promptTokens - safety)
+        // Keep at least one output token for providers that reject zero, but never inflate a
+        // small/negative remainder to 1,024: an oversized custom prompt must be rejected by the
+        // local preflight below instead of being sent with an impossible max_tokens value.
+        return minOf(outputLimit(provider.maxContextTokens).toLong(), remaining.coerceAtLeast(1L))
+            .toInt()
+    }
+
+    /**
+     * Prevents a user-editable prompt profile from reaching a provider when its estimated input
+     * already consumes the complete context window. This is intentionally a local, non-billable
+     * failure; retrying the same oversized request cannot help and would only waste a call.
+     */
+    private suspend fun executeCompletionSafely(request: LlmRequest): LlmResult {
+        val promptTokens = TokenBudgetPlanner.estimate(request.systemPrompt + request.userPrompt)
+        val requestedOutput = request.maxTokens?.toLong()?.coerceAtLeast(0L)
+            ?: outputLimit(request.provider.maxContextTokens).toLong()
+        val safety = (request.provider.maxContextTokens * 0.12).toLong().coerceAtLeast(512L)
+        val outputTooSmall = requestedOutput < MIN_REQUEST_OUTPUT_TOKENS
+        if (outputTooSmall || promptTokens + requestedOutput + safety > request.provider.maxContextTokens.toLong()) {
+            return LlmResult(
+                text = "",
+                // No provider request was made, so this preflight failure is not billable and
+                // must not inflate the run's usage counters.
+                promptTokens = 0,
+                completionTokens = 0,
+                isSuccess = false,
+                errorCategory = LlmErrorCategory.CONTEXT_OVERFLOW,
+                errorMessage = if (outputTooSmall) {
+                    "提示词剩余输出预算不足 ${MIN_REQUEST_OUTPUT_TOKENS} tokens（当前 ${requestedOutput}）"
+                } else {
+                    "提示词已超过模型上下文预算（${promptTokens} + ${requestedOutput} + ${safety} safety tokens）"
+                },
+                usageSource = UsageSource.ESTIMATED,
+                operation = request.operation
+            )
         }
-        return TokenBudgetPlanner.estimate(
-            context.stablePrefix + context.recentContext + historyText + matchedGlossaryText
-        ) + 700
+        return gateway.executeCompletion(request)
     }
 
     private suspend fun selectTargets(project: TranslationProjectV2Entity): List<LogicalChapterEntity> {
@@ -704,22 +792,24 @@ class BookTranslationEngine(
             projectId = project.id,
             chapterIndex = firstIndex
         )
+        val systemPrompt = TranslationProtocol.translationSystemPrompt(
+            promptProfile,
+            project.sourceLanguage,
+            project.targetLanguage,
+            project.styleGuide
+        )
+        val userPrompt = TranslationProtocol.translationUserPrompt(promptProfile, context, sources)
         val request = LlmRequest(
-                provider = provider,
-                systemPrompt = TranslationProtocol.translationSystemPrompt(
-                    promptProfile,
-                    project.sourceLanguage,
-                    project.targetLanguage,
-                    project.styleGuide
-                ),
-                userPrompt = TranslationProtocol.translationUserPrompt(promptProfile, context, sources),
-                temperature = provider.temperature,
-                maxTokens = outputLimit(provider.maxContextTokens),
-                operation = "BOOK_TRANSLATION",
-                promptCacheHint = cacheHint,
-                controlSignal = controls[project.id]?.signal
-            )
-        val result = gateway.executeCompletion(request)
+            provider = provider,
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            temperature = provider.temperature,
+            maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
+            operation = "BOOK_TRANSLATION",
+            promptCacheHint = cacheHint,
+            controlSignal = controls[project.id]?.signal
+        )
+        val result = executeCompletionSafely(request)
         recordUsage(runId, batchId, provider, request, result)
         awaitCommitBoundary(project.id)
         // RetryingLlmGateway deliberately marks provider-truncated responses as unsuccessful so
@@ -829,12 +919,16 @@ class BookTranslationEngine(
         var failed = 0
         var totalPromptTokens = result.promptTokens
         var totalCompletionTokens = result.completionTokens
-        val successfulSources = mutableListOf<ProtocolChapter>()
+        val initialMetadataSources = mutableListOf<ProtocolChapter>()
+        val repairedMetadata = mutableListOf<Pair<ProtocolChapter, String?>>()
         sources.forEach { source ->
             val matchingChapters = completeParsed?.chapters.orEmpty().filter { it.shortId == source.shortId }
             var translated = matchingChapters.singleOrNull()?.let { restoreProtectedChapter(source, it) }
             var qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
+            var usedRepair = false
+            var repairMetaJson: String? = null
             if (!qa.accepted) {
+                val initialRepairScope = DeterministicTranslationQa.repairScope(source, translated, qa, mandatoryTerms)
                 SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动一次自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_TRIGGERED", qa.problems)
                 val repair = repairChapter(
@@ -846,12 +940,41 @@ class BookTranslationEngine(
                     source = source,
                     partial = translated,
                     promptProfile = promptProfile,
-                    problems = qa.problems
+                    problems = qa.problems,
+                    qa = qa,
+                    mandatoryTerms = mandatoryTerms
                 )
                 translated = repair.chapter
+                repairMetaJson = repair.metaJson
+                usedRepair = true
                 totalPromptTokens += repair.promptTokens
                 totalCompletionTokens += repair.completionTokens
                 qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
+                // A local response can be syntactically valid yet leave a different affected
+                // segment untouched. One bounded full-chapter fallback is safer than preserving
+                // an empty or numerically corrupted segment indefinitely.
+                if (!qa.accepted && initialRepairScope.mode == QaRepairMode.LOCAL_SEGMENTS) {
+                    recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_FALLBACK_TRIGGERED", qa.problems)
+                    val fallback = repairChapter(
+                        project = project,
+                        provider = provider,
+                        runId = runId,
+                        batchId = batchId,
+                        context = context,
+                        source = source,
+                        partial = translated,
+                        promptProfile = promptProfile,
+                        problems = qa.problems,
+                        qa = qa,
+                        mandatoryTerms = mandatoryTerms,
+                        forceFullChapter = true
+                    )
+                    translated = fallback.chapter
+                    repairMetaJson = fallback.metaJson ?: repairMetaJson
+                    totalPromptTokens += fallback.promptTokens
+                    totalCompletionTokens += fallback.completionTokens
+                    qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
+                }
             }
             SystemLogger.info(
                 "QA_CHECK",
@@ -862,7 +985,7 @@ class BookTranslationEngine(
             if (qa.accepted && translated != null) {
                 awaitCommitBoundary(project.id)
                 commitChapter(project, source, translated)
-                successfulSources += source
+                if (usedRepair) repairedMetadata += source to repairMetaJson else initialMetadataSources += source
                 SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
             } else {
                 failed++
@@ -870,7 +993,14 @@ class BookTranslationEngine(
                 SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
             }
         }
-        if (successfulSources.isNotEmpty()) applyMetadata(project, successfulSources, completeParsed?.metaJson)
+        if (initialMetadataSources.isNotEmpty()) {
+            applyMetadata(project, initialMetadataSources, completeParsed?.metaJson)
+        }
+        repairedMetadata.forEach { (source, metaJson) ->
+            // A repair response is authoritative for the chapter it repaired. If it omitted META,
+            // applyMetadata records PENDING_REPAIR without invalidating the accepted translation.
+            applyMetadata(project, listOf(source), metaJson)
+        }
         val totalCost = TokenCalculator.calculateCost(
             totalPromptTokens,
             totalCompletionTokens,
@@ -956,26 +1086,25 @@ class BookTranslationEngine(
                 previousChapterOriginalTail = previousTails.first,
                 previousChapterTranslationTail = previousTails.second
             )
-            val matchedGlossaryText = context.matchedLexicon.joinToString("\n") {
-                "${it.sourceTerm} => ${it.targetTerm} ${it.notes}"
-            }
-            val historyText = buildString {
-                append(context.relatedStoryMemory.joinToString("\n") { "${it.factKey}: ${it.factValue} [entities=${it.entities}]" })
-                append('\n').append(context.previousChapterOriginalTail)
-                append('\n').append(context.previousChapterTranslationTail)
-            }
-            val fixedTokens = TokenBudgetPlanner.estimate(
-                context.stablePrefix + context.recentContext + historyText + matchedGlossaryText
-            ) + 700
             val reviewTokens = source.segments.sumOf { segment ->
                 TokenBudgetPlanner.estimate(segment.text) +
                     TokenBudgetPlanner.estimate(currentDraft.segments[segment.shortId].orEmpty())
             }
+            val reviewSystemPrompt = TranslationProtocol.polishSystemPrompt(
+                promptProfile,
+                project.sourceLanguage,
+                project.targetLanguage,
+                project.styleGuide
+            )
+            val reviewUserPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, currentDraft)
+            val fixedTokens = (TokenBudgetPlanner.estimate(reviewSystemPrompt + reviewUserPrompt) - reviewTokens)
+                .coerceAtLeast(0)
             val budget = TokenBudgetPlanner.plan(
                 maxContextTokens = provider.maxContextTokens,
                 userMaxBatchSize = 1,
                 sourceTokenEstimates = listOf(reviewTokens),
-                fixedContextTokens = fixedTokens
+                fixedContextTokens = fixedTokens,
+                fixedOutputTokens = protocolOutputOverhead(listOf(source))
             )
             if (budget.requiresSingleChapterChunking || budget.actualBatchSize < 1) {
                 val reason = "章节过长，无法在单次二次审校预算内安全处理，已保留初稿"
@@ -1054,25 +1183,27 @@ class BookTranslationEngine(
         mandatoryTerms: List<LexiconEntryEntity>,
         promptProfile: PromptProfileDraft
     ): DraftReviewOutcome {
+        val systemPrompt = TranslationProtocol.polishSystemPrompt(
+            promptProfile,
+            project.sourceLanguage,
+            project.targetLanguage,
+            project.styleGuide
+        )
+        val userPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, current)
         val request = LlmRequest(
             provider = provider,
-            systemPrompt = TranslationProtocol.polishSystemPrompt(
-                promptProfile,
-                project.sourceLanguage,
-                project.targetLanguage,
-                project.styleGuide
-            ),
-            userPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, current),
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
             // A second pass should be conservative even when the translation temperature is
             // configured higher for literary variation.
             temperature = provider.temperature.coerceAtMost(0.35f),
-            maxTokens = outputLimit(provider.maxContextTokens),
+            maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
             operation = "BOOK_POLISH",
             promptCacheHint = prepareCache(project, provider, context),
             controlSignal = controls[project.id]?.signal
         )
         val result = try {
-            gateway.executeCompletion(request)
+            executeCompletionSafely(request)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Throwable) {
@@ -1184,68 +1315,96 @@ class BookTranslationEngine(
         partial: ParsedTranslationChapter?,
         promptProfile: PromptProfileDraft,
         problems: List<String> = emptyList(),
-        previousChunkTranslationTail: String = ""
+        previousChunkTranslationTail: String = "",
+        qa: QaResult? = null,
+        mandatoryTerms: List<LexiconEntryEntity> = emptyList(),
+        forceFullChapter: Boolean = false
     ): ChapterRepairOutcome {
-        val missing = source.segments.filter { partial?.segments?.containsKey(it.shortId) != true }
-        val hasDuplicateIds = partial?.duplicateSegmentIds?.isNotEmpty() == true
-        // Duplicate IDs cannot be repaired by filling only missing segments: request the complete
-        // chapter so a clean response can replace the malformed structure atomically.
-        val retrySource = if (missing.isNotEmpty() && partial != null && !hasDuplicateIds) {
-            source.copy(segments = missing)
+        val scope = if (forceFullChapter) {
+            QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = problems)
+        } else {
+            qa?.let { DeterministicTranslationQa.repairScope(source, partial, it, mandatoryTerms) }
+                ?: QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = problems)
+        }
+        val retrySource = if (scope.mode == QaRepairMode.LOCAL_SEGMENTS && partial != null) {
+            source.copy(segments = source.segments.filter { it.shortId in scope.segmentIds })
         } else {
             source
         }
+        if (retrySource.segments.isEmpty()) {
+            return ChapterRepairOutcome(partial, 0, 0)
+        }
+        val systemPrompt = TranslationProtocol.translationSystemPrompt(
+            promptProfile,
+            project.sourceLanguage,
+            project.targetLanguage,
+            project.styleGuide
+        )
+        val userPrompt = TranslationProtocol.repairUserPrompt(
+            promptProfile,
+            context,
+            listOf(retrySource),
+            problems,
+            previousChunkTranslationTail
+        )
         val request = LlmRequest(
-                provider,
-                TranslationProtocol.translationSystemPrompt(
-                    promptProfile,
-                    project.sourceLanguage,
-                    project.targetLanguage,
-                    project.styleGuide
-                ),
-                TranslationProtocol.repairUserPrompt(
-                    promptProfile,
-                    context,
-                    listOf(retrySource),
-                    problems,
-                    previousChunkTranslationTail
-                ),
-                provider.temperature,
-                outputLimit(provider.maxContextTokens),
-                "CHAPTER_REPAIR",
-                prepareCache(project, provider, context),
-                controls[project.id]?.signal
-            )
-        val retry = gateway.executeCompletion(request)
+            provider = provider,
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            temperature = provider.temperature.coerceIn(0f, 0.2f),
+            maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
+            operation = "CHAPTER_REPAIR",
+            promptCacheHint = prepareCache(project, provider, context),
+            controlSignal = controls[project.id]?.signal
+        )
+        val retry = executeCompletionSafely(request)
         recordUsage(runId, batchId, provider, request, retry)
         awaitCommitBoundary(project.id)
         val repairedResponse = runCatching { TranslationProtocol.parse(retry.text) }.getOrNull()
         val canRecoverTruncated = retry.isTruncated && repairedResponse?.chapters?.isNotEmpty() == true
         if ((!retry.isSuccess && !canRecoverTruncated) || (retry.isTruncated && !canRecoverTruncated)) {
-            return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
+            return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens, repairedResponse?.metaJson)
         }
         val repaired = repairedResponse
             ?.chapters
             ?.filter { it.shortId == source.shortId }
             ?.singleOrNull()
             ?.let { restoreProtectedChapter(source, it) }
-            ?: return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens)
-        if (partial == null) return ChapterRepairOutcome(repaired, retry.promptTokens, retry.completionTokens)
+            ?: return ChapterRepairOutcome(partial, retry.promptTokens, retry.completionTokens, repairedResponse?.metaJson)
+        if (partial == null) return ChapterRepairOutcome(repaired, retry.promptTokens, retry.completionTokens, repairedResponse?.metaJson)
+        val sourceSegmentIds = source.segments.mapTo(hashSetOf<Int>()) { it.shortId }
         val merged = source.segments.mapNotNull { segment ->
-            (repaired.segments[segment.shortId] ?: partial.segments[segment.shortId])?.let { segment.shortId to it }
-        }.toMap(LinkedHashMap())
-        val repairedCoversSource = source.segments.all { it.shortId in repaired.segments }
+            val repairedText = repaired.segments[segment.shortId]
+            val partialText = partial.segments[segment.shortId]
+            // A returned replacement wins even when it is an empty string; preserving the old
+            // value here would keep the very EMPTY_SEGMENT that triggered the repair alive.
+            (if (segment.shortId in retrySource.segments.map { it.shortId }) repairedText else partialText)
+                ?.let { segment.shortId to it }
+        }.toMap(LinkedHashMap<Int, String>()).also { mergedSegments ->
+            // Do not silently discard an unexpected ID emitted by the repair response. Keeping it
+            // in the merged map lets deterministic QA reject the response instead of mistaking a
+            // malformed local repair for a clean chapter.
+            repaired.segments
+                .filterKeys { it !in sourceSegmentIds }
+                .forEach { (id, text) -> mergedSegments[id] = text }
+        }
+        val repairedCoversSource = retrySource.segments.all { it.shortId in repaired.segments }
         return ChapterRepairOutcome(
             chapter = partial.copy(
                 segments = merged,
                 duplicateSegmentIds = if (repairedCoversSource) {
-                    repaired.duplicateSegmentIds
+                    if (scope.mode == QaRepairMode.FULL_CHAPTER) {
+                        repaired.duplicateSegmentIds
+                    } else {
+                        partial.duplicateSegmentIds + repaired.duplicateSegmentIds
+                    }
                 } else {
                     partial.duplicateSegmentIds + repaired.duplicateSegmentIds
                 }
             ),
             promptTokens = retry.promptTokens,
-            completionTokens = retry.completionTokens
+            completionTokens = retry.completionTokens,
+            metaJson = repairedResponse?.metaJson
         )
     }
 
@@ -1273,7 +1432,9 @@ class BookTranslationEngine(
             }
             val piece = pieces.single()
             val size = TokenBudgetPlanner.estimate(piece.text)
-            if (current.isNotEmpty() && tokens + size > safeSourceBudget) {
+            if (current.isNotEmpty() &&
+                (tokens + size > safeSourceBudget || current.size >= MAX_PROTOCOL_SEGMENTS_PER_REQUEST)
+            ) {
                 groups += current
                 current = mutableListOf()
                 tokens = 0
@@ -1288,27 +1449,29 @@ class BookTranslationEngine(
         var previousChunkTranslationTail = ""
         groups.forEach { group ->
             val chunkSource = source.copy(segments = group)
-            val request = LlmRequest(
-                provider,
-                TranslationProtocol.translationSystemPrompt(
-                    promptProfile,
-                    project.sourceLanguage,
-                    project.targetLanguage,
-                    project.styleGuide
-                ),
-                TranslationProtocol.translationUserPrompt(
-                    promptProfile,
-                    context,
-                    listOf(chunkSource),
-                    previousChunkTranslationTail
-                ),
-                provider.temperature,
-                outputLimit(provider.maxContextTokens),
-                "OVERSIZED_CHAPTER_CHUNK",
-                prepareCache(project, provider, context),
-                controls[project.id]?.signal
+            val systemPrompt = TranslationProtocol.translationSystemPrompt(
+                promptProfile,
+                project.sourceLanguage,
+                project.targetLanguage,
+                project.styleGuide
             )
-            val result = gateway.executeCompletion(request)
+            val userPrompt = TranslationProtocol.translationUserPrompt(
+                promptProfile,
+                context,
+                listOf(chunkSource),
+                previousChunkTranslationTail
+            )
+            val request = LlmRequest(
+                provider = provider,
+                systemPrompt = systemPrompt,
+                userPrompt = userPrompt,
+                temperature = provider.temperature,
+                maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
+                operation = "OVERSIZED_CHAPTER_CHUNK",
+                promptCacheHint = prepareCache(project, provider, context),
+                controlSignal = controls[project.id]?.signal
+            )
+            val result = executeCompletionSafely(request)
             recordUsage(runId, batchId, provider, request, result)
             awaitCommitBoundary(project.id)
             prompt += result.promptTokens
@@ -1344,6 +1507,7 @@ class BookTranslationEngine(
                 ?.let { restoreProtectedChapter(chunkSource, it) }
             var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
             if (!qa.accepted) {
+                val initialRepairScope = DeterministicTranslationQa.repairScope(chunkSource, parsed, qa, mandatoryTerms)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
                 val repair = repairChapter(
                     project = project,
@@ -1355,12 +1519,36 @@ class BookTranslationEngine(
                     partial = parsed,
                     promptProfile = promptProfile,
                     problems = qa.problems,
+                    qa = qa,
+                    mandatoryTerms = mandatoryTerms,
                     previousChunkTranslationTail = previousChunkTranslationTail
                 )
                 parsed = repair.chapter
                 prompt += repair.promptTokens
                 completion += repair.completionTokens
                 qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
+                if (!qa.accepted && initialRepairScope.mode == QaRepairMode.LOCAL_SEGMENTS) {
+                    recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_FALLBACK_TRIGGERED", qa.problems)
+                    val fallback = repairChapter(
+                        project = project,
+                        provider = provider,
+                        runId = runId,
+                        batchId = batchId,
+                        context = context,
+                        source = chunkSource,
+                        partial = parsed,
+                        promptProfile = promptProfile,
+                        problems = qa.problems,
+                        qa = qa,
+                        mandatoryTerms = mandatoryTerms,
+                        previousChunkTranslationTail = previousChunkTranslationTail,
+                        forceFullChapter = true
+                    )
+                    parsed = fallback.chapter
+                    prompt += fallback.promptTokens
+                    completion += fallback.completionTokens
+                    qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
+                }
             }
             if (!qa.accepted || parsed == null) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
@@ -1601,6 +1789,11 @@ class BookTranslationEngine(
         // The provider call has already completed when this method is entered. Keep the audit
         // write durable even if the worker is cancelled during the short persistence window.
         val cost = TokenCalculator.calculateCost(result.promptTokens, result.completionTokens, provider.inputPricePerMillion, provider.outputPricePerMillion)
+        val status = when {
+            result.isSuccess -> RequestLogStatus.SUCCESS
+            result.isTruncated && result.text.isNotBlank() -> RequestLogStatus.WARNING
+            else -> RequestLogStatus.FAILURE
+        }
         val captureDebug = debugEnabled()
         val attemptTrace = if (captureDebug) result.attempts.joinToString("\n") { attempt ->
             buildString {
@@ -1626,7 +1819,8 @@ class BookTranslationEngine(
                 userPrompt = request.userPrompt.takeIf { captureDebug },
                 responseText = result.text.takeIf { captureDebug },
                 attemptTrace = attemptTrace,
-                isSuccess = result.isSuccess
+                isSuccess = result.isSuccess,
+                status = status.name
             )
         )
         tasks.getRun(runId)?.let { run ->
@@ -1653,7 +1847,13 @@ class BookTranslationEngine(
                 durationMs = 0,
                 errorCategory = LlmErrorCategory.QUALITY_REJECTED.name,
                 errorMessage = problems.distinct().joinToString("; "),
-                isSuccess = false
+                isSuccess = false,
+                status = when {
+                    operation.contains("TRIGGERED", ignoreCase = true) ||
+                        operation.contains("SKIPPED", ignoreCase = true) ||
+                        operation.contains("FALLBACK", ignoreCase = true) -> RequestLogStatus.WARNING.name
+                    else -> RequestLogStatus.FAILURE.name
+                }
             )
         )
     }

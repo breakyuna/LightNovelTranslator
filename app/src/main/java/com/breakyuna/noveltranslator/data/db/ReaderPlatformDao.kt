@@ -323,7 +323,7 @@ interface PlatformTaskDao {
     @Query("""
         SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
                cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,
-               isSuccess, timestamp
+               isSuccess, status, timestamp
         FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC
     """)
     fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>>

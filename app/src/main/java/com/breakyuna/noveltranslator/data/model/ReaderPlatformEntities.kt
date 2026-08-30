@@ -14,6 +14,7 @@ enum class ReviewStatus { CANDIDATE, CONFIRMED }
 enum class TranslationMode { FULL_BOOK, CHAPTER_RANGE, SEAMLESS }
 enum class MemoryOperation { ADD, UPDATE }
 enum class MemoryRepairState { READY, PENDING_REPAIR }
+enum class RequestLogStatus { SUCCESS, WARNING, FAILURE, INFO }
 enum class DisplayMode { TRANSLATION, ORIGINAL, BILINGUAL, QUICK_EDIT }
 enum class PagingMode { CONTINUOUS, HORIZONTAL, VERTICAL }
 enum class ReaderLayoutMode { CLEAN, STANDARD, WORKBENCH }
@@ -434,7 +435,9 @@ data class PlatformRequestLogEntity(
     val responseText: String? = null,
     val attemptTrace: String? = null,
     val isSuccess: Boolean,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    /** Separates informational/repair diagnostics from actual provider or final QA failures. */
+    @ColumnInfo(defaultValue = "'SUCCESS'") val status: String = RequestLogStatus.SUCCESS.name
 )
 
 /** Lightweight row for list screens; large debug payloads are loaded only after expansion. */
@@ -453,7 +456,8 @@ data class PlatformRequestLogSummary(
     val errorCategory: String?,
     val errorMessage: String?,
     val isSuccess: Boolean,
-    val timestamp: Long
+    val timestamp: Long,
+    val status: String = RequestLogStatus.SUCCESS.name
 )
 
 data class ShelfBook(

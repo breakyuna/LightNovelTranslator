@@ -195,6 +195,49 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun repairScope_includesEmptyAndMissingSegments_insteadOfKeepingAnEmptyValue() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "first"),
+                ProtocolSegment(2, 101, "missing"),
+                ProtocolSegment(3, 102, "empty")
+            )
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "第一", 3 to ""))
+        val qa = DeterministicTranslationQa.validate(source, translated)
+
+        val scope = DeterministicTranslationQa.repairScope(source, translated, qa)
+
+        assertEquals(QaRepairMode.LOCAL_SEGMENTS, scope.mode)
+        assertEquals(setOf(2, 3), scope.segmentIds)
+    }
+
+    @Test
+    fun repairScope_usesWholeChapterWhenIdsAreDuplicatedOrUnexpected() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "first"), ProtocolSegment(2, 101, "second"))
+        )
+        val duplicate = ParsedTranslationChapter(1, mapOf(1 to "第一", 2 to "第二"), duplicateSegmentIds = setOf(1))
+        val qa = QaResult(
+            accepted = false,
+            problems = listOf("STRUCTURE_DUPLICATE_SEGMENTS"),
+            issues = listOf(QaIssue("STRUCTURE_DUPLICATE_SEGMENTS", "duplicate response ids: 1"))
+        )
+
+        val scope = DeterministicTranslationQa.repairScope(source, duplicate, qa)
+
+        assertEquals(QaRepairMode.FULL_CHAPTER, scope.mode)
+    }
+
+    @Test
     fun polishPrompt_keepsSourceAndCurrentTranslationSeparateAndMasksProtectedText() {
         val sourceText = "Alice raised her sword [IMG:hero.png]."
         val protected = TranslationTextProtection.protect(sourceText)
@@ -243,6 +286,7 @@ class TranslationProtocolTest {
         assertFalse(system.contains(TranslationProtocol.SOURCE_LANGUAGE_PLACEHOLDER))
         assertTrue(user.contains("请先遵守这条额外规则。"))
         assertTrue(user.contains("[SOURCE]"))
+        assertTrue(system.contains("NON_NEGOTIABLE_PROTOCOL"))
     }
 
     @Test

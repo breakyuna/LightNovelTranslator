@@ -1178,6 +1178,7 @@ private fun LiveLogDialog(
 private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiStrings) {
     val formatter = remember { DateFormat.getTimeInstance(DateFormat.MEDIUM) }
     val errorText = listOfNotNull(log.errorCategory, log.errorMessage).filter { it.isNotBlank() }.joinToString(": ")
+    val status = requestLogStatus(log)
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1190,9 +1191,14 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
             verticalAlignment = Alignment.Top
         ) {
             Icon(
-                if (log.isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
+                when (status) {
+                    RequestLogStatus.SUCCESS -> Icons.Default.CheckCircle
+                    RequestLogStatus.WARNING -> Icons.Default.Warning
+                    RequestLogStatus.INFO -> Icons.Default.Info
+                    RequestLogStatus.FAILURE -> Icons.Default.Error
+                },
                 null,
-                tint = if (log.isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                tint = requestLogStatusColor(status),
                 modifier = Modifier.size(18.dp)
             )
             Column(Modifier.weight(1f)) {
@@ -1216,11 +1222,29 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (errorText.isNotBlank()) {
-                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    Text(errorText, color = requestLogStatusColor(status), style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
     }
+}
+
+private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
+    if (log.operation.contains("TRIGGERED", ignoreCase = true) ||
+        log.operation.contains("SKIPPED", ignoreCase = true) ||
+        log.operation.contains("FALLBACK", ignoreCase = true)
+    ) return RequestLogStatus.WARNING
+    val parsed = runCatching { RequestLogStatus.valueOf(log.status) }.getOrNull()
+    return if (parsed == RequestLogStatus.SUCCESS && !log.isSuccess) RequestLogStatus.FAILURE
+    else parsed ?: if (log.isSuccess) RequestLogStatus.SUCCESS else RequestLogStatus.FAILURE
+}
+
+@Composable
+private fun requestLogStatusColor(status: RequestLogStatus): Color = when (status) {
+    RequestLogStatus.SUCCESS -> MaterialTheme.colorScheme.primary
+    RequestLogStatus.WARNING -> Color(0xFFFFA000)
+    RequestLogStatus.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    RequestLogStatus.FAILURE -> MaterialTheme.colorScheme.error
 }
 
 @Composable
