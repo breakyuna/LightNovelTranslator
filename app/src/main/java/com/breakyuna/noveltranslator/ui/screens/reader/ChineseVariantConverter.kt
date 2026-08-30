@@ -21,6 +21,7 @@ private val traditionalToSimplified by lazy {
 }
 
 /** Converts only rendered text; image markers are split before this function is called. */
+@SuppressLint("NewApi")
 fun convertChineseVariant(text: String, useTraditionalChinese: Boolean): String =
     if (useTraditionalChinese) {
         simplifiedToTraditional?.transliterate(text) ?: text
