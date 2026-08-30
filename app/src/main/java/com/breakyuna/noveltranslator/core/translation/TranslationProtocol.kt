@@ -360,12 +360,16 @@ object TranslationProtocol {
     }
 
     fun parse(raw: String): ParsedTranslationResponse {
-        val translationMatch = Regex("<TRANSLATION>([\\s\\S]*?)</TRANSLATION>", RegexOption.IGNORE_CASE).find(raw)
+        val translationOpenPattern = "<TRANSLATION(?:\\s+[^>]*)?\\s*>"
+        val translationMatch = Regex("$translationOpenPattern([\\s\\S]*?)</TRANSLATION\\s*>", RegexOption.IGNORE_CASE).find(raw)
         val translationBody = translationMatch?.groupValues?.get(1) ?: run {
-            val open = Regex("<TRANSLATION>", RegexOption.IGNORE_CASE).find(raw)
+            val open = Regex(translationOpenPattern, RegexOption.IGNORE_CASE).find(raw)
             if (open == null) "" else raw.substring(open.range.last + 1)
         }
-        val chapters = Regex("<C\\s+id=\"?(\\d+)\"?[^>]*>([\\s\\S]*?)</C>", RegexOption.IGNORE_CASE)
+        val chapters = Regex(
+            "<C\\s+[^>]*?\\bid\\s*=\\s*[\"']?(\\d+)[\"']?[^>]*>([\\s\\S]*?)</C\\s*>",
+            RegexOption.IGNORE_CASE
+        )
             .findAll(translationBody)
             .mapNotNull { chapter ->
                 chapter.groupValues[1].toIntOrNull()?.let { chapterId ->
@@ -373,7 +377,10 @@ object TranslationProtocol {
                 }
             }.toMutableList()
         if (translationMatch == null) {
-            val lastOpen = Regex("<C\\s+id=\"?(\\d+)\"?[^>]*>", RegexOption.IGNORE_CASE).findAll(translationBody).lastOrNull()
+            val lastOpen = Regex(
+                "<C\\s+[^>]*?\\bid\\s*=\\s*[\"']?(\\d+)[\"']?[^>]*>",
+                RegexOption.IGNORE_CASE
+            ).findAll(translationBody).lastOrNull()
             val incompleteId = lastOpen?.groupValues?.get(1)?.toIntOrNull()
             if (lastOpen != null && incompleteId != null && chapters.none { it.shortId == incompleteId }) {
                 val tail = translationBody.substring(lastOpen.range.last + 1)
@@ -397,7 +404,10 @@ object TranslationProtocol {
     }
 
     private fun parseChapter(chapterId: Int, body: String): ParsedTranslationChapter {
-        val matches = Regex("<S\\s+id=\"?(\\d+)\"?[^>]*>([\\s\\S]*?)</S>", RegexOption.IGNORE_CASE)
+        val matches = Regex(
+            "<S\\s+[^>]*?\\bid\\s*=\\s*[\"']?(\\d+)[\"']?[^>]*>([\\s\\S]*?)</S\\s*>",
+            RegexOption.IGNORE_CASE
+        )
             .findAll(body)
             .toList()
         val validMatches = matches.mapNotNull { match ->
@@ -416,7 +426,7 @@ object TranslationProtocol {
 
     // Decode only entities present in the original response. A one-pass matcher preserves a
     // literal string such as &amp;quot; as &quot; instead of double-decoding it to a quote.
-    private val entityPattern = Regex("&(amp|lt|gt|quot|apos);")
+    private val entityPattern = Regex("&(amp|lt|gt|quot|apos|#\\d+|#x[0-9A-Fa-f]+);")
     private fun unescape(value: String): String = entityPattern.replace(value) { match ->
         when (match.groupValues[1]) {
             "amp" -> "&"
@@ -424,8 +434,18 @@ object TranslationProtocol {
             "gt" -> ">"
             "quot" -> "\""
             "apos" -> "'"
-            else -> match.value
+            else -> decodeNumericEntity(match.groupValues[1]) ?: match.value
         }
+    }
+
+    private fun decodeNumericEntity(entity: String): String? {
+        val codePoint = when {
+            entity.startsWith("#x", ignoreCase = true) -> entity.drop(2).toIntOrNull(16)
+            entity.startsWith('#') -> entity.drop(1).toIntOrNull()
+            else -> null
+        } ?: return null
+        if (!Character.isValidCodePoint(codePoint) || codePoint in 0xD800..0xDFFF) return null
+        return String(Character.toChars(codePoint))
     }
 }
 

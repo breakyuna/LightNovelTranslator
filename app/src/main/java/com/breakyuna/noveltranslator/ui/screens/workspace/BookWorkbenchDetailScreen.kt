@@ -48,6 +48,7 @@ import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.core.translation.TranslationProtocol
+import com.breakyuna.noveltranslator.core.translation.TranslationScopePlanner
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.components.TARGET_LANGUAGE_OPTIONS
@@ -79,6 +80,8 @@ fun BookWorkbenchDetailScreen(
         .collectAsState(initial = emptyList())
     val chapters by remember(bookId) { viewModel.bookPlatformRepo.observeChapters(bookId) }
         .collectAsState(initial = emptyList())
+    val readerProgress by remember(bookId) { viewModel.bookPlatformRepo.observeProgress(bookId) }
+        .collectAsState(initial = null)
     val translationProjects by remember(bookId) { viewModel.bookPlatformRepo.observeTranslationProjects(bookId) }
         .collectAsState(initial = emptyList())
     val allRuns by remember(bookId) { viewModel.observeRunsByBook(bookId) }
@@ -106,6 +109,18 @@ fun BookWorkbenchDetailScreen(
 
     val currentTargetEdition = editions.firstOrNull { it.id == selectedTargetEditionId }
     val currentProject = translationProjects.firstOrNull { it.targetEditionId == selectedTargetEditionId }
+    val taskScopeChapters = remember(chapters, currentProject, readerProgress?.logicalChapterId) {
+        currentProject?.let { project ->
+            TranslationScopePlanner.select(
+                chapters = chapters,
+                mode = project.translationMode,
+                rangeStart = project.rangeStart,
+                rangeEnd = project.rangeEnd,
+                currentChapterId = readerProgress?.logicalChapterId,
+                seamlessAheadChapters = project.seamlessAheadChapters
+            )
+        } ?: chapters
+    }
     val promptProfile by remember(currentProject?.id) {
         if (currentProject != null) viewModel.observePromptProfile(currentProject.id)
         else flowOf(null)
@@ -225,6 +240,7 @@ fun BookWorkbenchDetailScreen(
                                 book = currentBook,
                                 editions = editions,
                                 chapters = chapters,
+                                totalTaskChapters = taskScopeChapters.size,
                                 targetEdition = currentTargetEdition,
                                 project = currentProject,
                                 promptProfile = promptProfile,
@@ -285,7 +301,7 @@ fun BookWorkbenchDetailScreen(
                     providers = allProviders,
                     run = latestRun,
                     selectedTab = selectedTab,
-                    chapterCount = chapters.size,
+                    chapterCount = taskScopeChapters.size,
                     lexiconCount = projectLexicon.count { it.reviewStatus == ReviewStatus.CONFIRMED.name },
                     onSelectTab = { selectedTab = it },
                     onSelectEdition = { selectedTargetEditionId = it },
@@ -1031,6 +1047,7 @@ private fun TasksAndControlTab(
     book: BookEntity,
     editions: List<EditionEntity>,
     chapters: List<LogicalChapterEntity>,
+    totalTaskChapters: Int,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
     promptProfile: PromptProfileEntity?,
@@ -1044,10 +1061,14 @@ private fun TasksAndControlTab(
     onRequestAiSplit: (ApiProviderEntity) -> Unit,
     onSelectChapterAction: (LogicalChapterEntity) -> Unit
 ) {
-    val totalChapters = chapters.size
-    val completedChapters = run?.completedChapters ?: 0
-    val progress = if (totalChapters > 0) (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f) else 0f
+    val totalChapters = totalTaskChapters
     val currentState = project?.state ?: run?.state ?: "IDLE"
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS")) {
+        totalChapters
+    } else {
+        (run?.completedChapters ?: 0).coerceAtMost(totalChapters)
+    }
+    val progress = if (totalChapters > 0) (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f) else 0f
     val reviewRunning = project?.highQualityReview == true && currentState == "RUNNING" && completedChapters >= totalChapters
 
     LazyColumn(
@@ -1277,7 +1298,14 @@ private fun TasksAndControlTab(
                                     ) {
                                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text(if (completedChapters > 0) "继续翻译剩余章节" else "开始全书翻译")
+                                        Text(
+                                            when {
+                                                completedChapters > 0 -> "继续翻译剩余章节"
+                                                project.translationMode == TranslationMode.CHAPTER_RANGE.name -> "开始指定范围翻译"
+                                                project.translationMode == TranslationMode.SEAMLESS.name -> "补齐阅读缓冲"
+                                                else -> "开始全书翻译"
+                                            }
+                                        )
                                     }
                                 }
                             }

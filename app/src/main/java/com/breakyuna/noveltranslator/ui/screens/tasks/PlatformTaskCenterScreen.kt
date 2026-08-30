@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
+import com.breakyuna.noveltranslator.core.translation.TranslationScopePlanner
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
@@ -296,12 +297,14 @@ fun PlatformTaskCenterScreen(
                     val isExpanded = expandedBookIds[book.id] == true
 
                     val bookChapters by viewModel.bookPlatformRepo.observeChapters(book.id).collectAsState(initial = emptyList())
+                    val readerProgress by viewModel.bookPlatformRepo.observeProgress(book.id).collectAsState(initial = null)
 
                     BookWorkspaceUnitCard(
                         book = book,
                         projects = bookProjects,
                         runs = bookRuns,
-                        totalChaptersCount = bookChapters.size,
+                        chapters = bookChapters,
+                        currentChapterId = readerProgress?.logicalChapterId,
                         isExpanded = isExpanded,
                         strings = strings,
                         viewModel = viewModel,
@@ -373,7 +376,8 @@ private fun BookWorkspaceUnitCard(
     book: BookEntity,
     projects: List<TranslationProjectV2Entity>,
     runs: List<PlatformTranslationRunEntity>,
-    totalChaptersCount: Int,
+    chapters: List<LogicalChapterEntity>,
+    currentChapterId: Long?,
     isExpanded: Boolean,
     strings: PlatformUiStrings,
     viewModel: AppViewModel,
@@ -728,10 +732,18 @@ private fun BookWorkspaceUnitCard(
                         ) {
                             items(projects, key = { "project-${it.id}" }) { project ->
                                 val projectRun = runs.firstOrNull { it.translationProjectId == project.id }
+                                val taskChapterCount = TranslationScopePlanner.select(
+                                    chapters = chapters,
+                                    mode = project.translationMode,
+                                    rangeStart = project.rangeStart,
+                                    rangeEnd = project.rangeEnd,
+                                    currentChapterId = currentChapterId,
+                                    seamlessAheadChapters = project.seamlessAheadChapters
+                                ).size
                                 TranslationProjectTaskItem(
                                     project = project,
                                     run = projectRun,
-                                    totalChapters = totalChaptersCount,
+                                    totalChapters = taskChapterCount,
                                     strings = strings,
                                     viewModel = viewModel,
                                     onOpenEdition = { onOpenEdition(project.targetEditionId) },
@@ -775,8 +787,14 @@ private fun TranslationProjectTaskItem(
     onViewLogs: () -> Unit,
     onViewGlossary: () -> Unit
 ) {
-    val currentState = run?.state ?: project.state
-    val completedChapters = run?.completedChapters ?: 0
+    // The project is the execution aggregate and remains authoritative even when its newest run
+    // could not persist the matching terminal state during cleanup.
+    val currentState = project.state
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS")) {
+        totalChapters
+    } else {
+        (run?.completedChapters ?: 0).coerceAtMost(totalChapters)
+    }
     val failedChapters = run?.failedChapters ?: 0
     val progressFraction = if (totalChapters > 0) {
         (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f)

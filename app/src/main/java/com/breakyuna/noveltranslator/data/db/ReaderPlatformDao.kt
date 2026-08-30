@@ -202,8 +202,8 @@ interface TranslationProjectV2Dao {
     @Query("UPDATE translation_projects_v2 SET state = :state, updatedAt = :now WHERE id = :id")
     suspend fun updateState(id: Long, state: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE translation_projects_v2 SET state = 'COMPLETED', updatedAt = :now WHERE id = :id AND state NOT IN ('CANCELLED', 'RUNNING', 'PAUSED')")
-    suspend fun completeIfNotActive(id: Long, now: Long = System.currentTimeMillis()): Int
+    @Query("UPDATE translation_projects_v2 SET state = 'COMPLETED', updatedAt = :now WHERE id = :id AND state NOT IN ('CANCELLED', 'PAUSED')")
+    suspend fun completeIfNotStopped(id: Long, now: Long = System.currentTimeMillis()): Int
 
     @Query("UPDATE translation_projects_v2 SET state = 'INTERRUPTED', updatedAt = :now WHERE state IN ('RUNNING', 'PAUSED')")
     suspend fun markInterrupted(now: Long = System.currentTimeMillis())

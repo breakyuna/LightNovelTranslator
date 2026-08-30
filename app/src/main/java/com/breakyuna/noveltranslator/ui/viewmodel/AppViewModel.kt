@@ -40,6 +40,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -130,6 +132,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
     private val bookTranslationJobs = ConcurrentHashMap<Long, Job>()
     private val seamlessJobs = ConcurrentHashMap<Long, Job>()
+    /** The start action waits for the latest in-flight configuration write for the same project. */
+    private val translationConfigJobs = ConcurrentHashMap<Long, Job>()
+    private val translationConfigLocks = ConcurrentHashMap<Long, Mutex>()
+    /** Every translation worker waits until stale durable RUNNING/PAUSED rows are recovered. */
+    private val translationRecoveryJob: Job
     private val translationJobRegistryLock = Any()
     /** Blocks new progress/translation workers while their Book or Edition is being removed. */
     private val deletingBooks = ConcurrentHashMap.newKeySet<Long>()
@@ -167,11 +174,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val termExtractionAgent = TermExtractionAgent(llmClient)
 
     init {
-        viewModelScope.launch(Dispatchers.IO) {
-            providerRepo.normalizeBuiltInPresets()
-            providerRepo.encryptUnprotectedSecrets()
+        translationRecoveryJob = viewModelScope.launch(Dispatchers.IO) {
+            // Recover durable task state before any provider normalization can suspend. Otherwise
+            // a newly started task may be incorrectly marked INTERRUPTED by this startup cleanup.
             db.translationProjectV2Dao().markInterrupted()
             db.platformTaskDao().markInterrupted()
+            providerRepo.normalizeBuiltInPresets()
+            providerRepo.encryptUnprotectedSecrets()
         }
     }
 
@@ -502,13 +511,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun bookImagesDir(bookId: Long): File = bookFiles.sharedImagesDir(bookId)
 
     fun runBookTranslation(projectId: Long) {
-        // Seamless prefetch uses the same project and durable run tables. Do not queue a second
-        // explicit worker for that project while the background buffer is already running.
-        val seamlessRunning = synchronized(translationJobRegistryLock) {
-            seamlessJobs.containsKey(projectId)
-        }
-        if (!launchBookTranslation(projectId, "翻译任务失败")) {
-            showMessage(if (seamlessRunning) "该翻译任务正在进行无感预翻译" else "该翻译任务已经在运行")
+        viewModelScope.launch(Dispatchers.IO) {
+            // Saving range/model settings and pressing Start are separate UI actions. Serialize
+            // them here so a fast tap cannot start from the stale FULL_BOOK snapshot and then
+            // reject the range save because the project has already become RUNNING.
+            translationConfigJobs[projectId]?.join()
+            // Seamless prefetch uses the same project and durable run tables. Do not queue a
+            // second explicit worker while the background buffer is already running.
+            val seamlessRunning = synchronized(translationJobRegistryLock) {
+                seamlessJobs.containsKey(projectId)
+            }
+            if (!launchBookTranslation(projectId, "翻译任务失败")) {
+                withContext(Dispatchers.Main) {
+                    showMessage(if (seamlessRunning) "该翻译任务正在进行无感预翻译" else "该翻译任务已经在运行")
+                }
+            }
         }
     }
 
@@ -565,6 +582,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (projectId in deletingTranslationProjects || seamlessJobs.containsKey(projectId)) return false
             job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 try {
+                    translationRecoveryJob.join()
                     val project = bookPlatformRepo.getTranslationProject(projectId)
                     if (project == null) return@launch
                     val blocked = synchronized(translationJobRegistryLock) {
@@ -713,6 +731,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     .forEach { project ->
                         val seamlessJob = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                             try {
+                                translationRecoveryJob.join()
                                 runCancellable { bookTranslationScheduler.run(project.id) }
                                     .onFailure { showMessage("无感翻译缓冲失败：${it.localizedMessage}") }
                             } finally {
@@ -873,26 +892,28 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         promptProfile: PromptProfileDraft? = null,
         onSuccess: () -> Unit = {}
     ) {
-        viewModelScope.launch(Dispatchers.IO) {
+        val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
-                val existing = bookPlatformRepo.getTranslationProject(projectId) ?: return@launch
-                val updated = existing.copy(
-                    providerId = providerId,
-                    modelName = modelName.trim().take(200),
-                    translationMode = mode.name,
-                    maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
-                    rangeStart = rangeStart,
-                    rangeEnd = rangeEnd,
-                    seamlessAheadChapters = (seamlessAheadChapters ?: existing.seamlessAheadChapters)
-                        .coerceIn(1, 50),
-                    styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
-                    highQualityReview = highQualityReview ?: existing.highQualityReview,
-                    updatedAt = System.currentTimeMillis()
-                )
-                bookPlatformRepo.updateTranslationProject(updated, promptProfile)
-                withContext(Dispatchers.Main) {
-                    showMessage("翻译配置已保存")
-                    onSuccess()
+                translationConfigLocks.getOrPut(projectId) { Mutex() }.withLock {
+                    val existing = bookPlatformRepo.getTranslationProject(projectId) ?: return@launch
+                    val updated = existing.copy(
+                        providerId = providerId,
+                        modelName = modelName.trim().take(200),
+                        translationMode = mode.name,
+                        maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                        rangeStart = rangeStart,
+                        rangeEnd = rangeEnd,
+                        seamlessAheadChapters = (seamlessAheadChapters ?: existing.seamlessAheadChapters)
+                            .coerceIn(1, 50),
+                        styleGuide = styleGuide.trim().take(2_000).ifBlank { "保持文学韵味与专有名词一致性" },
+                        highQualityReview = highQualityReview ?: existing.highQualityReview,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    bookPlatformRepo.updateTranslationProject(updated, promptProfile)
+                    withContext(Dispatchers.Main) {
+                        showMessage("翻译配置已保存")
+                        onSuccess()
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -900,8 +921,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.Main) {
                     showMessage("保存翻译配置失败：${error.localizedMessage ?: "任务状态或参数无效"}")
                 }
+            } finally {
+                coroutineContext[Job]?.let { currentJob ->
+                    translationConfigJobs.remove(projectId, currentJob)
+                }
             }
         }
+        translationConfigJobs[projectId] = job
+        job.start()
     }
 
     fun upsertLexiconEntry(entry: LexiconEntryEntity) {
@@ -1761,6 +1788,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         synchronized(translationJobRegistryLock) {
             bookTranslationJobs.clear()
             seamlessJobs.clear()
+            translationConfigJobs.clear()
+            translationConfigLocks.clear()
             deletingBooks.clear()
             deletingTranslationProjects.clear()
         }

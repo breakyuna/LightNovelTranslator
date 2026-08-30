@@ -86,6 +86,16 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun parser_acceptsHarmlessXmlFormattingVariantsAndNumericEntities() {
+        val parsed = TranslationProtocol.parse(
+            "<TRANSLATION version='1' ><C title='chapter' id = '1'><S id = '1'>Tom&#39;s answer</S ></C ></TRANSLATION >"
+        )
+
+        assertFalse(parsed.isTruncated)
+        assertEquals("Tom's answer", parsed.chapters.single().segments[1])
+    }
+
+    @Test
     fun deterministicQa_rejects_missing_segment_and_changed_image_marker() {
         val source = ProtocolChapter(
             shortId = 1,
