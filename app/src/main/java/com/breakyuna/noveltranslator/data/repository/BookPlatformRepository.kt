@@ -33,6 +33,7 @@ class BookPlatformRepository(
 ) {
     private val books = database.bookDao()
     private val projects = database.translationProjectV2Dao()
+    private val promptProfiles = database.promptProfileDao()
     private val progressDao = database.readerProgressDao()
 
     val shelf: Flow<List<ShelfBook>> = books.observeShelf()
@@ -47,6 +48,7 @@ class BookPlatformRepository(
     fun observeChapters(bookId: Long) = books.observeChapters(bookId)
     fun observeTranslationProjects(bookId: Long) = projects.observeByBook(bookId)
     fun observeTranslationProjectsForEdition(editionId: Long) = projects.observeByTargetEdition(editionId)
+    fun observePromptProfile(projectId: Long) = promptProfiles.observeLatest(projectId)
     fun observeProgress(bookId: Long) = progressDao.observe(bookId)
     fun observeLexicon(projectId: Long) = database.lexiconV2Dao().observe(projectId)
     fun observeLexiconCandidates(projectId: Long) = database.lexiconCandidateAggregateDao().observeAllActive(projectId)
@@ -58,9 +60,13 @@ class BookPlatformRepository(
     fun observeRequestLogs(runId: Long) = database.platformTaskDao().observeRequestLogs(runId)
 
     suspend fun getTranslationProject(projectId: Long) = projects.get(projectId)
+    suspend fun getPromptProfile(projectId: Long) = promptProfiles.getLatest(projectId)
     suspend fun getTranslationProjects(bookId: Long) = projects.getByBook(bookId)
     suspend fun getTranslationProjectsForEdition(editionId: Long) = projects.getByTargetEdition(editionId)
-    suspend fun updateTranslationProject(project: TranslationProjectV2Entity) = database.withTransaction {
+    suspend fun updateTranslationProject(
+        project: TranslationProjectV2Entity,
+        promptProfile: PromptProfileDraft? = null
+    ) = database.withTransaction {
         // Serialize the state check with the scheduler's state writes. A UI snapshot that was idle
         // before the run started must not be able to overwrite RUNNING with a new configuration.
         val existing = projects.get(project.id) ?: error("Translation project not found")
@@ -99,6 +105,60 @@ class BookPlatformRepository(
                 updatedAt = System.currentTimeMillis()
             )
         )
+        promptProfile?.let { savePromptProfileInTransaction(existing.id, it) }
+    }
+
+    /** Saves a new immutable Prompt Profile version for the project when its content changed. */
+    suspend fun savePromptProfile(projectId: Long, draft: PromptProfileDraft): PromptProfileEntity =
+        database.withTransaction {
+            val project = projects.get(projectId) ?: error("Translation project not found")
+            require(project.state !in setOf("RUNNING", "PAUSED")) {
+                "Stop the active translation task before changing prompts"
+            }
+            savePromptProfileInTransaction(projectId, draft)
+        }
+
+    private suspend fun savePromptProfileInTransaction(
+        projectId: Long,
+        draft: PromptProfileDraft
+    ): PromptProfileEntity {
+        val normalized = normalizePromptProfile(draft)
+        val latest = promptProfiles.getLatest(projectId)
+        if (latest != null &&
+            latest.translationSystemPrompt == normalized.translationSystemPrompt &&
+            latest.translationUserPromptTemplate == normalized.translationUserPromptTemplate &&
+            latest.polishSystemPrompt == normalized.polishSystemPrompt &&
+            latest.polishUserPromptTemplate == normalized.polishUserPromptTemplate
+        ) {
+            return latest
+        }
+        val profile = PromptProfileEntity(
+            translationProjectId = projectId,
+            version = promptProfiles.getMaxVersion(projectId) + 1,
+            translationSystemPrompt = normalized.translationSystemPrompt,
+            translationUserPromptTemplate = normalized.translationUserPromptTemplate,
+            polishSystemPrompt = normalized.polishSystemPrompt,
+            polishUserPromptTemplate = normalized.polishUserPromptTemplate
+        )
+        promptProfiles.insert(profile)
+        return profile
+    }
+
+    private fun normalizePromptProfile(draft: PromptProfileDraft): PromptProfileDraft {
+        val normalized = PromptProfileDraft(
+            translationSystemPrompt = draft.translationSystemPrompt.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
+            translationUserPromptTemplate = draft.translationUserPromptTemplate.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
+            polishSystemPrompt = draft.polishSystemPrompt.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
+            polishUserPromptTemplate = draft.polishUserPromptTemplate.trim().take(MAX_PROMPT_TEMPLATE_CHARS)
+        )
+        require(isSafeText(normalized.translationSystemPrompt, allowLineBreaks = true) &&
+            isSafeText(normalized.translationUserPromptTemplate, allowLineBreaks = true) &&
+            isSafeText(normalized.polishSystemPrompt, allowLineBreaks = true) &&
+            isSafeText(normalized.polishUserPromptTemplate, allowLineBreaks = true)
+        ) {
+            "Prompt templates contain unsupported control characters"
+        }
+        return normalized
     }
     suspend fun getChapters(bookId: Long) = books.getChapters(bookId)
     suspend fun retranslateChapter(editionId: Long, logicalChapterId: Long) {
@@ -284,7 +344,8 @@ class BookPlatformRepository(
         rangeEnd: Int? = null,
         seamlessAheadChapters: Int = 5,
         styleGuide: String = "保持文学韵味与专有名词一致性",
-        highQualityReview: Boolean = false
+        highQualityReview: Boolean = false,
+        promptProfile: PromptProfileDraft? = null
     ): Long = database.withTransaction {
         validateTranslationConfiguration(bookId, mode.name, rangeStart, rangeEnd)
         val normalizedModelName = modelName.trim().take(200)
@@ -331,6 +392,7 @@ class BookPlatformRepository(
                 updatedAt = System.currentTimeMillis()
             )
             projects.update(updated)
+            promptProfile?.let { savePromptProfileInTransaction(existing.id, it) }
             books.setPreferredEdition(bookId, targetEditionId)
             val old = progressDao.get(bookId) ?: ReaderProgressEntity(bookId, sourceEditionId, null, null)
             progressDao.upsert(old.copy(preferredEditionId = targetEditionId, updatedAt = System.currentTimeMillis()))
@@ -354,6 +416,7 @@ class BookPlatformRepository(
                 highQualityReview = highQualityReview
             )
         )
+        promptProfile?.let { savePromptProfileInTransaction(projectId, it) }
         books.setPreferredEdition(bookId, targetEditionId)
         val old = progressDao.get(bookId) ?: ReaderProgressEntity(bookId, sourceEditionId, null, null)
         progressDao.upsert(old.copy(preferredEditionId = targetEditionId, updatedAt = System.currentTimeMillis()))
@@ -379,6 +442,15 @@ class BookPlatformRepository(
             logicalChapterId = logicalChapter?.id,
             logicalSegmentId = logicalSegmentId,
             segmentOffset = progress.segmentOffset.coerceAtLeast(0),
+            fontSizeSp = progress.fontSizeSp.takeIf { it.isFinite() }?.coerceIn(12f, 40f) ?: 18f,
+            fontFamily = runCatching { ReaderFontFamily.valueOf(progress.fontFamily) }
+                .getOrDefault(ReaderFontFamily.SYSTEM).name,
+            letterSpacingSp = progress.letterSpacingSp.takeIf { it.isFinite() }?.coerceIn(0f, 4f) ?: 0f,
+            lineSpacingMultiplier = progress.lineSpacingMultiplier.takeIf { it.isFinite() }?.coerceIn(1.0f, 3.0f) ?: 1.35f,
+            paragraphSpacingDp = progress.paragraphSpacingDp.takeIf { it.isFinite() }?.coerceIn(0f, 64f) ?: 10f,
+            pageMarginDp = progress.pageMarginDp.takeIf { it.isFinite() }?.coerceIn(4f, 96f) ?: 18f,
+            readerBackground = runCatching { ReaderBackground.valueOf(progress.readerBackground) }
+                .getOrDefault(ReaderBackground.SYSTEM).name,
             updatedAt = System.currentTimeMillis()
         )
         progressDao.upsert(sanitized)
@@ -603,5 +675,6 @@ class BookPlatformRepository(
         const val MAX_LEXICON_TARGET_CHARS = 160
         const val MAX_LEXICON_ALIASES_CHARS = 500
         const val MAX_LEXICON_NOTES_CHARS = 300
+        const val MAX_PROMPT_TEMPLATE_CHARS = 24_000
     }
 }

@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.data.model
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -17,6 +18,8 @@ enum class DisplayMode { TRANSLATION, ORIGINAL, BILINGUAL, QUICK_EDIT }
 enum class PagingMode { CONTINUOUS, HORIZONTAL, VERTICAL }
 enum class ReaderLayoutMode { CLEAN, STANDARD, WORKBENCH }
 enum class PageAnimation { NONE, SLIDE, FADE, CURL }
+enum class ReaderFontFamily { SYSTEM, SERIF, SANS_SERIF, MONOSPACE }
+enum class ReaderBackground { SYSTEM, PAPER, MINT, NIGHT }
 enum class AcquisitionType { LOCAL_FILE, PASTED_TEXT, WEB_CAPTURE }
 
 @Entity(tableName = "books", indices = [Index("shelfOrder")])
@@ -186,6 +189,52 @@ data class TranslationProjectV2Entity(
     init { require(maxBatchChapters in 1..5) }
 }
 
+/**
+ * Editable prompt templates are kept as immutable versions instead of overwriting the text that
+ * a previous run used.  The latest version is the active profile for a translation project.
+ */
+data class PromptProfileDraft(
+    val translationSystemPrompt: String,
+    val translationUserPromptTemplate: String,
+    val polishSystemPrompt: String,
+    val polishUserPromptTemplate: String,
+    val version: Int = 1
+)
+
+@Entity(
+    tableName = "translation_prompt_profiles",
+    foreignKeys = [
+        ForeignKey(
+            entity = TranslationProjectV2Entity::class,
+            parentColumns = ["id"],
+            childColumns = ["translationProjectId"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("translationProjectId"),
+        Index(value = ["translationProjectId", "version"], unique = true)
+    ]
+)
+data class PromptProfileEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val translationProjectId: Long,
+    val version: Int,
+    val translationSystemPrompt: String,
+    val translationUserPromptTemplate: String,
+    val polishSystemPrompt: String,
+    val polishUserPromptTemplate: String,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    fun asDraft(): PromptProfileDraft = PromptProfileDraft(
+        translationSystemPrompt = translationSystemPrompt,
+        translationUserPromptTemplate = translationUserPromptTemplate,
+        polishSystemPrompt = polishSystemPrompt,
+        polishUserPromptTemplate = polishUserPromptTemplate,
+        version = version
+    )
+}
+
 @Entity(
     tableName = "lexicon_entries",
     foreignKeys = [ForeignKey(entity = TranslationProjectV2Entity::class, parentColumns = ["id"], childColumns = ["translationProjectId"], onDelete = ForeignKey.CASCADE)],
@@ -281,6 +330,14 @@ data class ReaderProgressEntity(
     val pagingMode: String = PagingMode.CONTINUOUS.name,
     val readerLayoutMode: String = ReaderLayoutMode.CLEAN.name,
     val pageAnimation: String = PageAnimation.SLIDE.name,
+    @ColumnInfo(defaultValue = "18.0") val fontSizeSp: Float = 18f,
+    @ColumnInfo(defaultValue = "'SYSTEM'") val fontFamily: String = ReaderFontFamily.SYSTEM.name,
+    @ColumnInfo(defaultValue = "0.0") val letterSpacingSp: Float = 0f,
+    @ColumnInfo(defaultValue = "1.35") val lineSpacingMultiplier: Float = 1.35f,
+    @ColumnInfo(defaultValue = "10.0") val paragraphSpacingDp: Float = 10f,
+    @ColumnInfo(defaultValue = "18.0") val pageMarginDp: Float = 18f,
+    @ColumnInfo(defaultValue = "0") val useTraditionalChinese: Boolean = false,
+    @ColumnInfo(defaultValue = "'SYSTEM'") val readerBackground: String = ReaderBackground.SYSTEM.name,
     val updatedAt: Long = System.currentTimeMillis()
 )
 
@@ -319,6 +376,7 @@ data class PlatformTranslationRunEntity(
     val providerId: Long,
     val providerName: String,
     val modelName: String,
+    @ColumnInfo(defaultValue = "1") val promptProfileVersion: Int = 1,
     val state: String = "QUEUED",
     val completedChapters: Int = 0,
     val failedChapters: Int = 0,

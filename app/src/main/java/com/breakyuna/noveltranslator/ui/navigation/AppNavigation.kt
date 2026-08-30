@@ -16,7 +16,6 @@ import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.history.ReadingHistoryScreen
 import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
-import com.breakyuna.noveltranslator.ui.screens.bookdetail.BookDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.bookdetail.EditionDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
@@ -118,8 +117,7 @@ fun AppNavigation(
                     composable(AppDestination.Bookshelf.route) {
                         BookShelfScreen(
                             viewModel = viewModel,
-                            onOpenDetail = { navController.navigate(AppDestination.BookDetail.createRoute(it)) },
-                            onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(it)) }
+                            onOpenBook = { navController.navigate(AppDestination.PlatformReader.createRoute(it)) }
                         )
                     }
 
@@ -139,8 +137,8 @@ fun AppNavigation(
                         PlatformTaskCenterScreen(
                             viewModel = viewModel,
                             initialBookId = bookId,
-                            onOpenBookDetail = { targetBookId ->
-                                navController.navigate(AppDestination.BookDetail.createRoute(targetBookId))
+                            onOpenBook = { targetBookId ->
+                                navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId))
                             },
                             onOpenReader = { targetBookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
@@ -159,29 +157,7 @@ fun AppNavigation(
                             viewModel = viewModel,
                             onContinueReading = { bookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(bookId, chapterId))
-                            },
-                            onOpenBook = { navController.navigate(AppDestination.BookDetail.createRoute(it)) }
-                        )
-                    }
-
-                    // ==========================================
-                    // 4. Book Detail & Workbench
-                    // ==========================================
-                    composable(
-                        route = AppDestination.BookDetail.route,
-                        arguments = listOf(navArgument("bookId") { type = NavType.LongType })
-                    ) { backStackEntry ->
-                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
-                        BookDetailScreen(
-                            bookId = bookId,
-                            viewModel = viewModel,
-                            onBack = { navController.popBackStack() },
-                            onContinueReading = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId)) },
-                            onOpenWorkbench = {
-                                navController.navigate(AppDestination.BookWorkbench.createRoute(bookId))
-                            },
-                            onReadChapter = { navController.navigate(AppDestination.PlatformReader.createRoute(bookId, it)) },
-                            onOpenEdition = { navController.navigate(AppDestination.EditionDetail.createRoute(bookId, it)) }
+                            }
                         )
                     }
 
@@ -196,9 +172,6 @@ fun AppNavigation(
                             onNavigateBack = { navController.popBackStack() },
                             onOpenReader = { targetBookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
-                            },
-                            onOpenBookDetail = { targetBookId ->
-                                navController.navigate(AppDestination.BookDetail.createRoute(targetBookId))
                             }
                         )
                     }
@@ -233,7 +206,15 @@ fun AppNavigation(
                     ) { backStackEntry ->
                         val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
                         val chapterId = backStackEntry.arguments?.getLong("chapterId")?.takeIf { it > 0 }
-                        PlatformReaderScreen(bookId, chapterId, viewModel) { navController.popBackStack() }
+                        PlatformReaderScreen(
+                            bookId = bookId,
+                            initialLogicalChapterId = chapterId,
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            onOpenWorkbench = {
+                                navController.navigate(AppDestination.BookWorkbench.createRoute(bookId))
+                            }
+                        )
                     }
 
                     composable(

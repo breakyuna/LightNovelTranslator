@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
@@ -22,6 +23,7 @@ import com.breakyuna.noveltranslator.data.model.LogicalSegmentEntity
 import com.breakyuna.noveltranslator.data.model.PlatformRequestLogEntity
 import com.breakyuna.noveltranslator.data.model.PlatformTranslationBatchEntity
 import com.breakyuna.noveltranslator.data.model.PlatformTranslationRunEntity
+import com.breakyuna.noveltranslator.data.model.PromptProfileEntity
 import com.breakyuna.noveltranslator.data.model.ProviderCacheRecordEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import com.breakyuna.noveltranslator.data.model.ReaderProgressEntity
@@ -70,9 +72,10 @@ class Converters {
         ProviderCacheRecordEntity::class,
         PlatformTranslationRunEntity::class,
         PlatformTranslationBatchEntity::class,
-        PlatformRequestLogEntity::class
+        PlatformRequestLogEntity::class,
+        PromptProfileEntity::class
     ],
-    version = 1,
+    version = 3,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -86,8 +89,53 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun readerProgressDao(): ReaderProgressDao
     abstract fun providerCacheDao(): ProviderCacheDao
     abstract fun platformTaskDao(): PlatformTaskDao
+    abstract fun promptProfileDao(): PromptProfileDao
 
     companion object {
+        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN fontSizeSp REAL NOT NULL DEFAULT 18.0")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN fontFamily TEXT NOT NULL DEFAULT 'SYSTEM'")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN letterSpacingSp REAL NOT NULL DEFAULT 0.0")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN lineSpacingMultiplier REAL NOT NULL DEFAULT 1.35")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN paragraphSpacingDp REAL NOT NULL DEFAULT 10.0")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN pageMarginDp REAL NOT NULL DEFAULT 18.0")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN useTraditionalChinese INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE reader_progress ADD COLUMN readerBackground TEXT NOT NULL DEFAULT 'SYSTEM'")
+            }
+        }
+
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `translation_prompt_profiles` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `translationProjectId` INTEGER NOT NULL,
+                        `version` INTEGER NOT NULL,
+                        `translationSystemPrompt` TEXT NOT NULL,
+                        `translationUserPromptTemplate` TEXT NOT NULL,
+                        `polishSystemPrompt` TEXT NOT NULL,
+                        `polishUserPromptTemplate` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`translationProjectId`) REFERENCES `translation_projects_v2`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_translation_prompt_profiles_translationProjectId` " +
+                        "ON `translation_prompt_profiles` (`translationProjectId`)"
+                )
+                database.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_translation_prompt_profiles_translationProjectId_version` " +
+                        "ON `translation_prompt_profiles` (`translationProjectId`, `version`)"
+                )
+                database.execSQL(
+                    "ALTER TABLE `platform_translation_runs` ADD COLUMN `promptProfileVersion` INTEGER NOT NULL DEFAULT 1"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -97,7 +145,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "light_novel_translation_platform.db"
-                ).build().also { database ->
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { database ->
                     instance = database
                     CoroutineScope(Dispatchers.IO).launch {
                         seedDefaultProviders(database)

@@ -385,7 +385,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 bookPlatformRepo.createTranslationEdition(bookId, sourceEditionId, targetLanguage, editionName)
             }.onSuccess { editionId ->
                 withContext(Dispatchers.Main) {
-                    showMessage("翻译 Edition 已创建，可在详情页配置翻译方式")
+                    showMessage("翻译 Edition 已创建，可在翻译工作台配置翻译方式")
                     onCreated(editionId)
                 }
             }.onFailure { showMessage("创建 Edition 失败：${it.localizedMessage}") }
@@ -405,6 +405,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         seamlessAheadChapters: Int = 5,
         styleGuide: String = "保持文学韵味与专有名词一致性",
         highQualityReview: Boolean = false,
+        promptProfile: PromptProfileDraft? = null,
         startImmediately: Boolean = true
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -421,7 +422,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     rangeEnd = rangeEnd,
                     seamlessAheadChapters = seamlessAheadChapters,
                     styleGuide = styleGuide,
-                    highQualityReview = highQualityReview
+                    highQualityReview = highQualityReview,
+                    promptProfile = promptProfile
                 )
             }.onSuccess { projectId ->
                 showMessage("Edition 翻译任务已配置")
@@ -758,6 +760,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun observeRunsByProject(projectId: Long): Flow<List<PlatformTranslationRunEntity>> =
         bookPlatformRepo.observeRunsByProject(projectId)
 
+    fun observePromptProfile(projectId: Long): Flow<PromptProfileEntity?> =
+        bookPlatformRepo.observePromptProfile(projectId)
+
+    fun savePromptProfile(
+        projectId: Long,
+        draft: PromptProfileDraft,
+        onSaved: (Int) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCancellable { bookPlatformRepo.savePromptProfile(projectId, draft) }
+                .onSuccess { profile ->
+                    withContext(Dispatchers.Main) {
+                        showMessage("提示词已保存为第 ${profile.version} 版")
+                        onSaved(profile.version)
+                    }
+                }
+                .onFailure { error ->
+                    withContext(Dispatchers.Main) {
+                        showMessage("保存提示词失败：${error.localizedMessage ?: "提示词内容无效"}")
+                    }
+                }
+        }
+    }
+
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>> =
         bookPlatformRepo.observeBatches(runId)
 
@@ -787,6 +813,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         styleGuide: String,
         seamlessAheadChapters: Int? = null,
         highQualityReview: Boolean? = null,
+        promptProfile: PromptProfileDraft? = null,
         onSuccess: () -> Unit = {}
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -805,7 +832,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     highQualityReview = highQualityReview ?: existing.highQualityReview,
                     updatedAt = System.currentTimeMillis()
                 )
-                bookPlatformRepo.updateTranslationProject(updated)
+                bookPlatformRepo.updateTranslationProject(updated, promptProfile)
                 withContext(Dispatchers.Main) {
                     showMessage("翻译配置已保存")
                     onSuccess()

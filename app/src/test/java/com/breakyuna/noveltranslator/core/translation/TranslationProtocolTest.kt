@@ -225,6 +225,27 @@ class TranslationProtocolTest {
     }
 
     @Test
+    fun editablePromptProfile_rendersRuntimeValuesAndKeepsProtocolBody() {
+        val profile = TranslationProtocol.defaultPromptProfile()
+
+        val system = TranslationProtocol.translationSystemPrompt(
+            profile,
+            sourceLanguage = "English",
+            targetLanguage = "Chinese",
+            styleGuide = "保持冷峻克制"
+        )
+        val user = TranslationProtocol.renderUserPromptTemplate(
+            "请先遵守这条额外规则。\n${TranslationProtocol.PROMPT_BODY_PLACEHOLDER}",
+            "[SOURCE]\n<C id=\"1\">正文</C>"
+        )
+
+        assertTrue(system.contains("from English to Chinese"))
+        assertFalse(system.contains(TranslationProtocol.SOURCE_LANGUAGE_PLACEHOLDER))
+        assertTrue(user.contains("请先遵守这条额外规则。"))
+        assertTrue(user.contains("[SOURCE]"))
+    }
+
+    @Test
     fun aiPolishRevision_keepsAiPriorityAndIsRecognizedByRevisionPriority() {
         assertEquals(200, revisionPriority(RevisionType.AI_TRANSLATION.name))
         assertEquals(210, revisionPriority(RevisionType.AI_POLISH.name))

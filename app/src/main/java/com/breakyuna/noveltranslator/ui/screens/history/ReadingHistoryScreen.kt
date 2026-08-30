@@ -32,7 +32,6 @@ import java.util.Date
 fun ReadingHistoryScreen(
     viewModel: AppViewModel,
     onContinueReading: (Long, Long?) -> Unit,
-    onOpenBook: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val history by viewModel.readingHistory.collectAsState()
@@ -63,7 +62,7 @@ fun ReadingHistoryScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 items(history, key = ReadingHistoryItem::bookId) { item ->
-                    ReadingHistoryCard(item, english, onContinueReading, onOpenBook)
+                    ReadingHistoryCard(item, english, onContinueReading)
                 }
             }
         }
@@ -74,8 +73,7 @@ fun ReadingHistoryScreen(
 private fun ReadingHistoryCard(
     item: ReadingHistoryItem,
     english: Boolean,
-    onContinueReading: (Long, Long?) -> Unit,
-    onOpenBook: (Long) -> Unit
+    onContinueReading: (Long, Long?) -> Unit
 ) {
     val cover by rememberAsyncBookImage(item.coverPath, maxDimension = 320)
     ElevatedCard(Modifier.fillMaxWidth().clickable { onContinueReading(item.bookId, item.logicalChapterId) }) {
@@ -106,7 +104,6 @@ private fun ReadingHistoryCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            TextButton(onClick = { onOpenBook(item.bookId) }) { Text(if (english) "Details" else "详情") }
         }
     }
 }

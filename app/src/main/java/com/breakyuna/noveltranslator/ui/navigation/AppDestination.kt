@@ -11,10 +11,6 @@ sealed class AppDestination(val route: String) {
         fun createRoute(tab: Int = -1) = "settings?tab=$tab"
     }
 
-    object BookDetail : AppDestination("book/{bookId}") {
-        fun createRoute(bookId: Long) = "book/$bookId"
-    }
-
     object BookWorkbench : AppDestination("workbench/{bookId}") {
         fun createRoute(bookId: Long) = "workbench/$bookId"
     }

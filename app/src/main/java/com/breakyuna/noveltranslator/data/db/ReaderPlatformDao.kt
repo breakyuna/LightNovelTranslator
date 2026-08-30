@@ -204,6 +204,21 @@ interface TranslationProjectV2Dao {
 }
 
 @Dao
+interface PromptProfileDao {
+    @Query("SELECT * FROM translation_prompt_profiles WHERE translationProjectId = :projectId ORDER BY version DESC LIMIT 1")
+    fun observeLatest(projectId: Long): Flow<PromptProfileEntity?>
+
+    @Query("SELECT * FROM translation_prompt_profiles WHERE translationProjectId = :projectId ORDER BY version DESC LIMIT 1")
+    suspend fun getLatest(projectId: Long): PromptProfileEntity?
+
+    @Query("SELECT COALESCE(MAX(version), 0) FROM translation_prompt_profiles WHERE translationProjectId = :projectId")
+    suspend fun getMaxVersion(projectId: Long): Int
+
+    @Insert
+    suspend fun insert(profile: PromptProfileEntity): Long
+}
+
+@Dao
 interface LexiconV2Dao {
     @Query("SELECT * FROM lexicon_entries WHERE translationProjectId = :projectId ORDER BY kind, priority DESC, sourceTerm")
     fun observe(projectId: Long): Flow<List<LexiconEntryEntity>>

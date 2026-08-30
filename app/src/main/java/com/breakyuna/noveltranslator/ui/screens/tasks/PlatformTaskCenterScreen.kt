@@ -33,7 +33,7 @@ import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
-import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
+import com.breakyuna.noveltranslator.ui.components.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import java.text.DateFormat
@@ -46,7 +46,7 @@ fun PlatformTaskCenterScreen(
     viewModel: AppViewModel,
     initialBookId: Long? = null,
     onBack: (() -> Unit)? = null,
-    onOpenBookDetail: (Long) -> Unit = {},
+    onOpenBook: (Long) -> Unit = {},
     onOpenReader: (Long, Long?) -> Unit = { _, _ -> },
     onOpenEdition: (Long, Long) -> Unit = { _, _ -> },
     onOpenBookWorkbench: (Long) -> Unit = {}
@@ -318,7 +318,7 @@ fun PlatformTaskCenterScreen(
                             expandedBookIds[book.id] = !isExpanded
                         },
                         onOpenWorkbench = { onOpenBookWorkbench(book.id) },
-                        onOpenDetail = { onOpenBookDetail(book.id) },
+                        onOpenBook = { onOpenBook(book.id) },
                         onCreateTranslation = { createEditionForBook = book },
                         onOpenReader = { chapterId -> onOpenReader(book.id, chapterId) },
                         onOpenEdition = { editionId -> onOpenEdition(book.id, editionId) },
@@ -509,7 +509,7 @@ private fun BookWorkspaceUnitCard(
     viewModel: AppViewModel,
     onToggleExpand: () -> Unit,
     onOpenWorkbench: () -> Unit,
-    onOpenDetail: () -> Unit,
+    onOpenBook: () -> Unit,
     onCreateTranslation: () -> Unit,
     onOpenReader: (Long?) -> Unit,
     onOpenEdition: (Long) -> Unit,
@@ -736,12 +736,12 @@ private fun BookWorkspaceUnitCard(
                     }
 
                     TextButton(
-                        onClick = onOpenDetail,
+                        onClick = onOpenBook,
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Icon(Icons.Default.MenuBook, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("书籍详情", fontSize = 13.sp)
+                        Text("阅读", fontSize = 13.sp)
                     }
 
                     TextButton(
@@ -1170,7 +1170,7 @@ private fun OrphanedTaskRunItem(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "任务 #${run.id} · ${run.providerName}/${run.modelName}",
+                    "任务 #${run.id} · ${run.providerName}/${run.modelName} · Prompt v${run.promptProfileVersion}",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold
                 )

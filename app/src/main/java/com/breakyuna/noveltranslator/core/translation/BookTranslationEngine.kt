@@ -90,6 +90,7 @@ class BookTranslationEngine(
     private val books = database.bookDao()
     private val projects = database.translationProjectV2Dao()
     private val tasks = database.platformTaskDao()
+    private val promptProfiles = database.promptProfileDao()
     private val controls = ConcurrentHashMap<Long, ProjectControl>()
     /** Projects that have claimed the per-book execution slot, including startup I/O. */
     private val claimedProjects = ConcurrentHashMap.newKeySet<Long>()
@@ -179,6 +180,22 @@ class BookTranslationEngine(
                 }
                 return
             }
+            // Capture one immutable prompt profile for the whole run.  Materialize the default
+            // for projects created before Prompt Profiles existed, so their first run also has a
+            // durable v1 that later edits can advance to v2.
+            val promptProfile = promptProfiles.getLatest(project.id)?.asDraft() ?: run {
+                val default = TranslationProtocol.defaultPromptProfile()
+                val persisted = PromptProfileEntity(
+                    translationProjectId = project.id,
+                    version = 1,
+                    translationSystemPrompt = default.translationSystemPrompt,
+                    translationUserPromptTemplate = default.translationUserPromptTemplate,
+                    polishSystemPrompt = default.polishSystemPrompt,
+                    polishUserPromptTemplate = default.polishUserPromptTemplate
+                )
+                promptProfiles.insert(persisted)
+                persisted.asDraft()
+            }
             // Provider credentials are encrypted at rest. Always resolve through the repository
             // decryption boundary instead of reading ApiProviderDao directly.
             val provider = project.providerId?.let { providerResolver(it) }?.let { resolved ->
@@ -199,6 +216,7 @@ class BookTranslationEngine(
                     providerId = provider.id,
                     providerName = provider.name,
                     modelName = provider.selectedModel,
+                    promptProfileVersion = promptProfile.version,
                     state = "RUNNING",
                     currency = provider.currency
                 )
@@ -270,9 +288,17 @@ class BookTranslationEngine(
                     chapterIndex = batchSources.first().chapterIndex
                 )
                 if (budget.requiresSingleChapterChunking) {
-                    translateOversizedChapter(project, provider, runId, batchId, context, batchSources.first())
+                    translateOversizedChapter(
+                        project,
+                        provider,
+                        runId,
+                        batchId,
+                        context,
+                        batchSources.first(),
+                        promptProfile
+                    )
                 } else {
-                    translateBatch(project, provider, runId, batchId, context, batchSources)
+                    translateBatch(project, provider, runId, batchId, context, batchSources, promptProfile = promptProfile)
                 }
                 cursor += actual
                 batchIndex++
@@ -285,7 +311,7 @@ class BookTranslationEngine(
             if (project.highQualityReview && draftStageComplete) {
                 val reviewTargets = if (targets.isEmpty()) reviewOnlyTargets else selectReviewTargets(project)
                 if (reviewTargets.isNotEmpty()) {
-                    runPostDraftReview(project, provider, runId, reviewTargets, control)
+                    runPostDraftReview(project, provider, runId, reviewTargets, control, promptProfile)
                 }
             } else if (project.highQualityReview && targets.isNotEmpty()) {
                 SystemLogger.warn(
@@ -660,6 +686,7 @@ class BookTranslationEngine(
         batchId: Long,
         context: ContextPackage,
         sources: List<ProtocolChapter>,
+        promptProfile: PromptProfileDraft,
         allowChapterIsolation: Boolean = true
     ) {
         val cacheHint = prepareCache(project, provider, context)
@@ -679,8 +706,13 @@ class BookTranslationEngine(
         )
         val request = LlmRequest(
                 provider = provider,
-                systemPrompt = TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
-                userPrompt = TranslationProtocol.userPrompt(context, sources),
+                systemPrompt = TranslationProtocol.translationSystemPrompt(
+                    promptProfile,
+                    project.sourceLanguage,
+                    project.targetLanguage,
+                    project.styleGuide
+                ),
+                userPrompt = TranslationProtocol.translationUserPrompt(promptProfile, context, sources),
                 temperature = provider.temperature,
                 maxTokens = outputLimit(provider.maxContextTokens),
                 operation = "BOOK_TRANSLATION",
@@ -749,6 +781,7 @@ class BookTranslationEngine(
                         batchId = isolatedBatchId,
                         context = prepareContext(project, listOf(source)),
                         sources = listOf(source),
+                        promptProfile = promptProfile,
                         allowChapterIsolation = false
                     )
                     val childState = tasks.getBatch(isolatedBatchId)?.state
@@ -804,7 +837,17 @@ class BookTranslationEngine(
             if (!qa.accepted) {
                 SystemLogger.warn("QA_CHECK", "⚠️ 章节 #${source.chapterIndex} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动一次自动修复...", projectId = project.id, chapterIndex = source.chapterIndex)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_TRIGGERED", qa.problems)
-                val repair = repairChapter(project, provider, runId, batchId, context, source, translated, qa.problems)
+                val repair = repairChapter(
+                    project = project,
+                    provider = provider,
+                    runId = runId,
+                    batchId = batchId,
+                    context = context,
+                    source = source,
+                    partial = translated,
+                    promptProfile = promptProfile,
+                    problems = qa.problems
+                )
                 translated = repair.chapter
                 totalPromptTokens += repair.promptTokens
                 totalCompletionTokens += repair.completionTokens
@@ -865,7 +908,8 @@ class BookTranslationEngine(
         provider: ApiProviderEntity,
         runId: Long,
         chapters: List<LogicalChapterEntity>,
-        control: ProjectControl
+        control: ProjectControl,
+        promptProfile: PromptProfileDraft
     ) {
         SystemLogger.info(
             "AI_POLISH",
@@ -947,7 +991,17 @@ class BookTranslationEngine(
             // Re-check immediately before the paid second-pass request so a pause/cancel issued
             // while QA or prompt assembly was running cannot start another call.
             awaitBoundary(project.id, control)
-            val outcome = polishChapter(project, provider, runId, batchId, context, source, currentDraft, mandatoryTerms)
+            val outcome = polishChapter(
+                project,
+                provider,
+                runId,
+                batchId,
+                context,
+                source,
+                currentDraft,
+                mandatoryTerms,
+                promptProfile
+            )
             if (outcome.chapter != null) {
                 awaitCommitBoundary(project.id)
                 commitChapter(project, source, outcome.chapter, RevisionType.AI_POLISH)
@@ -997,12 +1051,18 @@ class BookTranslationEngine(
         context: ContextPackage,
         source: ProtocolChapter,
         current: ParsedTranslationChapter,
-        mandatoryTerms: List<LexiconEntryEntity>
+        mandatoryTerms: List<LexiconEntryEntity>,
+        promptProfile: PromptProfileDraft
     ): DraftReviewOutcome {
         val request = LlmRequest(
             provider = provider,
-            systemPrompt = TranslationProtocol.polishSystemPrompt(project.sourceLanguage, project.targetLanguage),
-            userPrompt = TranslationProtocol.polishUserPrompt(context, source, current),
+            systemPrompt = TranslationProtocol.polishSystemPrompt(
+                promptProfile,
+                project.sourceLanguage,
+                project.targetLanguage,
+                project.styleGuide
+            ),
+            userPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, current),
             // A second pass should be conservative even when the translation temperature is
             // configured higher for literary variation.
             temperature = provider.temperature.coerceAtMost(0.35f),
@@ -1122,6 +1182,7 @@ class BookTranslationEngine(
         context: ContextPackage,
         source: ProtocolChapter,
         partial: ParsedTranslationChapter?,
+        promptProfile: PromptProfileDraft,
         problems: List<String> = emptyList(),
         previousChunkTranslationTail: String = ""
     ): ChapterRepairOutcome {
@@ -1136,8 +1197,19 @@ class BookTranslationEngine(
         }
         val request = LlmRequest(
                 provider,
-                TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
-                TranslationProtocol.repairUserPrompt(context, listOf(retrySource), problems, previousChunkTranslationTail),
+                TranslationProtocol.translationSystemPrompt(
+                    promptProfile,
+                    project.sourceLanguage,
+                    project.targetLanguage,
+                    project.styleGuide
+                ),
+                TranslationProtocol.repairUserPrompt(
+                    promptProfile,
+                    context,
+                    listOf(retrySource),
+                    problems,
+                    previousChunkTranslationTail
+                ),
                 provider.temperature,
                 outputLimit(provider.maxContextTokens),
                 "CHAPTER_REPAIR",
@@ -1183,7 +1255,8 @@ class BookTranslationEngine(
         runId: Long,
         batchId: Long,
         context: ContextPackage,
-        source: ProtocolChapter
+        source: ProtocolChapter,
+        promptProfile: PromptProfileDraft
     ) {
         val safeSourceBudget = (provider.maxContextTokens * 0.28).toLong().coerceAtLeast(800)
         val groups = mutableListOf<List<ProtocolSegment>>()
@@ -1217,8 +1290,18 @@ class BookTranslationEngine(
             val chunkSource = source.copy(segments = group)
             val request = LlmRequest(
                 provider,
-                TranslationProtocol.systemPrompt(project.sourceLanguage, project.targetLanguage),
-                TranslationProtocol.userPrompt(context, listOf(chunkSource), previousChunkTranslationTail),
+                TranslationProtocol.translationSystemPrompt(
+                    promptProfile,
+                    project.sourceLanguage,
+                    project.targetLanguage,
+                    project.styleGuide
+                ),
+                TranslationProtocol.translationUserPrompt(
+                    promptProfile,
+                    context,
+                    listOf(chunkSource),
+                    previousChunkTranslationTail
+                ),
                 provider.temperature,
                 outputLimit(provider.maxContextTokens),
                 "OVERSIZED_CHAPTER_CHUNK",
@@ -1263,15 +1346,16 @@ class BookTranslationEngine(
             if (!qa.accepted) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
                 val repair = repairChapter(
-                    project,
-                    provider,
-                    runId,
-                    batchId,
-                    context,
-                    chunkSource,
-                    parsed,
-                    qa.problems,
-                    previousChunkTranslationTail
+                    project = project,
+                    provider = provider,
+                    runId = runId,
+                    batchId = batchId,
+                    context = context,
+                    source = chunkSource,
+                    partial = parsed,
+                    promptProfile = promptProfile,
+                    problems = qa.problems,
+                    previousChunkTranslationTail = previousChunkTranslationTail
                 )
                 parsed = repair.chapter
                 prompt += repair.promptTokens

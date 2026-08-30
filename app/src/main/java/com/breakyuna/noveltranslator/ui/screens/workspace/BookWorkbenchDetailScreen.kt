@@ -40,14 +40,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.core.llm.LlmErrorCategory
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
+import com.breakyuna.noveltranslator.core.translation.TranslationProtocol
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
-import com.breakyuna.noveltranslator.ui.screens.bookdetail.TARGET_LANGUAGE_OPTIONS
+import com.breakyuna.noveltranslator.ui.components.TARGET_LANGUAGE_OPTIONS
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
@@ -64,8 +67,7 @@ fun BookWorkbenchDetailScreen(
     bookId: Long,
     viewModel: AppViewModel,
     onNavigateBack: () -> Unit,
-    onOpenReader: (Long, Long?) -> Unit,
-    onOpenBookDetail: (Long) -> Unit
+    onOpenReader: (Long, Long?) -> Unit
 ) {
     val windowSize = rememberWindowSize()
     val useWideWorkbench = windowSize.isExpanded &&
@@ -104,6 +106,10 @@ fun BookWorkbenchDetailScreen(
 
     val currentTargetEdition = editions.firstOrNull { it.id == selectedTargetEditionId }
     val currentProject = translationProjects.firstOrNull { it.targetEditionId == selectedTargetEditionId }
+    val promptProfile by remember(currentProject?.id) {
+        if (currentProject != null) viewModel.observePromptProfile(currentProject.id)
+        else flowOf(null)
+    }.collectAsState(initial = null)
 
     val activeRuns by remember(currentProject?.id) {
         if (currentProject != null) viewModel.observeRunsByProject(currentProject.id)
@@ -193,9 +199,6 @@ fun BookWorkbenchDetailScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { onOpenBookDetail(currentBook.id) }) {
-                        Icon(Icons.Default.Info, "书籍详情")
-                    }
                     IconButton(onClick = openSelectedReader) {
                         Icon(Icons.Default.MenuBook, "阅读译文")
                     }
@@ -273,6 +276,7 @@ fun BookWorkbenchDetailScreen(
                     editions = editions,
                     selectedEdition = currentTargetEdition,
                     project = currentProject,
+                    promptProfile = promptProfile,
                     providers = allProviders,
                     run = latestRun,
                     selectedTab = selectedTab,
@@ -306,6 +310,7 @@ fun BookWorkbenchDetailScreen(
                     editions = editions,
                     selectedEdition = currentTargetEdition,
                     project = currentProject,
+                    promptProfile = promptProfile,
                     providers = allProviders,
                     viewModel = viewModel,
                     onSelectEdition = { selectedTargetEditionId = it },
@@ -523,6 +528,7 @@ private fun WorkbenchSidebar(
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
+    promptProfile: PromptProfileEntity?,
     run: PlatformTranslationRunEntity?,
     providers: List<ApiProviderEntity>,
     selectedTab: WorkbenchTab,
@@ -709,6 +715,7 @@ private fun WorkbenchSidebar(
                     editions = editions,
                     targetEdition = selectedEdition,
                     project = project,
+                    promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
                     compact = true
@@ -851,6 +858,7 @@ private fun WorkbenchHeroCard(
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
+    promptProfile: PromptProfileEntity?,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
     onSelectEdition: (Long) -> Unit,
@@ -885,6 +893,7 @@ private fun WorkbenchHeroCard(
                         editions = editions,
                         targetEdition = selectedEdition,
                         project = project,
+                        promptProfile = promptProfile,
                         providers = providers,
                         viewModel = viewModel,
                         compact = false,
@@ -906,6 +915,7 @@ private fun WorkbenchHeroCard(
                         editions = editions,
                         targetEdition = selectedEdition,
                         project = project,
+                        promptProfile = promptProfile,
                         providers = providers,
                         viewModel = viewModel,
                         compact = false,
@@ -1315,6 +1325,7 @@ private fun ModelStyleConfigurationCard(
     editions: List<EditionEntity>,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
+    promptProfile: PromptProfileEntity?,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
     compact: Boolean,
@@ -1338,6 +1349,19 @@ private fun ModelStyleConfigurationCard(
     var styleGuide by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
         mutableStateOf(project?.styleGuide?.ifBlank { "保持文学韵味与专有名词一致性" } ?: "保持文学韵味与专有名词一致性")
     }
+    val sourceLanguage = project?.sourceLanguage
+        ?: originalEdition?.language?.takeIf { it.isNotBlank() }
+        ?: book.originalLanguage
+    val targetLanguage = project?.targetLanguage
+        ?: targetEdition?.language?.takeIf { it.isNotBlank() }
+        ?: "目标语言"
+    val defaultPromptProfile = remember(sourceLanguage, targetLanguage) {
+        TranslationProtocol.defaultPromptProfile()
+    }
+    var promptDraft by remember(project?.id, promptProfile?.version, targetEdition?.id, sourceLanguage, targetLanguage) {
+        mutableStateOf(promptProfile?.asDraft() ?: defaultPromptProfile)
+    }
+    var showPromptEditor by remember(project?.id, targetEdition?.id) { mutableStateOf(false) }
     var highQualityReview by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
         mutableStateOf(project?.highQualityReview ?: false)
     }
@@ -1525,12 +1549,44 @@ private fun ModelStyleConfigurationCard(
             OutlinedTextField(
                 value = styleGuide,
                 onValueChange = { styleGuide = it.take(2_000) },
-                label = { Text("文学风格指导与自定义提示词") },
+                label = { Text("文学风格指导") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = if (compact) 2 else 3,
                 maxLines = if (compact) 4 else 6,
                 enabled = canEdit
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "翻译与润色提示词",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (promptProfile == null) {
+                            "当前使用默认模板，保存后将记录为第 1 版"
+                        } else {
+                            "当前 Prompt Profile · 第 ${promptProfile.version} 版"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                OutlinedButton(
+                    onClick = { showPromptEditor = true },
+                    enabled = canEdit,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(Icons.Default.EditNote, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(5.dp))
+                    Text("预览 / 编辑")
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1572,7 +1628,8 @@ private fun ModelStyleConfigurationCard(
                                 rangeEnd = project.rangeEnd,
                                 seamlessAheadChapters = project.seamlessAheadChapters,
                                 styleGuide = styleGuide,
-                                highQualityReview = highQualityReview
+                                highQualityReview = highQualityReview,
+                                promptProfile = promptDraft
                             )
                         } else if (originalEdition != null) {
                             viewModel.configureEditionTranslation(
@@ -1585,6 +1642,7 @@ private fun ModelStyleConfigurationCard(
                                 maxBatchChapters = 1,
                                 styleGuide = styleGuide,
                                 highQualityReview = highQualityReview,
+                                promptProfile = promptDraft,
                                 startImmediately = false
                             )
                         }
@@ -1599,6 +1657,264 @@ private fun ModelStyleConfigurationCard(
                 Text(if (project == null) "保存并创建任务" else "保存模型与风格")
             }
         }
+    }
+
+    if (showPromptEditor) {
+        PromptProfileEditorDialog(
+            draft = promptDraft,
+            sourceLanguage = sourceLanguage,
+            targetLanguage = targetLanguage,
+            styleGuide = styleGuide,
+            version = promptProfile?.version ?: 1,
+            canEdit = canEdit,
+            projectExists = project != null,
+            onDismiss = { showPromptEditor = false },
+            onSave = { updated ->
+                promptDraft = updated
+                showPromptEditor = false
+                project?.let { viewModel.savePromptProfile(it.id, updated) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun PromptProfileEditorDialog(
+    draft: PromptProfileDraft,
+    sourceLanguage: String,
+    targetLanguage: String,
+    styleGuide: String,
+    version: Int,
+    canEdit: Boolean,
+    projectExists: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (PromptProfileDraft) -> Unit
+) {
+    var selectedPrompt by rememberSaveable { mutableStateOf(0) }
+    var previewMode by rememberSaveable { mutableStateOf(false) }
+    var workingDraft by remember(draft) { mutableStateOf(draft) }
+    val isTranslation = selectedPrompt == 0
+    val systemPrompt = if (isTranslation) {
+        workingDraft.translationSystemPrompt
+    } else {
+        workingDraft.polishSystemPrompt
+    }
+    val userPromptTemplate = if (isTranslation) {
+        workingDraft.translationUserPromptTemplate
+    } else {
+        workingDraft.polishUserPromptTemplate
+    }
+    val fallbackSystemPrompt = if (isTranslation) {
+        TranslationProtocol.systemPrompt(sourceLanguage, targetLanguage)
+    } else {
+        TranslationProtocol.polishSystemPrompt(sourceLanguage, targetLanguage)
+    }
+    val renderedSystemPrompt = TranslationProtocol.renderSystemPrompt(
+        template = systemPrompt,
+        sourceLanguage = sourceLanguage,
+        targetLanguage = targetLanguage,
+        styleGuide = styleGuide,
+        fallback = fallbackSystemPrompt
+    )
+    val previewBody = if (isTranslation) {
+        """
+        [TRANSLATION_PROTOCOL]
+        Protocol version: 2
+        Style guide: $styleGuide
+
+        [SOURCE]
+        <C id="1" title="示例章节">
+        <S id="1">这里会注入当前批次的原文段落。</S>
+        </C>
+        """.trimIndent()
+    } else {
+        """
+        [POLISH_PROTOCOL]
+        Protocol version: 2
+
+        [SOURCE]
+        <C id="1"><S id="1">这里会注入当前章节原文。</S></C>
+
+        [CURRENT_TRANSLATION]
+        <C id="1"><S id="1">这里会注入已经通过质检的初稿。</S></C>
+        """.trimIndent()
+    }
+    val renderedUserPrompt = TranslationProtocol.renderUserPromptTemplate(userPromptTemplate, previewBody)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .fillMaxHeight(0.90f),
+            shape = RoundedCornerShape(20.dp),
+            tonalElevation = 6.dp
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, top = 16.dp, end = 10.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("提示词 Profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(
+                            if (projectExists) "当前第 $version 版 · 保存修改会生成新的版本" else "尚未创建翻译工程 · 保存后写入第 1 版",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭")
+                    }
+                }
+
+                TabRow(selectedTabIndex = selectedPrompt) {
+                    Tab(
+                        selected = isTranslation,
+                        onClick = { selectedPrompt = 0 },
+                        text = { Text("翻译提示词") },
+                        icon = { Icon(Icons.Default.Translate, null, Modifier.size(17.dp)) }
+                    )
+                    Tab(
+                        selected = !isTranslation,
+                        onClick = { selectedPrompt = 1 },
+                        text = { Text("润色提示词") },
+                        icon = { Icon(Icons.Default.AutoFixHigh, null, Modifier.size(17.dp)) }
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    OutlinedButton(onClick = { previewMode = !previewMode }) {
+                        Icon(
+                            if (previewMode) Icons.Default.Edit else Icons.Default.Visibility,
+                            null,
+                            Modifier.size(17.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                        Text(if (previewMode) "编辑模板" else "预览最终提示词")
+                    }
+                }
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (previewMode) {
+                        Text(
+                            "系统提示词（运行时已替换语言、风格等变量）",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        PromptPreviewBlock(renderedSystemPrompt)
+                        Text(
+                            "请求提示词（示例正文；实际运行会注入章节、术语和记忆）",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        PromptPreviewBlock(renderedUserPrompt)
+                    } else {
+                        Text(
+                            "系统提示词模板",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedTextField(
+                            value = systemPrompt,
+                            onValueChange = { value ->
+                                val updated = value.take(24_000)
+                                workingDraft = if (isTranslation) {
+                                    workingDraft.copy(translationSystemPrompt = updated)
+                                } else {
+                                    workingDraft.copy(polishSystemPrompt = updated)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 8,
+                            maxLines = 16,
+                            enabled = canEdit,
+                            supportingText = {
+                                Text("可用变量：{{SOURCE_LANGUAGE}}、{{TARGET_LANGUAGE}}、{{STYLE_GUIDE}}")
+                            }
+                        )
+                        Text(
+                            "请求提示词模板",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        OutlinedTextField(
+                            value = userPromptTemplate,
+                            onValueChange = { value ->
+                                val updated = value.take(24_000)
+                                workingDraft = if (isTranslation) {
+                                    workingDraft.copy(translationUserPromptTemplate = updated)
+                                } else {
+                                    workingDraft.copy(polishUserPromptTemplate = updated)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 5,
+                            maxLines = 12,
+                            enabled = canEdit,
+                            supportingText = {
+                                Text("建议保留 {{PROMPT_BODY}}，它会被替换为章节、术语、记忆和结构化输出正文")
+                            }
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "模板最多 24,000 字符",
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    TextButton(onClick = onDismiss) { Text("取消") }
+                    Spacer(Modifier.width(6.dp))
+                    Button(onClick = { onSave(workingDraft) }, enabled = canEdit) {
+                        Icon(Icons.Default.Save, null, Modifier.size(17.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text(if (projectExists) "保存新版本" else "应用到新建任务")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromptPreviewBlock(value: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Text(
+            value,
+            modifier = Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 
@@ -2686,7 +3002,7 @@ private fun LogsAndHistoryTab(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            "任务 #${run.id} · ${run.providerName}/${run.modelName}",
+                                            "任务 #${run.id} · ${run.providerName}/${run.modelName} · Prompt v${run.promptProfileVersion}",
                                             fontWeight = FontWeight.Bold,
                                             style = MaterialTheme.typography.titleSmall
                                         )
@@ -2820,7 +3136,7 @@ private fun DebugDiagnosticsTab(
                     Text("Debug 仅记录开启后的任务", fontWeight = FontWeight.Bold)
                     Text("内容可能包含小说正文、提示词和模型完整输出，请勿在公开场合直接分享。", style = MaterialTheme.typography.bodySmall)
                     if (run != null) {
-                        Text("当前任务 #${run.id} · ${run.state} · ${run.providerName}/${run.modelName}", style = MaterialTheme.typography.bodySmall)
+                        Text("当前任务 #${run.id} · ${run.state} · ${run.providerName}/${run.modelName} · Prompt v${run.promptProfileVersion}", style = MaterialTheme.typography.bodySmall)
                         if (!run.lastError.isNullOrBlank()) Text("任务失败原因：${run.lastError}", color = MaterialTheme.colorScheme.error)
                     }
                 }

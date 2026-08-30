@@ -53,8 +53,7 @@ import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 @Composable
 fun BookShelfScreen(
     viewModel: AppViewModel,
-    onOpenDetail: (Long) -> Unit,
-    onContinueReading: (Long) -> Unit,
+    onOpenBook: (Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val strings = platformUiStrings()
@@ -380,7 +379,7 @@ fun BookShelfScreen(
                                                 selectedBookIds + book.id
                                             }
                                         } else {
-                                            onOpenDetail(book.id)
+                                            onOpenBook(book.id)
                                         }
                                     },
                                     onLongClick = {
@@ -394,9 +393,7 @@ fun BookShelfScreen(
                                             selectedBookIds = setOf(book.id)
                                         }
                                     },
-                                    onDoubleClick = {
-                                        if (!inSelectionMode) onContinueReading(book.id)
-                                    }
+                                    onDoubleClick = null
                                 )
                             }
                         }
@@ -566,7 +563,7 @@ private fun BookCoverCard(
     strings: PlatformUiStrings,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    onDoubleClick: () -> Unit
+    onDoubleClick: (() -> Unit)?
 ) {
     val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 480)
 
