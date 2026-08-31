@@ -568,22 +568,41 @@ fun BookWorkbenchDetailScreen(
             onDismissRequest = { chapterActionTarget = null },
             title = { Text("章节操作 · ${targetCh.canonicalTitle}") },
             text = {
-                Text("章节编号: 第 ${targetCh.chapterIndex} 章\n您可以直接重新翻译此章节，或在阅读器中预览内容。")
+                Text("章节编号: 第 ${targetCh.chapterIndex} 章\n您可以直接重新翻译此章节，或在阅读器中预览此章内容。")
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.retranslateChapter(
-                            editionId = currentTargetEdition.id,
-                            logicalChapterId = targetCh.id,
-                            projectId = currentProject?.id
-                        )
-                        chapterActionTarget = null
-                    }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Refresh, null, Modifier.size(16.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("重译此章")
+                    OutlinedButton(
+                        onClick = {
+                            val selectedEditionId = currentTargetEdition.id
+                            val chapterId = targetCh.id
+                            chapterActionTarget = null
+                            viewModel.selectReadingEdition(currentBook.id, selectedEditionId) {
+                                onOpenReader(currentBook.id, chapterId)
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.MenuBook, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("预览此章")
+                    }
+                    Button(
+                        onClick = {
+                            viewModel.retranslateChapter(
+                                editionId = currentTargetEdition.id,
+                                logicalChapterId = targetCh.id,
+                                projectId = currentProject?.id
+                            )
+                            chapterActionTarget = null
+                        }
+                    ) {
+                        Icon(Icons.Default.Refresh, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("重译此章")
+                    }
                 }
             },
             dismissButton = {

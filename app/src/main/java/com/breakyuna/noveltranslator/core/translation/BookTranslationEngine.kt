@@ -1999,6 +1999,12 @@ class BookTranslationEngine(
             if (!qa.accepted) {
                 val initialRepairScope = DeterministicTranslationQa.repairScope(chunkSource, parsed, qa, mandatoryTerms)
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
+                SystemLogger.warn(
+                    "QA_CHECK",
+                    "⚠️ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/${groups.size} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动一次自动修复...",
+                    projectId = project.id,
+                    chapterIndex = source.chapterIndex
+                )
                 val repair = repairChapter(
                     project = project,
                     provider = provider,
@@ -2019,6 +2025,12 @@ class BookTranslationEngine(
                 qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
                 if (!qa.accepted && initialRepairScope.mode == QaRepairMode.LOCAL_SEGMENTS) {
                     recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_FALLBACK_TRIGGERED", qa.problems)
+                    SystemLogger.warn(
+                        "QA_CHECK",
+                        "⚠️ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/${groups.size} 局部修复后质检仍未通过 (${qa.problems.joinToString()})，尝试整块修复...",
+                        projectId = project.id,
+                        chapterIndex = source.chapterIndex
+                    )
                     val fallback = repairChapter(
                         project = project,
                         provider = provider,
@@ -2042,6 +2054,12 @@ class BookTranslationEngine(
             }
             if (!qa.commitAllowed() || parsed == null) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
+                SystemLogger.error(
+                    "QA_CHECK",
+                    "❌ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/${groups.size} 质检失败且自动修复未通过: ${qa.problems.joinToString().ifBlank { "未解析到有效译文" }}",
+                    projectId = project.id,
+                    chapterIndex = source.chapterIndex
+                )
                 tasks.updateBatch(
                     (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
                         state = "FAILED",
@@ -2057,6 +2075,12 @@ class BookTranslationEngine(
                     )
                 )
                 updateRunCounters(runId, completed = 0, failed = 1)
+                SystemLogger.info(
+                    "BATCH",
+                    "✨ 批次处理完毕: 章节 #${source.chapterIndex}, 成功 0 章, 失败 1 章 (分块 ${groupIndex + 1}/${groups.size} 质检未通过未落库)",
+                    projectId = project.id,
+                    chapterIndex = source.chapterIndex
+                )
                 return
             }
             if (qa.hasWarnings()) {
@@ -2105,6 +2129,12 @@ class BookTranslationEngine(
                 "QA_MERGED_CHAPTER_FAILED",
                 mergedQa.problems + "glossary=${mergedQa.glossaryStatus}"
             )
+            SystemLogger.error(
+                "QA_CHECK",
+                "❌ 章节 #${source.chapterIndex} 分块合并后质检未通过: ${mergedQa.problems.joinToString()}",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
             tasks.updateBatch(
                 (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
                     state = "FAILED",
@@ -2120,6 +2150,12 @@ class BookTranslationEngine(
                 )
             )
             updateRunCounters(runId, completed = 0, failed = 1)
+            SystemLogger.info(
+                "BATCH",
+                "✨ 批次处理完毕: 章节 #${source.chapterIndex}, 成功 0 章, 失败 1 章 (分块合并质检未通过未落库)",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
             clearChunkCheckpoint(project, source)
             return
         }
@@ -2154,6 +2190,18 @@ class BookTranslationEngine(
             )
         )
         updateRunCounters(runId, 1, 0)
+        SystemLogger.info(
+            "STORAGE",
+            "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库 (共 ${groups.size} 个分块合并)",
+            projectId = project.id,
+            chapterIndex = source.chapterIndex
+        )
+        SystemLogger.info(
+            "BATCH",
+            "✨ 批次处理完毕: 章节 #${source.chapterIndex}, 成功 1 章, 失败 0 章",
+            projectId = project.id,
+            chapterIndex = source.chapterIndex
+        )
     }
 
     private suspend fun commitChapter(
