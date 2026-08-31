@@ -610,23 +610,21 @@ object DeterministicTranslationQa {
             }
             // Keep the established diagnostic wording because it is useful in logs and UI filters.
             if (sourceImages != targetImages) issue("IMAGE_MARKER_CHANGED", "image markers changed", segment.shortId)
-            val sourceNumbers = numberPattern.findAll(sourceText).map { it.value }.toList()
-            val targetNumbers = numberPattern.findAll(target).map { it.value }.toList()
-            val normalizedSourceNumbers = sourceNumbers.map(::normalizeNumberToken)
-            val normalizedTargetNumbers = targetNumbers.map(::normalizeNumberToken)
-            if (normalizedSourceNumbers.isNotEmpty() && normalizedTargetNumbers.isNotEmpty() &&
-                normalizedSourceNumbers.size == normalizedTargetNumbers.size &&
-                normalizedSourceNumbers != normalizedTargetNumbers
+            val sourceNumbers = ChineseNumberParser.extractNormalizedNumbers(sourceText)
+            val targetNumbers = ChineseNumberParser.extractNormalizedNumbers(target)
+            if (sourceNumbers.isNotEmpty() && targetNumbers.isNotEmpty() &&
+                sourceNumbers.size == targetNumbers.size &&
+                sourceNumbers != targetNumbers
             ) {
                 // A same-length, different numeric sequence is strong evidence that a factual
                 // value changed.  Do not apply this rule when the target contains fewer digits:
                 // literary translations routinely spell only some source numerals as words.
                 issue("NUMERIC_CONTENT_CHANGED", "numeric sequence changed: $sourceNumbers -> $targetNumbers", segment.shortId)
-            } else if (normalizedSourceNumbers.isNotEmpty() &&
-                normalizedSourceNumbers != normalizedTargetNumbers
+            } else if (sourceNumbers.isNotEmpty() &&
+                sourceNumbers != targetNumbers
             ) {
                 // A count mismatch is ambiguous rather than automatically wrong.  For example,
-                // "4학년 1반" may become "Year 4, Class One".  Keep it visible in diagnostics,
+                // "4학년 1班" may become "Year 4, Class One".  Keep it visible in diagnostics,
                 // but do not reject the whole chapter before a multilingual number-word parser
                 // can prove that a value was actually lost.
                 diagnostic(

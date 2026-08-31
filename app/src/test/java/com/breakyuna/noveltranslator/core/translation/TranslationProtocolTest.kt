@@ -174,21 +174,60 @@ class TranslationProtocolTest {
     }
 
     @Test
-    fun deterministicQa_doesNotRejectLocalizedNumberWords_withoutDigits() {
+    fun deterministicQa_accuratelyAlignsNaturalChineseNumberWordsWithoutUncertainty() {
         val source = ProtocolChapter(
             shortId = 1,
             logicalChapterId = 10,
             chapterIndex = 1,
             title = "chapter",
-            segments = listOf(ProtocolSegment(1, 100, "He waited 12 days."))
+            segments = listOf(
+                ProtocolSegment(1, 100, "2匹の狼と3人の冒険者"),
+                ProtocolSegment(2, 101, "28 days later, 10 survived."),
+                ProtocolSegment(3, 102, "He waited 12 days.")
+            )
         )
-        val translated = ParsedTranslationChapter(1, mapOf(1 to "他等了十二天。"))
+        val translated = ParsedTranslationChapter(
+            1,
+            mapOf(
+                1 to "两只狼和三名冒险者",
+                2 to "二十八天后，十人幸存。",
+                3 to "他等了十二天。"
+            )
+        )
 
         val result = DeterministicTranslationQa.validate(source, translated)
 
         assertTrue(result.accepted)
-        assertTrue(result.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" })
+        assertFalse(result.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" })
+        assertFalse(result.issues.any { it.code == "NUMERIC_CONTENT_CHANGED" })
         assertTrue(result.commitAllowed())
+    }
+
+    @Test
+    fun deterministicQa_rejectsChineseNumberAlteredValues() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "He reached Level 50."),
+                ProtocolSegment(2, 101, "He waited 12 days.")
+            )
+        )
+        val translated = ParsedTranslationChapter(
+            1,
+            mapOf(
+                1 to "他达到了等级五。",
+                2 to "他等了十三天。"
+            )
+        )
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+
+        assertFalse(result.accepted)
+        assertEquals(2, result.problems.count { it.contains("NUMERIC_CONTENT_CHANGED") })
+        assertFalse(result.commitAllowed())
     }
 
     @Test
