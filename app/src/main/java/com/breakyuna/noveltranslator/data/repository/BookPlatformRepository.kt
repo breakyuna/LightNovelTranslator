@@ -389,7 +389,7 @@ class BookPlatformRepository(
                 seamlessAheadChapters = seamlessAheadChapters.coerceIn(1, 50),
                 styleGuide = normalizedStyleGuide,
                 highQualityReview = highQualityReview,
-                state = if (existing.state in setOf("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "INTERRUPTED")) "IDLE" else existing.state,
+                state = if (existing.state in setOf("COMPLETED", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED", "INTERRUPTED")) "IDLE" else existing.state,
                 updatedAt = System.currentTimeMillis()
             )
             projects.update(updated)

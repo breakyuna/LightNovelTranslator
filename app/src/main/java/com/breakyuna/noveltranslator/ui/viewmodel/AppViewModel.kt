@@ -726,7 +726,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     // a paused project must not be silently resumed by scrolling the reader.
                     .filter {
                         it.translationMode == TranslationMode.SEAMLESS.name &&
-                            it.state in setOf("IDLE", "INTERRUPTED", "COMPLETED", "COMPLETED_WITH_ERRORS")
+                            it.state in setOf("IDLE", "INTERRUPTED", "COMPLETED", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS")
                     }
                     .forEach { project ->
                         val seamlessJob = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {

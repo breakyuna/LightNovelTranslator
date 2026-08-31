@@ -320,6 +320,9 @@ interface PlatformTaskDao {
     @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId ORDER BY batchIndex")
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>>
 
+    @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId ORDER BY batchIndex")
+    suspend fun getBatches(runId: Long): List<PlatformTranslationBatchEntity>
+
     @Query("""
         SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
                cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,

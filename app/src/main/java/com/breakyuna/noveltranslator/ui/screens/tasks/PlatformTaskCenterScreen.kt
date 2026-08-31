@@ -98,14 +98,22 @@ fun PlatformTaskCenterScreen(
 
     // Computed overview statistics
     val totalTranslationBooksCount = booksWithTranslations.size
-    val runningRunsCount = allRuns.count { it.state == "RUNNING" }
-    val pausedRunsCount = allRuns.count { it.state == "PAUSED" }
-    val completedRunsCount = allRuns.count {
-        it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS")
+    val latestRunByProject = remember(allRuns) {
+        allRuns.groupBy { it.translationProjectId }
+            .mapValues { (_, projectRuns) ->
+                projectRuns.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+            }
+    }
+    val runningRunsCount = latestRunByProject.values.count { it?.state == "RUNNING" }
+    val pausedRunsCount = latestRunByProject.values.count { it?.state == "PAUSED" }
+    val completedRunsCount = latestRunByProject.values.count {
+        it?.state?.let { state ->
+            state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS")
+        } == true
     }
 
     // Filtered books
-    val filteredBooks = remember(booksWithTranslations, allProjects, allRuns, searchQuery, filterStatus) {
+    val filteredBooks = remember(booksWithTranslations, allProjects, allRuns, latestRunByProject, searchQuery, filterStatus) {
         booksWithTranslations.filter { book ->
             val matchesSearch = searchQuery.isBlank() ||
                     book.title.contains(searchQuery, ignoreCase = true) ||
@@ -115,15 +123,26 @@ fun PlatformTaskCenterScreen(
 
             val bookProjects = allProjects.filter { it.bookId == book.id }
             val bookRuns = allRuns.filter { it.bookId == book.id }
+            val projectStates = bookProjects.map { project ->
+                effectiveTaskState(project, latestRunByProject[project.id])
+            }
+            val orphanedLatestStates = bookRuns
+                .filter { run -> bookProjects.none { it.id == run.translationProjectId } }
+                .groupBy { it.translationProjectId }
+                .values
+                .mapNotNull { runsForProject ->
+                    runsForProject.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+                }
+                .map { it.state }
 
             when (filterStatus) {
-                "RUNNING" -> bookRuns.any { it.state == "RUNNING" } || bookProjects.any { it.state == "RUNNING" }
-                "PAUSED" -> bookRuns.any { it.state == "PAUSED" } || bookProjects.any { it.state == "PAUSED" }
+                "RUNNING" -> projectStates.any { it == "RUNNING" } || orphanedLatestStates.any { it == "RUNNING" }
+                "PAUSED" -> projectStates.any { it == "PAUSED" } || orphanedLatestStates.any { it == "PAUSED" }
                 "COMPLETED" -> (bookRuns.isNotEmpty() || bookProjects.isNotEmpty()) &&
-                        (bookRuns.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
-                            bookProjects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
-                        bookRuns.none { it.state in setOf("RUNNING", "PAUSED") } &&
-                        bookProjects.none { it.state in setOf("RUNNING", "PAUSED") }
+                        (projectStates.any { it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS") } ||
+                            orphanedLatestStates.any { it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS") }) &&
+                        projectStates.none { it in setOf("RUNNING", "PAUSED") } &&
+                        orphanedLatestStates.none { it in setOf("RUNNING", "PAUSED") }
                 else -> true
             }
         }
@@ -393,16 +412,39 @@ private fun BookWorkspaceUnitCard(
 ) {
     val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
 
-    val isRunning = runs.any { it.state == "RUNNING" } || projects.any { it.state == "RUNNING" }
-    val isPaused = runs.any { it.state == "PAUSED" } || projects.any { it.state == "PAUSED" }
+    // A book can have several historical Runs.  Looking at any old RUNNING row keeps the card
+    // stuck forever after a newer terminal run completes, so resolve one latest Run per project.
+    val latestRunByProjectForBook = runs
+        .groupBy { it.translationProjectId }
+        .mapValues { (_, projectRuns) ->
+            projectRuns.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+        }
+    val effectiveProjectStates = projects.map { project ->
+        effectiveTaskState(project, latestRunByProjectForBook[project.id])
+    }
+    val orphanedLatestStates = runs
+        .filter { run -> projects.none { it.id == run.translationProjectId } }
+        .groupBy { it.translationProjectId }
+        .values
+        .mapNotNull { runsForProject ->
+            runsForProject.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+        }
+        .map { it.state }
+    val isRunning = effectiveProjectStates.any { it == "RUNNING" } ||
+        orphanedLatestStates.any { it == "RUNNING" }
+    val isPaused = effectiveProjectStates.any { it == "PAUSED" } || orphanedLatestStates.any { it == "PAUSED" }
     val isCompleted = (runs.isNotEmpty() || projects.isNotEmpty()) &&
-            (projects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
-                runs.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
-            projects.none { it.state in setOf("RUNNING", "PAUSED") } &&
-            runs.none { it.state in setOf("RUNNING", "PAUSED") }
+        (effectiveProjectStates + orphanedLatestStates).any {
+            it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS")
+        } &&
+        (effectiveProjectStates + orphanedLatestStates).none { it in setOf("RUNNING", "PAUSED") }
 
     val taskCount = projects.size.coerceAtLeast(runs.size)
-    val orphanedRuns = runs.filter { run -> projects.none { it.id == run.translationProjectId } }
+    val orphanedRuns = runs
+        .filter { run -> projects.none { it.id == run.translationProjectId } }
+        .groupBy { it.translationProjectId }
+        .values
+        .mapNotNull { it.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { run -> run.createdAt }.thenBy { it.id }) }
 
     ElevatedCard(
         modifier = modifier,
@@ -731,7 +773,7 @@ private fun BookWorkspaceUnitCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             items(projects, key = { "project-${it.id}" }) { project ->
-                                val projectRun = runs.firstOrNull { it.translationProjectId == project.id }
+                                val projectRun = latestRunByProjectForBook[project.id]
                                 val taskChapterCount = TranslationScopePlanner.select(
                                     chapters = chapters,
                                     mode = project.translationMode,
@@ -787,10 +829,10 @@ private fun TranslationProjectTaskItem(
     onViewLogs: () -> Unit,
     onViewGlossary: () -> Unit
 ) {
-    // The project is the execution aggregate and remains authoritative even when its newest run
-    // could not persist the matching terminal state during cleanup.
-    val currentState = project.state
-    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS")) {
+    // Prefer a terminal state from the newest Run when the project row is still stale; otherwise
+    // the project remains the durable execution aggregate.
+    val currentState = effectiveTaskState(project, run)
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) {
         totalChapters
     } else {
         (run?.completedChapters ?: 0).coerceAtMost(totalChapters)
@@ -888,7 +930,7 @@ private fun TranslationProjectTaskItem(
                     )
                 } else {
                     LinearProgressIndicator(
-                        progress = { if (currentState in setOf("COMPLETED", "SUCCESS")) 1f else progressFraction.coerceIn(0f, 1f) },
+                        progress = { if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) 1f else progressFraction.coerceIn(0f, 1f) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp)
@@ -1250,7 +1292,8 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
 private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
     if (log.operation.contains("TRIGGERED", ignoreCase = true) ||
         log.operation.contains("SKIPPED", ignoreCase = true) ||
-        log.operation.contains("FALLBACK", ignoreCase = true)
+        log.operation.contains("FALLBACK", ignoreCase = true) ||
+        log.operation.contains("WARNING", ignoreCase = true)
     ) return RequestLogStatus.WARNING
     val parsed = runCatching { RequestLogStatus.valueOf(log.status) }.getOrNull()
     return if (parsed == RequestLogStatus.SUCCESS && !log.isSuccess) RequestLogStatus.FAILURE
@@ -1300,7 +1343,7 @@ private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUi
             )
             val err = batch.errorMessage
             if (!err.isNullOrBlank()) {
-                Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(err, color = statusColor(batch.state), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -1555,16 +1598,31 @@ private fun CreateTranslationEditionDialog(
 
 private fun statusColor(state: String): Color = when (state) {
     "FAILED", "ERROR", "COMPLETED_WITH_ERRORS" -> Color(0xFFD32F2F)
+    "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Color(0xFFF57C00)
     "RUNNING" -> Color(0xFF1976D2)
     "COMPLETED", "SUCCESS" -> Color(0xFF2E7D32)
     "PAUSED" -> Color(0xFFE65100)
     else -> Color(0xFF757575)
 }
 
+private fun effectiveTaskState(
+    project: TranslationProjectV2Entity,
+    run: PlatformTranslationRunEntity?
+): String {
+    val terminalRunStates = setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
+    val activeProjectStates = setOf("RUNNING", "PAUSED", "INTERRUPTED")
+    return if (project.state in activeProjectStates && run?.state?.let { it in terminalRunStates } == true) {
+        run.state
+    } else {
+        project.state
+    }
+}
+
 private fun statusIcon(state: String): androidx.compose.ui.graphics.vector.ImageVector = when (state) {
     "FAILED", "ERROR", "COMPLETED_WITH_ERRORS" -> Icons.Default.Error
     "RUNNING" -> Icons.Default.Sync
     "COMPLETED", "SUCCESS" -> Icons.Default.CheckCircle
+    "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Icons.Default.Warning
     "PAUSED" -> Icons.Default.PauseCircle
     else -> Icons.Default.Schedule
 }
@@ -1577,8 +1635,10 @@ private fun localizedState(state: String, strings: PlatformUiStrings): String {
         "RUNNING" -> "运行中"
         "PAUSED" -> "已暂停"
         "COMPLETED", "SUCCESS" -> "已完成"
+        "COMPLETED_WITH_WARNINGS" -> "完成但有提示"
         "COMPLETED_WITH_ERRORS" -> "完成但有错误"
         "FAILED", "ERROR" -> "失败"
+        "PARTIAL" -> "部分完成，需修复"
         "CANCELLED" -> "已取消"
         "INTERRUPTED" -> "已中断"
         else -> state

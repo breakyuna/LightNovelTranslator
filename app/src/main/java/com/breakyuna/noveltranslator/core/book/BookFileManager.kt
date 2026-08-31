@@ -135,6 +135,23 @@ class BookFileManager(private val context: Context) {
         return file.takeIf { it.isFile }?.readText(Charsets.UTF_8).orEmpty()
     }
 
+    /** Durable, atomic storage for an in-flight translation chapter checkpoint. */
+    fun saveTranslationCheckpoint(bookId: Long, checkpointName: String, content: String) {
+        val target = File(workspaceDir(bookId), safeName(checkpointName))
+        atomicWrite(target) { output ->
+            output.write(content.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    fun readTranslationCheckpoint(bookId: Long, checkpointName: String): String? {
+        val file = File(workspaceDir(bookId), safeName(checkpointName))
+        return file.takeIf { it.isFile }?.readText(Charsets.UTF_8)
+    }
+
+    fun deleteTranslationCheckpoint(bookId: Long, checkpointName: String) {
+        File(workspaceDir(bookId), safeName(checkpointName)).delete()
+    }
+
     fun deleteBook(bookId: Long) {
         File(context.filesDir, "books/book_$bookId").deleteRecursively()
         File(context.cacheDir, "books/book_$bookId").deleteRecursively()
