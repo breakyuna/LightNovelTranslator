@@ -16,7 +16,6 @@ import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.screens.history.ReadingHistoryScreen
 import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
-import com.breakyuna.noveltranslator.ui.screens.bookdetail.EditionDetailScreen
 import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
 import com.breakyuna.noveltranslator.ui.screens.settings.ApiSettingsScreen
 import com.breakyuna.noveltranslator.ui.screens.tasks.PlatformTaskCenterScreen
@@ -152,9 +151,6 @@ fun AppNavigation(
                             onOpenReader = { targetBookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
                             },
-                            onOpenEdition = { targetBookId, editionId ->
-                                navController.navigate(AppDestination.EditionDetail.createRoute(targetBookId, editionId))
-                            },
                             onOpenBookWorkbench = { targetBookId ->
                                 navController.navigate(AppDestination.BookWorkbench.createRoute(targetBookId))
                             }
@@ -182,27 +178,6 @@ fun AppNavigation(
                             onOpenReader = { targetBookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
                             }
-                        )
-                    }
-
-                    composable(
-                        route = AppDestination.EditionDetail.route,
-                        arguments = listOf(
-                            navArgument("bookId") { type = NavType.LongType },
-                            navArgument("editionId") { type = NavType.LongType }
-                        )
-                    ) { backStackEntry ->
-                        val bookId = backStackEntry.arguments?.getLong("bookId") ?: 0L
-                        val editionId = backStackEntry.arguments?.getLong("editionId") ?: 0L
-                        EditionDetailScreen(
-                            bookId = bookId,
-                            editionId = editionId,
-                            viewModel = viewModel,
-                            onBack = { navController.popBackStack() },
-                            onRead = { chapterId ->
-                                navController.navigate(AppDestination.PlatformReader.createRoute(bookId, chapterId))
-                            },
-                            onDeleted = { navController.popBackStack() }
                         )
                     }
 

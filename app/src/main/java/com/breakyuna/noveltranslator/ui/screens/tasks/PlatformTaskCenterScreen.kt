@@ -51,7 +51,6 @@ fun PlatformTaskCenterScreen(
     onBack: (() -> Unit)? = null,
     onOpenBook: (Long) -> Unit = {},
     onOpenReader: (Long, Long?) -> Unit = { _, _ -> },
-    onOpenEdition: (Long, Long) -> Unit = { _, _ -> },
     onOpenBookWorkbench: (Long) -> Unit = {}
 ) {
     val strings = platformUiStrings()
@@ -334,7 +333,6 @@ fun PlatformTaskCenterScreen(
                         onOpenBook = { onOpenBook(book.id) },
                         onCreateTranslation = { createEditionForBook = book },
                         onOpenReader = { chapterId -> onOpenReader(book.id, chapterId) },
-                        onOpenEdition = { editionId -> onOpenEdition(book.id, editionId) },
                         onViewLogs = { runId -> activeLogRunId = runId },
                         onViewGlossary = { projId -> activeGlossaryProjectId = projId },
                         modifier = Modifier
@@ -405,7 +403,6 @@ private fun BookWorkspaceUnitCard(
     onOpenBook: () -> Unit,
     onCreateTranslation: () -> Unit,
     onOpenReader: (Long?) -> Unit,
-    onOpenEdition: (Long) -> Unit,
     onViewLogs: (Long) -> Unit,
     onViewGlossary: (Long) -> Unit,
     modifier: Modifier = Modifier
@@ -788,7 +785,6 @@ private fun BookWorkspaceUnitCard(
                                     totalChapters = taskChapterCount,
                                     strings = strings,
                                     viewModel = viewModel,
-                                    onOpenEdition = { onOpenEdition(project.targetEditionId) },
                                     onOpenReader = {
                                         viewModel.selectReadingEdition(book.id, project.targetEditionId) {
                                             onOpenReader(null)
@@ -824,7 +820,6 @@ private fun TranslationProjectTaskItem(
     totalChapters: Int,
     strings: PlatformUiStrings,
     viewModel: AppViewModel,
-    onOpenEdition: () -> Unit,
     onOpenReader: () -> Unit,
     onViewLogs: () -> Unit,
     onViewGlossary: () -> Unit
@@ -1016,15 +1011,6 @@ private fun TranslationProjectTaskItem(
                         Icon(Icons.Default.MenuBook, null, Modifier.size(14.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("阅读译文", fontSize = 12.sp)
-                    }
-                    OutlinedButton(
-                        onClick = onOpenEdition,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(32.dp)
-                    ) {
-                        Icon(Icons.Default.OpenInNew, null, Modifier.size(14.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("译本详情", fontSize = 12.sp)
                     }
                 }
 

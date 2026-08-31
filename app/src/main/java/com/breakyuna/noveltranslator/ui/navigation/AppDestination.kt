@@ -15,10 +15,6 @@ sealed class AppDestination(val route: String) {
         fun createRoute(bookId: Long) = "workbench/$bookId"
     }
 
-    object EditionDetail : AppDestination("book/{bookId}/edition/{editionId}") {
-        fun createRoute(bookId: Long, editionId: Long) = "book/$bookId/edition/$editionId"
-    }
-
     object PlatformReader : AppDestination("platform_reader/{bookId}?chapterId={chapterId}") {
         fun createRoute(bookId: Long, chapterId: Long? = null) = "platform_reader/$bookId?chapterId=${chapterId ?: -1L}"
     }
