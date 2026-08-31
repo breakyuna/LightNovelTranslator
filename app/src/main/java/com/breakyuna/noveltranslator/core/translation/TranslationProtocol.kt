@@ -160,10 +160,11 @@ object TranslationProtocol {
         profile: PromptProfileDraft,
         context: ContextPackage,
         chapters: List<ProtocolChapter>,
-        previousChunkTranslationTail: String = ""
+        previousChunkTranslationTail: String = "",
+        chunkLabel: String? = null
     ): String = renderUserPromptTemplate(
         profile.translationUserPromptTemplate,
-        userPrompt(context, chapters, previousChunkTranslationTail)
+        userPrompt(context, chapters, previousChunkTranslationTail, chunkLabel)
     )
 
     fun polishSystemPrompt(
@@ -288,7 +289,8 @@ object TranslationProtocol {
     fun userPrompt(
         context: ContextPackage,
         chapters: List<ProtocolChapter>,
-        previousChunkTranslationTail: String = ""
+        previousChunkTranslationTail: String = "",
+        chunkLabel: String? = null
     ): String = buildString {
         val requestSource = chapters.asSequence()
             .flatMap { it.segments.asSequence() }
@@ -326,6 +328,12 @@ object TranslationProtocol {
             append("\n[PREVIOUS_CHUNK_TRANSLATION_TAIL]\n")
                 .append(escape(previousChunkTranslationTail.takeLast(900))).append('\n')
         }
+        if (!chunkLabel.isNullOrBlank()) {
+            append("\n[CURRENT_CHUNK]\n")
+                .append(escape(chunkLabel)).append('\n')
+                .append("Translate only the SOURCE segments in this chunk. The chunk label and all ")
+                .append("context/tail blocks are reference data and must never be copied into output.\n")
+        }
         append("\n[SOURCE]\n")
         chapters.forEach { chapter ->
             appendChapter(chapter)
@@ -355,6 +363,17 @@ object TranslationProtocol {
         append("Repair only the listed structural or fidelity problems. Keep every already valid ")
             .append("Chapter/Segment boundary and return the complete requested protocol response.\n")
         problems.distinct().take(24).forEach { append("- ").append(escape(it.take(500))).append('\n') }
+        if (problems.any { it.startsWith("REPEATED_TRANSLATED_SEGMENTS") }) {
+            append("\n[DUPLICATE_OUTPUT_REPAIR]\n")
+            append("The listed Segment IDs have output identical to another Segment despite different ")
+                .append("source text. Rewrite only those listed segments from their own SOURCE text; ")
+                .append("do not copy the anchor segment or any previous-chunk context.\n")
+        }
+        if (problems.any { it.startsWith("NUMERIC_CONTENT_CHANGED") }) {
+            append("\n[NUMERIC_FACT_REPAIR]\n")
+            append("Restore the exact numeric values and order from SOURCE. Do not invent, round, ")
+                .append("merge, or replace a numeric value with a different value.\n")
+        }
         append("\n")
         append(userPrompt(context, chapters, previousChunkTranslationTail))
     }
@@ -501,7 +520,39 @@ data class QaResult(
     val problems: List<String>,
     val glossaryStatus: GlossaryQaStatus = GlossaryQaStatus.NONE,
     val issues: List<QaIssue> = emptyList()
-)
+) {
+    /**
+     * These checks are useful signals, but cannot safely distinguish a faithful literary choice
+     * from a model defect without a language-aware evaluator.  They may be committed after the
+     * bounded repair pass while remaining visible in the request log.
+     */
+    fun commitAllowed(): Boolean = problems.none { problem ->
+        NON_BLOCKING_CODES.none { code -> problem.startsWith(code) }
+    }
+
+    fun warningMessages(): List<String> {
+        val problemWarnings = problems.filter { problem ->
+            NON_BLOCKING_CODES.any { code -> problem.startsWith(code) }
+        }
+        val diagnosticWarnings = issues
+            .filter { it.code in NON_BLOCKING_CODES }
+            .map { issue ->
+                val location = issue.segmentId?.let { " segment $it" }.orEmpty()
+                "${issue.code}$location: ${issue.detail}"
+            }
+        return (problemWarnings + diagnosticWarnings).distinct()
+    }
+
+    fun hasWarnings(): Boolean = warningMessages().isNotEmpty()
+
+    private companion object {
+        val NON_BLOCKING_CODES = setOf(
+            "NUMERIC_CONTENT_UNCERTAIN",
+            "REPEATED_TRANSLATED_SEGMENTS",
+            "REPEATED_TRANSLATED_SOURCE"
+        )
+    }
+}
 
 enum class QaRepairMode { LOCAL_SEGMENTS, FULL_CHAPTER }
 
@@ -564,13 +615,25 @@ object DeterministicTranslationQa {
             val normalizedSourceNumbers = sourceNumbers.map(::normalizeNumberToken)
             val normalizedTargetNumbers = targetNumbers.map(::normalizeNumberToken)
             if (normalizedSourceNumbers.isNotEmpty() && normalizedTargetNumbers.isNotEmpty() &&
+                normalizedSourceNumbers.size == normalizedTargetNumbers.size &&
                 normalizedSourceNumbers != normalizedTargetNumbers
             ) {
+                // A same-length, different numeric sequence is strong evidence that a factual
+                // value changed.  Do not apply this rule when the target contains fewer digits:
+                // literary translations routinely spell only some source numerals as words.
                 issue("NUMERIC_CONTENT_CHANGED", "numeric sequence changed: $sourceNumbers -> $targetNumbers", segment.shortId)
-            } else if (normalizedSourceNumbers.isNotEmpty() && normalizedTargetNumbers.isEmpty()) {
-                // Some target languages spell numbers out. Keep this as an audit diagnostic
-                // instead of rejecting a potentially faithful localized numeral.
-                diagnostic("NUMERIC_CONTENT_UNCERTAIN", "source contains numerals but target has no ASCII/Unicode digits", segment.shortId)
+            } else if (normalizedSourceNumbers.isNotEmpty() &&
+                normalizedSourceNumbers != normalizedTargetNumbers
+            ) {
+                // A count mismatch is ambiguous rather than automatically wrong.  For example,
+                // "4학년 1반" may become "Year 4, Class One".  Keep it visible in diagnostics,
+                // but do not reject the whole chapter before a multilingual number-word parser
+                // can prove that a value was actually lost.
+                diagnostic(
+                    "NUMERIC_CONTENT_UNCERTAIN",
+                    "numeric sequence cannot be aligned safely: $sourceNumbers -> $targetNumbers",
+                    segment.shortId
+                )
             }
             if (target.length > sourceText.length * 8 + 500) issue("ABNORMAL_LENGTH", "output is implausibly long", segment.shortId)
             if (listOf("I can't translate", "I cannot translate", "as an AI", "以下是翻译", "翻译如下").any { target.contains(it, true) }) {
@@ -605,8 +668,42 @@ object DeterministicTranslationQa {
                 }
             }
         }
-        val duplicates = translated.segments.values.map { it.trim() }.filter { it.length >= 30 }.groupingBy { it }.eachCount().filterValues { it > 1 }
-        if (duplicates.isNotEmpty()) issue("REPEATED_TRANSLATED_SEGMENTS", "repeated translated segments")
+        // Identical output is only suspicious when it corresponds to different source text.
+        // Novels legitimately repeat boilerplate, chapter epigraphs and short scene transitions;
+        // rejecting every equal target paragraph made long chapters fail even when the model was
+        // faithful.  Keep the first segment in each suspicious group as the repair anchor and
+        // attach concrete IDs to the remaining segments so repairScope can stay local.
+        val sourceById = source.segments.associateBy { it.shortId }
+        val duplicateGroups = translated.segments
+            .mapValues { (_, value) -> value.trim() }
+            .filterValues { it.length >= 30 }
+            .entries
+            .groupBy { it.value }
+            .values
+            .filter { it.size > 1 }
+        duplicateGroups.forEach { entries ->
+            val ids = entries.map { it.key }.sorted()
+            val distinctSources = entries
+                .mapNotNull { sourceById[it.key]?.originalText }
+                .map(::normalizeDuplicateSource)
+                .distinct()
+            if (distinctSources.size <= 1) {
+                diagnostic(
+                    "REPEATED_TRANSLATED_SOURCE",
+                    "identical target text maps to identical source text: ${ids.joinToString(", ")}",
+                    ids.firstOrNull()
+                )
+            } else {
+                val anchor = ids.first()
+                ids.drop(1).forEach { duplicateId ->
+                    issue(
+                        "REPEATED_TRANSLATED_SEGMENTS",
+                        "target text matches segment $anchor while source text differs",
+                        duplicateId
+                    )
+                }
+            }
+        }
         return QaResult(
             accepted = problems.isEmpty(),
             problems = problems.distinct(),
@@ -642,7 +739,14 @@ object DeterministicTranslationQa {
 
         val affected = linkedSetOf<Int>()
         expected.filterNot { it in actual }.forEach(affected::add)
-        qa.issues.mapNotNull { it.segmentId }.forEach(affected::add)
+        // Diagnostics such as localized-number uncertainty or a repeated source paragraph are
+        // intentionally non-blocking.  They must not silently expand a repair request when a
+        // different segment has a real blocking problem; only issue codes represented in
+        // `problems` belong to the retry scope.
+        qa.issues
+            .filter { issue -> qa.problems.any { problem -> problem.startsWith(issue.code) } }
+            .mapNotNull { it.segmentId }
+            .forEach(affected::add)
 
         // GLOSSARY_MISSING is reported at chapter level because a target term may legitimately
         // move across punctuation. For repair, resend every source segment where the confirmed
@@ -696,6 +800,10 @@ object DeterministicTranslationQa {
             if (character.isDigit()) append(Character.digit(character, 10))
         }
     }
+
+    private fun normalizeDuplicateSource(value: String): String = value
+        .trim()
+        .replace(Regex("\\s+"), " ")
 }
 
 internal object LexiconTermMatcher {

@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.core.translation
 
+import android.util.Base64
 import androidx.room.withTransaction
 import com.breakyuna.noveltranslator.core.agent.ExtractedTermCandidate
 import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
@@ -20,6 +21,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -78,7 +80,17 @@ class BookTranslationEngine(
         val chapter: ParsedTranslationChapter?,
         val promptTokens: Long,
         val completionTokens: Long,
-        val reason: String? = null
+        val reason: String? = null,
+        val warnings: List<String> = emptyList()
+    )
+
+    private data class ChunkCheckpoint(
+        val sourceFingerprint: String,
+        val planFingerprint: String,
+        val totalChunks: Int,
+        val completedChunks: Int,
+        val translatedSegments: Map<Int, String>,
+        val previousChunkTranslationTail: String
     )
 
     private class FatalTranslationRunException(
@@ -95,7 +107,7 @@ class BookTranslationEngine(
         // chapters, but partition dense chapters before the model starts dropping IDs.
         const val MAX_PROTOCOL_SEGMENTS_PER_REQUEST = 48
         const val MIN_REQUEST_OUTPUT_TOKENS = 1_024
-        val TERMINAL_PROJECT_STATES = setOf("COMPLETED", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
+        val TERMINAL_PROJECT_STATES = setOf("COMPLETED", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
     }
 
     private val books = database.bookDao()
@@ -109,6 +121,8 @@ class BookTranslationEngine(
     private val scheduledProjects = ConcurrentHashMap<Long, AtomicInteger>()
     private val activeRuns = ConcurrentHashMap<Long, Long>()
     private val lexiconCandidateAggregator = LexiconCandidateAggregator(database)
+
+    private val checkpointFilePrefix = ".translation_checkpoint_"
 
     suspend fun projectBookId(projectId: Long): Long? = projects.get(projectId)?.bookId
 
@@ -199,7 +213,9 @@ class BookTranslationEngine(
                 emptyList()
             }
             if (targets.isEmpty() && reviewOnlyTargets.isEmpty()) {
-                if (!control.cancelled.get()) {
+                val currentProjectState = projects.get(project.id)?.state
+                val currentProjectIsTerminal = currentProjectState?.let { it in TERMINAL_PROJECT_STATES } == true
+                if (!control.cancelled.get() && !currentProjectIsTerminal) {
                     // This worker owns the project execution gate. A stale RUNNING state can be
                     // left by process interruption or by resume-before-start, so it must be
                     // allowed to converge to COMPLETED when the selected scope has no work.
@@ -369,17 +385,56 @@ class BookTranslationEngine(
                 )
             }
             awaitCommitBoundary(project.id)
-            val target = books.getEdition(project.targetEditionId)
-            val allChapters = books.getChapters(project.bookId)
-            val editionComplete = allChapters.all { hasCompleteDraft(project, it) }
-            awaitCommitBoundary(project.id)
-            target?.let { books.updateEdition(it.copy(isComplete = editionComplete, updatedAt = System.currentTimeMillis())) }
-            val run = tasks.getRun(runId)
-            val finalState = if ((run?.failedChapters ?: 0) > 0) "COMPLETED_WITH_ERRORS" else "COMPLETED"
-            awaitCommitBoundary(project.id)
-            projects.updateState(project.id, finalState)
-            awaitCommitBoundary(project.id)
-            run?.let { tasks.updateRun(it.copy(state = finalState, updatedAt = System.currentTimeMillis())) }
+            // Terminal writes must be one durable, non-cancellable boundary.  Otherwise a
+            // cancellation or process interruption between the project and Run updates can
+            // leave the UI showing RUNNING after the final log has already been written.
+            val run = withContext(NonCancellable) {
+                val cancelled = control.cancelled.get() || projects.get(project.id)?.state == "CANCELLED"
+                val paused = control.paused.get() || projects.get(project.id)?.state == "PAUSED"
+                if (cancelled) {
+                    finalizeCancelledRun(project.id, runId)
+                    tasks.getRun(runId)
+                } else if (paused) {
+                    // Pause wins a race with the last commit boundary. Leave both durable rows
+                    // paused; resume will schedule a fresh worker and reuse any chunk checkpoint.
+                    tasks.getRun(runId)
+                } else {
+                    val target = books.getEdition(project.targetEditionId)
+                    val allChapters = books.getChapters(project.bookId)
+                    val editionComplete = allChapters.all { hasCompleteDraft(project, it) }
+                    val latestRun = tasks.getRun(runId)
+                    val hasWarnings = tasks.getBatches(runId).any { it.state == "COMPLETED_WITH_WARNINGS" }
+                    val finalState = when {
+                        (latestRun?.failedChapters ?: 0) > 0 -> "COMPLETED_WITH_ERRORS"
+                        hasWarnings -> "COMPLETED_WITH_WARNINGS"
+                        else -> "COMPLETED"
+                    }
+                    database.withTransaction {
+                        target?.let {
+                            books.updateEdition(
+                                it.copy(
+                                    isComplete = editionComplete,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                        projects.updateState(project.id, finalState)
+                        tasks.getRun(runId)?.let { currentRun ->
+                            tasks.updateRun(currentRun.copy(state = finalState, updatedAt = System.currentTimeMillis()))
+                        }
+                    }
+                    tasks.getRun(runId)
+                }
+            }
+            val finalProjectState = projects.get(project.id)?.state
+            if (control.cancelled.get() || control.paused.get() || finalProjectState == "CANCELLED" || finalProjectState == "PAUSED") {
+                return
+            }
+            val finalState = when {
+                (run?.failedChapters ?: 0) > 0 -> "COMPLETED_WITH_ERRORS"
+                run?.state == "COMPLETED_WITH_WARNINGS" -> "COMPLETED_WITH_WARNINGS"
+                else -> "COMPLETED"
+            }
             SystemLogger.info(
                 "TRANSLATION",
                 "✅ 翻译任务执行完毕！最终状态: $finalState，已成功翻译 ${run?.completedChapters ?: 0} 章，失败 ${run?.failedChapters ?: 0} 章",
@@ -461,67 +516,134 @@ class BookTranslationEngine(
     }
 
     private suspend fun finalizeCancelledRun(projectId: Long, runId: Long) {
-        persistCleanupStep(projectId, "项目取消状态") {
-            projects.updateState(projectId, "CANCELLED")
-        }
-        persistCleanupStep(projectId, "批次取消状态") {
-            tasks.getRunningBatches(runId).forEach { batch ->
-                tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+        try {
+            database.withTransaction {
+                projects.updateState(projectId, "CANCELLED")
+                tasks.getRunningBatches(runId).forEach { batch ->
+                    tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+                }
+                tasks.getRun(runId)?.let {
+                    tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis()))
+                }
             }
-        }
-        persistCleanupStep(projectId, "运行取消状态") {
-            tasks.getRun(runId)?.let {
-                tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis()))
+        } catch (error: Throwable) {
+            // A storage/backend failure should not prevent best-effort convergence. The fallback
+            // keeps the three durable rows independently recoverable while retaining the original
+            // error in the system log.
+            SystemLogger.error(
+                "TRANSLATION",
+                "取消状态事务未能完成，执行分步补偿: ${error.localizedMessage ?: error.javaClass.simpleName}",
+                projectId = projectId
+            )
+            persistCleanupStep(projectId, "项目取消状态") {
+                projects.updateState(projectId, "CANCELLED")
+            }
+            persistCleanupStep(projectId, "批次取消状态") {
+                tasks.getRunningBatches(runId).forEach { batch ->
+                    tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
+                }
+            }
+            persistCleanupStep(projectId, "运行取消状态") {
+                tasks.getRun(runId)?.let {
+                    tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis()))
+                }
             }
         }
     }
 
     private suspend fun finalizeFailedRun(projectId: Long, runId: Long, error: Throwable): String {
         val failureReport = buildFailureReport(error)
-        persistCleanupStep(projectId, "项目失败状态") {
-            projects.updateState(projectId, "FAILED")
-        }
-        persistCleanupStep(projectId, "批次失败状态") {
-            tasks.getRunningBatches(runId).forEach { batch ->
-                tasks.updateBatch(
-                    batch.copy(
-                        state = "FAILED",
-                        errorMessage = failureReport.take(2_000),
-                        updatedAt = System.currentTimeMillis()
+        try {
+            database.withTransaction {
+                projects.updateState(projectId, "FAILED")
+                tasks.getRunningBatches(runId).forEach { batch ->
+                    tasks.updateBatch(
+                        batch.copy(
+                            state = "FAILED",
+                            errorMessage = failureReport.take(2_000),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+                tasks.getRun(runId)?.let {
+                    tasks.updateRun(
+                        it.copy(
+                            state = "FAILED",
+                            lastError = failureReport.take(2_000),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+                tasks.insertRequestLog(
+                    PlatformRequestLogEntity(
+                        runId = runId,
+                        batchId = null,
+                        operation = "TRANSLATION_RUN",
+                        attemptCount = 1,
+                        promptTokens = 0,
+                        completionTokens = 0,
+                        estimatedCost = 0.0,
+                        durationMs = 0,
+                        errorCategory = (error as? FatalTranslationRunException)?.category?.name
+                            ?: error::class.simpleName
+                            ?: "UNEXPECTED_ERROR",
+                        errorMessage = failureReport,
+                        isSuccess = false,
+                        status = RequestLogStatus.FAILURE.name
                     )
                 )
             }
-        }
-        persistCleanupStep(projectId, "运行失败状态") {
-            tasks.getRun(runId)?.let {
-                tasks.updateRun(
-                    it.copy(
-                        state = "FAILED",
-                        lastError = failureReport.take(2_000),
-                        updatedAt = System.currentTimeMillis()
-                    )
-                )
-            }
-        }
-        persistCleanupStep(projectId, "运行失败日志") {
-            tasks.insertRequestLog(
-                PlatformRequestLogEntity(
-                    runId = runId,
-                    batchId = null,
-                    operation = "TRANSLATION_RUN",
-                    attemptCount = 1,
-                    promptTokens = 0,
-                    completionTokens = 0,
-                    estimatedCost = 0.0,
-                    durationMs = 0,
-                    errorCategory = (error as? FatalTranslationRunException)?.category?.name
-                        ?: error::class.simpleName
-                        ?: "UNEXPECTED_ERROR",
-                    errorMessage = failureReport,
-                    isSuccess = false,
-                    status = RequestLogStatus.FAILURE.name
-                )
+        } catch (cleanupError: Throwable) {
+            SystemLogger.error(
+                "TRANSLATION",
+                "失败状态事务未能完成，执行分步补偿: ${cleanupError.localizedMessage ?: cleanupError.javaClass.simpleName}",
+                projectId = projectId
             )
+            persistCleanupStep(projectId, "项目失败状态") {
+                projects.updateState(projectId, "FAILED")
+            }
+            persistCleanupStep(projectId, "批次失败状态") {
+                tasks.getRunningBatches(runId).forEach { batch ->
+                    tasks.updateBatch(
+                        batch.copy(
+                            state = "FAILED",
+                            errorMessage = failureReport.take(2_000),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+            persistCleanupStep(projectId, "运行失败状态") {
+                tasks.getRun(runId)?.let {
+                    tasks.updateRun(
+                        it.copy(
+                            state = "FAILED",
+                            lastError = failureReport.take(2_000),
+                            updatedAt = System.currentTimeMillis()
+                        )
+                    )
+                }
+            }
+            persistCleanupStep(projectId, "运行失败日志") {
+                tasks.insertRequestLog(
+                    PlatformRequestLogEntity(
+                        runId = runId,
+                        batchId = null,
+                        operation = "TRANSLATION_RUN",
+                        attemptCount = 1,
+                        promptTokens = 0,
+                        completionTokens = 0,
+                        estimatedCost = 0.0,
+                        durationMs = 0,
+                        errorCategory = (error as? FatalTranslationRunException)?.category?.name
+                            ?: error::class.simpleName
+                            ?: "UNEXPECTED_ERROR",
+                        errorMessage = failureReport,
+                        isSuccess = false,
+                        status = RequestLogStatus.FAILURE.name
+                    )
+                )
+            }
         }
         return failureReport
     }
@@ -732,7 +854,7 @@ class BookTranslationEngine(
         }) return false
         val mandatoryTerms = database.lexiconV2Dao().getConfirmed(project.id)
             .filter(LexiconEntryPolicy::isEligibleForTranslation)
-        return DeterministicTranslationQa.validate(source, translated, mandatoryTerms).accepted
+        return DeterministicTranslationQa.validate(source, translated, mandatoryTerms).commitAllowed()
     }
 
     private suspend fun chapterHasActivePolish(
@@ -1030,6 +1152,7 @@ class BookTranslationEngine(
         val completeParsed = parsed
         val mandatoryTerms = context.matchedLexicon
         var failed = 0
+        var warningCount = 0
         var totalPromptTokens = result.promptTokens
         var totalCompletionTokens = result.completionTokens
         val initialMetadataSources = mutableListOf<ProtocolChapter>()
@@ -1064,8 +1187,8 @@ class BookTranslationEngine(
                 totalCompletionTokens += repair.completionTokens
                 qa = DeterministicTranslationQa.validate(source, translated, mandatoryTerms)
                 // A local response can be syntactically valid yet leave a different affected
-                // segment untouched. One bounded full-chapter fallback is safer than preserving
-                // an empty or numerically corrupted segment indefinitely.
+                // segment untouched. Recompute the scope from the latest QA result for one more
+                // bounded repair; only structural problems will escalate to a full chapter.
                 if (!qa.accepted && initialRepairScope.mode == QaRepairMode.LOCAL_SEGMENTS) {
                     recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_REPAIR_FALLBACK_TRIGGERED", qa.problems)
                     val fallback = repairChapter(
@@ -1095,9 +1218,25 @@ class BookTranslationEngine(
                 projectId = project.id,
                 chapterIndex = source.chapterIndex
             )
-            if (qa.accepted && translated != null) {
+            if (qa.commitAllowed() && translated != null) {
                 awaitCommitBoundary(project.id)
                 commitChapter(project, source, translated)
+                if (qa.hasWarnings()) {
+                    warningCount++
+                    recordQaDiagnostic(
+                        runId,
+                        batchId,
+                        source.chapterIndex,
+                        "QA_VALIDATION_WARNING",
+                        qa.warningMessages()
+                    )
+                    SystemLogger.warn(
+                        "QA_CHECK",
+                        "⚠️ 章节 #${source.chapterIndex} 质检保留警告后已落库: ${qa.warningMessages().joinToString()}",
+                        projectId = project.id,
+                        chapterIndex = source.chapterIndex
+                    )
+                }
                 if (usedRepair) repairedMetadata += source to repairMetaJson else initialMetadataSources += source
                 SystemLogger.info("STORAGE", "💾 章节 #${source.chapterIndex} 《${source.title}》 译文已持久化落库", projectId = project.id, chapterIndex = source.chapterIndex)
             } else {
@@ -1121,12 +1260,17 @@ class BookTranslationEngine(
             provider.outputPricePerMillion
         )
         val batch = (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
-            state = if (failed == 0) "COMPLETED" else "PARTIAL",
+            state = when {
+                failed > 0 -> "PARTIAL"
+                warningCount > 0 -> "COMPLETED_WITH_WARNINGS"
+                else -> "COMPLETED"
+            },
             promptTokens = totalPromptTokens,
             completionTokens = totalCompletionTokens,
             cost = totalCost,
             errorMessage = when {
                 failed > 0 -> "$failed chapter(s) failed deterministic QA"
+                warningCount > 0 -> "$warningCount chapter(s) committed with QA warnings"
                 result.isTruncated -> "模型响应曾截断，已恢复可解析章节"
                 else -> null
             }
@@ -1176,7 +1320,7 @@ class BookTranslationEngine(
             val mandatoryTerms = database.lexiconV2Dao().getConfirmed(project.id)
                 .filter { LexiconEntryPolicy.isEligibleForTranslation(it) }
             val baseQa = DeterministicTranslationQa.validate(source, current, mandatoryTerms)
-            if (current == null || !baseQa.accepted) {
+            if (current == null || !baseQa.commitAllowed()) {
                 val reason = if (current == null) {
                     "找不到完整初稿，跳过二次审校"
                 } else {
@@ -1247,6 +1391,15 @@ class BookTranslationEngine(
             if (outcome.chapter != null) {
                 awaitCommitBoundary(project.id)
                 commitChapter(project, source, outcome.chapter, RevisionType.AI_POLISH)
+                if (outcome.warnings.isNotEmpty()) {
+                    recordQaDiagnostic(
+                        runId,
+                        batchId,
+                        source.chapterIndex,
+                        "AI_POLISH_QA_WARNING",
+                        outcome.warnings
+                    )
+                }
                 SystemLogger.info(
                     "AI_POLISH",
                     "✨ 初稿完成后已提交第 ${source.chapterIndex} 章二次审校结果",
@@ -1269,7 +1422,11 @@ class BookTranslationEngine(
             tasks.getBatch(batchId)?.let {
                 tasks.updateBatch(
                     it.copy(
-                        state = if (outcome.chapter != null) "COMPLETED" else "PARTIAL",
+                        state = when {
+                            outcome.chapter == null -> "PARTIAL"
+                            outcome.warnings.isNotEmpty() -> "COMPLETED_WITH_WARNINGS"
+                            else -> "COMPLETED"
+                        },
                         promptTokens = outcome.promptTokens,
                         completionTokens = outcome.completionTokens,
                         cost = cost,
@@ -1362,7 +1519,7 @@ class BookTranslationEngine(
             )
         }
         val qa = DeterministicTranslationQa.validate(source, candidate, mandatoryTerms)
-        if (!qa.accepted) {
+        if (!qa.commitAllowed()) {
             return DraftReviewOutcome(
                 chapter = null,
                 promptTokens = result.promptTokens,
@@ -1379,7 +1536,12 @@ class BookTranslationEngine(
                 reason = "二次审校疑似重写初稿，已保留初稿: ${rewriteProblems.joinToString()}"
             )
         }
-        return DraftReviewOutcome(candidate, result.promptTokens, result.completionTokens)
+        return DraftReviewOutcome(
+            chapter = candidate,
+            promptTokens = result.promptTokens,
+            completionTokens = result.completionTokens,
+            warnings = qa.warningMessages()
+        )
     }
 
     /** Conservative guard against a copy-editor call silently becoming a fresh translation. */
@@ -1533,6 +1695,179 @@ class BookTranslationEngine(
         )
     }
 
+    private fun translationCheckpointName(project: TranslationProjectV2Entity, source: ProtocolChapter): String =
+        "$checkpointFilePrefix${project.id}_${source.logicalChapterId}.txt"
+
+    private fun checkpointFingerprint(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+        return buildString(digest.size * 2) {
+            digest.forEach { byte ->
+                append(Character.forDigit((byte.toInt() ushr 4) and 0x0f, 16))
+                append(Character.forDigit(byte.toInt() and 0x0f, 16))
+            }
+        }
+    }
+
+    private fun chapterSourceFingerprint(source: ProtocolChapter): String = checkpointFingerprint(
+        source.segments.joinToString("\u0000") { segment ->
+            "${segment.shortId}\u0001${segment.originalText}"
+        }
+    )
+
+    private fun chunkPlanFingerprint(
+        groups: List<List<ProtocolSegment>>,
+        context: ContextPackage,
+        project: TranslationProjectV2Entity,
+        provider: ApiProviderEntity,
+        promptProfile: PromptProfileDraft
+    ): String = checkpointFingerprint(buildString {
+        append("provider=").append(provider.name).append('/').append(provider.selectedModel)
+        append("|target=").append(project.targetLanguage)
+        append("|style=").append(project.styleGuide)
+        append("|promptProfile=").append(promptProfile.version)
+        append("|context=").append(contextStateFingerprint(context))
+        append("|groups=")
+        append(groups.joinToString("\u0002") { group ->
+            group.joinToString("\u0000") { segment -> "${segment.shortId}\u0001${segment.text}" }
+        })
+    })
+
+    private fun contextStateFingerprint(context: ContextPackage): String = checkpointFingerprint(buildString {
+        append(context.fingerprint).append('|')
+        context.matchedLexicon.forEach { entry ->
+            append(entry.sourceTerm).append("=>").append(entry.targetTerm).append('|')
+        }
+        context.relatedStoryMemory.forEach { memory ->
+            append(memory.factKey).append('=').append(memory.factValue).append('|')
+        }
+        append(context.recentContext)
+    })
+
+    private fun encodeCheckpointText(value: String): String =
+        Base64.encodeToString(value.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+    private fun decodeCheckpointText(value: String): String? = runCatching {
+        Base64.decode(value, Base64.DEFAULT).toString(Charsets.UTF_8)
+    }.getOrNull()
+
+    private fun encodeChunkCheckpoint(checkpoint: ChunkCheckpoint): String = buildString {
+        append("version=1\n")
+        append("source=").append(checkpoint.sourceFingerprint).append('\n')
+        append("plan=").append(checkpoint.planFingerprint).append('\n')
+        append("total=").append(checkpoint.totalChunks).append('\n')
+        append("completed=").append(checkpoint.completedChunks).append('\n')
+        append("tail=").append(encodeCheckpointText(checkpoint.previousChunkTranslationTail)).append('\n')
+        checkpoint.translatedSegments.toSortedMap().forEach { (id, text) ->
+            append("segment.").append(id).append('=').append(encodeCheckpointText(text)).append('\n')
+        }
+    }
+
+    private fun decodeChunkCheckpoint(raw: String): ChunkCheckpoint? {
+        val fields = linkedMapOf<String, String>()
+        val segments = linkedMapOf<Int, String>()
+        raw.lineSequence().forEach { line ->
+            val separator = line.indexOf('=')
+            if (separator <= 0) return@forEach
+            val key = line.substring(0, separator)
+            val value = line.substring(separator + 1)
+            if (key.startsWith("segment.")) {
+                key.removePrefix("segment.").toIntOrNull()?.let { id ->
+                    decodeCheckpointText(value)?.let { segments[id] = it }
+                }
+            } else {
+                fields[key] = value
+            }
+        }
+        if (fields["version"] != "1") return null
+        val sourceFingerprint = fields["source"] ?: return null
+        val planFingerprint = fields["plan"] ?: return null
+        val totalChunks = fields["total"]?.toIntOrNull() ?: return null
+        val completedChunks = fields["completed"]?.toIntOrNull() ?: return null
+        val tail = fields["tail"]?.let(::decodeCheckpointText) ?: ""
+        return ChunkCheckpoint(
+            sourceFingerprint = sourceFingerprint,
+            planFingerprint = planFingerprint,
+            totalChunks = totalChunks,
+            completedChunks = completedChunks,
+            translatedSegments = segments,
+            previousChunkTranslationTail = tail
+        )
+    }
+
+    private fun loadChunkCheckpoint(
+        project: TranslationProjectV2Entity,
+        source: ProtocolChapter,
+        groups: List<List<ProtocolSegment>>,
+        sourceFingerprint: String,
+        planFingerprint: String
+    ): ChunkCheckpoint? {
+        val raw = runCatching {
+            files.readTranslationCheckpoint(project.bookId, translationCheckpointName(project, source))
+        }.getOrNull() ?: return null
+        val checkpoint = decodeChunkCheckpoint(raw) ?: return null
+        val sourceIds = source.segments.mapTo(hashSetOf<Int>()) { it.shortId }
+        return checkpoint.takeIf {
+            it.sourceFingerprint == sourceFingerprint &&
+                it.planFingerprint == planFingerprint &&
+                it.totalChunks == groups.size &&
+                it.completedChunks in 0..groups.size &&
+                it.translatedSegments.keys.all { id -> id in sourceIds }
+        }
+    }
+
+    private suspend fun saveChunkCheckpoint(
+        project: TranslationProjectV2Entity,
+        source: ProtocolChapter,
+        sourceFingerprint: String,
+        planFingerprint: String,
+        totalChunks: Int,
+        completedChunks: Int,
+        translatedSegments: Map<Int, String>,
+        previousChunkTranslationTail: String
+    ) {
+        try {
+            withContext(NonCancellable) {
+                files.saveTranslationCheckpoint(
+                    project.bookId,
+                    translationCheckpointName(project, source),
+                    encodeChunkCheckpoint(
+                        ChunkCheckpoint(
+                            sourceFingerprint = sourceFingerprint,
+                            planFingerprint = planFingerprint,
+                            totalChunks = totalChunks,
+                            completedChunks = completedChunks,
+                            translatedSegments = translatedSegments,
+                            previousChunkTranslationTail = previousChunkTranslationTail
+                        )
+                    )
+                )
+            }
+        } catch (error: Throwable) {
+            SystemLogger.error(
+                "CHECKPOINT",
+                "检查点写入失败，继续使用当前内存结果: ${error.localizedMessage ?: error.javaClass.simpleName}",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+        }
+    }
+
+    private suspend fun clearChunkCheckpoint(project: TranslationProjectV2Entity, source: ProtocolChapter) {
+        try {
+            withContext(NonCancellable) {
+                files.deleteTranslationCheckpoint(project.bookId, translationCheckpointName(project, source))
+            }
+        } catch (error: Throwable) {
+            SystemLogger.warn(
+                "CHECKPOINT",
+                "检查点清理失败（不影响已落库译文）: ${error.localizedMessage ?: error.javaClass.simpleName}",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+        }
+    }
+
     private suspend fun translateOversizedChapter(
         project: TranslationProjectV2Entity,
         provider: ApiProviderEntity,
@@ -1568,11 +1903,32 @@ class BookTranslationEngine(
             tokens += size
         }
         if (current.isNotEmpty()) groups += current
+        val sourceFingerprint = chapterSourceFingerprint(source)
+        val planFingerprint = chunkPlanFingerprint(groups, context, project, provider, promptProfile)
+        val checkpoint = loadChunkCheckpoint(
+            project = project,
+            source = source,
+            groups = groups,
+            sourceFingerprint = sourceFingerprint,
+            planFingerprint = planFingerprint
+        )
         val translated = linkedMapOf<Int, String>()
         var prompt = 0L
         var completion = 0L
-        var previousChunkTranslationTail = ""
-        groups.forEach { group ->
+        var warningCount = 0
+        var previousChunkTranslationTail = checkpoint?.previousChunkTranslationTail.orEmpty()
+        val resumeFromChunk = checkpoint?.completedChunks ?: 0
+        if (checkpoint != null && resumeFromChunk > 0) {
+            translated.putAll(checkpoint.translatedSegments)
+            SystemLogger.info(
+                "CHECKPOINT",
+                "♻️ 章节 #${source.chapterIndex} 从第 ${resumeFromChunk + 1}/${groups.size} 个分块继续，已跳过 $resumeFromChunk 个已完成分块",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+        }
+        groups.forEachIndexed { groupIndex, group ->
+            if (groupIndex < resumeFromChunk) return@forEachIndexed
             val chunkSource = source.copy(segments = group)
             val systemPrompt = TranslationProtocol.translationSystemPrompt(
                 promptProfile,
@@ -1584,7 +1940,8 @@ class BookTranslationEngine(
                 promptProfile,
                 context,
                 listOf(chunkSource),
-                previousChunkTranslationTail
+                previousChunkTranslationTail,
+                chunkLabel = "Chunk ${groupIndex + 1}/${groups.size}"
             )
             val request = LlmRequest(
                 provider = provider,
@@ -1683,7 +2040,7 @@ class BookTranslationEngine(
                     qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
                 }
             }
-            if (!qa.accepted || parsed == null) {
+            if (!qa.commitAllowed() || parsed == null) {
                 recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
                 tasks.updateBatch(
                     (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
@@ -1702,19 +2059,89 @@ class BookTranslationEngine(
                 updateRunCounters(runId, completed = 0, failed = 1)
                 return
             }
+            if (qa.hasWarnings()) {
+                warningCount++
+                recordQaDiagnostic(
+                    runId,
+                    batchId,
+                    source.chapterIndex,
+                    "QA_CHUNK_VALIDATION_WARNING",
+                    qa.warningMessages()
+                )
+                SystemLogger.warn(
+                    "QA_CHECK",
+                    "⚠️ 章节 #${source.chapterIndex} 分块质检保留警告后继续合并: ${qa.warningMessages().joinToString()}",
+                    projectId = project.id,
+                    chapterIndex = source.chapterIndex
+                )
+            }
             val validated = parsed ?: error("QA accepted a missing parsed chunk")
             validated.segments.forEach { (id, text) ->
                 val previous = translated[id]
                 translated[id] = if (previous.isNullOrBlank()) text else "$previous\n\n$text"
             }
             previousChunkTranslationTail = validated.segments.values.joinToString("\n").takeLast(900)
+            saveChunkCheckpoint(
+                project = project,
+                source = source,
+                sourceFingerprint = sourceFingerprint,
+                planFingerprint = planFingerprint,
+                totalChunks = groups.size,
+                completedChunks = groupIndex + 1,
+                translatedSegments = translated,
+                previousChunkTranslationTail = previousChunkTranslationTail
+            )
+        }
+        // A chunk can pass in isolation while two different chunks still produce the same
+        // paragraph or leave a cross-boundary structural gap. Validate the merged chapter once
+        // more before writing it, using the same warning-vs-blocking policy as normal batches.
+        val merged = ParsedTranslationChapter(source.shortId, translated)
+        val mergedQa = DeterministicTranslationQa.validate(source, merged, context.matchedLexicon)
+        if (!mergedQa.commitAllowed()) {
+            recordQaDiagnostic(
+                runId,
+                batchId,
+                source.chapterIndex,
+                "QA_MERGED_CHAPTER_FAILED",
+                mergedQa.problems + "glossary=${mergedQa.glossaryStatus}"
+            )
+            tasks.updateBatch(
+                (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                    state = "FAILED",
+                    promptTokens = prompt,
+                    completionTokens = completion,
+                    cost = TokenCalculator.calculateCost(
+                        prompt,
+                        completion,
+                        provider.inputPricePerMillion,
+                        provider.outputPricePerMillion
+                    ),
+                    errorMessage = mergedQa.problems.joinToString()
+                )
+            )
+            updateRunCounters(runId, completed = 0, failed = 1)
+            clearChunkCheckpoint(project, source)
+            return
+        }
+        if (mergedQa.hasWarnings()) {
+            warningCount++
+            recordQaDiagnostic(
+                runId,
+                batchId,
+                source.chapterIndex,
+                "QA_MERGED_CHAPTER_WARNING",
+                mergedQa.warningMessages()
+            )
         }
         awaitCommitBoundary(project.id)
-        commitChapter(project, source, ParsedTranslationChapter(source.shortId, translated))
+        commitChapter(project, source, merged)
+        clearChunkCheckpoint(project, source)
         tasks.updateBatch(
             (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
-                state = "COMPLETED", promptTokens = prompt, completionTokens = completion,
-                cost = TokenCalculator.calculateCost(prompt, completion, provider.inputPricePerMillion, provider.outputPricePerMillion)
+                state = if (warningCount > 0) "COMPLETED_WITH_WARNINGS" else "COMPLETED",
+                promptTokens = prompt, completionTokens = completion,
+                cost = TokenCalculator.calculateCost(prompt, completion, provider.inputPricePerMillion, provider.outputPricePerMillion),
+                errorMessage = warningCount.takeIf { it > 0 }?.let { "$it chunk(s) committed with QA warnings" }
             )
         )
         database.memoryDao().upsertChapterMemory(
@@ -2038,7 +2465,8 @@ class BookTranslationEngine(
                 status = when {
                     operation.contains("TRIGGERED", ignoreCase = true) ||
                         operation.contains("SKIPPED", ignoreCase = true) ||
-                        operation.contains("FALLBACK", ignoreCase = true) -> RequestLogStatus.WARNING.name
+                        operation.contains("FALLBACK", ignoreCase = true) ||
+                        operation.contains("WARNING", ignoreCase = true) -> RequestLogStatus.WARNING.name
                     else -> RequestLogStatus.FAILURE.name
                 }
             )

@@ -188,6 +188,153 @@ class TranslationProtocolTest {
 
         assertTrue(result.accepted)
         assertTrue(result.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" })
+        assertTrue(result.commitAllowed())
+    }
+
+    @Test
+    fun deterministicQa_doesNotRejectPartiallyLocalizedNumbers() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "Class 4, group 1 met."))
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "Class 4, group one met."))
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+
+        assertTrue(result.accepted)
+        assertTrue(result.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" })
+        assertFalse(result.issues.any { it.code == "NUMERIC_CONTENT_CHANGED" })
+    }
+
+    @Test
+    fun deterministicQa_rejectsSameCountChangedNumbers() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "He waited 12 days."))
+        )
+        val translated = ParsedTranslationChapter(1, mapOf(1 to "He waited 13 days."))
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+
+        assertFalse(result.accepted)
+        assertTrue(result.problems.any { it.startsWith("NUMERIC_CONTENT_CHANGED") })
+        assertFalse(result.commitAllowed())
+    }
+
+    @Test
+    fun deterministicQa_allowsRepeatedTranslationForRepeatedSource() {
+        val repeatedSource = "The same epigraph appears in every edition of the story."
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, repeatedSource),
+                ProtocolSegment(2, 101, repeatedSource)
+            )
+        )
+        val repeatedTarget = "The same translated epigraph appears in every edition of the story."
+        val translated = ParsedTranslationChapter(1, mapOf(1 to repeatedTarget, 2 to repeatedTarget))
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+
+        assertTrue(result.accepted)
+        assertTrue(result.issues.any { it.code == "REPEATED_TRANSLATED_SOURCE" })
+        assertTrue(result.hasWarnings())
+        assertTrue(result.commitAllowed())
+    }
+
+    @Test
+    fun deterministicQa_repeatedDifferentSourceTargetsOnlyDuplicateSegmentForRepair() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "Alice entered the room and looked around carefully."),
+                ProtocolSegment(2, 101, "Bob entered the hall and listened to the silence.")
+            )
+        )
+        val repeatedTarget = "The character entered the room and looked around carefully before speaking."
+        val translated = ParsedTranslationChapter(1, mapOf(1 to repeatedTarget, 2 to repeatedTarget))
+
+        val result = DeterministicTranslationQa.validate(source, translated)
+        val scope = DeterministicTranslationQa.repairScope(source, translated, result)
+
+        assertFalse(result.accepted)
+        assertTrue(result.problems.any { it.contains("segment 2") })
+        assertTrue(result.commitAllowed())
+        assertTrue(result.hasWarnings())
+        assertEquals(QaRepairMode.LOCAL_SEGMENTS, scope.mode)
+        assertEquals(setOf(2), scope.segmentIds)
+    }
+
+    @Test
+    fun repairScope_doesNotExpandForNonBlockingNumericDiagnostic() {
+        val source = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(
+                ProtocolSegment(1, 100, "A complete paragraph with enough text to trigger a real duplicate check."),
+                ProtocolSegment(2, 101, "Class 4, group 1 met in the hall."),
+                ProtocolSegment(3, 102, "A third paragraph remains complete and independent.")
+            )
+        )
+        val translated = ParsedTranslationChapter(
+            1,
+            mapOf(
+                1 to "第一段完整译文，且长度足够长。",
+                2 to "Class 4, group one met in the hall.",
+                3 to ""
+            )
+        )
+        val qa = DeterministicTranslationQa.validate(source, translated)
+
+        val scope = DeterministicTranslationQa.repairScope(source, translated, qa)
+
+        assertEquals(QaRepairMode.LOCAL_SEGMENTS, scope.mode)
+        assertEquals(setOf(3), scope.segmentIds)
+        assertTrue(qa.issues.any { it.code == "NUMERIC_CONTENT_UNCERTAIN" && it.segmentId == 2 })
+    }
+
+    @Test
+    fun chunkPrompt_marksTailAsReferenceData() {
+        val context = ContextPackage(
+            stablePrefix = "Protocol version: 2",
+            matchedLexicon = emptyList(),
+            relatedStoryMemory = emptyList(),
+            recentContext = "",
+            fingerprint = "test"
+        )
+        val chapter = ProtocolChapter(
+            shortId = 1,
+            logicalChapterId = 10,
+            chapterIndex = 1,
+            title = "chapter",
+            segments = listOf(ProtocolSegment(1, 100, "source"))
+        )
+
+        val prompt = TranslationProtocol.translationUserPrompt(
+            TranslationProtocol.defaultPromptProfile(),
+            context,
+            listOf(chapter),
+            previousChunkTranslationTail = "tail",
+            chunkLabel = "Chunk 2/3"
+        )
+
+        assertTrue(prompt.contains("[CURRENT_CHUNK]"))
+        assertTrue(prompt.contains("Chunk 2/3"))
+        assertTrue(prompt.contains("must never be copied into output"))
     }
 
     @Test
