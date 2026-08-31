@@ -8,7 +8,7 @@ import com.breakyuna.noveltranslator.core.llm.TranslationPrompts
 import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
-import org.json.JSONArray
+import org.json.JSONObject
 
 class ChapterSplitAgent(private val llmClient: LlmGateway) {
 
@@ -21,104 +21,84 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
     ): List<ParsedChapter> {
         if (fullText.isBlank()) return emptyList()
         require(fullText.length <= MAX_AI_SPLIT_CHARS) {
-            "AI splitting is limited to 2,000,000 characters; use regex splitting for larger books"
-        }
-        val locatedMarkers = mutableListOf<Pair<Int, String>>()
-        val step = WINDOW_CHARS - WINDOW_OVERLAP_CHARS
-        val totalWindows = if (fullText.length <= WINDOW_CHARS) {
-            1
-        } else {
-            1 + (fullText.length - WINDOW_CHARS + step - 1) / step
-        }
-        var completedWindows = 0
-        var windowStart = 0
-        while (windowStart < fullText.length) {
-            val windowEnd = minOf(fullText.length, windowStart + WINDOW_CHARS)
-            val window = fullText.substring(windowStart, windowEnd)
-            val result = llmClient.executeCompletion(
-                LlmRequest(
-                    provider = provider,
-                    systemPrompt = "You are an expert novel-structuring assistant. Output valid JSON only.",
-                    userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(window),
-                    temperature = 0.2f,
-                    maxTokens = 3000,
-                    operation = "CHAPTER_SPLIT",
-                    controlSignal = controlSignal
-                )
-            )
-            onUsage?.invoke(result)
-            require(result.isSuccess && !result.isTruncated && result.text.isNotBlank()) {
-                "AI splitter window ${completedWindows + 1}/$totalWindows failed: ${result.errorMessage ?: "empty response"}"
-            }
-            val parsedMarkers = parseMarkers(result.text)
-                ?: error("AI splitter returned invalid JSON in window ${completedWindows + 1}/$totalWindows")
-            parsedMarkers.forEach { (title, sentence) ->
-                val needle = sentence.take(30)
-                val localPosition = window.indexOf(needle)
-                if (localPosition >= 0) locatedMarkers += (windowStart + localPosition) to title
-            }
-            completedWindows++
-            onProgress?.invoke(completedWindows, totalWindows)
-            if (windowEnd == fullText.length) break
-            windowStart = windowEnd - WINDOW_OVERLAP_CHARS
+            "AI splitting is limited to $MAX_AI_SPLIT_CHARS characters; use regex splitting for larger books"
         }
 
-        val markers = locatedMarkers.sortedBy { it.first }.distinctBy { it.first }
-        if (markers.isEmpty()) return fallbackSplit(fullText)
-        val chapters = mutableListOf<ParsedChapter>()
-        markers.forEachIndexed { index, (start, title) ->
-            val end = markers.getOrNull(index + 1)?.first ?: fullText.length
-            val chapterStart = if (index == 0) 0 else start
-            val content = fullText.substring(chapterStart, end).trim()
-            if (content.isNotBlank()) chapters += ParsedChapter(
-                index = chapters.size + 1,
-                title = title,
-                content = content,
-                wordCount = TxtParser.countWords(content)
-            )
-        }
-        return chapters.ifEmpty { fallbackSplit(fullText) }
-    }
+        val sample = fullText.take(SAMPLE_CHARS)
+        onProgress?.invoke(0, 1)
 
-    /** Keeps a rejected/empty AI response from forcing English or Markdown books into one chunk. */
-    private fun fallbackSplit(fullText: String): List<ParsedChapter> {
-        val patterns = listOf(
-            TxtParser.REGEX_CHINESE,
-            TxtParser.REGEX_JAPANESE,
-            TxtParser.REGEX_KOREAN,
-            TxtParser.REGEX_ENGLISH,
-            TxtParser.REGEX_MARKDOWN
+        val result = llmClient.executeCompletion(
+            LlmRequest(
+                provider = provider,
+                systemPrompt = "You are an expert novel-structuring assistant. Output valid JSON only.",
+                userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(sample),
+                temperature = 0.1f,
+                maxTokens = 1000,
+                operation = "CHAPTER_SPLIT",
+                controlSignal = controlSignal
+            )
         )
-        val pattern = patterns
-            .map { candidate ->
-                val regex = Regex(candidate)
-                candidate to fullText.lineSequence().count { line -> regex.matches(line.trim()) }
-            }
-            .maxByOrNull { it.second }
-            ?.takeIf { it.second > 0 }
-            ?.first
-            ?: TxtParser.REGEX_CHINESE
-        return TxtParser.splitIntoChapters(fullText, pattern)
+        onUsage?.invoke(result)
+
+        require(result.isSuccess && result.text.isNotBlank()) {
+            "AI chapter regex extraction failed: ${result.errorMessage ?: "empty response"}"
+        }
+
+        val extractedRegex = parseExtractedRegex(result.text)
+        val chapters = if (!extractedRegex.isNullOrBlank()) {
+            runCatching {
+                TxtParser.validateChapterRegex(extractedRegex)
+                TxtParser.splitIntoChapters(fullText, extractedRegex)
+            }.getOrNull()
+        } else {
+            null
+        }
+
+        onProgress?.invoke(1, 1)
+
+        return if (!chapters.isNullOrEmpty() && (chapters.size > 1 || fullText.length < 5000)) {
+            chapters
+        } else {
+            fallbackSplit(fullText, sample)
+        }
     }
 
-    private fun parseMarkers(raw: String): List<Pair<String, String>>? = runCatching {
+    /**
+     * Parses the regular expression from the LLM output.
+     */
+    internal fun parseExtractedRegex(raw: String): String? = runCatching {
         val cleaned = raw.trim()
             .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s*```$"), "")
             .trim()
-        val array = JSONArray(cleaned)
-        buildList {
-            for (i in 0 until array.length()) {
-                val item = array.optJSONObject(i) ?: continue
-                val sentence = item.optString("firstSentence").trim()
-                if (sentence.isNotBlank()) add(item.optString("title", "Chapter ${i + 1}") to sentence)
-            }
-        }
-    }.getOrNull()
+
+        val jsonRegex = runCatching {
+            val json = JSONObject(cleaned)
+            json.optString("regex")
+                .ifBlank { json.optString("pattern") }
+                .ifBlank { json.optString("chapterRegex") }
+                .trim()
+        }.getOrNull()
+
+        if (!jsonRegex.isNullOrBlank()) return@runCatching jsonRegex
+
+        // Fallback parser if JSON is malformed
+        val regexMatch = Regex(""""(?:regex|pattern|chapterRegex)"\s*:\s*"((?:\\.|[^"\\])*)"""", RegexOption.IGNORE_CASE)
+            .find(cleaned)
+        regexMatch?.groupValues?.get(1)?.replace("\\\\", "\\")?.replace("\\\"", "\"")?.trim()
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+
+    /**
+     * Fallback split using offline heuristic / language-based regex detection.
+     */
+    private fun fallbackSplit(fullText: String, sample: String): List<ParsedChapter> {
+        val inferredRegex = TxtParser.inferChapterRegex(sample)
+        return TxtParser.splitIntoChapters(fullText, inferredRegex)
+    }
 
     companion object {
-        private const val WINDOW_CHARS = 22_000
-        private const val WINDOW_OVERLAP_CHARS = 1_000
-        const val MAX_AI_SPLIT_CHARS = 2_000_000
+        const val SAMPLE_CHARS = 20_000
+        const val MAX_AI_SPLIT_CHARS = 10_000_000
     }
 }
+

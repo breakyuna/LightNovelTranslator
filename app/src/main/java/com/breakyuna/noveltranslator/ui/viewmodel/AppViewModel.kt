@@ -1597,7 +1597,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         if (count < 0) break
                         text.append(buffer, 0, count)
                         require(text.length <= ChapterSplitAgent.MAX_AI_SPLIT_CHARS) {
-                            "AI splitting is limited to 2,000,000 characters; use regex splitting for larger books"
+                            "AI splitting is limited to ${ChapterSplitAgent.MAX_AI_SPLIT_CHARS} characters"
                         }
                     }
                     text.toString()
