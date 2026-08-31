@@ -224,7 +224,16 @@ class LlmClient : LlmGateway {
         operation: String = "TRANSLATION"
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
-        return try {
+        val estimatedInputTokens = TokenCalculator.estimateTokens(systemPrompt + userPrompt)
+        val promptChars = systemPrompt.length + userPrompt.length
+        val model = provider.selectedModel.ifBlank { "default" }
+
+        SystemLogger.info(
+            tag = "LLM_API",
+            message = "📤 发送请求: ${provider.name}/$model [$operation] | 预估输入Token: $estimatedInputTokens (提示词: ${promptChars}字)"
+        )
+
+        val result = try {
             when (provider.providerType) {
                 ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
                     provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
@@ -237,21 +246,54 @@ class LlmClient : LlmGateway {
                 )
             }.copy(operation = operation)
         } catch (cancelled: CancellationException) {
+            val duration = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+            SystemLogger.warn(
+                tag = "LLM_API",
+                message = "⏹️ 请求已取消: ${provider.name}/$model [$operation] | 耗时: ${duration}ms"
+            )
             throw cancelled
         } catch (e: Exception) {
-            LlmResult(
+            val duration = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+            val errorCategory = classifyException(e)
+            val errorMsg = safeErrorMessage(e)
+            SystemLogger.error(
+                tag = "LLM_API",
+                message = "📥 请求异常: ${provider.name}/$model [$operation] | 耗时: ${duration}ms | 错误: $errorCategory ($errorMsg)"
+            )
+            return LlmResult(
                 text = "",
                 promptTokens = 0,
                 completionTokens = 0,
                 isSuccess = false,
-                errorCategory = classifyException(e),
-                retryable = isRetryableCategory(classifyException(e)),
-                errorMessage = safeErrorMessage(e),
+                errorCategory = errorCategory,
+                retryable = isRetryableCategory(errorCategory),
+                errorMessage = errorMsg,
                 usageSource = UsageSource.UNKNOWN,
-                durationMs = System.currentTimeMillis() - startedAt,
+                durationMs = duration,
                 operation = operation
             )
         }
+
+        val duration = result.durationMs.coerceAtLeast(1)
+        val durationSec = duration / 1000.0
+        val outSpeed = String.format(Locale.US, "%.1f", result.completionTokens / durationSec)
+        val totalTokens = result.promptTokens + result.completionTokens
+        val totalSpeed = String.format(Locale.US, "%.1f", totalTokens / durationSec)
+
+        if (result.isSuccess) {
+            SystemLogger.info(
+                tag = "LLM_API",
+                message = "📥 收到响应: ${provider.name}/$model [$operation] | 成功 | 耗时: ${duration}ms (${String.format(Locale.US, "%.2f", durationSec)}s) | Token: 输入=${result.promptTokens}, 输出=${result.completionTokens}, 总计=$totalTokens | 速率: 输出 ${outSpeed} t/s (总计 ${totalSpeed} t/s)"
+            )
+        } else {
+            val reason = result.errorMessage ?: result.errorCategory?.name ?: "UNKNOWN_ERROR"
+            SystemLogger.warn(
+                tag = "LLM_API",
+                message = "📥 请求未完成: ${provider.name}/$model [$operation] | 耗时: ${duration}ms (${String.format(Locale.US, "%.2f", durationSec)}s) | 状态: ${result.errorCategory ?: "FAILED"} ($reason) | Token: 输入=${result.promptTokens}, 输出=${result.completionTokens}"
+            )
+        }
+
+        return result
     }
 
     private fun isRetryableCategory(category: LlmErrorCategory): Boolean = when (category) {
