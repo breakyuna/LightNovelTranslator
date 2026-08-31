@@ -730,8 +730,7 @@ object DeterministicTranslationQa {
         }
 
         val globalFullChapterCodes = setOf(
-            "STRUCTURE_MISSING_CHAPTER",
-            "REPEATED_TRANSLATED_SEGMENTS"
+            "STRUCTURE_MISSING_CHAPTER"
         )
         if (qa.issues.any { it.code in globalFullChapterCodes }) {
             return QaRepairScope(QaRepairMode.FULL_CHAPTER, reasons = reasons)
