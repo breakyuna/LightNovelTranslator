@@ -4,10 +4,12 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
+import com.breakyuna.noveltranslator.core.translation.TranslationScopePlanner
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
@@ -54,6 +57,7 @@ fun PlatformTaskCenterScreen(
     val strings = platformUiStrings()
     val window = rememberWindowSize()
     val allBooks by viewModel.allPlatformBooks.collectAsState()
+    val allEditions by viewModel.allPlatformEditions.collectAsState()
     val allProjects by viewModel.platformTranslationProjects.collectAsState()
     val allRuns by viewModel.platformTaskRuns.collectAsState()
 
@@ -75,7 +79,7 @@ fun PlatformTaskCenterScreen(
 
     // Filter & Search states
     var searchQuery by rememberSaveable { mutableStateOf("") }
-    var filterStatus by rememberSaveable { mutableStateOf("ALL") } // ALL, RUNNING, PAUSED, COMPLETED, NO_TASKS
+    var filterStatus by rememberSaveable { mutableStateOf("ALL") } // ALL, RUNNING, PAUSED, COMPLETED
     var showSearchBar by rememberSaveable { mutableStateOf(false) }
 
     // Dialog states
@@ -83,23 +87,34 @@ fun PlatformTaskCenterScreen(
     var activeLogRunId by remember { mutableStateOf<Long?>(null) }
     var activeGlossaryProjectId by remember { mutableStateOf<Long?>(null) }
 
+    // Books that have at least one translation edition or translation project
+    val booksWithTranslations = remember(allBooks, allEditions, allProjects) {
+        allBooks.filter { book ->
+            val hasTranslationEdition = allEditions.any { it.bookId == book.id && it.type != EditionType.IMPORTED.name }
+            val hasTranslationProject = allProjects.any { it.bookId == book.id }
+            hasTranslationEdition || hasTranslationProject
+        }
+    }
+
     // Computed overview statistics
-    val totalBooksCount = allBooks.size
-    val runningRunsCount = allRuns.count { it.state == "RUNNING" }
-    val pausedRunsCount = allRuns.count { it.state == "PAUSED" }
-    val completedRunsCount = allRuns.count {
-        it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS")
+    val totalTranslationBooksCount = booksWithTranslations.size
+    val latestRunByProject = remember(allRuns) {
+        allRuns.groupBy { it.translationProjectId }
+            .mapValues { (_, projectRuns) ->
+                projectRuns.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+            }
     }
-    val totalTokens = remember(allRuns) {
-        allRuns.sumOf { it.promptTokens + it.completionTokens }
-    }
-    val totalCostLabel = remember(allRuns) {
-        formatRunCostSummary(allRuns)
+    val runningRunsCount = latestRunByProject.values.count { it?.state == "RUNNING" }
+    val pausedRunsCount = latestRunByProject.values.count { it?.state == "PAUSED" }
+    val completedRunsCount = latestRunByProject.values.count {
+        it?.state?.let { state ->
+            state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS")
+        } == true
     }
 
     // Filtered books
-    val filteredBooks = remember(allBooks, allProjects, allRuns, searchQuery, filterStatus) {
-        allBooks.filter { book ->
+    val filteredBooks = remember(booksWithTranslations, allProjects, allRuns, latestRunByProject, searchQuery, filterStatus) {
+        booksWithTranslations.filter { book ->
             val matchesSearch = searchQuery.isBlank() ||
                     book.title.contains(searchQuery, ignoreCase = true) ||
                     book.author.contains(searchQuery, ignoreCase = true)
@@ -108,16 +123,26 @@ fun PlatformTaskCenterScreen(
 
             val bookProjects = allProjects.filter { it.bookId == book.id }
             val bookRuns = allRuns.filter { it.bookId == book.id }
+            val projectStates = bookProjects.map { project ->
+                effectiveTaskState(project, latestRunByProject[project.id])
+            }
+            val orphanedLatestStates = bookRuns
+                .filter { run -> bookProjects.none { it.id == run.translationProjectId } }
+                .groupBy { it.translationProjectId }
+                .values
+                .mapNotNull { runsForProject ->
+                    runsForProject.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+                }
+                .map { it.state }
 
             when (filterStatus) {
-                "RUNNING" -> bookRuns.any { it.state == "RUNNING" } || bookProjects.any { it.state == "RUNNING" }
-                "PAUSED" -> bookRuns.any { it.state == "PAUSED" } || bookProjects.any { it.state == "PAUSED" }
+                "RUNNING" -> projectStates.any { it == "RUNNING" } || orphanedLatestStates.any { it == "RUNNING" }
+                "PAUSED" -> projectStates.any { it == "PAUSED" } || orphanedLatestStates.any { it == "PAUSED" }
                 "COMPLETED" -> (bookRuns.isNotEmpty() || bookProjects.isNotEmpty()) &&
-                        (bookRuns.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
-                            bookProjects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
-                        bookRuns.none { it.state in setOf("RUNNING", "PAUSED") } &&
-                        bookProjects.none { it.state in setOf("RUNNING", "PAUSED") }
-                "NO_TASKS" -> bookProjects.isEmpty() && bookRuns.isEmpty()
+                        (projectStates.any { it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS") } ||
+                            orphanedLatestStates.any { it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS") }) &&
+                        projectStates.none { it in setOf("RUNNING", "PAUSED") } &&
+                        orphanedLatestStates.none { it in setOf("RUNNING", "PAUSED") }
                 else -> true
             }
         }
@@ -131,7 +156,7 @@ fun PlatformTaskCenterScreen(
         if (initialBookId != null && initialBookId > 0) {
             val targetIdx = filteredBooks.indexOfFirst { it.id == initialBookId }
             if (targetIdx >= 0) {
-                listState.animateScrollToItem(targetIdx + 1) // +1 for stats header item
+                listState.animateScrollToItem(targetIdx)
             }
         }
     }
@@ -237,39 +262,25 @@ fun PlatformTaskCenterScreen(
                 }
             }
 
-            // 2. Metrics Overview Header Card
-            item {
-                WorkspaceMetricsBanner(
-                    totalBooks = totalBooksCount,
-                    runningTasks = runningRunsCount,
-                    pausedTasks = pausedRunsCount,
-                    completedTasks = completedRunsCount,
-                    totalTokens = totalTokens,
-                    totalCostLabel = totalCostLabel,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 840.dp)
-                )
-            }
-
-            // 3. Filter Chips Row
+            // 2. Filter Chips Row
             item {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .widthIn(max = 840.dp),
+                        .widthIn(max = 840.dp)
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilterChip(
                         selected = filterStatus == "ALL",
                         onClick = { filterStatus = "ALL" },
-                        label = { Text("全部 (${allBooks.size})") }
+                        label = { Text("全部 ($totalTranslationBooksCount)", maxLines = 1) }
                     )
                     FilterChip(
                         selected = filterStatus == "RUNNING",
                         onClick = { filterStatus = "RUNNING" },
-                        label = { Text("翻译中 ($runningRunsCount)") },
+                        label = { Text("翻译中 ($runningRunsCount)", maxLines = 1) },
                         leadingIcon = if (filterStatus == "RUNNING") {
                             { Icon(Icons.Default.Sync, null, Modifier.size(14.dp)) }
                         } else null
@@ -277,21 +288,21 @@ fun PlatformTaskCenterScreen(
                     FilterChip(
                         selected = filterStatus == "PAUSED",
                         onClick = { filterStatus = "PAUSED" },
-                        label = { Text("已暂停 ($pausedRunsCount)") }
+                        label = { Text("已暂停 ($pausedRunsCount)", maxLines = 1) }
                     )
                     FilterChip(
                         selected = filterStatus == "COMPLETED",
                         onClick = { filterStatus = "COMPLETED" },
-                        label = { Text("已完成 ($completedRunsCount)") }
+                        label = { Text("已完成 ($completedRunsCount)", maxLines = 1) }
                     )
                 }
             }
 
-            // 4. Books List (Books as Units with Expandable Tasks)
+            // 3. Books List (Books as Units with Expandable Tasks)
             if (filteredBooks.isEmpty()) {
                 item {
                     EmptyWorkspaceState(
-                        hasAnyBooks = allBooks.isNotEmpty(),
+                        hasAnyBooks = booksWithTranslations.isNotEmpty(),
                         strings = strings,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -305,12 +316,14 @@ fun PlatformTaskCenterScreen(
                     val isExpanded = expandedBookIds[book.id] == true
 
                     val bookChapters by viewModel.bookPlatformRepo.observeChapters(book.id).collectAsState(initial = emptyList())
+                    val readerProgress by viewModel.bookPlatformRepo.observeProgress(book.id).collectAsState(initial = null)
 
                     BookWorkspaceUnitCard(
                         book = book,
                         projects = bookProjects,
                         runs = bookRuns,
-                        totalChaptersCount = bookChapters.size,
+                        chapters = bookChapters,
+                        currentChapterId = readerProgress?.logicalChapterId,
                         isExpanded = isExpanded,
                         strings = strings,
                         viewModel = viewModel,
@@ -375,127 +388,6 @@ fun PlatformTaskCenterScreen(
 }
 
 /**
- * 顶部概览指标卡片
- */
-@Composable
-private fun WorkspaceMetricsBanner(
-    totalBooks: Int,
-    runningTasks: Int,
-    pausedTasks: Int,
-    completedTasks: Int,
-    totalTokens: Long,
-    totalCostLabel: String,
-    modifier: Modifier = Modifier
-) {
-    ElevatedCard(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.DashboardCustomize,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "工作台概览",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Text(
-                    "消耗: ${TokenCalculator.formatTokenCount(totalTokens)} Tokens · $totalCostLabel",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                MetricItem(
-                    label = "图书总数",
-                    value = totalBooks.toString(),
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "运行中任务",
-                    value = runningTasks.toString(),
-                    color = if (runningTasks > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    highlight = runningTasks > 0,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "已暂停",
-                    value = pausedTasks.toString(),
-                    color = if (pausedTasks > 0) Color(0xFFF57C00) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-                MetricItem(
-                    label = "已完成",
-                    value = completedTasks.toString(),
-                    color = if (completedTasks > 0) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricItem(
-    label: String,
-    value: String,
-    color: Color,
-    highlight: Boolean = false,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(10.dp),
-        color = if (highlight) color.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            modifier = Modifier.padding(vertical = 10.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                value,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
-        }
-    }
-}
-
-/**
  * 以书籍为大单位的主卡片（支持展开下属任务）
  */
 @Composable
@@ -503,7 +395,8 @@ private fun BookWorkspaceUnitCard(
     book: BookEntity,
     projects: List<TranslationProjectV2Entity>,
     runs: List<PlatformTranslationRunEntity>,
-    totalChaptersCount: Int,
+    chapters: List<LogicalChapterEntity>,
+    currentChapterId: Long?,
     isExpanded: Boolean,
     strings: PlatformUiStrings,
     viewModel: AppViewModel,
@@ -519,16 +412,39 @@ private fun BookWorkspaceUnitCard(
 ) {
     val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
 
-    val isRunning = runs.any { it.state == "RUNNING" } || projects.any { it.state == "RUNNING" }
-    val isPaused = runs.any { it.state == "PAUSED" } || projects.any { it.state == "PAUSED" }
+    // A book can have several historical Runs.  Looking at any old RUNNING row keeps the card
+    // stuck forever after a newer terminal run completes, so resolve one latest Run per project.
+    val latestRunByProjectForBook = runs
+        .groupBy { it.translationProjectId }
+        .mapValues { (_, projectRuns) ->
+            projectRuns.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+        }
+    val effectiveProjectStates = projects.map { project ->
+        effectiveTaskState(project, latestRunByProjectForBook[project.id])
+    }
+    val orphanedLatestStates = runs
+        .filter { run -> projects.none { it.id == run.translationProjectId } }
+        .groupBy { it.translationProjectId }
+        .values
+        .mapNotNull { runsForProject ->
+            runsForProject.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+        }
+        .map { it.state }
+    val isRunning = effectiveProjectStates.any { it == "RUNNING" } ||
+        orphanedLatestStates.any { it == "RUNNING" }
+    val isPaused = effectiveProjectStates.any { it == "PAUSED" } || orphanedLatestStates.any { it == "PAUSED" }
     val isCompleted = (runs.isNotEmpty() || projects.isNotEmpty()) &&
-            (projects.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") } ||
-                runs.any { it.state in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS") }) &&
-            projects.none { it.state in setOf("RUNNING", "PAUSED") } &&
-            runs.none { it.state in setOf("RUNNING", "PAUSED") }
+        (effectiveProjectStates + orphanedLatestStates).any {
+            it in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_ERRORS", "COMPLETED_WITH_WARNINGS")
+        } &&
+        (effectiveProjectStates + orphanedLatestStates).none { it in setOf("RUNNING", "PAUSED") }
 
     val taskCount = projects.size.coerceAtLeast(runs.size)
-    val orphanedRuns = runs.filter { run -> projects.none { it.id == run.translationProjectId } }
+    val orphanedRuns = runs
+        .filter { run -> projects.none { it.id == run.translationProjectId } }
+        .groupBy { it.translationProjectId }
+        .values
+        .mapNotNull { it.maxWithOrNull(compareBy<PlatformTranslationRunEntity> { run -> run.createdAt }.thenBy { it.id }) }
 
     ElevatedCard(
         modifier = modifier,
@@ -857,11 +773,19 @@ private fun BookWorkspaceUnitCard(
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             items(projects, key = { "project-${it.id}" }) { project ->
-                                val projectRun = runs.firstOrNull { it.translationProjectId == project.id }
+                                val projectRun = latestRunByProjectForBook[project.id]
+                                val taskChapterCount = TranslationScopePlanner.select(
+                                    chapters = chapters,
+                                    mode = project.translationMode,
+                                    rangeStart = project.rangeStart,
+                                    rangeEnd = project.rangeEnd,
+                                    currentChapterId = currentChapterId,
+                                    seamlessAheadChapters = project.seamlessAheadChapters
+                                ).size
                                 TranslationProjectTaskItem(
                                     project = project,
                                     run = projectRun,
-                                    totalChapters = totalChaptersCount,
+                                    totalChapters = taskChapterCount,
                                     strings = strings,
                                     viewModel = viewModel,
                                     onOpenEdition = { onOpenEdition(project.targetEditionId) },
@@ -905,8 +829,14 @@ private fun TranslationProjectTaskItem(
     onViewLogs: () -> Unit,
     onViewGlossary: () -> Unit
 ) {
-    val currentState = run?.state ?: project.state
-    val completedChapters = run?.completedChapters ?: 0
+    // Prefer a terminal state from the newest Run when the project row is still stale; otherwise
+    // the project remains the durable execution aggregate.
+    val currentState = effectiveTaskState(project, run)
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) {
+        totalChapters
+    } else {
+        (run?.completedChapters ?: 0).coerceAtMost(totalChapters)
+    }
     val failedChapters = run?.failedChapters ?: 0
     val progressFraction = if (totalChapters > 0) {
         (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f)
@@ -1000,7 +930,7 @@ private fun TranslationProjectTaskItem(
                     )
                 } else {
                     LinearProgressIndicator(
-                        progress = { if (currentState in setOf("COMPLETED", "SUCCESS")) 1f else progressFraction.coerceIn(0f, 1f) },
+                        progress = { if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) 1f else progressFraction.coerceIn(0f, 1f) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp)
@@ -1308,6 +1238,7 @@ private fun LiveLogDialog(
 private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiStrings) {
     val formatter = remember { DateFormat.getTimeInstance(DateFormat.MEDIUM) }
     val errorText = listOfNotNull(log.errorCategory, log.errorMessage).filter { it.isNotBlank() }.joinToString(": ")
+    val status = requestLogStatus(log)
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -1320,9 +1251,14 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
             verticalAlignment = Alignment.Top
         ) {
             Icon(
-                if (log.isSuccess) Icons.Default.CheckCircle else Icons.Default.Error,
+                when (status) {
+                    RequestLogStatus.SUCCESS -> Icons.Default.CheckCircle
+                    RequestLogStatus.WARNING -> Icons.Default.Warning
+                    RequestLogStatus.INFO -> Icons.Default.Info
+                    RequestLogStatus.FAILURE -> Icons.Default.Error
+                },
                 null,
-                tint = if (log.isSuccess) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                tint = requestLogStatusColor(status),
                 modifier = Modifier.size(18.dp)
             )
             Column(Modifier.weight(1f)) {
@@ -1346,11 +1282,30 @@ private fun RequestLogItem(log: PlatformRequestLogSummary, strings: PlatformUiSt
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (errorText.isNotBlank()) {
-                    Text(errorText, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    Text(errorText, color = requestLogStatusColor(status), style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
     }
+}
+
+private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
+    if (log.operation.contains("TRIGGERED", ignoreCase = true) ||
+        log.operation.contains("SKIPPED", ignoreCase = true) ||
+        log.operation.contains("FALLBACK", ignoreCase = true) ||
+        log.operation.contains("WARNING", ignoreCase = true)
+    ) return RequestLogStatus.WARNING
+    val parsed = runCatching { RequestLogStatus.valueOf(log.status) }.getOrNull()
+    return if (parsed == RequestLogStatus.SUCCESS && !log.isSuccess) RequestLogStatus.FAILURE
+    else parsed ?: if (log.isSuccess) RequestLogStatus.SUCCESS else RequestLogStatus.FAILURE
+}
+
+@Composable
+private fun requestLogStatusColor(status: RequestLogStatus): Color = when (status) {
+    RequestLogStatus.SUCCESS -> MaterialTheme.colorScheme.primary
+    RequestLogStatus.WARNING -> Color(0xFFFFA000)
+    RequestLogStatus.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    RequestLogStatus.FAILURE -> MaterialTheme.colorScheme.error
 }
 
 @Composable
@@ -1388,7 +1343,7 @@ private fun BatchItem(batch: PlatformTranslationBatchEntity, strings: PlatformUi
             )
             val err = batch.errorMessage
             if (!err.isNullOrBlank()) {
-                Text(err, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(err, color = statusColor(batch.state), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -1643,16 +1598,31 @@ private fun CreateTranslationEditionDialog(
 
 private fun statusColor(state: String): Color = when (state) {
     "FAILED", "ERROR", "COMPLETED_WITH_ERRORS" -> Color(0xFFD32F2F)
+    "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Color(0xFFF57C00)
     "RUNNING" -> Color(0xFF1976D2)
     "COMPLETED", "SUCCESS" -> Color(0xFF2E7D32)
     "PAUSED" -> Color(0xFFE65100)
     else -> Color(0xFF757575)
 }
 
+private fun effectiveTaskState(
+    project: TranslationProjectV2Entity,
+    run: PlatformTranslationRunEntity?
+): String {
+    val terminalRunStates = setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
+    val activeProjectStates = setOf("RUNNING", "PAUSED", "INTERRUPTED")
+    return if (project.state in activeProjectStates && run?.state?.let { it in terminalRunStates } == true) {
+        run.state
+    } else {
+        project.state
+    }
+}
+
 private fun statusIcon(state: String): androidx.compose.ui.graphics.vector.ImageVector = when (state) {
     "FAILED", "ERROR", "COMPLETED_WITH_ERRORS" -> Icons.Default.Error
     "RUNNING" -> Icons.Default.Sync
     "COMPLETED", "SUCCESS" -> Icons.Default.CheckCircle
+    "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Icons.Default.Warning
     "PAUSED" -> Icons.Default.PauseCircle
     else -> Icons.Default.Schedule
 }
@@ -1665,8 +1635,10 @@ private fun localizedState(state: String, strings: PlatformUiStrings): String {
         "RUNNING" -> "运行中"
         "PAUSED" -> "已暂停"
         "COMPLETED", "SUCCESS" -> "已完成"
+        "COMPLETED_WITH_WARNINGS" -> "完成但有提示"
         "COMPLETED_WITH_ERRORS" -> "完成但有错误"
         "FAILED", "ERROR" -> "失败"
+        "PARTIAL" -> "部分完成，需修复"
         "CANCELLED" -> "已取消"
         "INTERRUPTED" -> "已中断"
         else -> state

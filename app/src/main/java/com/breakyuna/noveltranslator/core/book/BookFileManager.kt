@@ -40,7 +40,9 @@ class BookFileManager(private val context: Context) {
 
     fun saveEditionChapter(bookId: Long, editionId: Long, chapterIndex: Int, title: String, text: String): String {
         val fileName = "%04d_%s.txt".format(Locale.US, chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
-        atomicWrite(File(editionChaptersDir(bookId, editionId), fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
+        val file = File(editionChaptersDir(bookId, editionId), fileName)
+        file.parentFile?.mkdirs()
+        file.writeText(text, Charsets.UTF_8)
         return fileName
     }
 
@@ -52,7 +54,9 @@ class BookFileManager(private val context: Context) {
             safeName(title).take(40).ifBlank { "chapter" },
             UUID.randomUUID().toString()
         )
-        atomicWrite(File(editionChaptersDir(bookId, editionId), fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
+        val file = File(editionChaptersDir(bookId, editionId), fileName)
+        file.parentFile?.mkdirs()
+        file.writeText(text, Charsets.UTF_8)
         return fileName
     }
 
@@ -74,7 +78,9 @@ class BookFileManager(private val context: Context) {
 
     fun saveStagedEditionChapter(stagingDir: File, chapterIndex: Int, title: String, text: String): String {
         val fileName = "%04d_%s.txt".format(Locale.US, chapterIndex, safeName(title).take(50).ifBlank { "chapter" })
-        atomicWrite(File(stagingDir, fileName)) { it.write(text.toByteArray(Charsets.UTF_8)) }
+        val file = File(stagingDir, fileName)
+        file.parentFile?.mkdirs()
+        file.writeText(text, Charsets.UTF_8)
         return fileName
     }
 
@@ -127,6 +133,23 @@ class BookFileManager(private val context: Context) {
     fun readEditionChapter(bookId: Long, editionId: Long, fileName: String): String {
         val file = File(editionChaptersDir(bookId, editionId), File(fileName).name)
         return file.takeIf { it.isFile }?.readText(Charsets.UTF_8).orEmpty()
+    }
+
+    /** Durable, atomic storage for an in-flight translation chapter checkpoint. */
+    fun saveTranslationCheckpoint(bookId: Long, checkpointName: String, content: String) {
+        val target = File(workspaceDir(bookId), safeName(checkpointName))
+        atomicWrite(target) { output ->
+            output.write(content.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    fun readTranslationCheckpoint(bookId: Long, checkpointName: String): String? {
+        val file = File(workspaceDir(bookId), safeName(checkpointName))
+        return file.takeIf { it.isFile }?.readText(Charsets.UTF_8)
+    }
+
+    fun deleteTranslationCheckpoint(bookId: Long, checkpointName: String) {
+        File(workspaceDir(bookId), safeName(checkpointName)).delete()
     }
 
     fun deleteBook(bookId: Long) {

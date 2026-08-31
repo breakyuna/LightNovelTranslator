@@ -75,7 +75,7 @@ class Converters {
         PlatformRequestLogEntity::class,
         PromptProfileEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -136,6 +136,14 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `platform_request_logs` ADD COLUMN `status` TEXT NOT NULL DEFAULT 'SUCCESS'"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -145,7 +153,7 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "light_novel_translation_platform.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { database ->
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { database ->
                     instance = database
                     CoroutineScope(Dispatchers.IO).launch {
                         seedDefaultProviders(database)

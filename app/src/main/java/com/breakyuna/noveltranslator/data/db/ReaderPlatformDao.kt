@@ -56,6 +56,12 @@ interface BookDao {
     @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
     fun observeEditions(bookId: Long): Flow<List<EditionEntity>>
 
+    @Query("SELECT * FROM editions ORDER BY createdAt")
+    fun observeAllEditions(): Flow<List<EditionEntity>>
+
+    @Query("SELECT * FROM editions ORDER BY createdAt")
+    suspend fun getAllEditions(): List<EditionEntity>
+
     @Query("SELECT * FROM editions WHERE bookId = :bookId ORDER BY createdAt")
     suspend fun getEditions(bookId: Long): List<EditionEntity>
 
@@ -196,8 +202,8 @@ interface TranslationProjectV2Dao {
     @Query("UPDATE translation_projects_v2 SET state = :state, updatedAt = :now WHERE id = :id")
     suspend fun updateState(id: Long, state: String, now: Long = System.currentTimeMillis())
 
-    @Query("UPDATE translation_projects_v2 SET state = 'COMPLETED', updatedAt = :now WHERE id = :id AND state NOT IN ('CANCELLED', 'RUNNING', 'PAUSED')")
-    suspend fun completeIfNotActive(id: Long, now: Long = System.currentTimeMillis()): Int
+    @Query("UPDATE translation_projects_v2 SET state = 'COMPLETED', updatedAt = :now WHERE id = :id AND state NOT IN ('CANCELLED', 'PAUSED')")
+    suspend fun completeIfNotStopped(id: Long, now: Long = System.currentTimeMillis()): Int
 
     @Query("UPDATE translation_projects_v2 SET state = 'INTERRUPTED', updatedAt = :now WHERE state IN ('RUNNING', 'PAUSED')")
     suspend fun markInterrupted(now: Long = System.currentTimeMillis())
@@ -314,10 +320,13 @@ interface PlatformTaskDao {
     @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId ORDER BY batchIndex")
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>>
 
+    @Query("SELECT * FROM platform_translation_batches WHERE runId = :runId ORDER BY batchIndex")
+    suspend fun getBatches(runId: Long): List<PlatformTranslationBatchEntity>
+
     @Query("""
         SELECT id, runId, batchId, operation, attemptCount, promptTokens, completionTokens,
                cachedTokens, estimatedCost, durationMs, finishReason, errorCategory, errorMessage,
-               isSuccess, timestamp
+               isSuccess, status, timestamp
         FROM platform_request_logs WHERE runId = :runId ORDER BY timestamp DESC
     """)
     fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>>

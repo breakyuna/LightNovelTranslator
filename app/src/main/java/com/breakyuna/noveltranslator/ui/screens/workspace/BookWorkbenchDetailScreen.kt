@@ -48,6 +48,7 @@ import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.core.logger.SystemLogEntry
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.core.translation.TranslationProtocol
+import com.breakyuna.noveltranslator.core.translation.TranslationScopePlanner
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.components.TARGET_LANGUAGE_OPTIONS
@@ -79,6 +80,8 @@ fun BookWorkbenchDetailScreen(
         .collectAsState(initial = emptyList())
     val chapters by remember(bookId) { viewModel.bookPlatformRepo.observeChapters(bookId) }
         .collectAsState(initial = emptyList())
+    val readerProgress by remember(bookId) { viewModel.bookPlatformRepo.observeProgress(bookId) }
+        .collectAsState(initial = null)
     val translationProjects by remember(bookId) { viewModel.bookPlatformRepo.observeTranslationProjects(bookId) }
         .collectAsState(initial = emptyList())
     val allRuns by remember(bookId) { viewModel.observeRunsByBook(bookId) }
@@ -105,7 +108,21 @@ fun BookWorkbenchDetailScreen(
     }
 
     val currentTargetEdition = editions.firstOrNull { it.id == selectedTargetEditionId }
-    val currentProject = translationProjects.firstOrNull { it.targetEditionId == selectedTargetEditionId }
+    val currentProject = translationProjects
+        .filter { it.targetEditionId == selectedTargetEditionId }
+        .maxWithOrNull(compareBy<TranslationProjectV2Entity> { it.updatedAt }.thenBy { it.id })
+    val taskScopeChapters = remember(chapters, currentProject, readerProgress?.logicalChapterId) {
+        currentProject?.let { project ->
+            TranslationScopePlanner.select(
+                chapters = chapters,
+                mode = project.translationMode,
+                rangeStart = project.rangeStart,
+                rangeEnd = project.rangeEnd,
+                currentChapterId = readerProgress?.logicalChapterId,
+                seamlessAheadChapters = project.seamlessAheadChapters
+            )
+        } ?: chapters
+    }
     val promptProfile by remember(currentProject?.id) {
         if (currentProject != null) viewModel.observePromptProfile(currentProject.id)
         else flowOf(null)
@@ -115,7 +132,11 @@ fun BookWorkbenchDetailScreen(
         if (currentProject != null) viewModel.observeRunsByProject(currentProject.id)
         else flowOf(emptyList())
     }.collectAsState(initial = emptyList())
-    val latestRun = activeRuns.firstOrNull() ?: allRuns.firstOrNull { it.translationProjectId == currentProject?.id }
+    val latestRun = activeRuns
+        .maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
+        ?: allRuns
+            .filter { it.translationProjectId == currentProject?.id }
+            .maxWithOrNull(compareBy<PlatformTranslationRunEntity> { it.createdAt }.thenBy { it.id })
 
     val projectLexicon by remember(currentProject?.id, selectedTab, useWideWorkbench) {
         if (currentProject != null && (selectedTab == WorkbenchTab.GLOSSARY || useWideWorkbench)) viewModel.observeLexicon(currentProject.id)
@@ -225,6 +246,7 @@ fun BookWorkbenchDetailScreen(
                                 book = currentBook,
                                 editions = editions,
                                 chapters = chapters,
+                                totalTaskChapters = taskScopeChapters.size,
                                 targetEdition = currentTargetEdition,
                                 project = currentProject,
                                 promptProfile = promptProfile,
@@ -285,7 +307,7 @@ fun BookWorkbenchDetailScreen(
                     providers = allProviders,
                     run = latestRun,
                     selectedTab = selectedTab,
-                    chapterCount = chapters.size,
+                    chapterCount = taskScopeChapters.size,
                     lexiconCount = projectLexicon.count { it.reviewStatus == ReviewStatus.CONFIRMED.name },
                     onSelectTab = { selectedTab = it },
                     onSelectEdition = { selectedTargetEditionId = it },
@@ -299,7 +321,8 @@ fun BookWorkbenchDetailScreen(
                     WideWorkspaceHeader(
                         tab = selectedTab,
                         edition = currentTargetEdition,
-                        project = currentProject
+                        project = currentProject,
+                        run = latestRun
                     )
                     tabContent(Modifier.fillMaxWidth().weight(1f))
                 }
@@ -315,6 +338,7 @@ fun BookWorkbenchDetailScreen(
                     editions = editions,
                     selectedEdition = currentTargetEdition,
                     project = currentProject,
+                    run = latestRun,
                     promptProfile = promptProfile,
                     providers = allProviders,
                     viewModel = viewModel,
@@ -547,8 +571,12 @@ private fun WorkbenchSidebar(
     viewModel: AppViewModel
 ) {
     var editionMenuExpanded by remember { mutableStateOf(false) }
-    val currentState = project?.state ?: run?.state ?: "IDLE"
-    val completedChapters = run?.completedChapters ?: 0
+    val currentState = effectiveTranslationState(project, run)
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) {
+        chapterCount
+    } else {
+        run?.completedChapters ?: 0
+    }
     val progress = if (chapterCount > 0) {
         (completedChapters.toFloat() / chapterCount).coerceIn(0f, 1f)
     } else 0f
@@ -720,6 +748,7 @@ private fun WorkbenchSidebar(
                     editions = editions,
                     targetEdition = selectedEdition,
                     project = project,
+                    run = run,
                     promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
@@ -803,13 +832,15 @@ private fun WorkbenchSidebar(
 private fun WideWorkspaceHeader(
     tab: WorkbenchTab,
     edition: EditionEntity?,
-    project: TranslationProjectV2Entity?
+    project: TranslationProjectV2Entity?,
+    run: PlatformTranslationRunEntity?
 ) {
     val description = when (tab) {
         WorkbenchTab.TASKS -> "监控进度、控制翻译并处理单章任务"
         WorkbenchTab.GLOSSARY -> "审核候选术语并维护 Story Memory"
         WorkbenchTab.LOGS -> "查看任务历史、模型调用和诊断日志"
     }
+    val currentState = effectiveTranslationState(project, run)
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
             Row(
@@ -843,9 +874,10 @@ private fun WideWorkspaceHeader(
                 }
                 Surface(
                     shape = CircleShape,
-                    color = when (project?.state) {
+                    color = when (currentState) {
                         "RUNNING" -> MaterialTheme.colorScheme.primary
                         "PAUSED" -> MaterialTheme.colorScheme.tertiary
+                        "COMPLETED_WITH_WARNINGS" -> Color(0xFFF57C00)
                         "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
                         else -> MaterialTheme.colorScheme.surfaceVariant
                     },
@@ -863,6 +895,7 @@ private fun WorkbenchHeroSummary(
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
+    run: PlatformTranslationRunEntity?,
     promptProfile: PromptProfileEntity?,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
@@ -876,7 +909,7 @@ private fun WorkbenchHeroSummary(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
             val showConfigBesideBook = maxWidth >= 720.dp
             if (showConfigBesideBook) {
@@ -898,6 +931,7 @@ private fun WorkbenchHeroSummary(
                         editions = editions,
                         targetEdition = selectedEdition,
                         project = project,
+                        run = run,
                         promptProfile = promptProfile,
                         providers = providers,
                         viewModel = viewModel,
@@ -906,27 +940,14 @@ private fun WorkbenchHeroSummary(
                     )
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    BookHeroSummary(
-                        book = book,
-                        editions = editions,
-                        selectedEdition = selectedEdition,
-                        onSelectEdition = onSelectEdition,
-                        onCreateEdition = onCreateEdition,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    ModelStyleConfigurationCard(
-                        book = book,
-                        editions = editions,
-                        targetEdition = selectedEdition,
-                        project = project,
-                        promptProfile = promptProfile,
-                        providers = providers,
-                        viewModel = viewModel,
-                        compact = false,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                BookHeroSummary(
+                    book = book,
+                    editions = editions,
+                    selectedEdition = selectedEdition,
+                    onSelectEdition = onSelectEdition,
+                    onCreateEdition = onCreateEdition,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
@@ -1044,6 +1065,7 @@ private fun TasksAndControlTab(
     book: BookEntity,
     editions: List<EditionEntity>,
     chapters: List<LogicalChapterEntity>,
+    totalTaskChapters: Int,
     targetEdition: EditionEntity?,
     project: TranslationProjectV2Entity?,
     promptProfile: PromptProfileEntity?,
@@ -1057,10 +1079,14 @@ private fun TasksAndControlTab(
     onRequestAiSplit: (ApiProviderEntity) -> Unit,
     onSelectChapterAction: (LogicalChapterEntity) -> Unit
 ) {
-    val totalChapters = chapters.size
-    val completedChapters = run?.completedChapters ?: 0
+    val totalChapters = totalTaskChapters
+    val currentState = effectiveTranslationState(project, run)
+    val completedChapters = if (currentState in setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS")) {
+        totalChapters
+    } else {
+        (run?.completedChapters ?: 0).coerceAtMost(totalChapters)
+    }
     val progress = if (totalChapters > 0) (completedChapters.toFloat() / totalChapters).coerceIn(0f, 1f) else 0f
-    val currentState = project?.state ?: run?.state ?: "IDLE"
     val reviewRunning = project?.highQualityReview == true && currentState == "RUNNING" && completedChapters >= totalChapters
 
     LazyColumn(
@@ -1170,6 +1196,7 @@ private fun TasksAndControlTab(
                                     "RUNNING" -> MaterialTheme.colorScheme.primary
                                     "PAUSED" -> MaterialTheme.colorScheme.tertiary
                                     "COMPLETED" -> Color(0xFF2E7D32)
+                                    "COMPLETED_WITH_WARNINGS" -> Color(0xFFF57C00)
                                     "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
                                     else -> MaterialTheme.colorScheme.surfaceVariant
                                 }
@@ -1179,13 +1206,14 @@ private fun TasksAndControlTab(
                                         "RUNNING" -> "正在翻译"
                                         "PAUSED" -> "已暂停"
                                         "COMPLETED" -> "已完成"
+                                        "COMPLETED_WITH_WARNINGS" -> "完成但有提示"
                                         "FAILED" -> "异常中断"
                                         "COMPLETED_WITH_ERRORS" -> "完成但有错误"
                                         else -> "待绪"
                                     },
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (currentState in listOf("RUNNING", "COMPLETED", "FAILED", "COMPLETED_WITH_ERRORS")) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    color = if (currentState in listOf("RUNNING", "COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "COMPLETED_WITH_ERRORS")) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -1290,7 +1318,14 @@ private fun TasksAndControlTab(
                                     ) {
                                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text(if (completedChapters > 0) "继续翻译剩余章节" else "开始全书翻译")
+                                        Text(
+                                            when {
+                                                completedChapters > 0 -> "继续翻译剩余章节"
+                                                project.translationMode == TranslationMode.CHAPTER_RANGE.name -> "开始指定范围翻译"
+                                                project.translationMode == TranslationMode.SEAMLESS.name -> "补齐阅读缓冲"
+                                                else -> "开始全书翻译"
+                                            }
+                                        )
                                     }
                                 }
                             }
@@ -1329,6 +1364,7 @@ private fun TasksAndControlTab(
                     editions = editions,
                     targetEdition = targetEdition,
                     project = project,
+                    run = run,
                     promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
@@ -1340,7 +1376,8 @@ private fun TasksAndControlTab(
                 TaskScaleConfigurationCard(
                     project = project,
                     totalChapters = totalChapters,
-                    viewModel = viewModel
+                    viewModel = viewModel,
+                    run = run
                 )
             }
 
@@ -1404,7 +1441,8 @@ private fun ModelStyleConfigurationCard(
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
     compact: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    run: PlatformTranslationRunEntity? = null
 ) {
     val originalEdition = editions.firstOrNull { it.id == book.primaryEditionId }
         ?: editions.firstOrNull { it.type == EditionType.IMPORTED.name }
@@ -1455,7 +1493,7 @@ private fun ModelStyleConfigurationCard(
                 ?: providers.firstOrNull()?.selectedModel.orEmpty()
         }
     }
-    val canEdit = project?.state !in setOf("RUNNING", "PAUSED")
+    val canEdit = effectiveTranslationState(project, run) !in setOf("RUNNING", "PAUSED")
     val canCreateProject = project != null || (
         targetEdition != null &&
             originalEdition != null &&
@@ -1683,7 +1721,7 @@ private fun ModelStyleConfigurationCard(
                 Switch(
                     checked = highQualityReview,
                     onCheckedChange = { highQualityReview = it },
-                    enabled = project?.state !in setOf("RUNNING", "PAUSED")
+                    enabled = effectiveTranslationState(project, run) !in setOf("RUNNING", "PAUSED")
                 )
             }
 
@@ -1997,7 +2035,8 @@ private fun PromptPreviewBlock(value: String) {
 private fun TaskScaleConfigurationCard(
     project: TranslationProjectV2Entity,
     totalChapters: Int,
-    viewModel: AppViewModel
+    viewModel: AppViewModel,
+    run: PlatformTranslationRunEntity? = null
 ) {
     var translationMode by rememberSaveable(project.id, project.updatedAt) {
         mutableStateOf(project.translationMode)
@@ -2018,7 +2057,7 @@ private fun TaskScaleConfigurationCard(
         (rangeStart != null && rangeEnd != null && rangeStart > 0 && rangeEnd >= rangeStart && rangeEnd <= totalChapters)
     // The engine captures one immutable configuration snapshot for a run. Do not let a paused
     // run appear editable because those changes would silently be ignored on resume.
-    val canEdit = project.state !in setOf("RUNNING", "PAUSED")
+    val canEdit = effectiveTranslationState(project, run) !in setOf("RUNNING", "PAUSED")
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -3083,7 +3122,12 @@ private fun LogsAndHistoryTab(
                                         )
                                         Surface(
                                             shape = RoundedCornerShape(4.dp),
-                                            color = if (run.state == "COMPLETED") Color(0xFF2E7D32) else MaterialTheme.colorScheme.primary
+                                            color = when (run.state) {
+                                                "COMPLETED", "SUCCESS" -> Color(0xFF2E7D32)
+                                                "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Color(0xFFF57C00)
+                                                "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
+                                                else -> MaterialTheme.colorScheme.primary
+                                            }
                                         ) {
                                             Text(
                                                 run.state,
@@ -3125,6 +3169,7 @@ private fun LogsAndHistoryTab(
                         }
                     } else {
                         items(requestLogs, key = { "req_${it.id}" }) { log ->
+                            val status = requestLogStatus(log)
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(8.dp),
@@ -3137,8 +3182,13 @@ private fun LogsAndHistoryTab(
                                     ) {
                                         Text(log.operation, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                                         Text(
-                                            if (log.isSuccess) "成功 (${log.durationMs}ms)" else "失败",
-                                            color = if (log.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                            when (status) {
+                                                RequestLogStatus.SUCCESS -> "成功 (${log.durationMs}ms)"
+                                                RequestLogStatus.WARNING -> "需修复"
+                                                RequestLogStatus.INFO -> "信息"
+                                                RequestLogStatus.FAILURE -> "失败"
+                                            },
+                                            color = requestLogStatusColor(status),
                                             style = MaterialTheme.typography.labelSmall
                                         )
                                     }
@@ -3148,7 +3198,7 @@ private fun LogsAndHistoryTab(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     if (!log.errorMessage.isNullOrBlank()) {
-                                        Text(log.errorMessage, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                        Text(log.errorMessage, color = requestLogStatusColor(status), style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -3233,6 +3283,7 @@ private fun DebugDiagnosticsTab(
             item { Text("此任务没有 Debug API 内容；可能是在开启 Debug 模式之前执行的。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
             items(requestLogs, key = { "debug_req_${it.id}" }) { log ->
+                val status = requestLogStatus(log)
                 val expanded = expandedLogId == log.id
                 val detail by produceState<PlatformRequestLogEntity?>(initialValue = null, log.id, expanded) {
                     if (expanded) value = viewModel.getRequestLogDetail(log.id)
@@ -3241,11 +3292,24 @@ private fun DebugDiagnosticsTab(
                     Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(log.operation, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            Text(if (log.isSuccess) "成功" else "失败", color = if (log.isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error)
+                            Text(
+                                when (status) {
+                                    RequestLogStatus.SUCCESS -> "成功"
+                                    RequestLogStatus.WARNING -> "需修复"
+                                    RequestLogStatus.INFO -> "信息"
+                                    RequestLogStatus.FAILURE -> "失败"
+                                },
+                                color = requestLogStatusColor(status)
+                            )
                         }
                         Text("耗时 ${log.durationMs}ms · 尝试 ${log.attemptCount} 次 · ${log.promptTokens + log.completionTokens} Tokens", style = MaterialTheme.typography.bodySmall)
-                        if (!log.isSuccess) {
-                            Text("失败原因：${debugFailureExplanation(log)}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        if (status != RequestLogStatus.SUCCESS) {
+                            Text(
+                                if (status == RequestLogStatus.WARNING) "诊断：${debugFailureExplanation(log)}"
+                                else "失败原因：${debugFailureExplanation(log)}",
+                                color = requestLogStatusColor(status),
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                         if (expanded) {
                             DebugTextBlock("重试轨迹", detail?.attemptTrace)
@@ -3285,6 +3349,46 @@ private fun debugFailureExplanation(log: PlatformRequestLogSummary): String = wh
     LlmErrorCategory.QUALITY_REJECTED.name -> "QA 校验发现缺段、图片标记变化、术语不一致或异常内容：${log.errorMessage.orEmpty()}"
     LlmErrorCategory.NETWORK_UNAVAILABLE.name, LlmErrorCategory.TIMEOUT.name -> "网络连接或请求超时，自动重试后仍未成功。${log.errorMessage.orEmpty()}"
     else -> log.errorMessage ?: log.errorCategory ?: "未返回更具体的失败信息"
+}
+
+private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
+    // Older rows predate the status column. Infer repair diagnostics from their operation name so
+    // an existing QA_REPAIR_TRIGGERED record does not remain a red failure after migration.
+    if (log.operation.contains("TRIGGERED", ignoreCase = true) ||
+        log.operation.contains("SKIPPED", ignoreCase = true) ||
+        log.operation.contains("FALLBACK", ignoreCase = true)
+    ) return RequestLogStatus.WARNING
+    val parsed = runCatching { RequestLogStatus.valueOf(log.status) }.getOrNull()
+    return if (parsed == RequestLogStatus.SUCCESS && !log.isSuccess) RequestLogStatus.FAILURE
+    else parsed ?: if (log.isSuccess) RequestLogStatus.SUCCESS else RequestLogStatus.FAILURE
+}
+
+/**
+ * The project row is normally the source of truth, but a terminal Run can be written a few
+ * milliseconds before its project row is observed by a screen. Prefer that terminal state over
+ * a stale active project state so controls cannot keep showing a finished task as RUNNING.
+ */
+private fun effectiveTranslationState(
+    project: TranslationProjectV2Entity?,
+    run: PlatformTranslationRunEntity?
+): String {
+    val projectState = project?.state
+    val runState = run?.state
+    val terminalRunStates = setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
+    val activeProjectStates = setOf("RUNNING", "PAUSED", "INTERRUPTED")
+    return when {
+        projectState == null -> runState ?: "IDLE"
+        projectState in activeProjectStates && runState?.let { it in terminalRunStates } == true -> runState
+        else -> projectState
+    }
+}
+
+@Composable
+private fun requestLogStatusColor(status: RequestLogStatus): Color = when (status) {
+    RequestLogStatus.SUCCESS -> Color(0xFF2E7D32)
+    RequestLogStatus.WARNING -> Color(0xFFFFA000)
+    RequestLogStatus.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
+    RequestLogStatus.FAILURE -> MaterialTheme.colorScheme.error
 }
 
 // Dialogs

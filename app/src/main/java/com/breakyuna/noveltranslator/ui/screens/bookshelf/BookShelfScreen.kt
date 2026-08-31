@@ -59,6 +59,7 @@ fun BookShelfScreen(
     val strings = platformUiStrings()
     val books by viewModel.shelfBooks.collectAsState()
     val hiddenBooks by viewModel.hiddenBooks.collectAsState()
+    val batchImportProgress by viewModel.batchImportProgress.collectAsState()
 
     var displayedBooks by remember { mutableStateOf<List<ShelfBook>>(emptyList()) }
     var draggingBookId by remember { mutableStateOf<Long?>(null) }
@@ -170,93 +171,99 @@ fun BookShelfScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (books.isEmpty()) {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    verticalArrangement = Arrangement.Center,
-                    horizontalAlignment = Alignment.CenterHorizontally
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                AnimatedVisibility(
+                    visible = batchImportProgress?.isImporting == true,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
                 ) {
-                    Icon(
-                        Icons.Default.AutoStories,
-                        null,
-                        Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = .55f)
-                    )
-                    Spacer(Modifier.height(18.dp))
-                    Text(strings.emptyShelfTitle, style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        strings.emptyShelfDescription,
-                        textAlign = TextAlign.Center,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(Modifier.height(20.dp))
-                    Button(onClick = launchFilePicker) { Text(strings.importFirstBook) }
-                    TextButton(onClick = viewModel::createSampleBook) { Text(strings.loadSample) }
-                }
-            } else {
-                Column(Modifier.fillMaxSize()) {
-                    // Subheader bar (stats / quick actions)
-                    if (!inSelectionMode) {
-                        Row(
+                    batchImportProgress?.let { progress ->
+                        Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
+                            tonalElevation = 2.dp
                         ) {
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                            Column(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        Icons.Default.AutoStories,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    Spacer(Modifier.width(6.dp))
                                     Text(
-                                        "共 ${books.size} 本图书",
+                                        text = "正在批量导入图书 (${progress.completed}/${progress.total})",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "${((progress.completed.toFloat() / maxOf(1, progress.total)) * 100).toInt()}%",
                                         style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                TextButton(
-                                    onClick = {
-                                        if (books.isNotEmpty()) {
-                                            selectedBookIds = setOf(books.first().id)
-                                        }
-                                    },
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("编辑", style = MaterialTheme.typography.labelLarge)
-                                }
-                                TextButton(
-                                    onClick = launchFilePicker,
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                                ) {
-                                    Text("导入", style = MaterialTheme.typography.labelLarge)
+                                Spacer(Modifier.height(6.dp))
+                                LinearProgressIndicator(
+                                    progress = { (progress.completed.toFloat() / maxOf(1, progress.total)).coerceIn(0f, 1f) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(4.dp)
+                                        .clip(RoundedCornerShape(2.dp)),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                                )
+                                if (!progress.currentBookName.isNullOrBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = progress.currentBookName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
                         }
                     }
+                }
 
+                if (books.isEmpty()) {
+                    Column(
+                        Modifier
+                            .fillMaxSize()
+                            .padding(32.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            Icons.Default.AutoStories,
+                            null,
+                            Modifier.size(64.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = .55f)
+                        )
+                        Spacer(Modifier.height(18.dp))
+                        Text(strings.emptyShelfTitle, style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            strings.emptyShelfDescription,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(20.dp))
+                        Button(onClick = launchFilePicker) { Text(strings.importFirstBook) }
+                        TextButton(onClick = viewModel::createSampleBook) { Text(strings.loadSample) }
+                    }
+                } else {
                     // Bookshelf Grid with Drag & Drop
                     LazyVerticalGrid(
                         state = gridState,
                         columns = GridCells.Adaptive(114.dp),
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .weight(1f),
+                        modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
                             start = 16.dp,
                             end = 16.dp,

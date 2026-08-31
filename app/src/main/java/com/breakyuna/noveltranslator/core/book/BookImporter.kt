@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.core.book
 
 import androidx.room.withTransaction
+import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.core.parser.EpubParser
 import com.breakyuna.noveltranslator.core.parser.ParsedChapter
 import com.breakyuna.noveltranslator.core.parser.TxtParser
@@ -29,7 +30,14 @@ class BookImporter(
     private val database: AppDatabase,
     private val files: BookFileManager
 ) {
-    private data class StagedChapter(val title: String, val fileName: String, val wordCount: Int)
+    private data class StagedChapter(val chapterIndex: Int, val title: String, val fileName: String, val wordCount: Int)
+    private data class PreparedChapterData(
+        val chapterIndex: Int,
+        val title: String,
+        val content: String,
+        val wordCount: Int,
+        val fileName: String
+    )
     private data class NormalizedAcquiredBook(
         val title: String,
         val author: String,
@@ -140,6 +148,13 @@ class BookImporter(
             ?: error("The preserved source file was not found")
 
         val isEpub = sourceFile.extension.equals("epub", ignoreCase = true)
+        val detection = if (!isEpub) runCatching { TxtParser.detectStructure(sourceFile, regexPattern.trim().takeIf(String::isNotBlank)) }.getOrNull() else null
+        if (detection != null) {
+            SystemLogger.info(
+                "CHAPTER_SPLIT",
+                "书籍分章检测: pattern=${detection.detectedPattern}, confidence=${detection.confidence.toInt()}%, chapters=${detection.headings.size}, warnings=${detection.warnings.joinToString()}"
+            )
+        }
         val effectiveRegex = regexPattern.trim().takeIf(String::isNotBlank)
             ?: if (isEpub) TxtParser.REGEX_CHINESE else TxtParser.inferChapterRegex(sourceFile, book.originalLanguage)
         val progress = database.readerProgressDao().get(bookId)
@@ -157,7 +172,7 @@ class BookImporter(
             val chapters = TxtParser.chapterSequence(
                 reader = reader,
                 regexPattern = effectiveRegex,
-                cropTableOfContents = cropTableOfContents
+                cropTableOfContents = cropTableOfContents || (detection?.detectedTocRange != null)
             ).iterator()
             rebuildOriginalEdition(bookId, originalEdition, chapters, progress)
         } finally {
@@ -217,6 +232,7 @@ class BookImporter(
                     normalized.renderedText
                 )
                 staged += StagedChapter(
+                    chapterCount,
                     normalized.title,
                     fileName,
                     TxtParser.countWords(normalized.renderedText)
@@ -231,22 +247,35 @@ class BookImporter(
                 database.withTransaction {
                     val dao = database.bookDao()
                     dao.deleteLogicalChaptersByBook(bookId)
-                    staged.forEachIndexed { index, chapter ->
-                        val content = files.readEditionChapter(
-                            bookId,
-                            originalEdition.id,
-                            chapter.fileName
-                        )
-                        persistChapterInTransaction(
-                            bookId = bookId,
-                            editionId = originalEdition.id,
-                            chapterIndex = index + 1,
+                }
+                val batchBuffer = mutableListOf<PreparedChapterData>()
+                for (chapter in staged) {
+                    val content = files.readEditionChapter(
+                        bookId,
+                        originalEdition.id,
+                        chapter.fileName
+                    )
+                    batchBuffer.add(
+                        PreparedChapterData(
+                            chapterIndex = chapter.chapterIndex,
                             title = chapter.title,
                             content = content,
                             wordCount = chapter.wordCount,
                             fileName = chapter.fileName
                         )
+                    )
+                    if (batchBuffer.size >= CHAPTER_TRANSACTION_BATCH_SIZE) {
+                        persistChaptersBatch(bookId, originalEdition.id, batchBuffer)
+                        batchBuffer.clear()
                     }
+                }
+                if (batchBuffer.isNotEmpty()) {
+                    persistChaptersBatch(bookId, originalEdition.id, batchBuffer)
+                    batchBuffer.clear()
+                }
+
+                database.withTransaction {
+                    val dao = database.bookDao()
                     dao.updateEdition(originalEdition.copy(isComplete = true, updatedAt = now))
                     dao.update(
                         (dao.getBook(bookId) ?: error("Book not found")).copy(
@@ -264,8 +293,8 @@ class BookImporter(
                             updatedAt = now
                         )
                     )
-                    chapterCount
                 }
+                chapterCount
             } catch (error: Throwable) {
                 files.rollbackEditionChapterSwap(bookId, originalEdition.id, backupDir)
                 throw error
@@ -345,8 +374,29 @@ class BookImporter(
                 )
             )
         }
+        val batchBuffer = mutableListOf<PreparedChapterData>()
         normalizedChapters.forEachIndexed { index, chapter ->
-            persistChapter(bookId, editionId, index + 1, chapter)
+            val chapterIndex = index + 1
+            val storedFileName = files.saveEditionChapter(
+                bookId, editionId, chapterIndex, chapter.title, chapter.renderedText
+            )
+            batchBuffer.add(
+                PreparedChapterData(
+                    chapterIndex = chapterIndex,
+                    title = chapter.title,
+                    content = chapter.renderedText,
+                    wordCount = TxtParser.countWords(chapter.renderedText),
+                    fileName = storedFileName
+                )
+            )
+            if (batchBuffer.size >= CHAPTER_TRANSACTION_BATCH_SIZE) {
+                persistChaptersBatch(bookId, editionId, batchBuffer)
+                batchBuffer.clear()
+            }
+        }
+        if (batchBuffer.isNotEmpty()) {
+            persistChaptersBatch(bookId, editionId, batchBuffer)
+            batchBuffer.clear()
         }
         finalizeImport(bookId, editionId, normalizedTitle, normalizedAuthor, normalizedCoverPath)
     }
@@ -372,17 +422,46 @@ class BookImporter(
             )
         }
         var chapterCount = 0
+        val detection = runCatching { TxtParser.detectStructure(sourceFile, customRegex) }.getOrNull()
+        if (detection != null) {
+            SystemLogger.info(
+                "CHAPTER_SPLIT",
+                "导入 TXT 分章检测: pattern=${detection.detectedPattern}, confidence=${detection.confidence.toInt()}%, chapters=${detection.headings.size}"
+            )
+        }
+        val effectiveRegex = customRegex?.takeIf(String::isNotBlank)
+            ?: TxtParser.inferChapterRegex(sourceFile, originalLanguage)
+        val batchBuffer = mutableListOf<PreparedChapterData>()
         TxtParser.openDetectedReader(sourceFile).use { reader ->
             val chapters = TxtParser.chapterSequence(
                 reader,
-                customRegex?.takeIf(String::isNotBlank)
-                    ?: TxtParser.inferChapterRegex(sourceFile, originalLanguage),
-                cropTableOfContents = cropTableOfContents
+                effectiveRegex,
+                cropTableOfContents = cropTableOfContents || (detection?.detectedTocRange != null)
             ).iterator()
             while (chapters.hasNext()) {
                 val parsed = chapters.next()
                 chapterCount++
-                persistChapter(bookId, editionId, chapterCount, AcquiredChapter(parsed.title, parsed.content))
+                val normalized = normalizeChapter(AcquiredChapter(parsed.title, parsed.content), chapterCount)
+                val storedFileName = files.saveEditionChapter(
+                    bookId, editionId, chapterCount, normalized.title, normalized.renderedText
+                )
+                batchBuffer.add(
+                    PreparedChapterData(
+                        chapterIndex = chapterCount,
+                        title = normalized.title,
+                        content = normalized.renderedText,
+                        wordCount = TxtParser.countWords(normalized.renderedText),
+                        fileName = storedFileName
+                    )
+                )
+                if (batchBuffer.size >= CHAPTER_TRANSACTION_BATCH_SIZE) {
+                    persistChaptersBatch(bookId, editionId, batchBuffer)
+                    batchBuffer.clear()
+                }
+            }
+            if (batchBuffer.isNotEmpty()) {
+                persistChaptersBatch(bookId, editionId, batchBuffer)
+                batchBuffer.clear()
             }
         }
         require(chapterCount > 0) { "No readable chapters were found" }
@@ -393,25 +472,6 @@ class BookImporter(
             normalizeMetadata(author, "Unknown", 300),
             null
         )
-    }
-
-    private suspend fun persistChapter(
-        bookId: Long,
-        editionId: Long,
-        chapterIndex: Int,
-        chapter: AcquiredChapter
-    ) {
-        val normalized = normalizeChapter(chapter, chapterIndex)
-        database.withTransaction {
-            persistChapterInTransaction(
-                bookId = bookId,
-                editionId = editionId,
-                chapterIndex = chapterIndex,
-                title = normalized.title,
-                content = normalized.renderedText,
-                wordCount = TxtParser.countWords(normalized.renderedText)
-            )
-        }
     }
 
     private fun normalizeAcquiredBook(book: AcquiredBook, language: String): NormalizedAcquiredBook {
@@ -475,53 +535,53 @@ class BookImporter(
         it.code == 0 || it.code == 127 || (it.code < 32 && it != '\n' && it != '\r' && it != '\t')
     }
 
-    private suspend fun persistChapterInTransaction(
+    private suspend fun persistChaptersBatch(
         bookId: Long,
         editionId: Long,
-        chapterIndex: Int,
-        title: String,
-        content: String,
-        wordCount: Int,
-        fileName: String? = null
+        chapters: List<PreparedChapterData>
     ) {
-        val parts = splitSegments(content)
-        val storedFileName = fileName ?: files.saveEditionChapter(bookId, editionId, chapterIndex, title, content)
-        val dao = database.bookDao()
-        val logicalChapterId = dao.insertLogicalChapter(
-            LogicalChapterEntity(bookId = bookId, chapterIndex = chapterIndex, canonicalTitle = title)
-        )
-        val editionChapterId = dao.insertEditionChapter(
-            EditionChapterEntity(
-                editionId = editionId,
-                logicalChapterId = logicalChapterId,
-                title = title,
-                contentFileName = storedFileName,
-                wordCount = wordCount
-            )
-        )
-        var offset = 0
-        while (offset < parts.size) {
-            val end = minOf(offset + SEGMENT_BATCH_SIZE, parts.size)
-            val batch = parts.subList(offset, end)
-            val logicalIds = dao.insertLogicalSegments(
-                batch.indices.map { index ->
-                    LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = offset + index)
-                }
-            )
-            val editionIds = dao.insertEditionSegments(
-                batch.mapIndexed { index, text ->
-                    EditionSegmentEntity(
-                        editionChapterId = editionChapterId,
-                        segmentIndex = offset + index,
-                        baseText = text,
-                        sourceHash = sha256(text)
+        if (chapters.isEmpty()) return
+        database.withTransaction {
+            val dao = database.bookDao()
+            for (chapter in chapters) {
+                val parts = splitSegments(chapter.content)
+                val logicalChapterId = dao.insertLogicalChapter(
+                    LogicalChapterEntity(bookId = bookId, chapterIndex = chapter.chapterIndex, canonicalTitle = chapter.title)
+                )
+                val editionChapterId = dao.insertEditionChapter(
+                    EditionChapterEntity(
+                        editionId = editionId,
+                        logicalChapterId = logicalChapterId,
+                        title = chapter.title,
+                        contentFileName = chapter.fileName,
+                        wordCount = chapter.wordCount
                     )
+                )
+                var offset = 0
+                while (offset < parts.size) {
+                    val end = minOf(offset + SEGMENT_BATCH_SIZE, parts.size)
+                    val batch = parts.subList(offset, end)
+                    val logicalIds = dao.insertLogicalSegments(
+                        batch.indices.map { index ->
+                            LogicalSegmentEntity(logicalChapterId = logicalChapterId, segmentIndex = offset + index)
+                        }
+                    )
+                    val editionIds = dao.insertEditionSegments(
+                        batch.mapIndexed { index, text ->
+                            EditionSegmentEntity(
+                                editionChapterId = editionChapterId,
+                                segmentIndex = offset + index,
+                                baseText = text,
+                                sourceHash = sha256(text)
+                            )
+                        }
+                    )
+                    dao.insertMappings(logicalIds.zip(editionIds) { logicalId, editionSegmentId ->
+                        EditionSegmentMappingEntity(logicalId, editionSegmentId)
+                    })
+                    offset = end
                 }
-            )
-            dao.insertMappings(logicalIds.zip(editionIds) { logicalId, editionSegmentId ->
-                EditionSegmentMappingEntity(logicalId, editionSegmentId)
-            })
-            offset = end
+            }
         }
     }
 
@@ -556,6 +616,7 @@ class BookImporter(
     }
 
     companion object {
+        private const val CHAPTER_TRANSACTION_BATCH_SIZE = 50
         private const val SEGMENT_BATCH_SIZE = 500
 
         fun splitSegments(text: String): List<String> = text
