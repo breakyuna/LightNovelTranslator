@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -583,95 +584,147 @@ private fun BookCoverCard(
                 onDoubleClick = onDoubleClick
             )
     ) {
-        Box(
+        // Book Cover with 3D Spine and Layered Depth
+        Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.72f)
-                .clip(RoundedCornerShape(10.dp))
-                .background(
-                    Brush.verticalGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
-                            MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.75f)
-                        )
-                    )
-                ),
-            contentAlignment = Alignment.Center
+                .aspectRatio(0.72f),
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+            shadowElevation = 2.dp,
+            tonalElevation = 1.dp
         ) {
-            if (cover != null) {
-                androidx.compose.foundation.Image(
-                    cover!!,
-                    book.title,
-                    Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Text(
-                    book.title.take(3),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                )
-            }
-
-            if (book.hasTranslationProject) {
-                Surface(
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(6.dp),
-                    shape = RoundedCornerShape(4.dp),
-                    color = MaterialTheme.colorScheme.primary
-                ) {
-                    Text(
-                        strings.translationBadge,
-                        Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
+                                MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (cover != null) {
+                    androidx.compose.foundation.Image(
+                        cover!!,
+                        book.title,
+                        Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.padding(12.dp)
+                    ) {
+                        Text(
+                            book.title.take(4),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
-            }
 
-            // Selection Circle Indicator in bottom-right corner
-            if (inSelectionMode) {
+                // 3D Realistic Book Spine Lighting Gradient Overlay (Left edge shadow)
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(8.dp)
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .then(
-                            if (selected) {
-                                Modifier.background(Color(0xFFE65100))
-                            } else {
-                                Modifier
-                                    .background(Color.Black.copy(alpha = 0.25f))
-                                    .border(1.5.dp, Color.White.copy(alpha = 0.85f), CircleShape)
-                            }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (selected) {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = "已选择",
-                            modifier = Modifier.size(16.dp),
-                            tint = Color.White
+                        .fillMaxHeight()
+                        .width(14.dp)
+                        .align(Alignment.CenterStart)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(
+                                    Color.Black.copy(alpha = 0.36f),
+                                    Color.Black.copy(alpha = 0.12f),
+                                    Color.Transparent
+                                )
+                            )
                         )
+                )
+
+                // Book Spine Crease Highlight
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(1.dp)
+                        .padding(start = 13.dp)
+                        .align(Alignment.CenterStart)
+                        .background(Color.White.copy(alpha = 0.18f))
+                )
+
+                // Translation Badge (Frosted Pill Style)
+                if (book.hasTranslationProject) {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp),
+                        shape = RoundedCornerShape(5.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
+                        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.35f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                strings.translationBadge,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 0.2.sp
+                            )
+                        }
+                    }
+                }
+
+                // Selection Circle Indicator in bottom-right corner
+                if (inSelectionMode) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(8.dp)
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .then(
+                                if (selected) {
+                                    Modifier.background(MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Modifier
+                                        .background(Color.Black.copy(alpha = 0.35f))
+                                        .border(1.5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (selected) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "已选择",
+                                modifier = Modifier.size(16.dp),
+                                tint = Color.White
+                            )
+                        }
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(7.dp))
         Text(
             book.title,
             modifier = Modifier.fillMaxWidth(),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-            fontWeight = FontWeight.Medium,
-            lineHeight = 17.sp
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            lineHeight = 17.5.sp
         )
         Spacer(Modifier.height(2.dp))
         Text(
@@ -682,7 +735,7 @@ private fun BookCoverCard(
                 else -> "未配置翻译"
             },
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
         )
     }
 }

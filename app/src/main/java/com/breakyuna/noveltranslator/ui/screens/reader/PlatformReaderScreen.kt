@@ -22,6 +22,8 @@ import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DashboardCustomize
 import androidx.compose.material.icons.filled.FormatListNumbered
@@ -547,7 +549,12 @@ private fun ReaderControlBar(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onPrevious, enabled = chapters.isNotEmpty() && currentChapterPosition > 0) {
-                    Text("<", style = MaterialTheme.typography.titleLarge, color = contentColor)
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.NavigateBefore,
+                        contentDescription = if (english) "Previous Chapter" else "上一章",
+                        tint = if (chapters.isNotEmpty() && currentChapterPosition > 0) contentColor else contentColor.copy(alpha = 0.35f),
+                        modifier = Modifier.size(28.dp)
+                    )
                 }
                 Column(Modifier.weight(1f)) {
                     Slider(
@@ -557,22 +564,32 @@ private fun ReaderControlBar(
                         valueRange = 0f..maxChapterPosition.toFloat(),
                         steps = (chapters.size - 2).coerceAtLeast(0),
                         enabled = chapters.size > 1,
-                        colors = SliderDefaults.colors(thumbColor = contentColor, activeTrackColor = contentColor)
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary,
+                            inactiveTrackColor = contentColor.copy(alpha = 0.2f)
+                        )
                     )
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
                             currentChapterTitle ?: if (english) "No chapter" else "暂无章节",
-                            style = MaterialTheme.typography.labelSmall,
-                            maxLines = 1
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         Text(
                             if (chapters.isEmpty()) "0 / 0" else "${currentChapterPosition + 1} / ${chapters.size}",
-                            style = MaterialTheme.typography.labelSmall
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
                         )
                     }
                 }
                 IconButton(onClick = onNext, enabled = chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) {
-                    Text(">", style = MaterialTheme.typography.titleLarge, color = contentColor)
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.NavigateNext,
+                        contentDescription = if (english) "Next Chapter" else "下一章",
+                        tint = if (chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) contentColor else contentColor.copy(alpha = 0.35f),
+                        modifier = Modifier.size(28.dp)
+                    )
                 }
             }
             Row(

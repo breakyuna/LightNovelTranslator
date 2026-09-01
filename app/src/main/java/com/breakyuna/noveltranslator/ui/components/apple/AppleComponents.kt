@@ -1,8 +1,10 @@
 package com.breakyuna.noveltranslator.ui.components.apple
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
@@ -11,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -20,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.breakyuna.noveltranslator.ui.theme.ButtonShape
 import com.breakyuna.noveltranslator.ui.theme.GroupedCardShape
+import com.breakyuna.noveltranslator.ui.theme.HeroCardShape
 import com.breakyuna.noveltranslator.ui.theme.Spacing
 import java.util.Locale
 
@@ -37,14 +41,17 @@ fun AppLargeTitle(
         modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .padding(horizontal = Spacing.compactHorizontalPadding, vertical = 8.dp),
+            .padding(horizontal = Spacing.compactHorizontalPadding, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f, fill = false)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.5).sp
+                ),
                 color = MaterialTheme.colorScheme.onBackground
             )
             if (!subtitle.isNullOrBlank()) {
@@ -52,7 +59,7 @@ fun AppLargeTitle(
                     text = subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 1.dp)
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
         }
@@ -67,13 +74,14 @@ fun AppLargeTitle(
 }
 
 /**
- * Subtle Grouped Surface Container (Pure white in light, dark grey in dark mode)
+ * Subtle Grouped Surface Container (Crisp white/night card with subtle 0.6dp border)
  */
 @Composable
 fun AppGroupedSurface(
     modifier: Modifier = Modifier,
     backgroundColor: Color = MaterialTheme.colorScheme.surface,
     shape: RoundedCornerShape = GroupedCardShape,
+    border: BorderStroke? = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
     contentPadding: PaddingValues = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
@@ -86,6 +94,7 @@ fun AppGroupedSurface(
             ),
         shape = shape,
         color = backgroundColor,
+        border = border,
         tonalElevation = 0.dp,
         shadowElevation = 0.dp
     ) {
@@ -93,6 +102,84 @@ fun AppGroupedSurface(
             modifier = Modifier.padding(contentPadding),
             content = content
         )
+    }
+}
+
+/**
+ * Hero Card with subtle gradient highlight
+ */
+@Composable
+fun AppHeroCard(
+    modifier: Modifier = Modifier,
+    shape: RoundedCornerShape = HeroCardShape,
+    gradientColors: List<Color> = listOf(
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+        MaterialTheme.colorScheme.surface
+    ),
+    border: BorderStroke? = BorderStroke(0.7.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+    contentPadding: PaddingValues = PaddingValues(16.dp),
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface,
+        border = border,
+        tonalElevation = 1.dp,
+        shadowElevation = 0.dp
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(gradientColors))
+                .padding(contentPadding)
+        ) {
+            Column(content = content)
+        }
+    }
+}
+
+/**
+ * Subtle Pill Badge
+ */
+@Composable
+fun AppBadge(
+    text: String,
+    modifier: Modifier = Modifier,
+    containerColor: Color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+    contentColor: Color = MaterialTheme.colorScheme.primary,
+    icon: ImageVector? = null
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(6.dp),
+        color = containerColor
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp)
+        ) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(11.dp)
+                )
+            }
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                color = contentColor
+            )
+        }
     }
 }
 
@@ -113,14 +200,14 @@ fun AppSection(
             Text(
                 text = displayHeader.uppercase(Locale.ROOT),
                 style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    letterSpacing = 0.6.sp
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.8.sp
                 ),
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
                 modifier = Modifier.padding(
                     start = Spacing.compactHorizontalPadding + 4.dp,
                     bottom = 6.dp,
-                    top = 16.dp
+                    top = 18.dp
                 )
             )
         }
@@ -151,7 +238,7 @@ fun AppSection(
 fun AppDivider(
     modifier: Modifier = Modifier,
     startIndent: Dp = 16.dp,
-    color: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+    color: Color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
 ) {
     HorizontalDivider(
         modifier = modifier.padding(start = startIndent),
@@ -185,14 +272,14 @@ fun AppSettingsRow(
             .then(
                 if (onClick != null) Modifier.clickable { onClick() } else Modifier
             )
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (displayIcon != null) {
             Box(
                 modifier = Modifier
-                    .size(30.dp)
-                    .clip(RoundedCornerShape(7.dp))
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(iconBackground),
                 contentAlignment = Alignment.Center
             ) {
@@ -200,7 +287,7 @@ fun AppSettingsRow(
                     imageVector = displayIcon,
                     contentDescription = null,
                     tint = iconTint,
-                    modifier = Modifier.size(17.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
             Spacer(modifier = Modifier.width(12.dp))
@@ -209,7 +296,7 @@ fun AppSettingsRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -254,7 +341,7 @@ fun AppSettingsRow(
 }
 
 /**
- * Apple-style Segmented Control
+ * Apple-style Segmented Control with Crisp Outline
  */
 @Composable
 fun AppSegmentedControl(
@@ -265,8 +352,9 @@ fun AppSegmentedControl(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(9.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
     ) {
         Row(
             modifier = Modifier
@@ -278,10 +366,11 @@ fun AppSegmentedControl(
                 val isSelected = index == selectedIndex
                 Surface(
                     onClick = { onItemSelected(index) },
-                    shape = RoundedCornerShape(7.dp),
+                    shape = RoundedCornerShape(8.dp),
                     color = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
-                    shadowElevation = if (isSelected) 1.dp else 0.dp,
-                    modifier = Modifier.weight(1f).height(32.dp)
+                    border = if (isSelected) BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)) else null,
+                    shadowElevation = if (isSelected) 1.5.dp else 0.dp,
+                    modifier = Modifier.weight(1f).height(34.dp)
                 ) {
                     Box(
                         modifier = Modifier.fillMaxSize(),
@@ -290,7 +379,8 @@ fun AppSegmentedControl(
                         Text(
                             text = title,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                fontSize = 12.5.sp
                             ),
                             color = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -316,7 +406,7 @@ fun AppStatusRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
+            .padding(vertical = 5.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -327,14 +417,14 @@ fun AppStatusRow(
         )
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
             color = valueColor
         )
     }
 }
 
 /**
- * Primary 48dp Apple-style Action Button
+ * Primary 48dp Apple-style Action Button with Subtle Gradient & Border
  */
 @Composable
 fun AppPrimaryButton(
@@ -367,7 +457,7 @@ fun AppPrimaryButton(
         }
         Text(
             text = text,
-            style = MaterialTheme.typography.labelLarge
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
         )
     }
 }
@@ -391,10 +481,10 @@ fun AppSecondaryButton(
         enabled = enabled,
         shape = ButtonShape,
         colors = ButtonDefaults.outlinedButtonColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
             contentColor = MaterialTheme.colorScheme.primary
         ),
-        border = null
+        border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     ) {
         if (icon != null) {
             Icon(imageVector = icon, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -402,7 +492,8 @@ fun AppSecondaryButton(
         }
         Text(
             text = text,
-            style = MaterialTheme.typography.labelLarge
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold)
         )
     }
 }
+
