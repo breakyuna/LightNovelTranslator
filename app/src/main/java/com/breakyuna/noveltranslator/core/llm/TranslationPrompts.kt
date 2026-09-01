@@ -51,7 +51,9 @@ BOUNDARY RULES:
 - If "Silver Moon Academy" is the official institution name, return the complete phrase "Silver Moon Academy".
 - Do not return a whole sentence or a long descriptive phrase. Prefer the smallest necessary proper name, except when the complete phrase itself is the established name.
 - A source term may intentionally keep the same spelling in the target language for a named token or control-like marker; do not use source==target as a reason to include an ordinary word.
-- Keep notes to one short sentence about disambiguation, identity, or world-building meaning.
+- Keep notes to one short sentence (under 15 words) about disambiguation, identity, or world-building meaning.
+- Output at most 30 the most important, high-frequency, or story-critical named entities. Do not output trivial items.
+- Output strictly a JSON array without markdown preamble, thinking steps, or trailing commentary.
 
 Allowed category values are exactly:
 - CHARACTER: specific person name, nickname, or alias

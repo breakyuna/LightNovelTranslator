@@ -436,7 +436,11 @@ object TranslationProtocol {
             .filterValues { it > 1 }.keys
         val segments = linkedMapOf<Int, String>()
         validMatches.forEach { (id, match) ->
-            if (id !in segments) segments[id] = unescape(match.groupValues[2].trim())
+            if (id !in segments) {
+                segments[id] = unescape(match.groupValues[2].trim())
+                    .replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
+                    .trim()
+            }
         }
         return ParsedTranslationChapter(chapterId, segments, duplicateIds)
     }

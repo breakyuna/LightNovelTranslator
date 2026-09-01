@@ -61,10 +61,12 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
         val result = llmClient.executeCompletion(
             LlmRequest(
                 provider = provider,
-                systemPrompt = "You are a specialized novel terminologist. Output valid JSON array only.",
+                systemPrompt = "You are a specialized novel terminologist. Output valid JSON array only with concise entries. Do not provide thoughts or explanations.",
                 userPrompt = prompt,
-                temperature = 0.3f,
+                temperature = 0.2f,
+                maxTokens = 3000,
                 operation = "TERM_EXTRACTION",
+                reasoningEffort = "low",
                 controlSignal = controlSignal
             )
         )
@@ -104,6 +106,7 @@ class TermExtractionAgent(private val llmClient: LlmGateway) {
             val rejections = mutableListOf<TermValidationRejection>()
             try {
                 val jsonStr = rawText.trim()
+                    .replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
                     .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
                     .replace(Regex("\\s*```$"), "")
                     .trim()

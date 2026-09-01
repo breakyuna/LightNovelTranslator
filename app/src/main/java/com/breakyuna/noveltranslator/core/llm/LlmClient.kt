@@ -211,7 +211,8 @@ class LlmClient : LlmGateway {
         userPrompt = request.userPrompt,
         temperature = request.temperature,
         maxTokens = request.maxTokens,
-        operation = request.operation
+        operation = request.operation,
+        reasoningEffort = request.reasoningEffort
     ).copy(operation = request.operation)
 
     /** Executes exactly one HTTP request. Retries belong to RetryingLlmGateway. */
@@ -221,7 +222,8 @@ class LlmClient : LlmGateway {
         userPrompt: String,
         temperature: Float? = null,
         maxTokens: Int? = null,
-        operation: String = "TRANSLATION"
+        operation: String = "TRANSLATION",
+        reasoningEffort: String? = null
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
         val estimatedInputTokens = TokenCalculator.estimateTokens(systemPrompt + userPrompt)
@@ -236,13 +238,13 @@ class LlmClient : LlmGateway {
         val result = try {
             when (provider.providerType) {
                 ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
-                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
                 )
                 ProviderType.GEMINI_DIRECT -> callGemini(
-                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
                 )
                 else -> callOpenAiCompatible(
-                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
                 )
             }.copy(operation = operation)
         } catch (cancelled: CancellationException) {
@@ -333,7 +335,8 @@ class LlmClient : LlmGateway {
         userPrompt: String,
         temperature: Float?,
         maxTokens: Int?,
-        startedAt: Long
+        startedAt: Long,
+        reasoningEffort: String? = null
     ): LlmResult {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = when {
@@ -345,11 +348,22 @@ class LlmClient : LlmGateway {
         val model = provider.selectedModel.ifBlank { "gpt-4o-mini" }
         val officialReasoningModel = URI(endpoint).host.equals("api.openai.com", true) &&
             (model.startsWith("o") || model.startsWith("gpt-5"))
+        val isReasoningModel = officialReasoningModel ||
+            model.contains("o1", ignoreCase = true) ||
+            model.contains("o3", ignoreCase = true) ||
+            model.contains("o4", ignoreCase = true) ||
+            model.contains("r1", ignoreCase = true) ||
+            model.contains("reasoner", ignoreCase = true) ||
+            model.contains("reasoning", ignoreCase = true)
         val body = JSONObject().apply {
             put("model", model)
             if (!officialReasoningModel) put("temperature", temperature ?: provider.temperature)
             if (maxTokens != null && maxTokens > 0) {
                 put(if (officialReasoningModel) "max_completion_tokens" else "max_tokens", maxTokens)
+            }
+            if (!reasoningEffort.isNullOrBlank() && isReasoningModel) {
+                val effortNormalized = reasoningEffort.lowercase(Locale.ROOT)
+                put("reasoning_effort", effortNormalized)
             }
             put("messages", JSONArray().apply {
                 if (systemPrompt.isNotBlank()) put(JSONObject().put("role", "system").put("content", systemPrompt))
@@ -359,7 +373,25 @@ class LlmClient : LlmGateway {
         val builder = Request.Builder().url(endpoint).post(body.toString().toRequestBody(jsonMediaType))
         provider.apiKey.trim().takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
         applyCustomHeaders(builder, provider)
-        val payload = performRequest(builder.build())
+        var payload = performRequest(builder.build())
+        // Fallback: if provider rejects reasoning_effort or max_completion_tokens with HTTP 400, retry once with standard payload
+        if (payload.code == 400 && (body.has("reasoning_effort") || body.has("max_completion_tokens"))) {
+            val retryBody = JSONObject(body.toString()).apply {
+                remove("reasoning_effort")
+                if (has("max_completion_tokens")) {
+                    val tokens = optInt("max_completion_tokens")
+                    remove("max_completion_tokens")
+                    put("max_tokens", tokens)
+                }
+            }
+            val retryRequest = Request.Builder().url(endpoint).post(retryBody.toString().toRequestBody(jsonMediaType))
+            provider.apiKey.trim().takeIf { it.isNotBlank() }?.let { retryRequest.header("Authorization", "Bearer $it") }
+            applyCustomHeaders(retryRequest, provider)
+            val retryPayload = performRequest(retryRequest.build())
+            if (retryPayload.isSuccessful || retryPayload.code != 400) {
+                payload = retryPayload
+            }
+        }
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)
@@ -390,7 +422,8 @@ class LlmClient : LlmGateway {
         userPrompt: String,
         temperature: Float?,
         maxTokens: Int?,
-        startedAt: Long
+        startedAt: Long,
+        reasoningEffort: String? = null
     ): LlmResult {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = when {
@@ -400,10 +433,19 @@ class LlmClient : LlmGateway {
         }
         validateEndpoint(endpoint, provider.providerType)
         require(provider.apiKey.isNotBlank()) { "Anthropic API key is required" }
+        val model = provider.selectedModel.ifBlank { "claude-haiku-4-5-20251001" }
+        val isClaude37Plus = model.contains("claude-3-7", ignoreCase = true) ||
+            model.contains("claude-4", ignoreCase = true)
         val body = JSONObject().apply {
-            put("model", provider.selectedModel.ifBlank { "claude-haiku-4-5-20251001" })
+            put("model", model)
             put("max_tokens", maxTokens ?: minOf(16_384, provider.maxContextTokens / 2))
             put("temperature", temperature ?: provider.temperature)
+            if (!reasoningEffort.isNullOrBlank() && isClaude37Plus) {
+                val effortNormalized = reasoningEffort.lowercase(Locale.ROOT)
+                if (effortNormalized == "none" || effortNormalized == "disabled") {
+                    put("thinking", JSONObject().put("type", "disabled"))
+                }
+            }
             if (systemPrompt.isNotBlank()) put("system", systemPrompt)
             put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", userPrompt)))
         }
@@ -412,7 +454,19 @@ class LlmClient : LlmGateway {
             .header("anthropic-version", "2023-06-01")
             .post(body.toString().toRequestBody(jsonMediaType))
         applyCustomHeaders(requestBuilder, provider)
-        val payload = performRequest(requestBuilder.build())
+        var payload = performRequest(requestBuilder.build())
+        if (payload.code == 400 && body.has("thinking")) {
+            val retryBody = JSONObject(body.toString()).apply { remove("thinking") }
+            val retryRequest = Request.Builder().url(endpoint)
+                .header("x-api-key", provider.apiKey.trim())
+                .header("anthropic-version", "2023-06-01")
+                .post(retryBody.toString().toRequestBody(jsonMediaType))
+            applyCustomHeaders(retryRequest, provider)
+            val retryPayload = performRequest(retryRequest.build())
+            if (retryPayload.isSuccessful || retryPayload.code != 400) {
+                payload = retryPayload
+            }
+        }
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)
@@ -448,12 +502,17 @@ class LlmClient : LlmGateway {
         userPrompt: String,
         temperature: Float?,
         maxTokens: Int?,
-        startedAt: Long
+        startedAt: Long,
+        reasoningEffort: String? = null
     ): LlmResult {
         val model = provider.selectedModel.ifBlank { "gemini-2.5-flash" }
         val apiKey = provider.apiKey.trim()
         require(apiKey.isNotBlank()) { "Gemini API key is required" }
         val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
+        val supportsThinking = model.contains("2.5", ignoreCase = true) ||
+            model.contains("2.0", ignoreCase = true) ||
+            model.contains("thinking", ignoreCase = true) ||
+            model.contains("gemini-3", ignoreCase = true)
         val body = JSONObject().apply {
             put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", userPrompt)))))
             if (systemPrompt.isNotBlank()) {
@@ -462,6 +521,16 @@ class LlmClient : LlmGateway {
             put("generationConfig", JSONObject().apply {
                 put("temperature", temperature ?: provider.temperature)
                 if (maxTokens != null && maxTokens > 0) put("maxOutputTokens", maxTokens)
+                if (!reasoningEffort.isNullOrBlank() && supportsThinking) {
+                    val effortNormalized = reasoningEffort.lowercase(Locale.ROOT)
+                    if (effortNormalized == "none" || effortNormalized == "disabled") {
+                        put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                    } else if (effortNormalized == "low" || effortNormalized == "minimal") {
+                        put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
+                    } else if (effortNormalized == "high" || effortNormalized == "max") {
+                        put("thinkingConfig", JSONObject().put("thinkingBudget", 8192))
+                    }
+                }
             })
         }
         val requestBuilder = Request.Builder()
@@ -469,7 +538,21 @@ class LlmClient : LlmGateway {
             .header("x-goog-api-key", apiKey)
             .post(body.toString().toRequestBody(jsonMediaType))
         applyCustomHeaders(requestBuilder, provider)
-        val payload = performRequest(requestBuilder.build())
+        var payload = performRequest(requestBuilder.build())
+        if (payload.code == 400 && body.optJSONObject("generationConfig")?.has("thinkingConfig") == true) {
+            val retryBody = JSONObject(body.toString()).apply {
+                optJSONObject("generationConfig")?.remove("thinkingConfig")
+            }
+            val retryRequest = Request.Builder()
+                .url(endpoint)
+                .header("x-goog-api-key", apiKey)
+                .post(retryBody.toString().toRequestBody(jsonMediaType))
+            applyCustomHeaders(retryRequest, provider)
+            val retryPayload = performRequest(retryRequest.build())
+            if (retryPayload.isSuccessful || retryPayload.code != 400) {
+                payload = retryPayload
+            }
+        }
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)

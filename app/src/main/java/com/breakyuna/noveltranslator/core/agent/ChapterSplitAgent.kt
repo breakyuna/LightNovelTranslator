@@ -30,11 +30,12 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
         val result = llmClient.executeCompletion(
             LlmRequest(
                 provider = provider,
-                systemPrompt = "You are an expert novel-structuring assistant. Output valid JSON only.",
+                systemPrompt = "You are an expert novel-structuring assistant. Output valid JSON only without reasoning.",
                 userPrompt = TranslationPrompts.buildAgentChapterSplitPrompt(sample),
                 temperature = 0.1f,
                 maxTokens = 1000,
                 operation = "CHAPTER_SPLIT",
+                reasoningEffort = "low",
                 controlSignal = controlSignal
             )
         )
@@ -68,6 +69,7 @@ class ChapterSplitAgent(private val llmClient: LlmGateway) {
      */
     internal fun parseExtractedRegex(raw: String): String? = runCatching {
         val cleaned = raw.trim()
+            .replace(Regex("<think>[\\s\\S]*?</think>", RegexOption.IGNORE_CASE), "")
             .replace(Regex("^```(?:json)?\\s*", RegexOption.IGNORE_CASE), "")
             .replace(Regex("\\s*```$"), "")
             .trim()

@@ -41,7 +41,9 @@ data class LlmRequest(
     val operation: String = "TRANSLATION",
     val promptCacheHint: PromptCacheHint? = null,
     /** Optional per-request gate used by the translation scheduler. */
-    val controlSignal: TranslationControlSignal? = null
+    val controlSignal: TranslationControlSignal? = null,
+    /** Optional reasoning/thinking effort level (e.g., "none", "low", "medium", "high"). */
+    val reasoningEffort: String? = null
 )
 
 data class PromptCacheHint(
@@ -69,9 +71,18 @@ suspend fun LlmGateway.executeCompletion(
     userPrompt: String,
     temperature: Float? = null,
     maxTokens: Int? = null,
-    operation: String = "TRANSLATION"
+    operation: String = "TRANSLATION",
+    reasoningEffort: String? = null
 ): LlmResult = executeCompletion(
-    LlmRequest(provider, systemPrompt, userPrompt, temperature, maxTokens, operation)
+    LlmRequest(
+        provider = provider,
+        systemPrompt = systemPrompt,
+        userPrompt = userPrompt,
+        temperature = temperature,
+        maxTokens = maxTokens,
+        operation = operation,
+        reasoningEffort = reasoningEffort
+    )
 )
 
 fun interface DelayProvider {

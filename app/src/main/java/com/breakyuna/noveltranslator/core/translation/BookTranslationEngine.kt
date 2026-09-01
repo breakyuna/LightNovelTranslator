@@ -1036,7 +1036,8 @@ class BookTranslationEngine(
             maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
             operation = "BOOK_TRANSLATION",
             promptCacheHint = cacheHint,
-            controlSignal = controls[project.id]?.signal
+            controlSignal = controls[project.id]?.signal,
+            reasoningEffort = "low"
         )
         val result = executeCompletionSafely(request)
         recordUsage(runId, batchId, provider, request, result)
@@ -1470,7 +1471,8 @@ class BookTranslationEngine(
             maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
             operation = "BOOK_POLISH",
             promptCacheHint = prepareCache(project, provider, context),
-            controlSignal = controls[project.id]?.signal
+            controlSignal = controls[project.id]?.signal,
+            reasoningEffort = "low"
         )
         val result = try {
             executeCompletionSafely(request)
@@ -1636,7 +1638,8 @@ class BookTranslationEngine(
             maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
             operation = "CHAPTER_REPAIR",
             promptCacheHint = prepareCache(project, provider, context),
-            controlSignal = controls[project.id]?.signal
+            controlSignal = controls[project.id]?.signal,
+            reasoningEffort = "low"
         )
         val retry = executeCompletionSafely(request)
         recordUsage(runId, batchId, provider, request, retry)
@@ -1951,7 +1954,8 @@ class BookTranslationEngine(
                 maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
                 operation = "OVERSIZED_CHAPTER_CHUNK",
                 promptCacheHint = prepareCache(project, provider, context),
-                controlSignal = controls[project.id]?.signal
+                controlSignal = controls[project.id]?.signal,
+                reasoningEffort = "low"
             )
             val result = executeCompletionSafely(request)
             recordUsage(runId, batchId, provider, request, result)
@@ -2577,6 +2581,7 @@ class BookTranslationEngine(
                     }
                 }
             }
+            cut = cut.coerceIn(1, remaining.length)
             val maskedPiece = remaining.substring(0, cut)
             val pieceTokens = segment.protectedTokens.filter { maskedPiece.contains(it.marker) }
             pieces += segment.copy(
