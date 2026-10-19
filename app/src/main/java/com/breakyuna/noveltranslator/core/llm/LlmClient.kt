@@ -40,7 +40,12 @@ data class LlmResult(
     /** Input tokens the provider served from a prompt cache instead of re-processing. */
     val cachedTokens: Long = 0,
     val operation: String = "TRANSLATION",
-    val attempts: List<LlmAttempt> = emptyList()
+    val attempts: List<LlmAttempt> = emptyList(),
+    /**
+     * 原生 function calling 的工具调用（请求携带 tools 时模型选择调用工具）。
+     * 为空表示模型给出了纯文本答复；此时 [text] 有内容。
+     */
+    val toolCalls: List<LlmToolCall> = emptyList()
 )
 
 class LlmClient : LlmGateway {
@@ -218,7 +223,13 @@ class LlmClient : LlmGateway {
         // Only the Anthropic client turns a cache hint into wire-level breakpoints; every other
         // provider either caches implicitly or has no cache at all.
         promptCacheBreakpoints = request.promptCacheHint != null &&
-            request.provider.providerType == ProviderType.ANTHROPIC_CLAUDE
+            request.provider.providerType == ProviderType.ANTHROPIC_CLAUDE,
+        // Native function calling is only wired into the OpenAI-compatible shape; Anthropic and
+        // Gemini keep the text protocol (the agent layer falls back automatically).
+        tools = request.tools?.takeIf {
+            request.provider.providerType != ProviderType.ANTHROPIC_CLAUDE &&
+                request.provider.providerType != ProviderType.GEMINI_DIRECT
+        }
     ).copy(operation = request.operation)
 
     /** Executes exactly one HTTP request. Retries belong to RetryingLlmGateway. */
@@ -230,7 +241,8 @@ class LlmClient : LlmGateway {
         maxTokens: Int? = null,
         operation: String = "TRANSLATION",
         reasoningEffort: String? = null,
-        promptCacheBreakpoints: Boolean = false
+        promptCacheBreakpoints: Boolean = false,
+        tools: List<LlmToolSpec>? = null
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
         val estimatedInputTokens = TokenCalculator.estimateTokens(systemPrompt + userPrompt)
@@ -252,7 +264,8 @@ class LlmClient : LlmGateway {
                     provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
                 )
                 else -> callOpenAiCompatible(
-                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort,
+                    tools
                 )
             }.copy(operation = operation)
         } catch (cancelled: CancellationException) {
@@ -349,7 +362,8 @@ class LlmClient : LlmGateway {
         temperature: Float?,
         maxTokens: Int?,
         startedAt: Long,
-        reasoningEffort: String? = null
+        reasoningEffort: String? = null,
+        tools: List<LlmToolSpec>? = null
     ): LlmResult {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = when {
@@ -368,6 +382,8 @@ class LlmClient : LlmGateway {
             model.contains("r1", ignoreCase = true) ||
             model.contains("reasoner", ignoreCase = true) ||
             model.contains("reasoning", ignoreCase = true)
+        // 原生 function calling：工具目录非空时才携带 tools；tool_choice 用各 API 的默认 auto。
+        val toolSpecs = buildOpenAiTools(tools)
         val body = JSONObject().apply {
             put("model", model)
             if (!officialReasoningModel) put("temperature", temperature ?: provider.temperature)
@@ -378,6 +394,9 @@ class LlmClient : LlmGateway {
                 val effortNormalized = reasoningEffort.lowercase(Locale.ROOT)
                 put("reasoning_effort", effortNormalized)
             }
+            if (toolSpecs != null) {
+                put("tools", JSONArray(toolSpecs))
+            }
             put("messages", JSONArray().apply {
                 if (systemPrompt.isNotBlank()) put(JSONObject().put("role", "system").put("content", systemPrompt))
                 put(JSONObject().put("role", "user").put("content", userPrompt))
@@ -387,10 +406,14 @@ class LlmClient : LlmGateway {
         provider.apiKey.trim().takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
         applyCustomHeaders(builder, provider)
         var payload = performRequest(builder.build())
-        // Fallback: if provider rejects reasoning_effort or max_completion_tokens with HTTP 400, retry once with standard payload
-        if (payload.code == 400 && (body.has("reasoning_effort") || body.has("max_completion_tokens"))) {
+        // Fallback: if provider rejects reasoning_effort / max_completion_tokens / tools with
+        // HTTP 400, retry once with a standard payload (native tools degrade to text protocol).
+        if (payload.code == 400 &&
+            (body.has("reasoning_effort") || body.has("max_completion_tokens") || body.has("tools"))
+        ) {
             val retryBody = JSONObject(body.toString()).apply {
                 remove("reasoning_effort")
+                remove("tools")
                 if (has("max_completion_tokens")) {
                     val tokens = optInt("max_completion_tokens")
                     remove("max_completion_tokens")
@@ -403,13 +426,21 @@ class LlmClient : LlmGateway {
             val retryPayload = performRequest(retryRequest.build())
             if (retryPayload.isSuccessful || retryPayload.code != 400) {
                 payload = retryPayload
+                if (retryPayload.isSuccessful) {
+                    SystemLogger.info(
+                        tag = "LLM_API",
+                        message = "🔧 原生工具调用不受支持，已自动回退文本协议: ${provider.name}/$model"
+                    )
+                }
             }
         }
         val duration = System.currentTimeMillis() - startedAt
         if (!payload.isSuccessful) return httpFailure(payload, duration)
         val json = JSONObject(payload.body)
         val choice = json.optJSONArray("choices")?.optJSONObject(0)
-        val content = choice?.optJSONObject("message")?.optString("content").orEmpty()
+        val message = choice?.optJSONObject("message")
+        val content = message?.optString("content").orEmpty()
+        val toolCalls = parseOpenAiToolCalls(message?.optJSONArray("tool_calls"))
         val finishReason = choice?.optString("finish_reason", "")?.ifBlank { null }
         val usage = json.optJSONObject("usage")
         val promptTokens = usage?.optLong("prompt_tokens") ?: TokenCalculator.estimateTokens(systemPrompt + userPrompt)
@@ -419,7 +450,10 @@ class LlmClient : LlmGateway {
         val cachedTokens = usage?.optJSONObject("prompt_tokens_details")?.optLong("cached_tokens")
             ?: usage?.optLong("prompt_cache_hit_tokens")
             ?: 0L
-        if (content.isBlank()) return emptyFailure("Provider", finishReason, duration, promptTokens, completionTokens)
+        // 工具调用轮的 content 可能为空：此时 tool_calls 非空即算成功。
+        if (content.isBlank() && toolCalls.isEmpty()) {
+            return emptyFailure("Provider", finishReason, duration, promptTokens, completionTokens)
+        }
         return LlmResult(
             text = content,
             promptTokens = promptTokens,
@@ -431,8 +465,58 @@ class LlmClient : LlmGateway {
             usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
             requestId = payload.requestId ?: json.optString("id").ifBlank { null },
             cachedTokens = cachedTokens,
-            durationMs = duration
+            durationMs = duration,
+            toolCalls = toolCalls
         )
+    }
+
+    /**
+     * 把 Agent 工具目录映射为 OpenAI 兼容的 tools 数组元素。
+     * Schema 非法时退化为空对象 Schema；名称为空的条目跳过；全空时返回 null（不携带 tools）。
+     */
+    private fun buildOpenAiTools(tools: List<LlmToolSpec>?): List<JSONObject>? {
+        if (tools.isNullOrEmpty()) return null
+        val entries = tools.mapNotNull { spec ->
+            val name = spec.name.trim()
+            if (name.isEmpty()) {
+                null
+            } else {
+                JSONObject()
+                    .put("type", "function")
+                    .put(
+                        "function",
+                        JSONObject().apply {
+                            put("name", name)
+                            put("description", spec.description.trim())
+                            put(
+                                "parameters",
+                                runCatching { JSONObject(spec.parametersJson) }
+                                    .getOrElse { JSONObject().put("type", "object") }
+                            )
+                        }
+                    )
+            }
+        }
+        return entries.takeIf { it.isNotEmpty() }
+    }
+
+    /** 解析 OpenAI 兼容响应里的 tool_calls 数组；arguments 是字符串化 JSON。 */
+    private fun parseOpenAiToolCalls(array: JSONArray?): List<LlmToolCall> {
+        if (array == null) return emptyList()
+        val calls = mutableListOf<LlmToolCall>()
+        for (index in 0 until array.length()) {
+            val entry = array.optJSONObject(index) ?: continue
+            val function = entry.optJSONObject("function") ?: continue
+            val name = function.optString("name").trim()
+            if (name.isEmpty()) continue
+            val arguments = function.optString("arguments").trim().ifBlank { "{}" }
+            calls += LlmToolCall(
+                id = entry.optString("id").ifBlank { "call_$index" },
+                name = name,
+                argumentsJson = arguments
+            )
+        }
+        return calls
     }
 
     private suspend fun callAnthropic(

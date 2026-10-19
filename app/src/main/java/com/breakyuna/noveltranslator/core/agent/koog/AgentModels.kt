@@ -52,6 +52,24 @@ data class AgentSessionConfig(
     val temperature: Float = 0.4f,
     val maxTokens: Int = 2048,
     val reasoningEffort: String? = null,
+    /**
+     * 对话编排回合使用的温度。
+     *
+     * 格式服从性对温度高度敏感（调用块输出、协议解析都依赖模型严格遵守格式），
+     * 因此编排温度不应跟随用户为翻译配置的 [temperature]：集成层
+     * （AppViewModel）默认注入 0.2，并统一收敛到 0.0..0.5
+     * （见 [effectiveAgentTemperature]）。null 表示未显式配置，跟随
+     * [effectiveTemperature]（兼容既有调用方与测试）。
+     */
+    val agentTemperature: Float? = null,
+    /**
+     * 是否启用原生 function calling（provider 支持时）。
+     *
+     * 关闭时完全走文本工具协议；开启时请求携带 tools 数组，由 API 强制调用格式，
+     * 执行器把原生 tool_calls 转换回文本协议块交给同一套回合循环（见 LntPromptExecutor）。
+     * provider 不支持导致 400 时 LlmClient 自动去掉 tools 重试，不会打断回合。
+     */
+    val nativeToolsEnabled: Boolean = false,
     /** 单回合最大工具调用轮数，同时写入协议提示词。 */
     val maxToolRounds: Int = 6,
     /** 跨回合注入历史的用户回合数上限，超出后丢弃最旧回合。 */
@@ -67,6 +85,14 @@ data class AgentSessionConfig(
 
     val effectiveTemperature: Float
         get() = temperature.takeIf { it > 0f } ?: (provider?.temperature ?: 0.4f)
+
+    /** 编排回合实际下发的 temperature：显式配置时收敛到 0.0..0.5，否则跟随 [effectiveTemperature]。 */
+    val effectiveAgentTemperature: Float
+        get() = agentTemperature?.coerceIn(0f, AGENT_TEMPERATURE_MAX) ?: effectiveTemperature
+
+    private companion object {
+        const val AGENT_TEMPERATURE_MAX = 0.5f
+    }
 }
 
 /** 回合执行过程中的事件回流，由会话实现并落库/更新 UI。 */

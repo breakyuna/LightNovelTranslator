@@ -82,6 +82,63 @@ interface AgentToolHost {
         promptCacheEnabled: Boolean?
     ): String
 
+    // ------------------------------------------------------------------
+    // 翻译全流程扩展工具
+    //
+    // 默认实现返回"未接线"，由集成层（AppViewModel）按需覆写；
+    // 这样新增工具不会破坏既有实现方（测试替身等），而未接线状态
+    // 在运行时对模型可见，不会被静默当成空结果。
+    // ------------------------------------------------------------------
+
+    /** 为一本书创建译文 Edition 与翻译工程（默认全文、串行、默认 Provider）。 */
+    suspend fun createTranslationProject(
+        bookId: Long,
+        targetLanguage: String? = null,
+        editionName: String? = null
+    ): String = NOT_WIRED_MESSAGE
+
+    /** 取消一个翻译工程；已完成并通过 QA 的章节保留，不重复计费。 */
+    suspend fun cancelTranslation(projectId: Long): String = NOT_WIRED_MESSAGE
+
+    /** 恢复一个已暂停的翻译工程，从已持久化的边界继续。 */
+    suspend fun resumeTranslation(projectId: Long): String = NOT_WIRED_MESSAGE
+
+    /** 导出工程的译文 Edition 为 TXT / EPUB（可双语对照）。 */
+    suspend fun exportEdition(
+        projectId: Long,
+        format: String? = null,
+        bilingual: Boolean? = null
+    ): String = NOT_WIRED_MESSAGE
+
+    /** 列出工程术语表条目，可按关键词过滤。 */
+    suspend fun listGlossary(projectId: Long, keyword: String? = null): String = NOT_WIRED_MESSAGE
+
+    /** 新增一条术语（源文 → 译文）。 */
+    suspend fun addGlossaryEntry(
+        projectId: Long,
+        sourceTerm: String,
+        targetTerm: String,
+        kind: String? = null,
+        note: String? = null
+    ): String = NOT_WIRED_MESSAGE
+
+    /** 删除一条术语（entry_id 来自 list_glossary）。 */
+    suspend fun removeGlossaryEntry(projectId: Long, entryId: Long): String = NOT_WIRED_MESSAGE
+
+    /** 查看工程的质量规则三槽位（文本保护 / 译前替换 / 译后替换）。 */
+    suspend fun getQualityRules(projectId: Long): String = NOT_WIRED_MESSAGE
+
+    /** 保存一个质量规则槽位；[entriesJson] 为条目数组 JSON。 */
+    suspend fun setQualityRules(
+        projectId: Long,
+        slot: String,
+        entriesJson: String,
+        enabled: Boolean? = null
+    ): String = NOT_WIRED_MESSAGE
+
+    /** 汇总一个工程的 Token 用量与费用（历次运行累计）。 */
+    suspend fun getTranslationCost(projectId: Long): String = NOT_WIRED_MESSAGE
+
     /** Catalog rendered into the agent system prompt. Stable, so it needs no host state. */
     fun toolSpecs(): List<AgentToolSpec> = AGENT_TOOL_SPECS
 
@@ -190,6 +247,135 @@ interface AgentToolHost {
                     }
                 }
 
+                TOOL_CREATE_TRANSLATION_PROJECT -> {
+                    val bookId = requiredLong("book_id")
+                    if (bookId == null || bookId <= 0) {
+                        "缺少或非法的 book_id 参数"
+                    } else {
+                        createTranslationProject(
+                            bookId = bookId,
+                            targetLanguage = args.optString("target_language").trim().takeIf(String::isNotBlank),
+                            editionName = args.optString("edition_name").trim().takeIf(String::isNotBlank)
+                        )
+                    }
+                }
+
+                TOOL_CANCEL_TRANSLATION -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        cancelTranslation(projectId)
+                    }
+                }
+
+                TOOL_RESUME_TRANSLATION -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        resumeTranslation(projectId)
+                    }
+                }
+
+                TOOL_EXPORT_EDITION -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        exportEdition(
+                            projectId = projectId,
+                            format = args.optString("format").trim().takeIf(String::isNotBlank),
+                            bilingual = args.opt("bilingual")?.let { value ->
+                                value as? Boolean ?: value.toString().toBooleanStrictOrNull()
+                            }
+                        )
+                    }
+                }
+
+                TOOL_LIST_GLOSSARY -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        listGlossary(
+                            projectId = projectId,
+                            keyword = args.optString("keyword").trim().takeIf(String::isNotBlank)
+                        )
+                    }
+                }
+
+                TOOL_ADD_GLOSSARY_ENTRY -> {
+                    val projectId = requiredLong("project_id")
+                    val sourceTerm = args.optString("source_term").trim()
+                    val targetTerm = args.optString("target_term").trim()
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else if (sourceTerm.isEmpty() || targetTerm.isEmpty()) {
+                        "缺少 source_term 或 target_term 参数：术语必须同时给出源文与译文"
+                    } else {
+                        addGlossaryEntry(
+                            projectId = projectId,
+                            sourceTerm = sourceTerm,
+                            targetTerm = targetTerm,
+                            kind = args.optString("kind").trim().takeIf(String::isNotBlank),
+                            note = args.optString("note").trim().takeIf(String::isNotBlank)
+                        )
+                    }
+                }
+
+                TOOL_REMOVE_GLOSSARY_ENTRY -> {
+                    val projectId = requiredLong("project_id")
+                    val entryId = requiredLong("entry_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else if (entryId == null || entryId <= 0) {
+                        "缺少或非法的 entry_id 参数（可从 list_glossary 获取）"
+                    } else {
+                        removeGlossaryEntry(projectId, entryId)
+                    }
+                }
+
+                TOOL_GET_QUALITY_RULES -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        getQualityRules(projectId)
+                    }
+                }
+
+                TOOL_SET_QUALITY_RULES -> {
+                    val projectId = requiredLong("project_id")
+                    val slot = args.optString("slot").trim()
+                    val entriesJson = entriesJsonOf(args)
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else if (slot.isEmpty()) {
+                        "缺少 slot 参数：应为 text_preserve / pre_replacement / post_replacement"
+                    } else if (entriesJson.isBlank()) {
+                        "缺少 entries 参数：应为条目数组 JSON"
+                    } else {
+                        setQualityRules(
+                            projectId = projectId,
+                            slot = slot,
+                            entriesJson = entriesJson,
+                            enabled = args.opt("enabled")?.let { value ->
+                                value as? Boolean ?: value.toString().toBooleanStrictOrNull()
+                            }
+                        )
+                    }
+                }
+
+                TOOL_GET_TRANSLATION_COST -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        getTranslationCost(projectId)
+                    }
+                }
+
                 else -> return AgentToolOutcome.failure("unknown_tool", "未知工具: $name")
             }
         } catch (cancelled: CancellationException) {
@@ -201,6 +387,9 @@ interface AgentToolHost {
     }
 
     companion object {
+        /** 扩展工具未接线时对模型可见的占位回执。 */
+        const val NOT_WIRED_MESSAGE = "（该工具尚未接线：集成层未实现）"
+
         const val TOOL_LIST_BOOKS = "list_books"
         const val TOOL_GET_BOOK_STATUS = "get_book_status"
         const val TOOL_START_TRANSLATION = "start_translation"
@@ -210,6 +399,16 @@ interface AgentToolHost {
         const val TOOL_GET_RECENT_LOG = "get_recent_log"
         const val TOOL_ASK_USER = "ask_user"
         const val TOOL_UPDATE_TRANSLATION_CONFIG = "update_translation_config"
+        const val TOOL_CREATE_TRANSLATION_PROJECT = "create_translation_project"
+        const val TOOL_CANCEL_TRANSLATION = "cancel_translation"
+        const val TOOL_RESUME_TRANSLATION = "resume_translation"
+        const val TOOL_EXPORT_EDITION = "export_edition"
+        const val TOOL_LIST_GLOSSARY = "list_glossary"
+        const val TOOL_ADD_GLOSSARY_ENTRY = "add_glossary_entry"
+        const val TOOL_REMOVE_GLOSSARY_ENTRY = "remove_glossary_entry"
+        const val TOOL_GET_QUALITY_RULES = "get_quality_rules"
+        const val TOOL_SET_QUALITY_RULES = "set_quality_rules"
+        const val TOOL_GET_TRANSLATION_COST = "get_translation_cost"
 
         private val AGENT_TOOL_SPECS: List<AgentToolSpec> = listOf(
             AgentToolSpec(
@@ -256,6 +455,56 @@ interface AgentToolHost {
                 name = TOOL_UPDATE_TRANSLATION_CONFIG,
                 description = "修改翻译工程开关：parallel_chapters（同书并发章数 1-5）、continuity_mode（SOURCE_TAIL 或 TRANSLATION_TAIL）、metadata_enabled、prompt_cache_enabled。只能传需要修改的字段。",
                 parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"parallel_chapters":{"type":"integer","description":"并发章数，1-5"},"continuity_mode":{"type":"string","enum":["SOURCE_TAIL","TRANSLATION_TAIL"]},"metadata_enabled":{"type":"boolean"},"prompt_cache_enabled":{"type":"boolean"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_CREATE_TRANSLATION_PROJECT,
+                description = "为一本书创建译文 Edition 和翻译工程（默认全文、串行、默认 Provider）。创建后可调整配置并启动。",
+                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"},"target_language":{"type":"string","description":"译文语言，缺省按书本语言推断"},"edition_name":{"type":"string","description":"译文版本名，缺省自动生成"}},"required":["book_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_CANCEL_TRANSLATION,
+                description = "取消一个翻译工程。已完成并通过 QA 的章节保留，不会重复计费。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_RESUME_TRANSLATION,
+                description = "恢复一个已暂停的翻译工程，从已持久化的边界继续。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_EXPORT_EDITION,
+                description = "把一个翻译工程的译文导出为 TXT 或 EPUB 文件，可双语对照。导出前先告知用户格式与文件名。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"format":{"type":"string","enum":["txt","epub"],"description":"导出格式，默认 txt"},"bilingual":{"type":"boolean","description":"是否双语对照导出，默认否"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_LIST_GLOSSARY,
+                description = "查看翻译工程的术语表条目，可按关键词过滤。翻译或审校术语问题前先调用它。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"keyword":{"type":"string","description":"可选，按源文或译文过滤"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_ADD_GLOSSARY_ENTRY,
+                description = "向翻译工程添加一条术语（源文→译文）。会影响后续章节翻译，调用前必须向用户确认。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"source_term":{"type":"string","description":"源文术语"},"target_term":{"type":"string","description":"译文"},"kind":{"type":"string","description":"类别，如 人名/地名/技能/组织"},"note":{"type":"string","description":"备注"}},"required":["project_id","source_term","target_term"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_REMOVE_GLOSSARY_ENTRY,
+                description = "删除翻译工程中的一条术语。entry_id 来自 list_glossary 回执。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"entry_id":{"type":"integer","description":"术语条目 id"}},"required":["project_id","entry_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_GET_QUALITY_RULES,
+                description = "查看翻译工程的质量规则：文本保护、译前替换、译后替换三个槽位的启用状态、模式与条目。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_SET_QUALITY_RULES,
+                description = "保存一个质量规则槽位的条目。text_preserve 条目为 {\"src\":\"正则\",\"note\":\"说明\"}；pre/post_replacement 条目为 {\"pattern\":\"源文\",\"replacement\":\"译文\",\"isRegex\":false,\"caseSensitive\":false}。会改变后续翻译行为，调用前必须向用户确认。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"slot":{"type":"string","enum":["text_preserve","pre_replacement","post_replacement"],"description":"规则槽位"},"entries":{"type":"array","description":"条目数组"},"enabled":{"type":"boolean","description":"是否启用该槽位，缺省保持原值"}},"required":["project_id","slot","entries"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_GET_TRANSLATION_COST,
+                description = "汇总一个翻译工程的 Token 用量与费用（历次运行累计），用于回答成本相关问题。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"}},"required":["project_id"],"additionalProperties":false}"""
             )
         )
     }
@@ -267,3 +516,12 @@ data class AgentUserQuestion(
     val prompt: String,
     val options: List<String> = emptyList()
 )
+
+/**
+ * 从工具参数中取出规则条目数组 JSON：优先嵌套数组（模型按 schema 传对象），
+ * 其次接受整段字符串化的 JSON（部分模型只会输出字符串）。
+ */
+private fun entriesJsonOf(args: JSONObject): String {
+    args.optJSONArray("entries")?.let { array -> return array.toString() }
+    return args.optString("entries").trim()
+}

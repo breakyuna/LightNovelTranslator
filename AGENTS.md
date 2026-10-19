@@ -27,8 +27,9 @@ Book（作品）
 - **命名分组按名取值为 API 26**：`match.groups[name]` 底层调 `Matcher.start(String)`，minSdk 24 下 lint 直接报错。一律用 `namedGroupIndexes(pattern)` 预解析成组序号再按序号取（core/quality 与 core/text 各有一份实现）。
 - **其他 Kotlin 2.3 实测地雷**（`kotlinx.coroutines.CoroutineContext` 是 HIDDEN 弃用 typealias 要用 `kotlin.coroutines` 版、`resumeWithException` 是 stdlib 扩展需 import、`createTempDir` 是 ERROR 级弃用、`toList()` 对 0/1 元素不可变等）：完整清单见 `docs/plans/2026-10-19-build-and-ci-playbook.md`，写代码前必读。
 - **测试纪律**：新增测试必须落地后可运行才算数；禁构建期间用 Gradle 缓存里的 `kotlin-compiler-embeddable` 做单文件编译 + JUnit 运行验证。**KDoc/设计文档是测试期望的权威来源**，断言前先读实现的文档化意图；失败时先判定"测试错还是实现错"再动手。
-- **CI**：`test/lint/release` 三个并行 job；测试已配 `maxParallelForks`（勿改回单 fork）；artifact 名不能含 `/`；本地无 SDK 时不跑 gradle（CI 是唯一构建验证通道）。
-- 本地验证（README 记录的标准命令）：
+- **【最高优先级】本机禁止运行任何 gradle / 构建 / 测试 / lint 命令**：开发设备是 Android/Termux，内存与 CPU 撑不起 Gradle 守护进程 + Kotlin 编译 + Robolectric 的并发负载，并行 agent 同时构建会拖垮整机。所有 Agent（含 subagent）**只做静态验证**（`rg` / `read` / 符号核对 / 人工推演），验证结论必须注明"静态审查，未实际构建"。构建与测试由 CI（push 到 `main` / `beta` 或 `workflow_dispatch`）或用户在 PC 上执行；不得因为"没跑构建"而假装跑过，也不得为了跑构建而杀掉他人进程。若发现本机已有 gradle/java 守护进程在跑，先 `pkill -f GradleDaemon` 停掉再继续静态工作。
+- **CI**：`test/lint/release` 三个并行 job；测试已配 `maxParallelForks`（勿改回单 fork）；artifact 名不能含 `/`。
+- 本地标准命令（仅限 CI 或 PC 环境执行，本机禁跑）：
 
 ```bash
 ./gradlew testDebugUnitTest lintDebug assembleDebug
@@ -41,8 +42,8 @@ Book（作品）
 ```
 
 - CI（`.github/workflows/android.yml`）：push 到 `main` / `beta` 或 `workflow_dispatch` 触发，执行 `./gradlew testDebugUnitTest lintDebug assembleRelease`，需要 4 个签名 Secrets；本地打签名 Release 需提供 `ANDROID_KEYSTORE_PATH` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` 环境变量。
-- 单元测试全部是 JVM Robolectric，无需真机，但需要 Android SDK。在没有 SDK 的环境（如 Termux）不要假装执行过构建；能跑多少跑多少，汇报时如实说明。
-- 截图测试：Roborazzi，用 `captureRoboImage(filePath = "src/test/screenshots/...")` 显式指定路径，产物在 `app/src/test/screenshots/`。改动 UI 后用 `./gradlew recordRoborazziDebug` 重新录制。新增截图测试沿用现有 `@RunWith(RobolectricTestRunner)` + `@GraphicsMode(NATIVE)` + `@Config(qualifiers = Pixel8, sdk = [35])` 配置。
+- 单元测试全部是 JVM Robolectric，无需真机，但需要 Android SDK。**本机（Termux/Android 开发设备）禁止执行任何构建与测试**，理由见上文；静态审查（`rg`/`read`/符号核对）是唯一的本地验证手段，汇报时如实说明"未构建验证"。
+- 截图测试：Roborazzi，用 `captureRoboImage(filePath = "src/test/screenshots/...")` 显式指定路径，产物在 `app/src/test/screenshots/`。改动 UI 后用 `./gradlew recordRoborazziDebug` 重新录制（同样只在 CI/PC 执行）。新增截图测试沿用现有 `@RunWith(RobolectricTestRunner)` + `@GraphicsMode(NATIVE)` + `@Config(qualifiers = Pixel8, sdk = [35])` 配置。
 - `app/src/test` 下的 `ExampleUnitTest` / `ExampleRobolectricTest` 是模板遗留，不代表真实覆盖。
 
 ## 3. 代码地图
@@ -50,11 +51,14 @@ Book（作品）
 ```text
 app/src/main/java/com/breakyuna/noveltranslator/
 ├── core/
-│   ├── agent/          # 章节识别、术语抽取
+│   ├── agent/          # AgentToolHost（19 个全流程工具 + 文本协议调度）、章节识别、术语抽取
+│   │   └── koog/       # Koog 编排：会话、PromptExecutor 桥接（原生 tools + 文本协议双通道）、
+│   │                   # 协议解析加固（全角归一化/变体标签/宽容 JSON/疑似调用/熔断）、持久化
 │   ├── book/           # BookFileManager（正文/封面/文件唯一管理者）、BookImporter
 │   ├── exporter/       # EditionExporter
 │   ├── llm/            # LlmGateway（所有 LLM 调用唯一入口）、LlmClient、RetryPolicy、TokenCalculator、TranslationPrompts
-│   ├── logger/         # 脱敏系统日志
+│   ├── crash/         # CrashReporter（崩溃落盘 + last-crash 读取，重启不丢）
+│   ├── logger/         # 脱敏系统日志（内存 Flow + jsonl 落盘轮转 + 导出）
 │   ├── parser/         # TXT / EPUB 解析
 │   ├── sample/         # 示例数据
 │   ├── security/       # ApiKeyCipher（Key 加解密边界）

@@ -1,12 +1,17 @@
 package com.breakyuna.noveltranslator.ui.screens.agent
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -14,18 +19,25 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Build
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.SmartToy
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledIconButton
@@ -44,16 +56,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.breakyuna.noveltranslator.core.agent.koog.AgentMessage
 import com.breakyuna.noveltranslator.core.agent.koog.AgentRole
 import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionState
+import com.breakyuna.noveltranslator.core.agent.koog.AgentUsage
+import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.components.apple.AppBadge
 import com.breakyuna.noveltranslator.ui.components.apple.AppEmptyState
 import com.breakyuna.noveltranslator.ui.components.apple.AppLargeTitle
@@ -61,12 +74,22 @@ import com.breakyuna.noveltranslator.ui.components.apple.AppSecondaryButton
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.theme.Spacing
 
+/** 宽屏右侧信息侧栏占聊天列的宽度比例（侧栏 ≈ 0.58 / 1.58 ≈ 37%）。 */
+private val SidebarWeight = 0.58f
+
+/** 气泡最大宽度，避免平板 / 横屏下单行文字拉得过长。 */
+private val BubbleMaxWidth = 320.dp
+
 /**
  * Agent 对话页（纯展示层）。
  *
- * 所有状态经 [state] 注入，交互经回调上抛，不直接依赖数据库或 provider；
- * 需要完整行为时使用持有 [AgentChatController] 的重载。文案来自本页自带的
- * [AgentChatStrings]，跟随全局语言。
+ * 所有状态经 [state] 注入，交互经回调上抛，不直接依赖数据库或 provider；需要完整行为时
+ * 使用持有 [AgentChatController] 的重载。文案来自本页自带的 [AgentChatStrings]，跟随全局语言。
+ *
+ * 布局自适应：竖屏 / 紧凑宽度时单列（信息 chips + 对话流 + 输入区）；横屏且宽屏
+ * （[rememberWindowSize] 判定 isExpanded 且宽大于高）时右侧展开 [infoPanel] 信息侧栏，
+ * 侧栏可在标题栏折叠。宽屏下的运行状态、用量与诊断都经 [infoPanel] 展示，因此不再重复
+ * 绘制底部状态条。
  */
 @Composable
 fun AgentChatScreen(
@@ -75,9 +98,14 @@ fun AgentChatScreen(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     modelName: String? = null,
+    providerLabel: String? = null,
     onNewChat: (() -> Unit)? = null,
     onBack: (() -> Unit)? = null,
     onOpenSessions: (() -> Unit)? = null,
+    onOpenModelPanel: (() -> Unit)? = null,
+    onOpenDiagnostics: (() -> Unit)? = null,
+    onCopyText: ((String) -> Unit)? = null,
+    infoPanel: (@Composable ColumnScope.() -> Unit)? = null,
     question: AgentChatQuestion? = null,
     onAnswerQuestion: (String) -> Unit = {},
     onDismissQuestion: () -> Unit = {}
@@ -85,6 +113,11 @@ fun AgentChatScreen(
     val appStrings = LocalAppStrings.current
     val strings = remember(appStrings) { AgentChatStrings.resolve(appStrings) }
     val listState = rememberLazyListState()
+    val windowSize = rememberWindowSize()
+    val useSidebar = infoPanel != null &&
+        windowSize.isExpanded &&
+        windowSize.screenWidthDp > windowSize.screenHeightDp
+    var sidebarVisible by rememberSaveable { mutableStateOf(true) }
 
     LaunchedEffect(state.messages.size, state.isRunning) {
         if (state.messages.isNotEmpty()) {
@@ -94,7 +127,7 @@ fun AgentChatScreen(
 
     Column(modifier = modifier.fillMaxSize()) {
         val trailingContent: (@Composable RowScope.() -> Unit)? =
-            if (onNewChat != null || onBack != null || onOpenSessions != null) {
+            if (onNewChat != null || onBack != null || onOpenSessions != null || useSidebar) {
                 {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
@@ -117,6 +150,14 @@ fun AgentChatScreen(
                             Icon(imageVector = Icons.Outlined.Add, contentDescription = strings.newChat)
                         }
                     }
+                    if (useSidebar) {
+                        IconButton(onClick = { sidebarVisible = !sidebarVisible }) {
+                            Icon(
+                                imageVector = Icons.Outlined.Info,
+                                contentDescription = strings.sidebarToggle
+                            )
+                        }
+                    }
                 }
             } else {
                 null
@@ -127,31 +168,78 @@ fun AgentChatScreen(
             trailingContent = trailingContent
         )
 
-        if (state.messages.isEmpty()) {
-            AppEmptyState(
-                icon = Icons.Outlined.SmartToy,
-                title = strings.emptyTitle,
-                description = strings.emptyDescription,
+        if (useSidebar && infoPanel != null) {
+            // 横屏宽屏：聊天列 + 右侧信息侧栏，输入区留在布局流内，不会被键盘/侧栏遮挡。
+            // 侧栏折叠时聊天列顶部退回紧凑信息条，避免模型 / 用量信息一起消失。
+            val showCompactInfo = !sidebarVisible
+            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                Column(modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()) {
+                    if (showCompactInfo) {
+                        AgentInfoBar(
+                            modelName = modelName,
+                            providerLabel = providerLabel,
+                            usage = state.usage,
+                            strings = strings,
+                            onOpenModelPanel = onOpenModelPanel,
+                            onOpenDiagnostics = onOpenDiagnostics
+                        )
+                    }
+                    AgentTranscript(
+                        state = state,
+                        listState = listState,
+                        strings = strings,
+                        onCopyText = onCopyText,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    )
+                }
+                if (sidebarVisible) {
+                    Box(
+                        modifier = Modifier
+                            .width(0.8.dp)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+                    )
+                    Surface(
+                        modifier = Modifier
+                            .weight(SidebarWeight)
+                            .fillMaxHeight(),
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(
+                                    horizontal = Spacing.expandedHorizontalPadding,
+                                    vertical = Spacing.m
+                                )
+                        ) {
+                            infoPanel()
+                        }
+                    }
+                }
+            }
+        } else {
+            AgentInfoBar(
+                modelName = modelName,
+                providerLabel = providerLabel,
+                usage = state.usage,
+                strings = strings,
+                onOpenModelPanel = onOpenModelPanel,
+                onOpenDiagnostics = onOpenDiagnostics
+            )
+            AgentTranscript(
+                state = state,
+                listState = listState,
+                strings = strings,
+                onCopyText = onCopyText,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
             )
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(
-                    horizontal = Spacing.compactHorizontalPadding,
-                    vertical = Spacing.s
-                ),
-                verticalArrangement = Arrangement.spacedBy(Spacing.s)
-            ) {
-                items(state.messages, key = { it.id }) { message ->
-                    AgentMessageRow(message = message, strings = strings)
-                }
-            }
         }
 
         if (question != null) {
@@ -162,12 +250,14 @@ fun AgentChatScreen(
             )
         }
 
-        AgentStatusPanel(
-            state = state,
-            strings = strings,
-            modelName = modelName,
-            onCancel = onCancel
-        )
+        // 宽屏且侧栏展开时，运行状态 / 错误由信息侧栏展示；其余情况（单列、侧栏折叠）画底部状态条。
+        if (!useSidebar || !sidebarVisible) {
+            AgentStatusPanel(
+                state = state,
+                strings = strings,
+                onCancel = onCancel
+            )
+        }
 
         AgentInputBar(
             enabled = !state.isRunning,
@@ -184,6 +274,11 @@ fun AgentChatScreen(
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
     onOpenSessions: (() -> Unit)? = null,
+    onOpenModelPanel: (() -> Unit)? = null,
+    onOpenDiagnostics: (() -> Unit)? = null,
+    providerLabel: String? = null,
+    onCopyText: ((String) -> Unit)? = null,
+    infoPanel: (@Composable ColumnScope.() -> Unit)? = null,
     question: AgentChatQuestion? = null,
     onAnswerQuestion: (String) -> Unit = {},
     onDismissQuestion: () -> Unit = {}
@@ -196,9 +291,14 @@ fun AgentChatScreen(
         onCancel = controller::cancel,
         modifier = modifier,
         modelName = modelName,
+        providerLabel = providerLabel,
         onNewChat = controller::startNewChat,
         onBack = onBack,
         onOpenSessions = onOpenSessions,
+        onOpenModelPanel = onOpenModelPanel,
+        onOpenDiagnostics = onOpenDiagnostics,
+        onCopyText = onCopyText,
+        infoPanel = infoPanel,
         question = question,
         onAnswerQuestion = onAnswerQuestion,
         onDismissQuestion = onDismissQuestion
@@ -214,6 +314,108 @@ data class AgentChatQuestion(
     val prompt: String,
     val options: List<String> = emptyList()
 )
+
+/** 单列时的顶部信息条：模型 / 提供方 / 用量 chip，以及模型面板与诊断入口。 */
+@Composable
+private fun AgentInfoBar(
+    modelName: String?,
+    providerLabel: String?,
+    usage: AgentUsage,
+    strings: AgentChatText,
+    onOpenModelPanel: (() -> Unit)?,
+    onOpenDiagnostics: (() -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(
+                start = Spacing.compactHorizontalPadding,
+                end = Spacing.xs,
+                top = Spacing.xs,
+                bottom = Spacing.xs
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        LazyRow(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            item {
+                AppBadge(
+                    text = modelName ?: strings.modelUnknown,
+                    icon = Icons.Outlined.SmartToy,
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+            item {
+                AppBadge(
+                    text = providerLabel ?: strings.providerUnknown,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            item {
+                AppBadge(
+                    text = strings.usageShortTemplate
+                        .replace("{input}", usage.promptTokens.toString())
+                        .replace("{output}", usage.completionTokens.toString())
+                        .replace("{requests}", usage.requestCount.toString())
+                )
+            }
+        }
+        if (onOpenModelPanel != null) {
+            IconButton(onClick = onOpenModelPanel) {
+                Icon(
+                    imageVector = Icons.Filled.Tune,
+                    contentDescription = strings.modelPanelEntry
+                )
+            }
+        }
+        if (onOpenDiagnostics != null) {
+            IconButton(onClick = onOpenDiagnostics) {
+                Icon(
+                    imageVector = Icons.Outlined.BugReport,
+                    contentDescription = strings.diagnosticsEntry
+                )
+            }
+        }
+    }
+}
+
+/** 对话流：空态用 [AppEmptyState]，有消息时用带稳定 key 的 LazyColumn。 */
+@Composable
+private fun AgentTranscript(
+    state: AgentSessionState,
+    listState: LazyListState,
+    strings: AgentChatText,
+    onCopyText: ((String) -> Unit)?,
+    modifier: Modifier = Modifier
+) {
+    if (state.messages.isEmpty()) {
+        AppEmptyState(
+            icon = Icons.Outlined.SmartToy,
+            title = strings.emptyTitle,
+            description = strings.emptyDescription,
+            modifier = modifier.fillMaxWidth()
+        )
+    } else {
+        LazyColumn(
+            state = listState,
+            modifier = modifier,
+            contentPadding = PaddingValues(
+                horizontal = Spacing.compactHorizontalPadding,
+                vertical = Spacing.s
+            ),
+            verticalArrangement = Arrangement.spacedBy(Spacing.s)
+        ) {
+            items(state.messages, key = { it.id }) { message ->
+                AgentMessageRow(message = message, strings = strings, onCopyText = onCopyText)
+            }
+        }
+    }
+}
 
 /** 待答问题面板：选项按钮 + 自由文本回答，回答后由集成层恢复被阻塞的工具调用。 */
 @Composable
@@ -294,23 +496,49 @@ private fun AgentQuestionPanel(
     }
 }
 
+/**
+ * 单条消息渲染。工具调用 / 回执走 [AgentToolRow] 摘要行；用户与助手消息长按复制原文。
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AgentMessageRow(message: AgentMessage, strings: AgentChatText) {
+private fun AgentMessageRow(
+    message: AgentMessage,
+    strings: AgentChatText,
+    onCopyText: ((String) -> Unit)?
+) {
+    val clipboardManager = LocalClipboardManager.current
+    val copy: (String) -> Unit = { text ->
+        if (onCopyText != null) onCopyText(text) else clipboardManager.setText(AnnotatedString(text))
+    }
     when (message.role) {
         AgentRole.USER -> Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.End
         ) {
-            Surface(
-                color = MaterialTheme.colorScheme.primaryContainer,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
+            Column(
+                modifier = Modifier.widthIn(max = BubbleMaxWidth),
+                horizontalAlignment = Alignment.End
             ) {
                 Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    text = strings.youLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
+                    modifier = Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = { copy(message.content) }
+                    )
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
             }
         }
 
@@ -318,63 +546,36 @@ private fun AgentMessageRow(message: AgentMessage, strings: AgentChatText) {
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Start
         ) {
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp),
-                tonalElevation = 0.dp
-            ) {
+            Column(modifier = Modifier.widthIn(max = BubbleMaxWidth)) {
                 Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    text = strings.assistantLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Surface(
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp),
+                    tonalElevation = 0.dp,
+                    modifier = Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = { copy(message.content) }
+                    )
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                }
             }
         }
 
-        AgentRole.TOOL_CALL, AgentRole.TOOL_RESULT -> Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Start
-        ) {
-            val isCall = message.role == AgentRole.TOOL_CALL
-            val label = when {
-                isCall -> strings.toolCallLabel
-                message.isError -> strings.toolResultFailedLabel
-                else -> strings.toolResultLabel
-            }
-            AppBadge(
-                text = label,
-                icon = Icons.Outlined.Build,
-                containerColor = if (message.isError) {
-                    MaterialTheme.colorScheme.errorContainer
-                } else {
-                    MaterialTheme.colorScheme.secondaryContainer
-                },
-                contentColor = if (message.isError) {
-                    MaterialTheme.colorScheme.onErrorContainer
-                } else {
-                    MaterialTheme.colorScheme.onSecondaryContainer
-                }
-            )
-            Spacer(modifier = Modifier.width(Spacing.s))
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.weight(1f, fill = false)
-            ) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 8,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                )
-            }
-        }
+        AgentRole.TOOL_CALL, AgentRole.TOOL_RESULT -> AgentToolRow(
+            message = message,
+            strings = strings,
+            onCopyRaw = copy
+        )
 
         AgentRole.SYSTEM -> Text(
             text = message.content,
@@ -392,11 +593,11 @@ private fun AgentMessageRow(message: AgentMessage, strings: AgentChatText) {
     }
 }
 
+/** 单列时的底部状态条：思考中 + 停止按钮 + 错误信息。 */
 @Composable
 private fun AgentStatusPanel(
     state: AgentSessionState,
     strings: AgentChatText,
-    modelName: String?,
     onCancel: () -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = Spacing.compactHorizontalPadding)) {
@@ -423,25 +624,11 @@ private fun AgentStatusPanel(
                 color = MaterialTheme.colorScheme.error
             )
         }
-        if (modelName != null) {
-            Text(
-                text = strings.modelTemplate.replace("{model}", modelName),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-        Text(
-            text = strings.usageTemplate
-                .replace("{input}", state.usage.promptTokens.toString())
-                .replace("{output}", state.usage.completionTokens.toString())
-                .replace("{requests}", state.usage.requestCount.toString()),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
         Spacer(modifier = Modifier.height(Spacing.xs))
     }
 }
 
+/** 底部输入区：运行中禁用发送，保留 IME 发送动作与多行输入。 */
 @Composable
 private fun AgentInputBar(
     enabled: Boolean,

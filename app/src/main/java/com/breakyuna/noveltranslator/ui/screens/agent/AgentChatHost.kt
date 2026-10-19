@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.ui.screens.agent
 
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.SmartToy
@@ -19,6 +22,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -27,10 +32,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,15 +49,20 @@ import com.breakyuna.noveltranslator.ui.components.apple.AppCard
 import com.breakyuna.noveltranslator.ui.components.apple.AppEmptyState
 import com.breakyuna.noveltranslator.ui.components.apple.AppSecondaryButton
 import com.breakyuna.noveltranslator.ui.i18n.AgentEntryStrings
+import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.i18n.agentEntryStrings
 import com.breakyuna.noveltranslator.ui.theme.GroupedCardShape
 import com.breakyuna.noveltranslator.ui.theme.ModalSheetShape
 import com.breakyuna.noveltranslator.ui.theme.Spacing
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/** 分享日志文本的上限：超出后改为复制到剪贴板，避免 Intent 事务过大。 */
+private const val ShareTextLimit = 400_000
 
 /**
  * 进程内一次性标记：无会话参数打开助手时恢复最近一段会话，但绝不用历史会话覆盖
@@ -59,15 +73,21 @@ private var autoOpenedLatestSession = false
 /**
  * Agent 助手页宿主：把 AppViewModel 已有的能力接到纯展示层 [AgentChatScreen] 上。
  *
- * 这里只做三件接线，不新增任何 ViewModel API：
+ * 这里只做接线，不新增任何 ViewModel API：
  * - 会话：使用 [AppViewModel.agentChatController]（ViewModel 作用域内单例，离开页面不销毁），
  *   [initialSessionId] 有值时打开指定会话，为空时恢复最近一段会话；
  * - 会话列表：读取 [AppViewModel.observeAgentSessions] 提供的新建 / 切换入口
  *   （归档需要数据层入口，当前不可用）；
  * - ask_user：收集 [AppViewModel.agentQuestions]，用户作答 / 跳过时回调
  *   [AppViewModel.answerAgentQuestion] / [AppViewModel.dismissAgentQuestion]，
- *   解除被阻塞的工具调用。
+ *   解除被阻塞的工具调用；
+ * - 模型与工具：读取 provider 列表与 [AppViewModel.agentModelSelection] /
+ *   [AppViewModel.agentReasoningEffort] / [AppViewModel.agentNativeToolsEnabled]，
+ *   经底部弹窗修改后写回，并用 Snackbar 提示"对新对话生效"；
+ * - 诊断：读取 [AppViewModel.agentLastCrash] 与 [AppViewModel.systemLogs]，
+ *   宽屏时作为信息侧栏、竖屏时作为底部弹窗展示，支持清除崩溃与导出 / 复制日志。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentChatHostScreen(
     viewModel: AppViewModel,
@@ -75,15 +95,44 @@ fun AgentChatHostScreen(
     modifier: Modifier = Modifier,
     initialSessionId: Long? = null
 ) {
+    val appStrings = LocalAppStrings.current
     val entryStrings = agentEntryStrings()
+    val chatStrings = remember(appStrings) { AgentChatStrings.resolve(appStrings) }
 
     val controller = viewModel.agentChatController
     val controllerState by controller.state.collectAsStateWithLifecycle()
+    val modelName by controller.modelName.collectAsStateWithLifecycle()
     val sessions by remember(viewModel) { viewModel.observeAgentSessions() }
         .collectAsState(initial = emptyList())
+    val providers by viewModel.allProviders.collectAsStateWithLifecycle()
+    val modelSelection by viewModel.agentModelSelection.collectAsStateWithLifecycle()
+    val reasoningEffort by viewModel.agentReasoningEffort.collectAsStateWithLifecycle()
+    val nativeToolsEnabled by viewModel.agentNativeToolsEnabled.collectAsStateWithLifecycle()
+    val lastCrash by viewModel.agentLastCrash.collectAsStateWithLifecycle()
+    val systemLogs by viewModel.systemLogs.collectAsStateWithLifecycle()
 
     var showSessionSheet by rememberSaveable { mutableStateOf(false) }
+    var showModelSheet by rememberSaveable { mutableStateOf(false) }
+    var showDiagnosticsSheet by rememberSaveable { mutableStateOf(false) }
     var pendingQuestion by remember { mutableStateOf<AgentChatQuestion?>(null) }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+
+    // 解析当前生效的提供方：显式选择优先，否则跟随默认提供方。
+    val activeProvider = remember(providers, modelSelection.providerId) {
+        modelSelection.providerId
+            ?.let { id -> providers.firstOrNull { it.id == id } }
+            ?: providers.firstOrNull { it.isDefault }
+            ?: providers.firstOrNull()
+    }
+    val providerLabel = activeProvider?.let { "${it.name} · ${it.providerType.displayName}" }
+    // controller.modelName 要等会话真正发起后才解析；此前用当前选择预览将要使用的模型。
+    val displayModelName = modelName
+        ?: modelSelection.modelName?.takeIf { it.isNotBlank() }
+        ?: activeProvider?.selectedModel
 
     LaunchedEffect(controller, initialSessionId) {
         if (initialSessionId != null) {
@@ -109,17 +158,74 @@ fun AgentChatHostScreen(
         }
     }
 
+    fun copyText(text: String, message: String) {
+        clipboardManager.setText(AnnotatedString(text))
+        scope.launch { snackbarHostState.showSnackbar(message) }
+    }
+
+    /** 导出日志：优先系统分享；空日志/文本过大/没有可用分享入口时退回剪贴板。 */
+    fun exportLogs() {
+        // 读持久化 JSONL（suspend）：崩溃重启后仍能导出崩溃前的记录。
+        scope.launch {
+            val text = viewModel.exportAgentLogsWithHistory()
+            if (text.isBlank()) {
+                snackbarHostState.showSnackbar(entryStrings.logsEmpty)
+                return@launch
+            }
+            if (text.length > ShareTextLimit) {
+                copyText(text, entryStrings.copiedLabel)
+                return@launch
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            val started = runCatching {
+                context.startActivity(Intent.createChooser(send, entryStrings.logsExport))
+            }.isSuccess
+            if (!started) copyText(text, entryStrings.copiedLabel)
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         // AgentChatScreen 自己绘制带 statusBarsPadding 的大标题，这里只补底部内边距，
-        // 避免状态栏 inset 被计算两次。
+        // 避免状态栏 inset 被计算两次。状态由宿主收集后下传，屏幕保持纯展示。
         AgentChatScreen(
-            controller = controller,
+            state = controllerState,
+            onSend = controller::send,
+            onCancel = controller::cancel,
             modifier = Modifier.padding(bottom = padding.calculateBottomPadding()),
+            modelName = displayModelName,
+            providerLabel = providerLabel,
+            onNewChat = controller::startNewChat,
             onBack = onBack,
             onOpenSessions = { showSessionSheet = true },
+            onOpenModelPanel = { showModelSheet = true },
+            onOpenDiagnostics = { showDiagnosticsSheet = true },
+            onCopyText = { text -> copyText(text, chatStrings.copied) },
+            infoPanel = {
+                AgentInfoPanel(
+                    strings = entryStrings,
+                    state = controllerState,
+                    modelName = displayModelName,
+                    providerLabel = providerLabel,
+                    crash = lastCrash,
+                    logs = systemLogs,
+                    onOpenModelPanel = { showModelSheet = true },
+                    onCancel = controller::cancel,
+                    onClearCrash = viewModel::clearAgentLastCrash,
+                    onExportLogs = { exportLogs() },
+                    onCopyLogs = {
+                        scope.launch {
+                            copyText(viewModel.exportAgentLogsWithHistory(), entryStrings.copiedLabel)
+                        }
+                    }
+                )
+            },
             question = pendingQuestion,
             onAnswerQuestion = { answer ->
                 val question = pendingQuestion
@@ -149,6 +255,81 @@ fun AgentChatHostScreen(
                 controller.startNewChat()
             }
         )
+    }
+
+    if (showModelSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showModelSheet = false },
+            shape = ModalSheetShape,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            // 小屏弹窗高度有限，内容整体可滚动；内部提供方列表另有高度上限。
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = Spacing.l)
+                    .padding(bottom = Spacing.xl)
+            ) {
+                AgentModelPanelContent(
+                    strings = entryStrings,
+                    providers = providers,
+                    selectedProviderId = modelSelection.providerId,
+                    selectedModel = modelSelection.modelName,
+                    reasoningEffort = reasoningEffort,
+                    nativeToolsEnabled = nativeToolsEnabled,
+                    onApply = { providerId, model, effort, nativeTools ->
+                        viewModel.setAgentModelSelection(providerId, model)
+                        viewModel.setAgentReasoningEffort(effort)
+                        viewModel.setAgentNativeToolsEnabled(nativeTools)
+                        showModelSheet = false
+                        scope.launch {
+                            snackbarHostState.showSnackbar(entryStrings.modelAppliedToNewChat)
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    if (showDiagnosticsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showDiagnosticsSheet = false },
+            shape = ModalSheetShape,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = Spacing.l)
+                    .padding(bottom = Spacing.xl),
+                verticalArrangement = Arrangement.spacedBy(Spacing.m)
+            ) {
+                Text(
+                    text = entryStrings.diagnosticsTitle,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = entryStrings.diagnosticsSubtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                AgentDiagnosticsContent(
+                    strings = entryStrings,
+                    crash = lastCrash,
+                    logs = systemLogs,
+                    onClearCrash = viewModel::clearAgentLastCrash,
+                    onExportLogs = { exportLogs() },
+                    onCopyLogs = {
+                        scope.launch {
+                            copyText(viewModel.exportAgentLogsWithHistory(), entryStrings.copiedLabel)
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 

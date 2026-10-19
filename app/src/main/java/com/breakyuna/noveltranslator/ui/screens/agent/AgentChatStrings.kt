@@ -10,6 +10,9 @@ import com.breakyuna.noveltranslator.ui.i18n.EnglishStrings
  * 阅读平台的 i18n 由 ui/i18n 统一维护（AppStrings + ChineseStrings/EnglishStrings），
  * 但该目录属于其他改动范围，因此本页自带一套中英文案，避免并发修改冲突。
  * 集成阶段如需并入统一 i18n，把这里的字段搬进 AppStrings 即可，页面只依赖本类型。
+ *
+ * 宿主层面板（模型切换 / 诊断）的文案见
+ * [com.breakyuna.noveltranslator.ui.i18n.AgentEntryStrings]。
  */
 data class AgentChatText(
     val title: String,
@@ -39,7 +42,35 @@ data class AgentChatText(
     /** 占位符：{input} {output} {requests} */
     val usageTemplate: String,
     /** 占位符：{model} */
-    val modelTemplate: String
+    val modelTemplate: String,
+    // ---- 工具调用 / 回执摘要行 ----
+    /** 占位符：{tool} */
+    val toolCallSummaryTemplate: String,
+    /** 占位符：{tool} */
+    val toolResultSummaryTemplate: String,
+    /** 占位符：{tool} */
+    val toolResultFailedSummaryTemplate: String,
+    /** toolName 缺失时的占位 */
+    val toolUnknownLabel: String,
+    val toolArgsTitle: String,
+    val toolResultTitle: String,
+    val expandRaw: String,
+    val collapseRaw: String,
+    val copyRaw: String,
+    /** 占位符：{count} */
+    val rawCharsTemplate: String,
+    /** 占位符：{input} {output} {requests}（chip 用的短版） */
+    val usageShortTemplate: String,
+    val modelUnknown: String,
+    val providerUnknown: String,
+    val copyMessage: String,
+    val copied: String,
+    /** 顶部模型面板入口的无障碍描述 */
+    val modelPanelEntry: String,
+    /** 顶部诊断入口的无障碍描述 */
+    val diagnosticsEntry: String,
+    /** 宽屏信息侧栏折叠开关的无障碍描述 */
+    val sidebarToggle: String
 )
 
 object AgentChatStrings {
@@ -70,7 +101,25 @@ object AgentChatStrings {
         questionAnswerPlaceholder = "输入回答",
         questionSkip = "跳过问题，按默认值继续",
         usageTemplate = "本次会话：输入 {input} tokens · 输出 {output} tokens · {requests} 次请求",
-        modelTemplate = "当前模型：{model}"
+        modelTemplate = "当前模型：{model}",
+        toolCallSummaryTemplate = "调用 {tool}",
+        toolResultSummaryTemplate = "{tool} 已返回",
+        toolResultFailedSummaryTemplate = "{tool} 调用失败",
+        toolUnknownLabel = "未知工具",
+        toolArgsTitle = "调用参数（协议原文）",
+        toolResultTitle = "返回内容（协议原文）",
+        expandRaw = "展开原文",
+        collapseRaw = "收起原文",
+        copyRaw = "复制原文",
+        rawCharsTemplate = "{count} 字符",
+        usageShortTemplate = "输入 {input} · 输出 {output} · {requests} 次请求",
+        modelUnknown = "未选择模型",
+        providerUnknown = "未配置提供方",
+        copyMessage = "复制消息",
+        copied = "已复制到剪贴板",
+        modelPanelEntry = "模型与工具",
+        diagnosticsEntry = "诊断",
+        sidebarToggle = "信息栏"
     )
 
     val english = AgentChatText(
@@ -99,7 +148,25 @@ object AgentChatStrings {
         questionAnswerPlaceholder = "Type your answer",
         questionSkip = "Skip and continue with defaults",
         usageTemplate = "Session: {input} prompt tokens · {output} completion tokens · {requests} requests",
-        modelTemplate = "Model: {model}"
+        modelTemplate = "Model: {model}",
+        toolCallSummaryTemplate = "Calling {tool}",
+        toolResultSummaryTemplate = "{tool} returned",
+        toolResultFailedSummaryTemplate = "{tool} failed",
+        toolUnknownLabel = "unknown tool",
+        toolArgsTitle = "Arguments (raw protocol)",
+        toolResultTitle = "Result (raw protocol)",
+        expandRaw = "Show raw",
+        collapseRaw = "Hide raw",
+        copyRaw = "Copy raw",
+        rawCharsTemplate = "{count} chars",
+        usageShortTemplate = "In {input} · Out {output} · {requests} requests",
+        modelUnknown = "No model selected",
+        providerUnknown = "No provider configured",
+        copyMessage = "Copy message",
+        copied = "Copied to clipboard",
+        modelPanelEntry = "Model & tools",
+        diagnosticsEntry = "Diagnostics",
+        sidebarToggle = "Info panel"
     )
 
     /** 与全局语言保持一致：英文界面用英文文案，其余按中文（应用默认中文）。 */

@@ -112,9 +112,11 @@ QA 会区分网络、超时、限流、认证、上下文溢出、响应截断�
 AI 助手是一个对话式入口，用于查询与操作本应用的数据，**不实现翻译能力本身**：
 
 - 编排不替代翻译引擎：所有翻译、术语扫描、章节重分都通过工具委托给已有的 `AppViewModel` / 引擎方法执行，助手不并行实现业务逻辑，也不会绕过调度、暂停取消边界与审计链路。
-- 工具集（9 个）：`list_books`、`get_book_status`、`start_translation`、`pause_translation`、`scan_glossary`、`resplit_chapters`、`get_recent_log`、`ask_user`、`update_translation_config`。工具调用走文本协议（模型在回复中输出工具调用块，本地解析执行），不依赖原生 function calling。
+- 工具集（19 个）：查询类 `list_books`、`get_book_status`、`get_recent_log`、`list_glossary`、`get_quality_rules`、`get_translation_cost`；执行类 `start_translation`、`pause_translation`、`resume_translation`、`cancel_translation`、`scan_glossary`、`resplit_chapters`、`create_translation_project`、`add_glossary_entry`、`remove_glossary_entry`、`set_quality_rules`、`export_edition`、`update_translation_config`；交互类 `ask_user`。覆盖"导入 → 建工程 → 配置 → 翻译 → 术语 → 质量规则 → 导出"的完整流程，用户原则上只需与助手对话即可驱动整个翻译工作流。
+- 工具调用双通道：**原生 function calling**（默认开启，OpenAI 兼容形状的 provider 请求携带 tools 数组，由 API 强制调用格式；provider 以 400 拒绝时自动去掉 tools 重试，回合不中断）+ **文本协议兜底**（模型在回复中输出调用块，本地解析执行）。两条路共享同一套执行、回执与历史回路。
+- 弱模型适配：解析端对全角字符做归一化，容忍标签变体、散文包裹的 JSON、尾逗号/单引号/无引号键/注释；"想调用但没解析出来"时会先收到一次格式纠正回执而不是被当成最终答复；同一回合内相同调用自动熔断（不重复付费）；答复中的思考块与残留调用块会清洗后再展示。
 - 人工确认：会产生付费请求或修改数据的操作（开始翻译、术语扫描、重分章节、修改配置），系统指令要求助手先说明影响并等待用户明确确认；参数不足或需要选择时通过 `ask_user` 提问，问题以底部面板呈现，用户作答或关闭后助手才继续（等待上限 5 分钟）。
-- 默认使用项目当前默认 Provider：会话启动时解析设置里的默认 Provider 及其模型、温度；未配置 Provider 时助手不可用，页面会提示先配置。
+- 模型与参数可控：会话启动时解析默认 Provider 及其模型；Agent 页面可切换 Provider/模型、思考强度（off/low/medium/high）与原生工具开关，选择对新对话生效。未配置 Provider 时助手不可用，页面会提示先配置。编排回合固定低温（0.2），格式服从性优先于创意。
 - 会话与消息持久化在 `agent_sessions` / `agent_messages` 两张表（数据库 v5 引入），可切换历史会话、开新对话；单回合工具调用上限 6 轮，历史按 12 个回合截断后注入。
 - 助手只引用工具返回的事实，不编造书籍、章节、进度与 token 用量；不索取或复述 API Key 等凭证。
 
@@ -311,7 +313,7 @@ ANDROID_KEY_PASSWORD
 
 本轮重构后仍处于"模块就绪、未接线"状态的能力，构建通过后按此清单接线（详细步骤见架构总览文档）：
 
-- `assets/agent/system-prompt.md` 已就绪，但 `AppViewModel` 构造 `AgentChatController` 时未传入 `AssetsAgentPromptLoader`，助手实际使用内置兜底指令。
+- ~~`assets/agent/system-prompt.md` 未接线~~（已修复：`AppViewModel` 构造 `AgentChatController` 时传入 `AssetsAgentPromptLoader`，资产提示词生效，兜底指令仅在资产缺失时使用）。
 - `LlmRequestScheduler` / `RequestRatePool` 已就绪，但 `RetryingLlmGateway` 未注入调度器（默认 `null`），RPM/RPS 限流、429 冷却与并发自动升降整体关闭。
 - 质量规则（DB v6）已有读写与解析链路，但没有设置页 UI。
 - 导出选项与导出前预检已有 core 实现，`AppViewModel` 仍按默认选项调用（单语导出）。

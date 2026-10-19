@@ -35,6 +35,23 @@ enum class UsageSource {
     UNKNOWN
 }
 
+/**
+ * 原生 function calling 的工具声明（OpenAI 兼容形状）。
+ * [parametersJson] 是该工具的 JSON Schema 对象文本，由 Agent 工具目录映射而来。
+ */
+data class LlmToolSpec(
+    val name: String,
+    val description: String,
+    val parametersJson: String
+)
+
+/** 响应里的一个原生工具调用；[argumentsJson] 是字符串化的参数 JSON。 */
+data class LlmToolCall(
+    val id: String,
+    val name: String,
+    val argumentsJson: String
+)
+
 data class LlmRequest(
     val provider: ApiProviderEntity,
     val systemPrompt: String,
@@ -46,7 +63,12 @@ data class LlmRequest(
     /** Optional per-request gate used by the translation scheduler. */
     val controlSignal: TranslationControlSignal? = null,
     /** Optional reasoning/thinking effort level (e.g., "none", "low", "medium", "high"). */
-    val reasoningEffort: String? = null
+    val reasoningEffort: String? = null,
+    /**
+     * 原生 function calling 工具目录。非空时请求携带 tools 数组（仅 OpenAI 兼容形状的
+     * provider 支持）；provider 以 400 拒绝时 LlmClient 自动去掉 tools 重试一次。
+     */
+    val tools: List<LlmToolSpec>? = null
 )
 
 data class PromptCacheHint(

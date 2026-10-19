@@ -235,7 +235,7 @@ class AgentSession(
             id = config.effectiveModelName.ifBlank { "unknown-model" },
             capabilities = listOf(LLMCapability.Temperature)
         )
-        val executor = LntPromptExecutor(gateway, config) { signal }
+        val executor = LntPromptExecutor(gateway, config, toolHost.toolSpecs()) { signal }
         val systemPrompt = AgentPrompts.buildSystemPrompt(
             basePrompt = AgentPrompts.resolveBasePrompt(promptAssetLoader, systemPromptOverride),
             specs = toolHost.toolSpecs(),
@@ -255,8 +255,9 @@ class AgentSession(
             strategy = strategy,
             toolRegistry = ToolRegistry.EMPTY,
             systemPrompt = systemPrompt,
-            // Koog 的 LLMParams 要求 0.0..2.0；provider 上的历史配置可能越界，这里收敛。
-            temperature = config.effectiveTemperature.coerceIn(0f, 2f).toDouble(),
+            // 编排回合用收敛后的低温（默认 0.2，上限 0.5）：格式服从性对温度敏感，
+            // 翻译用的高温度不适用于对话编排。Koog 的 LLMParams 要求 0.0..2.0。
+            temperature = config.effectiveAgentTemperature.toDouble(),
             maxIterations = config.maxToolRounds + MAX_ITERATION_HEADROOM,
             id = AGENT_ID_PREFIX + (activeSessionId ?: 0L)
         ).also { agent = it }

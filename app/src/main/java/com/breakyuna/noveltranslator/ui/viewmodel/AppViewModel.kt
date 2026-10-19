@@ -7,6 +7,7 @@ import com.breakyuna.noveltranslator.core.agent.ChapterSplitAgent
 import com.breakyuna.noveltranslator.core.agent.LexiconCandidateAggregator
 import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.core.exporter.EditionExporter
+import com.breakyuna.noveltranslator.core.exporter.ExportOptions
 import com.breakyuna.noveltranslator.core.llm.LlmClient
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.RetryingLlmGateway
@@ -22,6 +23,8 @@ import com.breakyuna.noveltranslator.core.quality.QualityRuleJson
 import com.breakyuna.noveltranslator.core.quality.QualityRuleMode
 import com.breakyuna.noveltranslator.core.quality.QualityRuleType
 import com.breakyuna.noveltranslator.core.quality.QualityRuleValidator
+import com.breakyuna.noveltranslator.core.quality.ReplacementRuleEntry
+import com.breakyuna.noveltranslator.core.quality.TextPreserveRuleEntry
 import com.breakyuna.noveltranslator.core.quality.label
 import com.breakyuna.noveltranslator.core.book.BookFileManager
 import com.breakyuna.noveltranslator.core.book.BookImporter
@@ -33,6 +36,9 @@ import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionConfig
 import com.breakyuna.noveltranslator.core.agent.koog.AssetsAgentPromptLoader
 import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionStore
 import com.breakyuna.noveltranslator.core.agent.koog.RoomAgentSessionStore
+import com.breakyuna.noveltranslator.core.crash.CrashRecord
+import com.breakyuna.noveltranslator.core.crash.CrashReporter
+import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.ui.screens.agent.AgentChatController
 import com.breakyuna.noveltranslator.core.translation.AnthropicPromptCacheCapability
 import com.breakyuna.noveltranslator.core.translation.AutomaticPromptCacheCapability
@@ -215,15 +221,87 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private suspend fun resolveAgentSessionConfig(): AgentSessionConfig? {
-        val provider = providerRepo.getDefaultProvider() ?: return null
+        val selection = _agentModelSelection.value
+        val provider = selection.providerId
+            ?.let { providerRepo.getProviderById(it) }
+            ?: providerRepo.getDefaultProvider()
+            ?: return null
+        val effort = _agentReasoningEffort.value
         return AgentSessionConfig(
             provider = provider,
-            modelName = provider.selectedModel,
+            modelName = selection.modelName?.takeIf(String::isNotBlank) ?: provider.selectedModel,
             temperature = provider.temperature,
+            // 格式服从性对温度敏感：编排回合固定低温，不跟随用户的翻译温度。
+            agentTemperature = AGENT_TEMPERATURE,
             maxTokens = 2_048,
-            reasoningEffort = "low"
+            reasoningEffort = effort.takeIf { it != AGENT_REASONING_OFF },
+            nativeToolsEnabled = _agentNativeToolsEnabled.value
         )
     }
+
+    // ============================================================
+    // Agent 会话配置（模型切换 / 思考强度 / 原生工具调用）
+    // ============================================================
+
+    /** Agent 会话的模型选择；字段为 null 时跟随默认 Provider 的配置。 */
+    data class AgentModelSelection(
+        val providerId: Long? = null,
+        val modelName: String? = null
+    )
+
+    private val _agentModelSelection = MutableStateFlow(
+        AgentModelSelection(
+            providerId = prefs.getLong("agent_provider_id", -1L).takeIf { it > 0 },
+            modelName = prefs.getString("agent_model_name", null)?.takeIf(String::isNotBlank)
+        )
+    )
+    val agentModelSelection: StateFlow<AgentModelSelection> = _agentModelSelection.asStateFlow()
+
+    private val _agentReasoningEffort =
+        MutableStateFlow(prefs.getString("agent_reasoning_effort", AGENT_REASONING_LOW) ?: AGENT_REASONING_LOW)
+    val agentReasoningEffort: StateFlow<String> = _agentReasoningEffort.asStateFlow()
+
+    private val _agentNativeToolsEnabled =
+        MutableStateFlow(prefs.getBoolean("agent_native_tools_enabled", true))
+    val agentNativeToolsEnabled: StateFlow<Boolean> = _agentNativeToolsEnabled.asStateFlow()
+
+    /** 上次崩溃记录（CrashReporter 持久化，重启不丢）；null 表示无未读崩溃。 */
+    val agentLastCrash: StateFlow<CrashRecord?> = CrashReporter.observeLastCrash()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 切换 Agent 使用的模型；对新会话生效（当前回合结束后由 UI 开新对话）。 */
+    fun setAgentModelSelection(providerId: Long?, modelName: String?) {
+        _agentModelSelection.value = AgentModelSelection(providerId, modelName)
+        prefs.edit()
+            .putLong("agent_provider_id", providerId ?: -1L)
+            .putString("agent_model_name", modelName?.takeIf(String::isNotBlank))
+            .apply()
+    }
+
+    /** 思考强度：off / low / medium / high，按 provider 协议映射（见 LlmClient）。 */
+    fun setAgentReasoningEffort(effort: String) {
+        val normalized = effort.lowercase()
+        if (normalized !in AGENT_REASONING_EFFORTS) return
+        _agentReasoningEffort.value = normalized
+        prefs.edit().putString("agent_reasoning_effort", normalized).apply()
+    }
+
+    /** 原生 function calling 开关（仅对 OpenAI 兼容形状的 provider 有意义）。 */
+    fun setAgentNativeToolsEnabled(enabled: Boolean) {
+        _agentNativeToolsEnabled.value = enabled
+        prefs.edit().putBoolean("agent_native_tools_enabled", enabled).apply()
+    }
+
+    fun clearAgentLastCrash() {
+        viewModelScope.launch { CrashReporter.clearLastCrash() }
+    }
+
+    /**
+     * 导出系统日志全文——读持久化 JSONL，崩溃重启后仍能拿到崩溃前的记录
+     * （内存版 [exportAgentLogs] 在进程重启后只剩重启以来的条目）。
+     * 刚产生的条目有秒级落盘延迟，属可接受权衡。
+     */
+    suspend fun exportAgentLogsWithHistory(): String = SystemLogger.exportText()
 
     private val _agentQuestions = MutableSharedFlow<AgentUserQuestion>(extraBufferCapacity = 8)
     val agentQuestions: SharedFlow<AgentUserQuestion> = _agentQuestions.asSharedFlow()
@@ -473,6 +551,246 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 throw cancelled
             } catch (error: Throwable) {
                 "更新配置失败：${error.localizedMessage ?: "参数无效或任务状态不允许"}"
+            }
+        }
+
+        // ---------- 翻译全流程扩展工具 ----------
+
+        override suspend fun createTranslationProject(
+            bookId: Long,
+            targetLanguage: String?,
+            editionName: String?
+        ): String = withContext(Dispatchers.IO) {
+            val book = bookPlatformRepo.getBook(bookId)
+                ?: return@withContext "找不到 Book#$bookId"
+            val existing = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
+            if (existing != null) {
+                return@withContext "Book#$bookId 已有翻译工程 #${existing.id}（状态=${existing.state}）。" +
+                    "请先告知用户已有工程，确认是否仍要新建；一般应直接使用现有工程。"
+            }
+            val source = bookPlatformRepo.observeEditions(bookId).first()
+                .firstOrNull { it.type != EditionType.AI_TRANSLATION.name }
+                ?: return@withContext "Book#$bookId 没有可翻译的原文 Edition"
+            val provider = providerRepo.getDefaultProvider()
+                ?: return@withContext "没有可用的 API Provider，请先在设置中配置默认 Provider"
+            val language = targetLanguage?.takeIf(String::isNotBlank)
+                ?: if (book.originalLanguage.startsWith("zh", ignoreCase = true)) "English" else "中文"
+            val name = editionName?.takeIf(String::isNotBlank) ?: "${book.title} · ${language}译文"
+            val editionId = runCancellable {
+                bookPlatformRepo.createTranslationEdition(bookId, source.id, language, name)
+            }.getOrElse { return@withContext "创建译文 Edition 失败：${it.localizedMessage}" }
+            val projectId = runCancellable {
+                bookPlatformRepo.createTranslationProject(
+                    bookId = bookId,
+                    sourceEditionId = source.id,
+                    targetEditionId = editionId,
+                    providerId = provider.id,
+                    modelName = provider.selectedModel,
+                    mode = TranslationMode.FULL_BOOK,
+                    maxBatchChapters = 1
+                )
+            }.getOrElse { return@withContext "创建翻译工程失败：${it.localizedMessage}" }
+            ensureDefaultQualityRules(projectId)
+            val chapters = bookPlatformRepo.getChapters(bookId).size
+            "已为 Book#$bookId《${book.title}》创建翻译工程 #$projectId（译文 Edition #$editionId，" +
+                "共 $chapters 章，默认全文、串行、Provider=${provider.name}/${provider.selectedModel}）。" +
+                "可以说「开始翻译」启动，或用 update_translation_config 调整配置。"
+        }
+
+        override suspend fun cancelTranslation(projectId: Long): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            if (project.state !in setOf("RUNNING", "PAUSED", "QUEUED")) {
+                return@withContext "工程 #$projectId 当前状态为 ${project.state}，无需取消。"
+            }
+            cancelBookTranslation(projectId)
+            "已请求取消工程 #$projectId；已完成并通过 QA 的章节会保留，不重复计费。"
+        }
+
+        override suspend fun resumeTranslation(projectId: Long): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            if (project.state != "PAUSED") {
+                return@withContext "工程 #$projectId 当前状态为 ${project.state}，只有已暂停的工程可以恢复。"
+            }
+            resumeBookTranslation(projectId)
+            "已请求恢复工程 #$projectId，将从已持久化的边界继续。"
+        }
+
+        override suspend fun exportEdition(
+            projectId: Long,
+            format: String?,
+            bilingual: Boolean?
+        ): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val options = ExportOptions(
+                bilingual = bilingual ?: false,
+                translationFirst = true,
+                deduplicateIdentical = true,
+                includeImages = true
+            )
+            val epub = format?.trim()?.lowercase() == "epub"
+            runCancellable {
+                if (epub) {
+                    editionExporter.exportEpub(project.bookId, project.targetEditionId, options)
+                } else {
+                    editionExporter.exportTxt(project.bookId, project.targetEditionId, options)
+                }
+            }.fold(
+                onSuccess = { file ->
+                    val label = if (epub) "EPUB" else "TXT"
+                    val mode = if (options.bilingual) "（双语对照）" else ""
+                    "已导出工程 #$projectId 的译文 $label$mode：${file.name}，路径 ${file.absolutePath}"
+                },
+                onFailure = { "导出失败：${it.localizedMessage ?: "未知错误"}" }
+            )
+        }
+
+        override suspend fun listGlossary(projectId: Long, keyword: String?): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val entries = bookPlatformRepo.observeLexicon(projectId).first()
+            if (entries.isEmpty()) return@withContext "工程 #$projectId 的术语表为空。"
+            val filtered = if (keyword.isNullOrBlank()) {
+                entries
+            } else {
+                entries.filter {
+                    it.sourceTerm.contains(keyword, ignoreCase = true) ||
+                        it.targetTerm.contains(keyword, ignoreCase = true)
+                }
+            }
+            if (filtered.isEmpty()) return@withContext "没有匹配「$keyword」的术语。"
+            buildString {
+                append("工程 #$projectId 术语表共 ${entries.size} 条，命中 ${filtered.size} 条：")
+                filtered.take(50).forEach { entry ->
+                    append("\n- #${entry.id} ${entry.sourceTerm} → ${entry.targetTerm}")
+                    append("（${entry.kind}/${entry.category}，${if (entry.enabled) "启用" else "停用"}，${entry.reviewStatus}）")
+                }
+                if (filtered.size > 50) append("\n... 其余 ${filtered.size - 50} 条已省略")
+            }
+        }
+
+        override suspend fun addGlossaryEntry(
+            projectId: Long,
+            sourceTerm: String,
+            targetTerm: String,
+            kind: String?,
+            note: String?
+        ): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val existing = bookPlatformRepo.observeLexicon(projectId).first()
+                .firstOrNull { it.sourceTerm.equals(sourceTerm, ignoreCase = true) }
+            if (existing != null) {
+                bookPlatformRepo.updateLexiconEntry(
+                    existing.copy(
+                        targetTerm = targetTerm,
+                        notes = note ?: existing.notes,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+                return@withContext "术语「${existing.sourceTerm}」已存在，已将译文更新为「$targetTerm」。"
+            }
+            val id = bookPlatformRepo.upsertLexiconEntry(
+                LexiconEntryEntity(
+                    translationProjectId = projectId,
+                    sourceTerm = sourceTerm,
+                    targetTerm = targetTerm,
+                    kind = LexiconKind.entries.firstOrNull { it.name.equals(kind, ignoreCase = true) }?.name
+                        ?: LexiconKind.PROPER_NOUN.name,
+                    category = kind?.trim()?.take(50)?.takeIf(String::isNotBlank) ?: "CUSTOM",
+                    notes = note.orEmpty(),
+                    source = LexiconSource.MANUAL.name,
+                    reviewStatus = ReviewStatus.CONFIRMED.name
+                )
+            )
+            "已添加术语 #$id：$sourceTerm → $targetTerm。"
+        }
+
+        override suspend fun removeGlossaryEntry(projectId: Long, entryId: Long): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val entry = bookPlatformRepo.observeLexicon(projectId).first()
+                .firstOrNull { it.id == entryId }
+                ?: return@withContext "工程 #$projectId 下找不到术语 #$entryId"
+            bookPlatformRepo.deleteLexiconEntry(entryId)
+            "已删除术语「${entry.sourceTerm} → ${entry.targetTerm}」。"
+        }
+
+        override suspend fun getQualityRules(projectId: Long): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val sets = db.qualityRuleDao().observeByProject(projectId).first()
+            if (sets.isEmpty()) return@withContext "工程 #$projectId 尚未写入质量规则（引擎使用默认规则集）。"
+            buildString {
+                append("工程 #$projectId 质量规则：")
+                sets.sortedBy { it.type }.forEach { set ->
+                    val type = QualityRuleType.fromStorageKey(set.type)
+                    val entries = type?.let { QualityRuleJson.decode(it, set.entriesJson) }.orEmpty()
+                    append("\n- ${set.type}：启用=${set.enabled}，模式=${set.mode}，修订=${set.revision}，${entries.size} 条")
+                    entries.take(10).forEach { entry ->
+                        append("\n    · ${entry.compactDescription()}")
+                    }
+                    if (entries.size > 10) append("\n    ... 其余 ${entries.size - 10} 条已省略")
+                }
+            }
+        }
+
+        override suspend fun setQualityRules(
+            projectId: Long,
+            slot: String,
+            entriesJson: String,
+            enabled: Boolean?
+        ): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val type = qualitySlotOf(slot)
+                ?: return@withContext "未知规则槽位「$slot」：应为 text_preserve / pre_replacement / post_replacement"
+            val entries = QualityRuleJson.decode(type, entriesJson)
+            if (entries.isEmpty()) return@withContext "条目解析失败或为空：请给出条目数组 JSON。"
+            val existing = db.qualityRuleDao().get(projectId, type.storageKey)
+            val enabledValue = enabled
+                ?: existing?.enabled
+                ?: QualityRuleDefaults.defaultRuleSet(projectId, type).enabled
+            val modeValue = existing?.let { row -> QualityRuleMode.entries.firstOrNull { it.name == row.mode } }
+                ?: QualityRuleDefaults.defaultRuleSet(projectId, type).resolvedMode()
+            val issues = QualityRuleValidator.validateRuleSet(type, enabledValue, modeValue, entries)
+            val blocking = QualityRuleValidator.blockingIssues(issues)
+            if (blocking.isNotEmpty()) {
+                return@withContext "规则校验未通过：${blocking.joinToString("；") { it.message }}"
+            }
+            writeQualityRuleSet(projectId, type, enabledValue, modeValue, entries)
+            val warning = issues.firstOrNull { it.severity != QualityRuleIssueSeverity.ERROR }
+            buildString {
+                append("已保存工程 #$projectId 的 ${type.label()} 规则（${entries.size} 条，启用=$enabledValue）。")
+                warning?.let { append("警告：${it.message}") }
+            }
+        }
+
+        override suspend fun getTranslationCost(projectId: Long): String = withContext(Dispatchers.IO) {
+            bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val runs = bookPlatformRepo.observeRunsByProject(projectId).first()
+            if (runs.isEmpty()) return@withContext "工程 #$projectId 还没有任何运行记录。"
+            val promptTokens = runs.sumOf { it.promptTokens }
+            val completionTokens = runs.sumOf { it.completionTokens }
+            val cachedTokens = runs.sumOf { it.cachedTokens }
+            val cost = runs.sumOf { it.totalCost }
+            buildString {
+                append("工程 #$projectId 费用汇总（${runs.size} 次运行）：")
+                append("\n- 输入 Token：$promptTokens（其中缓存命中 $cachedTokens）")
+                append("\n- 输出 Token：$completionTokens")
+                append("\n- 累计费用：${formatCost(cost)} ${runs.last().currency}")
+                append("\n- 状态分布：${runs.groupingBy { it.state }.eachCount().entries.joinToString { "${it.key}=${it.value}" }}")
+                append("\n最近运行：")
+                runs.takeLast(5).forEach { run ->
+                    append(
+                        "\n- #${run.id} ${run.modelName}（${run.providerName}）状态=${run.state}，" +
+                            "完成 ${run.completedChapters} 章 / 失败 ${run.failedChapters} 章，" +
+                            "费用 ${formatCost(run.totalCost)}"
+                    )
+                }
             }
         }
     }
@@ -2264,3 +2582,38 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
 }
+
+/** Agent 工具参数里的槽位名（含中文别名与历史写法）到质量规则类型的映射。 */
+private fun qualitySlotOf(slot: String): QualityRuleType? {    val key = slot.trim().lowercase().replace("-", "_").replace(" ", "_")
+    return when (key) {
+        "text_preserve", "textpreserve", "preserve", "文本保护", "保护" -> QualityRuleType.TEXT_PRESERVE
+        "pre_replacement", "prereplacement", "pre", "译前替换", "译前" -> QualityRuleType.PRE_REPLACEMENT
+        "post_replacement", "postreplacement", "post", "译后替换", "译后" -> QualityRuleType.POST_REPLACEMENT
+        else -> QualityRuleType.entries.firstOrNull { it.name.equals(key, ignoreCase = true) }
+    }
+}
+
+/** 规则条目的单行紧凑描述，供 get_quality_rules 回执使用。 */
+private fun QualityRuleEntry.compactDescription(): String = when (this) {
+    is TextPreserveRuleEntry -> "保护 ${src}${if (note.isNotBlank()) "（$note）" else ""}"
+    is ReplacementRuleEntry ->
+        "${if (isRegex) "正则" else "字面"} ${pattern} → ${replacement}" +
+            if (caseSensitive) "（区分大小写）" else ""
+    else -> toString()
+}
+
+/** 费用格式化：小额保留 4 位，避免 0 元被显示成 0.0000 造成误解。 */
+private fun formatCost(cost: Double): String =
+    if (cost <= 0.0) "0" else String.format(java.util.Locale.US, "%.4f", cost)
+
+// ============================================================
+// Agent 会话配置常量
+// ============================================================
+
+/** 编排回合固定低温：格式服从性对温度敏感，不跟随用户的翻译温度。 */
+private const val AGENT_TEMPERATURE = 0.2f
+
+/** 思考强度档位；off 表示不下发思考参数（映射为 null）。 */
+private const val AGENT_REASONING_OFF = "off"
+private const val AGENT_REASONING_LOW = "low"
+private val AGENT_REASONING_EFFORTS = setOf("off", "low", "medium", "high")

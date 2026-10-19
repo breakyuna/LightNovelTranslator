@@ -1,32 +1,16 @@
 package com.breakyuna.noveltranslator
 
 import android.app.Application
+import com.breakyuna.noveltranslator.core.crash.CrashReporter
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
-
-import android.util.Log
 
 class TranslatorApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        // Order matters: the logger must be initialized first so a crash record can include
+        // the recent in-memory entries, and CrashReporter chains itself in front of the
+        // system default handler instead of replacing it.
         SystemLogger.init(this)
-        setupCrashHandler()
-    }
-
-    private fun setupCrashHandler() {
-        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            try {
-                val stackTrace = Log.getStackTraceString(throwable)
-                SystemLogger.error(
-                    tag = "CRASH",
-                    message = "Fatal Exception in ${thread.name}: ${throwable.message}",
-                    details = stackTrace
-                )
-            } catch (e: Exception) {
-                // Ignore errors during crash handling
-            } finally {
-                defaultHandler?.uncaughtException(thread, throwable)
-            }
-        }
+        CrashReporter.install(this)
     }
 }
