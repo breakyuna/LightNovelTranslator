@@ -59,11 +59,21 @@ class CrashReporterTest {
 
     @Test
     fun fatalCrashWritesDurableRecordThatSurvivesARestart() {
+        // 测试 JVM 里没有 Android 的 KillApplicationHandler（previous == null），此时直接
+        // 触发处理器会走进"终止 JVM"的兜底分支，把整个测试进程打死——run #94-#100 连续
+        // 崩六轮的根因就是这里（该测试入库前 CI 一直是绿的）。先装一个前驱处理器并强制
+        // 重装（installed 是粘性静态标记，不 reset 的话 install 是空操作），让链路指到
+        // 它身上：既验证"记录落盘"，也验证链式转发，且不会终止进程。
+        val forwarded = mutableListOf<Throwable>()
+        Thread.setDefaultUncaughtExceptionHandler { _, error -> forwarded += error }
+        CrashReporter.resetForTests()
         CrashReporter.install(context)
         SystemLogger.info("CRASH_SETUP", "right before the boom")
 
         val boom = IllegalStateException("reader workbench boom")
         Thread.getDefaultUncaughtExceptionHandler()!!.uncaughtException(Thread.currentThread(), boom)
+
+        assertEquals("异常必须继续链式转发给前驱处理器", listOf(boom), forwarded)
 
         val directory = CrashReporter.crashDirectory(context)
         val crashFiles = directory.listFiles { file -> file.name.startsWith("crash-") }.orEmpty()
