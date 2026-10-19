@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.core.crash
 import android.app.Application
 import android.content.Context
 import android.os.Build
-import android.os.Process
 import android.util.Log
 import com.breakyuna.noveltranslator.core.logger.LogSanitizer
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
@@ -73,14 +72,14 @@ object CrashReporter {
             previousHandler = previous
             Thread.setDefaultUncaughtExceptionHandler { thread, error ->
                 report(thread, error, fatal = true)
-                // Chain to the previous handler (Android's KillApplicationHandler). If there is
-                // none, terminate ourselves: leaving the main thread dead would hang the app.
+                // Chain to the previous handler (Android's KillApplicationHandler).
                 runCatching { previous?.uncaughtException(thread, error) }
                 if (previous == null) {
-                    runCatching {
-                        Process.killProcess(Process.myPid())
-                        Runtime.getRuntime().exit(10)
-                    }
+                    // 没有前驱处理器意味着这不是 Android 宿主（真机上 RuntimeInit 必然安装
+                    // KillApplicationHandler），而是 Robolectric 之类的纯 JVM。此时 killProcess
+                    // 是空操作、exit(10) 会打死整个测试 JVM 且不留任何诊断信息——改为打印
+                    // 堆栈后返回，让宿主（JVM 默认行为 / 测试框架）自行处置。
+                    runCatching { error.printStackTrace() }
                 }
             }
             // Load the previous crash record off the crashing path; a cold start must stay fast.

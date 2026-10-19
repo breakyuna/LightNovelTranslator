@@ -823,10 +823,23 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         translationRecoveryJob = viewModelScope.launch(Dispatchers.IO) {
             // Recover durable task state before any provider normalization can suspend. Otherwise
             // a newly started task may be incorrectly marked INTERRUPTED by this startup cleanup.
-            db.translationProjectV2Dao().markInterrupted()
-            db.platformTaskDao().markInterrupted()
-            providerRepo.normalizeBuiltInPresets()
-            providerRepo.encryptUnprotectedSecrets()
+            //
+            // 启动恢复绝不能拖垮进程：viewModelScope 是 SupervisorJob 且没有
+            // CoroutineExceptionHandler，子协程的异常会直达线程默认未捕获处理器——
+            // 真机上就是应用崩溃（ Robolectric 测试里则会打死测试 JVM）。逐项兜底。
+            try {
+                db.translationProjectV2Dao().markInterrupted()
+                db.platformTaskDao().markInterrupted()
+                providerRepo.normalizeBuiltInPresets()
+                providerRepo.encryptUnprotectedSecrets()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                SystemLogger.warn(
+                    "APP_INIT",
+                    "启动恢复失败（已忽略，不影响使用）: ${error.localizedMessage ?: error.javaClass.simpleName}"
+                )
+            }
         }
     }
 
