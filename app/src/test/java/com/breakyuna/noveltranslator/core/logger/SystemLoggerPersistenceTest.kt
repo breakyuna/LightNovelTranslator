@@ -45,13 +45,15 @@ class SystemLoggerPersistenceTest {
         repeat(10) { index -> SystemLogger.info("RECENT", "entry-$index") }
         SystemLogger.awaitIdleForTests()
 
-        // A new process starts with an empty in-memory buffer.
+        // A new process starts with an empty in-memory buffer; the re-init below
+        // also appends one "initialized" marker, so the persisted tail is
+        // [init, entry-0..9, init] and we must read 5 to filter out 4 RECENT.
         SystemLogger.resetForTests()
         SystemLogger.initDirectory(directory)
         SystemLogger.awaitIdleForTests()
         assertTrue(SystemLogger.logsFlow.value.none { it.tag == "RECENT" })
 
-        val recent = SystemLogger.recentEntries(4).filter { it.tag == "RECENT" }
+        val recent = SystemLogger.recentEntries(5).filter { it.tag == "RECENT" }
         assertEquals(listOf("entry-6", "entry-7", "entry-8", "entry-9"), recent.map { it.message })
     }
 
@@ -70,6 +72,9 @@ class SystemLoggerPersistenceTest {
         SystemLogger.error("EXPORT", "something broke", details = "line one\nline two")
         SystemLogger.awaitIdleForTests()
         SystemLogger.resetForTests()
+        // 真实重启后 Application.onCreate 会重新 init，读端据此找到日志目录。
+        SystemLogger.initDirectory(directory)
+        SystemLogger.awaitIdleForTests()
 
         val text = SystemLogger.exportText()
         assertTrue(text.contains("=== NOVEL TRANSLATOR STUDIO - SYSTEM RUNTIME LOG ==="))
@@ -100,7 +105,7 @@ class SystemLoggerPersistenceTest {
         assertEquals(420, persisted.size)
         assertEquals(persisted.size, persisted.map { it.id }.toSet().size)
         val recent = SystemLogger.recentEntries(3).filter { it.tag == "BIG" }
-        assertEquals(listOf("entry-417", "entry-418", "entry-419"), recent.map { it.message.take(11) })
+        assertEquals(listOf("entry-417", "entry-418", "entry-419"), recent.map { it.message.substringBefore(" ") })
     }
 
     @Test
@@ -134,7 +139,13 @@ class SystemLoggerPersistenceTest {
         SystemLogger.clearLogs()
         SystemLogger.awaitIdleForTests()
 
-        assertTrue(File(directory, SystemLogger.JSONL_FILE_NAME).readText(Charsets.UTF_8).isBlank())
+        // clear 之后会追加一条 "System logs cleared by user." 标记行（审计用途），
+        // 因此断言"已无 CLEAR 条目残留"而非文件空白。
+        val remaining = File(directory, SystemLogger.JSONL_FILE_NAME).readText(Charsets.UTF_8)
+            .lineSequence()
+            .filter { it.isNotBlank() }
+            .mapNotNull { line -> runCatching { adapter.fromJson(line) }.getOrNull() }
+        assertTrue("clear 后不应再有 CLEAR 条目", remaining.none { it.tag == "CLEAR" })
         assertFalse(File(directory, SystemLogger.JSONL_FILE_NAME + ".1").exists())
         assertFalse(File(directory, SystemLogger.JSONL_FILE_NAME + ".2").exists())
         assertFalse(File(directory, SystemLogger.JSONL_FILE_NAME + ".3").exists())

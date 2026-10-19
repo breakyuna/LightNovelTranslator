@@ -301,8 +301,10 @@ class AgentToolHostTest {
     }
 
     @Test
-    fun toolSpecsCoverAllNineToolsWithValidSchemas() {
+    fun toolSpecsCoverAllToolsWithValidSchemas() {
         val specs = RecordingToolHost().toolSpecs()
+        // 2026-10-19 起工具集从 9 个扩到 19 个，覆盖完整翻译流程；
+        // 顺序即目录顺序，executeTool 的 when 分支必须一一对应。
         val expected = listOf(
             AgentToolHost.TOOL_LIST_BOOKS,
             AgentToolHost.TOOL_GET_BOOK_STATUS,
@@ -312,7 +314,17 @@ class AgentToolHostTest {
             AgentToolHost.TOOL_RESPLIT_CHAPTERS,
             AgentToolHost.TOOL_GET_RECENT_LOG,
             AgentToolHost.TOOL_ASK_USER,
-            AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG
+            AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG,
+            AgentToolHost.TOOL_CREATE_TRANSLATION_PROJECT,
+            AgentToolHost.TOOL_CANCEL_TRANSLATION,
+            AgentToolHost.TOOL_RESUME_TRANSLATION,
+            AgentToolHost.TOOL_EXPORT_EDITION,
+            AgentToolHost.TOOL_LIST_GLOSSARY,
+            AgentToolHost.TOOL_ADD_GLOSSARY_ENTRY,
+            AgentToolHost.TOOL_REMOVE_GLOSSARY_ENTRY,
+            AgentToolHost.TOOL_GET_QUALITY_RULES,
+            AgentToolHost.TOOL_SET_QUALITY_RULES,
+            AgentToolHost.TOOL_GET_TRANSLATION_COST
         )
         assertEquals(expected, specs.map { it.name })
         assertEquals(expected.size, specs.map { it.name }.toSet().size)

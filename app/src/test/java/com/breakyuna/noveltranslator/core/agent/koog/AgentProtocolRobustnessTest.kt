@@ -201,7 +201,7 @@ class AgentProtocolRobustnessTest {
     fun cleanFinalTextStripsResidualBlocksAndStrayTags() {
         val callBlock = AgentToolProtocol.renderToolCallBlock("list_books", "{}")
         val resultBlock = AgentToolProtocol.renderToolResultBlock("list_books", true, "共 2 本书")
-        assertEquals("结论\n以上", AgentToolProtocol.cleanFinalText("结论\n$callBlock\n以上"))
+        assertEquals("结论\n\n以上", AgentToolProtocol.cleanFinalText("结论\n$callBlock\n以上"))
         assertEquals("结果\n请查收", AgentToolProtocol.cleanFinalText("结果\n${resultBlock}请查收"))
         assertEquals(
             "答复 残留",

@@ -95,8 +95,11 @@ class AgentToolDispatchTest {
             """{"project_id":1,"source_term":"韩立"}"""
         )
 
-        assertFalse(outcome.ok)
+        // 参数校验失败按既有契约走 success 信封（消息即回执），只有 JSON 本身
+        // 解析不了才是 failure 信封（invalid_arguments）。
+        assertTrue(outcome.ok)
         assertTrue(outcome.output.contains("target_term"))
+        assertTrue(outcome.output.contains("source_term"))
     }
 
     @Test
