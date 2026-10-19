@@ -147,9 +147,13 @@ class QualityRuleEngineTest {
 
     @Test
     fun compileAlternationIsolatesInlineFlags() {
-        // 第一条带 (?i)，不能泄漏到第二条分支
-        val regex = compileAlternation(listOf("(?i)foo", "BAR"))!!
+        // 组合正则默认 IGNORE_CASE，隔离断言只在大小写敏感模式下有意义：
+        // 前缀 (?i) 若泄漏会让 BAR 分支也忽略大小写。
+        val regex = compileAlternation(listOf("(?i)foo", "BAR"), caseSensitive = true)!!
+        // 第一条带 (?i)（被改写为 (?i:foo) 作用域组）：两种大小写都命中
         assertEquals(true, regex.containsMatchIn("FOO"))
+        assertEquals(true, regex.containsMatchIn("foo"))
+        // 第二条不受前缀标志影响：保持大小写敏感
         assertEquals(true, regex.containsMatchIn("BAR"))
         assertEquals(false, regex.containsMatchIn("bar"))
     }
