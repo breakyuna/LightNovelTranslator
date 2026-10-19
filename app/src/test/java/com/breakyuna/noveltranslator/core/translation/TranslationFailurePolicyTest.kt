@@ -18,7 +18,7 @@ class TranslationFailurePolicyTest {
             LlmErrorCategory.LOCAL_STORAGE,
             LlmErrorCategory.UNKNOWN
         ).forEach { category ->
-            assertTrue(category.name, TranslationFailurePolicy.shouldAbortRun(category))
+            assertTrue(category.name, TranslationFailurePolicy.isFatal(category))
         }
     }
 
@@ -32,7 +32,7 @@ class TranslationFailurePolicyTest {
             LlmErrorCategory.CONTEXT_OVERFLOW,
             LlmErrorCategory.QUALITY_REJECTED
         ).forEach { category ->
-            assertFalse(category.name, TranslationFailurePolicy.shouldAbortRun(category))
+            assertFalse(category.name, TranslationFailurePolicy.isFatal(category))
         }
     }
 }

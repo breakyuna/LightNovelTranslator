@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.core.parser
 
+import kotlin.io.path.createTempDirectory
 import java.io.File
 import java.nio.charset.Charset
 import java.util.zip.ZipEntry
@@ -37,7 +38,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun standardEpubKeepsSpineOrderTitlesParagraphsAndImageMarkers() {
-        val root = createTempDir(prefix = "epub_fidelity_")
+        val root = createTempDirectory(prefix = "epub_fidelity_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -101,7 +102,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun singleFileWithMultipleHeadingsSplitsByHeading() {
-        val root = createTempDir(prefix = "epub_split_")
+        val root = createTempDirectory(prefix = "epub_split_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -143,7 +144,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun contentBeforeFirstHeadingStaysWithFirstChapter() {
-        val root = createTempDir(prefix = "epub_lead_")
+        val root = createTempDirectory(prefix = "epub_lead_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -177,7 +178,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun headingOnlyDocumentsAreSkippedWithoutProducingEmptyChapters() {
-        val root = createTempDir(prefix = "epub_empty_")
+        val root = createTempDirectory(prefix = "epub_empty_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -208,7 +209,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun navTocTitlesTakePrecedenceOverGenericBodyHeadings() {
-        val root = createTempDir(prefix = "epub_nav_")
+        val root = createTempDirectory(prefix = "epub_nav_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -249,7 +250,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun fragmentAnchorsMatchHeadingsInsideCombinedFile() {
-        val root = createTempDir(prefix = "epub_frag_")
+        val root = createTempDirectory(prefix = "epub_frag_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -296,7 +297,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun ncxTitlesAreUsedWhenNavDocumentIsMissing() {
-        val root = createTempDir(prefix = "epub_ncx_")
+        val root = createTempDirectory(prefix = "epub_ncx_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -338,7 +339,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun rubyEntitiesTablesAndBreaksSurviveIntoChapterText() {
-        val root = createTempDir(prefix = "epub_rich_")
+        val root = createTempDirectory(prefix = "epub_rich_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -382,7 +383,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun gbkEncodedDocumentIsDecodedInsteadOfProducingMojibake() {
-        val root = createTempDir(prefix = "epub_gbk_")
+        val root = createTempDirectory(prefix = "epub_gbk_").toFile()
         try {
             val gbk = Charset.forName("GB18030")
             val epub = writeEpub(root) { zip ->
@@ -416,7 +417,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun emptySpineFallsBackToManifestHtmlDocuments() {
-        val root = createTempDir(prefix = "epub_nospine_")
+        val root = createTempDirectory(prefix = "epub_nospine_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -445,7 +446,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun missingOpfThrowsReadableError() {
-        val root = createTempDir(prefix = "epub_noopf_")
+        val root = createTempDirectory(prefix = "epub_noopf_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("OEBPS/Text/c1.xhtml", "<html><body><h1>第一章</h1><p>正文。</p></body></html>")
@@ -454,8 +455,8 @@ class EpubParserFidelityTest {
             val error = runCatching { EpubParser.parseEpubFile(epub) }.exceptionOrNull()
 
             assertTrue(error is IllegalArgumentException)
-            assertTrue(error.message!!.contains("container.xml"))
-            assertTrue(error.message!!.contains(".opf"))
+            assertTrue(error?.message!!.contains("container.xml"))
+            assertTrue(error?.message!!.contains(".opf"))
         } finally {
             root.deleteRecursively()
         }
@@ -463,7 +464,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun malformedContainerWithoutAnyOpfThrows() {
-        val root = createTempDir(prefix = "epub_badcontainer_")
+        val root = createTempDirectory(prefix = "epub_badcontainer_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", "<container><rootfile/></container>")
@@ -473,7 +474,7 @@ class EpubParserFidelityTest {
             val error = runCatching { EpubParser.parseEpubFile(epub) }.exceptionOrNull()
 
             assertTrue(error is IllegalArgumentException)
-            assertTrue(error.message!!.contains("container.xml"))
+            assertTrue(error?.message!!.contains("container.xml"))
         } finally {
             root.deleteRecursively()
         }
@@ -481,7 +482,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun malformedContainerWithFallbackOpfStillParses() {
-        val root = createTempDir(prefix = "epub_recover_")
+        val root = createTempDirectory(prefix = "epub_recover_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", "this is not xml at all <<<")
@@ -510,7 +511,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun oversizedZipEntryThrowsBudgetError() {
-        val root = createTempDir(prefix = "epub_bomb_")
+        val root = createTempDirectory(prefix = "epub_bomb_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -533,7 +534,7 @@ class EpubParserFidelityTest {
             val error = runCatching { EpubParser.parseEpubFile(epub) }.exceptionOrNull()
 
             assertTrue(error is IllegalArgumentException)
-            assertTrue(error.message!!.contains("25 MB"))
+            assertTrue(error?.message!!.contains("25 MB"))
         } finally {
             root.deleteRecursively()
         }
@@ -541,7 +542,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun tooManyZipEntriesThrows() {
-        val root = createTempDir(prefix = "epub_entries_")
+        val root = createTempDirectory(prefix = "epub_entries_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -553,7 +554,7 @@ class EpubParserFidelityTest {
             val error = runCatching { EpubParser.parseEpubFile(epub) }.exceptionOrNull()
 
             assertTrue(error is IllegalArgumentException)
-            assertTrue(error.message!!.contains("条目"))
+            assertTrue(error?.message!!.contains("条目"))
         } finally {
             root.deleteRecursively()
         }
@@ -561,7 +562,7 @@ class EpubParserFidelityTest {
 
     @Test
     fun unreadableEpubThrowsInsteadOfReturningEmptyBook() {
-        val root = createTempDir(prefix = "epub_none_")
+        val root = createTempDirectory(prefix = "epub_none_").toFile()
         try {
             val epub = writeEpub(root) { zip ->
                 zip.addText("META-INF/container.xml", containerXml)
@@ -582,7 +583,7 @@ class EpubParserFidelityTest {
             val error = runCatching { EpubParser.parseEpubFile(epub) }.exceptionOrNull()
 
             assertTrue(error is IllegalArgumentException)
-            assertTrue(error.message!!.contains("未找到可阅读的章节"))
+            assertTrue(error?.message!!.contains("未找到可阅读的章节"))
         } finally {
             root.deleteRecursively()
         }

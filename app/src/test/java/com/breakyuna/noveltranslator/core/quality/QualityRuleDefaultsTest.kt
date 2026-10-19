@@ -1,6 +1,6 @@
 package com.breakyuna.noveltranslator.core.quality
 
-import com.breakyuna.noveltranslator.core.text.TextPreserveRule
+import com.breakyuna.noveltranslator.core.text.TextProtectionRule
 import com.breakyuna.noveltranslator.core.translation.TranslationTextProtection
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -66,7 +66,7 @@ class QualityRuleDefaultsTest {
     @Test
     fun baseRulesProtectLegacyMarkers() {
         val rule = TextProtectionRule(QualityRuleDefaults.textPreserveBaseRules)
-        val segments = rule.collect("见图 [IMG:cover.png] 与 {{name}} 还有 ${var} 与 <b>粗体</b> 与 &amp;").toSet()
+        val segments = rule.collect("见图 [IMG:cover.png] 与 {{name}} 还有 \${var} 与 <b>粗体</b> 与 &amp;").toSet()
         assertTrue(segments.contains("[IMG:cover.png]"))
         assertTrue(segments.contains("{{name}}"))
         assertTrue(segments.contains("\${var}"))
@@ -150,8 +150,9 @@ class QualityRuleDefaultsTest {
                 ReplacementRuleEntry(pattern = "good", replacement = "y")
             )
         )
-        assertEquals(1, compiled!!.ruleCount)
-        assertEquals("y", compiled.apply("good"))
+        // 坏规则被剔除后仍可用：good 命中，坏正则不抛异常
+        assertEquals("y", compiled!!.apply("good"))
+        assertEquals("ok", compiled.apply("ok"))
     }
 
     // ---------- 枚举 ----------

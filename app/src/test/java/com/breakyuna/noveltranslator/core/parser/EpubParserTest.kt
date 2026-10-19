@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.core.parser
 
+import kotlin.io.path.createTempDirectory
 import java.io.File
 import java.io.FileInputStream
 import java.util.zip.ZipEntry
@@ -11,7 +12,7 @@ import org.junit.Test
 class EpubParserTest {
     @Test
     fun fileParserReadsSpineOrderAndStreamsImagesToDisk() {
-        val root = createTempDir(prefix = "epub_parser_test_")
+        val root = createTempDirectory(prefix = "epub_parser_test_").toFile()
         try {
             val epub = File(root, "book.epub")
             ZipOutputStream(epub.outputStream()).use { zip ->
@@ -64,7 +65,7 @@ class EpubParserTest {
 
     @Test
     fun optionalTocCroppingSkipsNavigationDocuments() {
-        val root = createTempDir(prefix = "epub_toc_test_")
+        val root = createTempDirectory(prefix = "epub_toc_test_").toFile()
         try {
             val epub = File(root, "book.epub")
             ZipOutputStream(epub.outputStream()).use { zip ->

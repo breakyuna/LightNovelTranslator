@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.core.agent.koog
 
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -55,14 +56,14 @@ class AgentSessionStoreTest {
         val store = InMemoryAgentSessionStore()
         val session = store.createSession("s", null, null)
         val flow = store.observeMessages(session)
-        assertTrue(flow.value.isEmpty())
+        assertTrue(flow.first().isEmpty())
 
         val id = store.appendMessage(session, message(AgentRole.USER, "问题"))
-        assertEquals(1, flow.value.size)
-        assertEquals("问题", flow.value.single().content)
+        assertEquals(1, flow.first().size)
+        assertEquals("问题", flow.first().single().content)
 
         store.updateMessageContent(id, "改写后")
-        assertEquals("改写后", flow.value.single().content)
+        assertEquals("改写后", flow.first().single().content)
     }
 
     @Test

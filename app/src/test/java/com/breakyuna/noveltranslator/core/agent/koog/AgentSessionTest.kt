@@ -89,7 +89,7 @@ class AgentSessionTest {
     }
 
     /** 第一次请求挂起在门上，用于验证运行中忽略并发输入。 */
-    private class GatedGateway(private val gate: CompletableDeferred<Unit>) : LlmGateway {
+    private inner class GatedGateway(private val gate: CompletableDeferred<Unit>) : LlmGateway {
         val requests = mutableListOf<LlmRequest>()
 
         override suspend fun executeCompletion(request: LlmRequest): LlmResult {
