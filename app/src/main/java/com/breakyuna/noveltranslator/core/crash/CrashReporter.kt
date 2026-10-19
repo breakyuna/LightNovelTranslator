@@ -76,11 +76,27 @@ object CrashReporter {
                 runCatching { previous?.uncaughtException(thread, error) }
                 if (previous == null) {
                     // 没有前驱处理器意味着这不是 Android 宿主（真机上 RuntimeInit 必然安装
-                    // KillApplicationHandler），而是 Robolectric 之类的纯 JVM。此时不能简单地
-                    // "返回"——主线程已随未捕获异常消亡，测试框架会永久挂等；也不能悄悄
-                    // exit(10)——那样不留任何堆栈。对齐 JVM 默认行为：打印堆栈后以退出码 1
-                    // 终止，让测试框架立刻看到失败和真实原因。
+                    // KillApplicationHandler），而是 Robolectric 之类的纯 JVM。
+                    // 堆栈必须落盘：Gradle 的 showStandardStreams 只转发与测试事件关联的
+                    // 输出，关闭阶段的未捕获异常 stderr 会被整段丢弃（连续五轮只看到 exit
+                    // code 看不到原因）。测试 JVM 的工作目录是 app 模块目录，写进
+                    // build/test-results 可随 CI artifact 上传。
                     runCatching { error.printStackTrace() }
+                    runCatching {
+                        val trace = buildString {
+                            appendLine("thread=" + thread.name)
+                            appendLine("time=" + SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+                            appendLine("fatal=" + true)
+                            appendLine(error.stackTraceToString())
+                        }
+                        listOf("build/test-results", "app/build/test-results").forEach { dir ->
+                            runCatching {
+                                File(dir).mkdirs()
+                                File(dir, "uncaught-crash.txt").writeText(trace, Charsets.UTF_8)
+                            }
+                        }
+                    }
+                    // 对齐 JVM 默认行为终止：简单返回会让已消亡的线程拖住 JVM（测试框架挂死）。
                     runCatching { Runtime.getRuntime().exit(1) }
                 }
             }
