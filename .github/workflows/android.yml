@@ -154,9 +154,12 @@ jobs:
 
           "$APKSIGNER" verify --verbose --print-certs "$APK"
 
+      - name: Resolve artifact name
+        run: echo "ARTIFACT_NAME=LightNovelTranslator-${GITHUB_REF_NAME//\//-}-signed" >> "$GITHUB_ENV"
+
       - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: LightNovelTranslator-${{ github.ref_name }}-signed
+          name: ${{ env.ARTIFACT_NAME }}
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error

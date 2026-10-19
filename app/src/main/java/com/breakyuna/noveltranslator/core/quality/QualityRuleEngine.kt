@@ -86,8 +86,11 @@ class QualityReplacements(entries: List<ReplacementRuleEntry>) {
 
     /** 正则规则：`(?U)` 由调用方决定，这里按 ASCII 字符类语义编译。 */
     private class RegexRule(val pattern: Regex, val template: String) : Rule {
+        // 命名分组预解析为组序号：MatchGroupCollection.get(String) 需要 API 26（minSdk 24）。
+        private val namedGroups: Map<String, Int> = namedGroupIndexes(pattern.pattern)
+
         override fun apply(text: String): String =
-            pattern.replace(text) { match -> expandReplacement(template, match) }
+            pattern.replace(text) { match -> expandReplacement(template, match, namedGroups) }
     }
 
     /** 字面量规则：复用 core/text 的 Aho–Corasick + NFKC + casefold 匹配器。 */
@@ -153,8 +156,16 @@ class QualityReplacements(entries: List<ReplacementRuleEntry>) {
  *
  * 与 `core/text` 的私有 `expandReplacement` 行为一致（反斜杠转义、缺失分组归空串），
  * 这样同一条规则在两个实现下的替换结果相同。
+ *
+ * 命名分组一律经 [namedGroupIndexes] 预解析成组序号后按序号取值：
+ * `MatchGroupCollection.get(String)` 底层调用 `Matcher.start(String)`，需要 API 26，
+ * 而本应用 minSdk 24，因此禁止在代码里出现按名查询（lint NewApi 会直接报错）。
  */
-internal fun expandReplacement(template: String, match: MatchResult): String {
+internal fun expandReplacement(
+    template: String,
+    match: MatchResult,
+    namedGroups: Map<String, Int> = emptyMap()
+): String {
     val sb = StringBuilder(template.length)
     var index = 0
     while (index < template.length) {
@@ -175,7 +186,10 @@ internal fun expandReplacement(template: String, match: MatchResult): String {
                 val close = template.indexOf('}', index + 2)
                 if (close > 0) {
                     val name = template.substring(index + 2, close)
-                    sb.append(match.groups[name]?.value ?: "")
+                    val groupIndex = namedGroups[name]
+                    if (groupIndex != null) {
+                        sb.append(match.groups[groupIndex]?.value ?: "")
+                    }
                     index = close + 1
                     continue
                 }
@@ -185,4 +199,51 @@ internal fun expandReplacement(template: String, match: MatchResult): String {
         index += 1
     }
     return sb.toString()
+}
+
+/** 命名组引用形式：`(?<name>` / `(?P<name>`（不含 `(?<=` / `(?<!` 环视）。 */
+private val NAMED_GROUP_REFERENCE =
+    Regex("""\(\?<([A-Za-z][A-Za-z0-9]*)>|\(\?P<([A-Za-z][A-Za-z0-9]*)>""")
+
+/**
+ * 扫描正则源，把命名分组映射到组序号（左到右按捕获括号计数）。
+ *
+ * 与 [countCapturingGroups] 共用同一套分组判定，保证序号一致；
+ * `(?P=name)` 回引按捕获计数但不进命名表（极罕见，用户规则应避免）。
+ */
+internal fun namedGroupIndexes(pattern: String): Map<String, Int> {
+    val names = LinkedHashMap<String, Int>()
+    var groupIndex = 0
+    var inCharClass = false
+    var index = 0
+    while (index < pattern.length) {
+        when (val ch = pattern[index]) {
+            '\\' -> index++ // 跳过被转义的下一个字符
+            '[' -> if (!inCharClass) inCharClass = true
+            ']' -> if (inCharClass) inCharClass = false
+            '(' -> if (!inCharClass) {
+                val next = pattern.getOrNull(index + 1)
+                val capturing = when {
+                    next == null -> true
+                    next != '?' -> true
+                    else -> when (val after = pattern.getOrNull(index + 2)) {
+                        ':', '=', '!' -> false
+                        '<' -> pattern.getOrNull(index + 3)?.let { it == '=' || it == '!' } != true
+                        'P' -> true
+                        else -> false // (?i) 等标志组不是组
+                    }
+                }
+                if (capturing) {
+                    groupIndex++
+                    val reference = NAMED_GROUP_REFERENCE.matchAt(pattern, index)
+                    if (reference != null) {
+                        val name = reference.groupValues[1].ifEmpty { reference.groupValues[2] }
+                        names[name] = groupIndex
+                    }
+                }
+            }
+        }
+        index++
+    }
+    return names
 }
