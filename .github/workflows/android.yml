@@ -50,8 +50,9 @@ jobs:
         run: chmod +x gradlew
 
       # maxParallelForks 由 app/build.gradle.kts 按 runner 核数设置（4 核 → 4 fork）。
+      # in-process 编译策略只是本机 Termux 兜底，CI 用 daemon（独立 JVM + 热 JIT）。
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --profile
+        run: ./gradlew testDebugUnitTest --profile -Pkotlin.compiler.execution.strategy=daemon
 
       # 测试失败也保留已下载的依赖，后续修复无需重新下载。
       - name: Save Robolectric android-all jars
@@ -95,7 +96,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Lint
-        run: ./gradlew lintDebug --profile
+        run: ./gradlew lintDebug --profile -Pkotlin.compiler.execution.strategy=daemon
 
       - name: Upload lint and build timing reports
         if: always()
@@ -187,7 +188,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease --profile
+        run: ./gradlew assembleRelease -Pkotlin.compiler.execution.strategy=daemon --profile
 
       - name: Upload release build timing reports
         if: always()
