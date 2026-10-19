@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.ui.navigation
 
 import android.app.Application
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.hasText
@@ -52,7 +53,11 @@ class ReaderWorkbenchNavigationTest {
     @get:Rule
     val composeRule = createComposeRule()
 
-    private val bookTitle = "工作台回归测试书"
+    /**
+     * 每个测试方法一份独立书名：Robolectric 在同一 JVM 内跨测试方法共享文件型数据库，
+     * seed 会在每个方法重复插入；唯一标题保证 onNodeWithText 只命中本书。
+     */
+    private val bookTitle = "工作台回归测试书-" + java.util.UUID.randomUUID().toString().take(8)
 
     /** Chinese [com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings.openWorkbench]. */
     private val openWorkbenchLabel = "翻译工作台"
@@ -62,11 +67,14 @@ class ReaderWorkbenchNavigationTest {
 
     private lateinit var viewModel: AppViewModel
 
+    /** seed 实际插入的书籍 id（不用硬编码，DB 自增 id 随方法累积变化）。 */
+    private var seededBookId: Long = 0L
+
     @Before
     fun setUp() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Application>()
         viewModel = AppViewModel(context)
-        seed(context)
+        seededBookId = seed(context)
     }
 
     @Test
@@ -130,42 +138,38 @@ class ReaderWorkbenchNavigationTest {
      */
     @Test(timeout = 60_000L)
     fun screensAcceptTheArgumentsAppNavigationPasses() {
+        // 一个测试只能 setContent 一次：两块屏幕放进同一个 Column 里做签名冒烟。
         composeRule.setContent {
             NovelTranslatorTheme {
                 CompositionLocalProvider(LocalAppStrings provides ChineseStrings) {
-                    PlatformReaderScreen(
-                        bookId = 7L,
-                        initialLogicalChapterId = null,
-                        viewModel = viewModel,
-                        onBack = {},
-                        onOpenWorkbench = {}
-                    )
+                    Column {
+                        PlatformReaderScreen(
+                            bookId = seededBookId,
+                            initialLogicalChapterId = null,
+                            viewModel = viewModel,
+                            onBack = {},
+                            onOpenWorkbench = {}
+                        )
+                        BookWorkbenchDetailScreen(
+                            bookId = seededBookId,
+                            viewModel = viewModel,
+                            onNavigateBack = {},
+                            onOpenReader = { _, _ -> },
+                            onOpenAgent = {}
+                        )
+                    }
                 }
             }
         }
         composeRule.waitForIdle()
         composeRule.waitUntilAtLeastOneExists(hasText("阅读"), timeoutMillis = 5_000)
-
-        composeRule.setContent {
-            NovelTranslatorTheme {
-                CompositionLocalProvider(LocalAppStrings provides ChineseStrings) {
-                    BookWorkbenchDetailScreen(
-                        bookId = 7L,
-                        viewModel = viewModel,
-                        onNavigateBack = {},
-                        onOpenReader = { _, _ -> },
-                        onOpenAgent = {}
-                    )
-                }
-            }
-        }
-        composeRule.waitForIdle()
         // Loading state first, then the workbench header once the seeded book arrives.
         composeRule.waitUntilAtLeastOneExists(hasText("工作台", substring = true), timeoutMillis = 10_000)
     }
 
-    private fun seed(context: Application) {
+    private fun seed(context: Application): Long {
         val db = AppDatabase.getDatabase(context)
+        var insertedBookId = 0L
         runBlocking {
             val bookId = db.bookDao().insert(
                 BookEntity(
@@ -224,6 +228,8 @@ class ReaderWorkbenchNavigationTest {
                     translationMode = "FULL_BOOK"
                 )
             )
+            insertedBookId = bookId
         }
+        return insertedBookId
     }
 }

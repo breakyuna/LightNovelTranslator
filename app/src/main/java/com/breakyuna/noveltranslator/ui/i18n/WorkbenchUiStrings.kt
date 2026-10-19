@@ -16,27 +16,7 @@ data class WorkbenchUiStrings(
     val tabGlossary: String,
     val tabLogs: String,
 
-    // AI chapter split dialogs
-    val aiSplitIntroTitle: String,
-    val aiSplitIntroBody: String,
-    val aiSplitStart: String,
-    val aiSplitRunningTitle: String,
-    val aiSplitRunningBody: String,
-    val aiSplitStop: String,
-    val aiSplitPreviewTitle: (Int) -> String,
-    val aiSplitPreviewMore: (Int) -> String,
-    val aiSplitApply: String,
-    val aiSplitDiscard: String,
-    val cancel: String,
 
-    // Edition delete / chapter action dialogs
-    val deleteEditionTitle: String,
-    val deleteEditionMessage: (String) -> String,
-    val confirmDelete: String,
-    val chapterActionTitle: (String) -> String,
-    val chapterActionBody: (Int) -> String,
-    val previewChapter: String,
-    val retranslateChapter: String,
 
     // Sidebar
     val unknownAuthor: String,
@@ -301,6 +281,7 @@ data class WorkbenchUiStrings(
     val taskMeta: (Long, String, String, Int) -> String,
     val taskError: String,
     val onOff: (Boolean) -> String
+    val dialogs: WorkbenchDialogStrings
 )
 
 private val ChineseWorkbenchUiStrings = WorkbenchUiStrings(
@@ -312,25 +293,7 @@ private val ChineseWorkbenchUiStrings = WorkbenchUiStrings(
     tabGlossary = "名词与术语表",
     tabLogs = "运行与系统日志",
 
-    aiSplitIntroTitle = "AI 识别章节边界",
-    aiSplitIntroBody = "AI 将读取保留的 TXT 原文，识别完成后自动重建原版的 LogicalChapter 与 Segment。此操作要求尚未创建翻译版本，且不会改写原文内容。",
-    aiSplitStart = "开始识别",
-    aiSplitRunningTitle = "正在识别章节边界",
-    aiSplitRunningBody = "AI 正在读取原始 TXT 并分析章节结构，可以停止当前请求。",
-    aiSplitStop = "停止识别",
-    aiSplitPreviewTitle = { count -> "确认章节识别结果（$count 章）" },
-    aiSplitPreviewMore = { count -> "其余 $count 章省略显示…" },
-    aiSplitApply = "确认并应用",
-    aiSplitDiscard = "放弃",
-    cancel = "取消",
 
-    deleteEditionTitle = "删除版本",
-    deleteEditionMessage = { name -> "确定要删除版本「$name」吗？\n\n该版本下的所有翻译成果、章节文件、术语表和历史记录将被永久删除。原始版本不受影响。" },
-    confirmDelete = "确认删除",
-    chapterActionTitle = { title -> "章节操作 · $title" },
-    chapterActionBody = { index -> "章节编号: 第 $index 章\n您可以直接重新翻译此章节，或在阅读器中预览此章内容。" },
-    previewChapter = "预览此章",
-    retranslateChapter = "重译此章",
 
     unknownAuthor = "未知作者",
     chaptersEditionsCount = { chapters, editions -> "$chapters 章 · $editions 个版本" },
@@ -578,6 +541,8 @@ private val ChineseWorkbenchUiStrings = WorkbenchUiStrings(
     taskMeta = { id, provider, model, version -> "任务 #$id · $provider/$model · Prompt v$version" },
     taskError = "异常",
     onOff = { enabled -> if (enabled) "开" else "关" }
+    dialogs = WorkbenchDialogStrings(
+    )
 )
 
 private val EnglishWorkbenchUiStrings = WorkbenchUiStrings(
@@ -855,6 +820,26 @@ private val EnglishWorkbenchUiStrings = WorkbenchUiStrings(
     taskMeta = { id, provider, model, version -> "Task #$id · $provider/$model · Prompt v$version" },
     taskError = "Error",
     onOff = { enabled -> if (enabled) "On" else "Off" }
+    dialogs = WorkbenchDialogStrings(
+        aiSplitIntroTitle = "AI chapter detection",,
+        aiSplitIntroBody = "AI reads the stored TXT source and rebuilds LogicalChapters and Segments for the original edition. This requires that no translation edition exists yet and never rewrites the source text.",,
+        aiSplitStart = "Start detection",,
+        aiSplitRunningTitle = "Detecting chapter boundaries",,
+        aiSplitRunningBody = "AI is reading the original TXT and analyzing its structure. You can stop the current request.",,
+        aiSplitStop = "Stop",,
+        aiSplitPreviewTitle = { count -> "Confirm detection result ($count chapters)" },,
+        aiSplitPreviewMore = { count -> "$count more chapters omitted…" },,
+        aiSplitApply = "Apply",,
+        aiSplitDiscard = "Discard",,
+        cancel = "Cancel",,
+        deleteEditionTitle = "Delete edition",,
+        deleteEditionMessage = { name -> "Delete edition “$name”?\n\nAll translations, chapter files, glossary entries and history under this edition will be permanently deleted. The original edition is not affected." },,
+        confirmDelete = "Delete",,
+        chapterActionTitle = { title -> "Chapter · $title" },,
+        chapterActionBody = { index -> "Chapter $index\nYou can retranslate this chapter directly, or preview it in the reader." },,
+        previewChapter = "Preview",,
+        retranslateChapter = "Retranslate",,
+    )
 )
 
 @Composable

@@ -153,7 +153,9 @@ class CrashReporterTest {
         assertEquals(record.exceptionClass, parsed.exceptionClass)
         // Newlines are collapsed on purpose: single-line header fields must stay parseable.
         assertEquals(record.exceptionMessage.replace("\n", " ⏎ "), parsed.exceptionMessage)
-        assertEquals(record.stackTrace, parsed.stackTrace)
+        // 磁盘格式按设计对自由文本块 trimEnd()（见 CrashRecord.encode 的格式约定），
+        // 因此 round-trip 对尾随空白保真、对内容保真。
+        assertEquals(record.stackTrace.trimEnd(), parsed.stackTrace.trimEnd())
         assertEquals(record.deviceModel, parsed.deviceModel)
         assertEquals(record.androidSdkInt, parsed.androidSdkInt)
         assertEquals(record.appVersionName, parsed.appVersionName)

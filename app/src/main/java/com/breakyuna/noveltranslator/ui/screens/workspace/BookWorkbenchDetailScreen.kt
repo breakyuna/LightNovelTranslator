@@ -545,9 +545,9 @@ fun BookWorkbenchDetailScreen(
         AlertDialog(
             onDismissRequest = { aiSplitProvider = null },
             shape = DialogShape,
-            title = { Text(wb.aiSplitIntroTitle) },
+            title = { Text(wb.dialogs.aiSplitIntroTitle) },
             text = {
-                Text(wb.aiSplitIntroBody)
+                Text(wb.dialogs.aiSplitIntroBody)
             },
             confirmButton = {
                 Button(
@@ -562,9 +562,9 @@ fun BookWorkbenchDetailScreen(
                             onFinished = { aiSplitRunning = false }
                         )
                     }
-                ) { Text(wb.aiSplitStart) }
+                ) { Text(wb.dialogs.aiSplitStart) }
             },
-            dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text(wb.cancel) } }
+            dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text(wb.dialogs.cancel) } }
         )
     }
 
@@ -572,13 +572,13 @@ fun BookWorkbenchDetailScreen(
         AlertDialog(
             onDismissRequest = {},
             shape = DialogShape,
-            title = { Text(wb.aiSplitRunningTitle) },
-            text = { Text(wb.aiSplitRunningBody) },
+            title = { Text(wb.dialogs.aiSplitRunningTitle) },
+            text = { Text(wb.dialogs.aiSplitRunningBody) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.cancelAgentBookChapterSplit(currentBook.id)
                     aiSplitRunning = false
-                }) { Text(wb.aiSplitStop) }
+                }) { Text(wb.dialogs.aiSplitStop) }
             }
         )
     }
@@ -590,7 +590,7 @@ fun BookWorkbenchDetailScreen(
                 viewModel.discardAgentBookChapterSplit(currentBook.id)
             },
             shape = DialogShape,
-            title = { Text(wb.aiSplitPreviewTitle(preview.size)) },
+            title = { Text(wb.dialogs.aiSplitPreviewTitle(preview.size)) },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                     items(preview.take(80), key = { it.index }) { chapter ->
@@ -602,7 +602,7 @@ fun BookWorkbenchDetailScreen(
                         )
                     }
                     if (preview.size > 80) {
-                        item { Text(wb.aiSplitPreviewMore(preview.size - 80), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item { Text(wb.dialogs.aiSplitPreviewMore(preview.size - 80), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
             },
@@ -612,7 +612,7 @@ fun BookWorkbenchDetailScreen(
                         aiSplitPreview = null
                         viewModel.applyAgentBookChapterSplit(currentBook.id)
                     }
-                ) { Text(wb.aiSplitApply) }
+                ) { Text(wb.dialogs.aiSplitApply) }
             },
             dismissButton = {
                 TextButton(
@@ -620,7 +620,7 @@ fun BookWorkbenchDetailScreen(
                         aiSplitPreview = null
                         viewModel.discardAgentBookChapterSplit(currentBook.id)
                     }
-                ) { Text(wb.aiSplitDiscard) }
+                ) { Text(wb.dialogs.aiSplitDiscard) }
             }
         )
     }
@@ -636,9 +636,9 @@ fun BookWorkbenchDetailScreen(
                     tint = MaterialTheme.colorScheme.error
                 )
             },
-            title = { Text(wb.deleteEditionTitle) },
+            title = { Text(wb.dialogs.deleteEditionTitle) },
             text = {
-                Text(wb.deleteEditionMessage(edition.name))
+                Text(wb.dialogs.deleteEditionMessage(edition.name))
             },
             confirmButton = {
                 Button(
@@ -655,12 +655,12 @@ fun BookWorkbenchDetailScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text(wb.confirmDelete)
+                    Text(wb.dialogs.confirmDelete)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editionToDelete = null }) {
-                    Text(wb.cancel)
+                    Text(wb.dialogs.cancel)
                 }
             }
         )
@@ -671,9 +671,9 @@ fun BookWorkbenchDetailScreen(
         AlertDialog(
             onDismissRequest = { chapterActionTarget = null },
             shape = DialogShape,
-            title = { Text(wb.chapterActionTitle(targetCh.canonicalTitle)) },
+            title = { Text(wb.dialogs.chapterActionTitle(targetCh.canonicalTitle)) },
             text = {
-                Text(wb.chapterActionBody(targetCh.chapterIndex))
+                Text(wb.dialogs.chapterActionBody(targetCh.chapterIndex))
             },
             confirmButton = {
                 Row(
@@ -692,7 +692,7 @@ fun BookWorkbenchDetailScreen(
                     ) {
                         Icon(Icons.Default.MenuBook, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text(wb.previewChapter)
+                        Text(wb.dialogs.previewChapter)
                     }
                     Button(
                         onClick = {
@@ -706,13 +706,13 @@ fun BookWorkbenchDetailScreen(
                     ) {
                         Icon(Icons.Default.Refresh, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text(wb.retranslateChapter)
+                        Text(wb.dialogs.retranslateChapter)
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { chapterActionTarget = null }) {
-                    Text(wb.cancel)
+                    Text(wb.dialogs.cancel)
                 }
             }
         )
@@ -2405,7 +2405,7 @@ private fun PromptProfileEditorDialog(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    TextButton(onClick = onDismiss) { Text(wb.cancel) }
+                    TextButton(onClick = onDismiss) { Text(wb.dialogs.cancel) }
                     Spacer(Modifier.width(6.dp))
                     Button(onClick = { onSave(workingDraft) }, enabled = canEdit, shape = ButtonShape) {
                         Icon(Icons.Default.Save, null, Modifier.size(17.dp))
@@ -3248,7 +3248,7 @@ private fun GlossaryManagementTab(
                             pendingImport = null
                         }
                     }) { Text(wb.skip) }
-                    TextButton(onClick = { conflict = null; pendingImport = null }) { Text(wb.cancel) }
+                    TextButton(onClick = { conflict = null; pendingImport = null }) { Text(wb.dialogs.cancel) }
                 }
             }
         )
@@ -3415,7 +3415,7 @@ private fun CandidateEditDialog(
                 Text(wb.confirmAndImport)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(wb.cancel) } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(wb.dialogs.cancel) } }
     )
 }
 
@@ -3942,7 +3942,7 @@ private fun CreateEditionDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(wb.cancel) }
+            TextButton(onClick = onDismiss) { Text(wb.dialogs.cancel) }
         }
     )
 }
@@ -4146,7 +4146,7 @@ private fun TermScannerDialog(
         },
         dismissButton = {
             if (!isScanning && scanCompletedCount == null) {
-                TextButton(onClick = onDismiss) { Text(wb.cancel) }
+                TextButton(onClick = onDismiss) { Text(wb.dialogs.cancel) }
             }
         }
     )
@@ -4261,7 +4261,7 @@ private fun AddLexiconEntryDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(wb.cancel) }
+            TextButton(onClick = onDismiss) { Text(wb.dialogs.cancel) }
         }
     )
 }
