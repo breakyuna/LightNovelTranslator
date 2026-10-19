@@ -1,7 +1,6 @@
 package com.breakyuna.noveltranslator.core.quality
 
 import com.breakyuna.noveltranslator.core.text.TextProtectionRule
-import kotlin.text.toPattern
 
 /** 校验问题严重级。ERROR 阻止保存，WARNING 只提示。 */
 enum class QualityRuleIssueSeverity { ERROR, WARNING }
@@ -149,6 +148,46 @@ object QualityRuleValidator {
     fun blockingIssues(issues: List<QualityRuleIssue>): List<QualityRuleIssue> =
         issues.filter { it.severity == QualityRuleIssueSeverity.ERROR }
 
+    /**
+     * 统计正则里的捕获组数量（纯 Kotlin 扫描，不依赖 java.util.regex.Pattern）。
+     *
+     * 规则：`(?:` `(?=` `(?!` `(?<=` `(?<!` 为非捕获；`(?<name>` / `(?P<name>` 与普通 `(` 为捕获。
+     * 跳过字符类内的括号与反斜杠转义。
+     */
+    internal fun countCapturingGroups(pattern: String): Int {
+        var count = 0
+        var inCharClass = false
+        var index = 0
+        while (index < pattern.length) {
+            when (val ch = pattern[index]) {
+                '\\' -> index++ // 跳过被转义的下一个字符
+                '[' -> if (!inCharClass) inCharClass = true
+                ']' -> if (inCharClass) inCharClass = false
+                '(' -> if (!inCharClass) {
+                    val next = pattern.getOrNull(index + 1)
+                    if (next == null) {
+                        count++
+                    } else if (next != '?') {
+                        count++
+                    } else {
+                        when (val after = pattern.getOrNull(index + 2)) {
+                            ':', '=', '!' -> Unit // (?: (?= (?! 非捕获
+                            '<' -> {
+                                // (?<= (?<! 非捕获；(?<name> 捕获
+                                val third = pattern.getOrNull(index + 3)
+                                if (third != '=' && third != '!') count++
+                            }
+                            'P' -> count++ // (?P<name> 捕获
+                            else -> Unit
+                        }
+                    }
+                }
+            }
+            index++
+        }
+        return count
+    }
+
     private fun commonRegexWarnings(
         index: Int,
         pattern: String,
@@ -180,7 +219,7 @@ object QualityRuleValidator {
         regex: Regex
     ): List<QualityRuleIssue> {
         val issues = mutableListOf<QualityRuleIssue>()
-        val groupCount = runCatching { regex.toPattern().groupCount() }.getOrDefault(0)
+        val groupCount = countCapturingGroups(pattern)
         val definedNames = NAMED_GROUP_PATTERN.findAll(pattern)
             .mapNotNull { it.groups[1]?.value ?: it.groups[2]?.value }
             .toSet()
