@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.ui.navigation
 
 import android.app.Application
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.test.ExperimentalComposeUiApi
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -44,6 +45,7 @@ import org.robolectric.annotation.GraphicsMode
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = RobolectricDeviceQualifiers.Pixel8, sdk = [34])
+@OptIn(ExperimentalComposeUiApi::class)
 class ReaderWorkbenchNavigationTest {
     @get:Rule
     val composeRule = createComposeRule()
