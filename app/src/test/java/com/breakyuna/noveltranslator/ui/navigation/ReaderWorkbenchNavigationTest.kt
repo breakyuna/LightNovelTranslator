@@ -24,9 +24,11 @@ import com.breakyuna.noveltranslator.ui.screens.workspace.BookWorkbenchDetailScr
 import com.breakyuna.noveltranslator.ui.theme.NovelTranslatorTheme
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
+import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -62,11 +64,35 @@ class ReaderWorkbenchNavigationTest {
 
     private lateinit var viewModel: AppViewModel
 
+    private var previousHandler: Thread.UncaughtExceptionHandler? = null
+
     @Before
     fun setUp() = runBlocking {
+        // 诊断：本测试渲染整个 App（ViewModel + Room + 全导航图），是套件里唯一会触发
+        // AppViewModel 协程/Flow 的测试。未捕获异常会被 CrashReporter 的处理器带走
+        // （exit code，堆栈不进 Gradle 控制台），这里先落盘到 artifact 上传目录。
+        previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            runCatching {
+                File("build/test-results").mkdirs()
+                File("build/test-results/uncaught-exception.txt").writeText(
+                    buildString {
+                        appendLine("thread=${thread.name}")
+                        appendLine("time=${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
+                        appendLine(error.stackTraceToString())
+                    }
+                )
+            }
+            previousHandler?.uncaughtException(thread, error)
+        }
         val context = ApplicationProvider.getApplicationContext<Application>()
         viewModel = AppViewModel(context)
         seed(context)
+    }
+
+    @After
+    fun tearDown() {
+        Thread.setDefaultUncaughtExceptionHandler(previousHandler)
     }
 
     @Test

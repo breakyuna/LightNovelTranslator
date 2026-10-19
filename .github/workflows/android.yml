@@ -68,8 +68,8 @@ jobs:
         with:
           name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            app/build/test-results/testDebugUnitTest/
-            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/
+            app/build/reports/tests/
             build/reports/profile/
           if-no-files-found: ignore
           retention-days: 7
