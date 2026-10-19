@@ -77,7 +77,7 @@ class ReaderWorkbenchNavigationTest {
         assertEquals("workbench/7", AppDestination.BookWorkbench.createRoute(7L))
     }
 
-    @Test
+    @Test(timeout = 60_000L)
     fun readerTopBarWorkbenchActionOpensTheWorkbenchWithoutCrashing() {
         renderApp()
 
@@ -92,7 +92,7 @@ class ReaderWorkbenchNavigationTest {
         composeRule.waitUntilAtLeastOneExists(hasText(bookTitle, substring = true), timeoutMillis = 5_000)
     }
 
-    @Test
+    @Test(timeout = 60_000L)
     fun workbenchBackAndForthKeepsTheReaderUsable() {
         renderApp()
 
@@ -128,7 +128,7 @@ class ReaderWorkbenchNavigationTest {
      * Mirrors what [AppNavigation] hands to the two screens, so the wiring itself is part of
      * the regression surface: a missing or mistyped argument fails here first.
      */
-    @Test
+    @Test(timeout = 60_000L)
     fun screensAcceptTheArgumentsAppNavigationPasses() {
         composeRule.setContent {
             NovelTranslatorTheme {

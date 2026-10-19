@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import java.io.File
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -81,7 +82,10 @@ class CrashReporterTest {
         assertTrue(File(directory, CrashReporter.LAST_CRASH_FILE_NAME).exists())
 
         // A new process sees an empty in-memory logger; only the file survives.
+        // CrashReporter 与 SystemLogger 各有独立的内存缓冲，重启模拟要两个都重置——
+        // 上面的 CRASH_SETUP 日志还留在 SystemLogger 的内存里。
         CrashReporter.resetForTests()
+        SystemLogger.resetForTests()
         assertTrue(SystemLogger.logsFlow.value.isEmpty())
         assertNull(runBlocking { CrashReporter.readLastCrash() })
 
@@ -162,12 +166,12 @@ class CrashReporterTest {
         CrashReporter.install(context)
         CrashReporter.reportNonFatal(Thread.currentThread(), IllegalStateException("observed"))
 
+        // StateFlow 不会 complete，直接 collect 会把 runBlocking 永久挂住（该测试此前
+        // 从未真正执行过——更早的 fatalCrash 测试会打死 JVM）。用 first 取首个非空发射。
         val observed = runBlocking {
-            var value: CrashRecord? = null
-            CrashReporter.observeLastCrash().collect { value = it }
-            value
+            CrashReporter.observeLastCrash().first { it != null }
         }
-        assertEquals("observed", observed?.exceptionMessage)
+        assertEquals("observed", observed.exceptionMessage)
     }
 
     @Test
