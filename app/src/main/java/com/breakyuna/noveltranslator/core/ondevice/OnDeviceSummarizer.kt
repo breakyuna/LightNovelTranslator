@@ -171,9 +171,9 @@ class OnDeviceSummarizer(private val appContext: Context) {
         future.addListener(
             {
                 try {
-                    continuation.resume(future.get().summary)
+                    continuation.resumeWith(Result.success(future.get().summary))
                 } catch (e: Throwable) {
-                    if (continuation.isActive) continuation.resumeWithException(e)
+                    if (continuation.isActive) continuation.resumeWith(Result.failure(e))
                 }
             },
             { command -> command.run() }

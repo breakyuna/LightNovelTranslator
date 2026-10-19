@@ -118,10 +118,13 @@ class OnDevicePromptClient {
     }
 
     /**
-     * Gemini Nano 基础模型名（如 nano-v3）。ML Kit 的 GenerativeModel.baseModelName 是 suspend
-     * 函数；不可用时返回 null，由探测层决定如何展示。
+     * Gemini Nano 基础模型名（如 nano-v3）。
+     *
+     * 注意：ML Kit 的 GenerativeModel 以 Kotlin 编译，但 `getBaseModelName` 带 getter 式命名，
+     * Kotlin 侧保留原方法名（不像 `checkStatus` 那样去前缀），因此调用写作 `getBaseModelName()`。
+     * 不可用时返回 null，由探测层决定如何展示。
      */
-    suspend fun baseModelName(): String? = runCatching { model.baseModelName() }.getOrNull()
+    suspend fun baseModelName(): String? = runCatching { model.getBaseModelName() }.getOrNull()
 
     private fun buildRequest(prompt: String, config: OnDevicePromptConfig): GenerateContentRequest =
         GenerateContentRequest.Builder(TextPart(prompt)).apply {

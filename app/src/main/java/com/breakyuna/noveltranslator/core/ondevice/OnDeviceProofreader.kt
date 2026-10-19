@@ -156,10 +156,10 @@ class OnDeviceProofreader(private val appContext: Context) {
                             )
                         } else {
                             // getResults() 的真实返回类型是实现 List 的内部类，转成标准 List 再交出。
-                            continuation.resume(value.results?.toList().orEmpty())
+                            continuation.resumeWith(Result.success(value.results?.toList().orEmpty()))
                         }
                     } catch (e: Throwable) {
-                        if (continuation.isActive) continuation.resumeWithException(e)
+                        if (continuation.isActive) continuation.resumeWith(Result.failure(e))
                     }
                 },
                 { command -> command.run() }
