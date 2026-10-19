@@ -73,6 +73,9 @@ android {
       // Robolectric 跨 fork 安全（各自独立 JVM + 共享 android-all 缓存）。
       all { test ->
         test.maxParallelForks = (Runtime.getRuntime().availableProcessors()).coerceIn(1, 8)
+        // 默认 512MB 堆对“全 App 导航 + Compose + ViewModel + Room”的重型测试偏小，
+        // 提到 1g（4 fork × 1g + daemon 4g，16GB runner 仍宽裕）。
+        test.maxHeapSize = "1g"
       }
     }
   }

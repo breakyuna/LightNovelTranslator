@@ -33,7 +33,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import org.robolectric.annotation.GraphicsMode
 
 /**
  * Regression guard for "opening the workbench from the reader crashes the app".
@@ -43,7 +42,10 @@ import org.robolectric.annotation.GraphicsMode
  * here reproduces the user-visible crash instead of only asserting on parameter plumbing.
  */
 @RunWith(RobolectricTestRunner::class)
-@GraphicsMode(GraphicsMode.Mode.NATIVE)
+// 不用 @GraphicsMode(NATIVE)：本测试只做语义断言（点击/文本存在性），不需要像素级渲染；
+// NATIVE 模式为每个视图创建原生 surface，在 4 fork 并发的 CI 上是压垮测试 JVM 的主因
+// （run #94/#95 均在此类测试上 exit value 10 崩溃，去掉后与 GreetingScreenshotTest
+// 各司其职：那个才需要 NATIVE）。
 @Config(qualifiers = RobolectricDeviceQualifiers.Pixel8, sdk = [34])
 @OptIn(ExperimentalTestApi::class)
 class ReaderWorkbenchNavigationTest {
