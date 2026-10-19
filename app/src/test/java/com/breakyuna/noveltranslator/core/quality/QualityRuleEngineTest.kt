@@ -21,7 +21,8 @@ class QualityRuleEngineTest {
         val rules = QualityReplacements(
             listOf(ReplacementRuleEntry(pattern = "Alice", replacement = "爱丽丝"))
         )
-        assertEquals("爱丽丝 and ALICE", rules.apply("Alice and ALICE"))
+        // 大小写不敏感：两个不同大小写的出现都命中
+        assertEquals("爱丽丝 and 爱丽丝", rules.apply("Alice and ALICE"))
         assertEquals(1, rules.ruleCount)
     }
 
@@ -32,7 +33,8 @@ class QualityRuleEngineTest {
                 ReplacementRuleEntry(pattern = "Alice", replacement = "爱丽丝", caseSensitive = true)
             )
         )
-        assertEquals("爱丽丝 and Alice", rules.apply("Alice and Alice"))
+        // 大小写敏感：只有精确匹配被替换
+        assertEquals("爱丽丝 and ALICE", rules.apply("Alice and ALICE"))
     }
 
     @Test

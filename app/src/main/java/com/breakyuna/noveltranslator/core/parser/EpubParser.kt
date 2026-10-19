@@ -123,7 +123,10 @@ object EpubParser {
             val opfEntry = (opfPath ?: entryFor("OEBPS/content.opf")?.name
                 ?: entries.keys.firstOrNull { it.endsWith(".opf", ignoreCase = true) })
                 ?.let { path -> entryFor(path) }
-                ?: error(
+                // 与条目数 / 解压量 / 无正文等结构性错误保持同一异常类型：
+                // require() 系列抛 IllegalArgumentException，这里曾用 error() 抛
+                // IllegalStateException，调用方无法用统一方式识别"包结构无效"。
+                ?: throw IllegalArgumentException(
                     "EPUB 包结构无效：${containerProblem ?: "未找到 OPF 清单"}，且包内没有任何 .opf 文件"
                 )
             if (containerProblem != null) {

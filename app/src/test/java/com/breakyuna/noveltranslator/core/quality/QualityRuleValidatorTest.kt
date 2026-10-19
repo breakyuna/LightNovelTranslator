@@ -55,7 +55,7 @@ class QualityRuleValidatorTest {
         val issues = QualityRuleValidator.validateEntry(
             QualityRuleType.TEXT_PRESERVE,
             0,
-            TextPreserveRuleEntry(src = " +")
+            TextPreserveRuleEntry(src = "[ ]+")
         )
         assertTrue(issues.any { it.severity == QualityRuleIssueSeverity.WARNING && it.message.contains("空白") })
     }

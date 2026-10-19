@@ -127,7 +127,8 @@ object GlossaryIo {
             else -> buildString {
                 append("[\n")
                 entries.forEachIndexed { index, entry ->
-                    append(jsonEntryObject(entry, fieldIndent = "    ", closingIndent = "  "))
+                    // 排版与内置预设（assets/glossary/presets）逐字节一致：对象括号 4 空格、字段 8 空格
+                    append("    ").append(jsonEntryObject(entry, fieldIndent = "        ", closingIndent = "    "))
                     append(if (index == entries.lastIndex) "\n" else ",\n")
                 }
                 append("]")
@@ -383,11 +384,7 @@ object GlossaryIo {
             "targetTerm" to jsonString(entry.targetTerm),
             "kind" to jsonString(entry.kind),
             "category" to jsonString(entry.category),
-            "aliases" to if (entry.aliases.isEmpty()) {
-                "[]"
-            } else {
-                entry.aliases.joinToString(", ", "[", "]") { jsonString(it) }
-            },
+            "aliases" to jsonAliases(entry.aliases, fieldIndent),
             "notes" to jsonString(entry.notes),
             "caseSensitive" to entry.caseSensitive.toString(),
             "exactMatch" to entry.exactMatch.toString(),
@@ -405,6 +402,27 @@ object GlossaryIo {
             append(closingIndent).append("}")
         }
     }
+
+    /**
+     * `aliases` 字段排版：空列表保持行内 `[]`；pretty 模式每项一行，缩进与内置预设一致，
+     * 便于导出文件与预设互相 diff。
+     */
+    private fun jsonAliases(aliases: List<String>, fieldIndent: String): String =
+        if (aliases.isEmpty()) {
+            "[]"
+        } else if (fieldIndent.isEmpty()) {
+            aliases.joinToString(", ", "[", "]") { jsonString(it) }
+        } else {
+            val itemIndent = fieldIndent + "    "
+            buildString {
+                append("[\n")
+                aliases.forEachIndexed { index, alias ->
+                    append(itemIndent).append(jsonString(alias))
+                    append(if (index == aliases.lastIndex) "\n" else ",\n")
+                }
+                append(fieldIndent).append("]")
+            }
+        }
 
     private fun jsonString(value: String): String {
         val out = StringBuilder(value.length + 2)

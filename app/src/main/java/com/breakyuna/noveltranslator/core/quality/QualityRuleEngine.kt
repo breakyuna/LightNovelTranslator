@@ -45,12 +45,31 @@ internal fun compileRulePattern(pattern: String, caseSensitive: Boolean = false)
 /** 把若干模式按定义序合并成一条 alternation；单条非法时整组返回 null。 */
 internal fun compileAlternation(patterns: List<String>, caseSensitive: Boolean = false): Regex? {
     if (patterns.isEmpty()) return null
-    // 每条模式包一层 (?:...)：隔离用户模式里的内联标志与顶层 alternation，
-    // 避免 `(?i)` 之类泄漏到后续分支，也避免量化作用域歧义。
-    val source = patterns.joinToString("|") { "(?:$it)" }
+    // 每条模式包一层 (?:...)：隔离用户模式里的顶层 alternation 与量化作用域歧义；
+    // 前缀内联标志另行改写为标志作用域组（见 isolateLeadingInlineFlags），
+    // 否则 Java/ICU 正则里 (?i) 会从其位置作用到所在组剩余部分，泄漏到后续分支。
+    val source = patterns.joinToString("|") { "(?:${isolateLeadingInlineFlags(it)})" }
     return runCatching {
         Regex(source, if (caseSensitive) emptySet() else setOf(RegexOption.IGNORE_CASE))
     }.getOrNull()
+}
+
+/** 匹配“前缀内联标志”形式：`(?flags)rest`；不含 `<` `:` `=` `!` 所以不会误伤命名组与环视。 */
+private val LEADING_INLINE_FLAGS = Regex("""^\(\?([a-zA-Z]+)\)(.*)$""", RegexOption.DOT_MATCHES_ALL)
+
+/**
+ * 把模式前缀的内联标志改写为标志作用域组：`(?i)foo` → `(?i:foo)`。
+ *
+ * Java/ICU 正则中 `(?i)` 作用于**所在组的剩余部分**，直接拼接 alternation 会让
+ * 标志泄漏到后续分支（测试 `compileAlternationIsolatesInlineFlags` 守着这一点）。
+ * 非前缀位置的标志不重写（保持原样，调用方应避免依赖该模式）。
+ */
+private fun isolateLeadingInlineFlags(pattern: String): String {
+    val match = LEADING_INLINE_FLAGS.matchEntire(pattern) ?: return pattern
+    val flags = match.groupValues[1]
+    val rest = match.groupValues[2]
+    if (rest.isEmpty()) return pattern
+    return "(?$flags:$rest)"
 }
 
 /**

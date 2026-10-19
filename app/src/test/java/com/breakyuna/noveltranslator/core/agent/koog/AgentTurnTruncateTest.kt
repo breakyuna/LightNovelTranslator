@@ -81,7 +81,11 @@ class AgentTurnTruncateTest {
             listOf(AgentRole.USER, AgentRole.TOOL_CALL, AgentRole.TOOL_RESULT, AgentRole.ASSISTANT),
             truncated.map { it.role }
         )
-        assertEquals(listOf("u2", "get_recent_log", "get_recent_log", "a2"), truncated.map { it.content })
+        // content 由本文件的助手函数生成：toolCall 为“调用 X”、toolResult 为“X 返回”
+        assertEquals(
+            listOf("u2", "调用 get_recent_log", "get_recent_log 返回", "a2"),
+            truncated.map { it.content }
+        )
         assertTrue(truncated[2].isError)
     }
 

@@ -66,7 +66,16 @@ android {
     compose = true
     buildConfig = true
   }
-  testOptions { unitTests { isIncludeAndroidResources = true } }
+  testOptions {
+    unitTests {
+      isIncludeAndroidResources = true
+      // GitHub runner 4 核：多 fork 并行跑测试（含 Robolectric），CI 墙钟时间约降 4 倍。
+      // Robolectric 跨 fork 安全（各自独立 JVM + 共享 android-all 缓存）。
+      all { test ->
+        test.maxParallelForks = (Runtime.getRuntime().availableProcessors()).coerceIn(1, 8)
+      }
+    }
+  }
   sourceSets.getByName("test").assets.srcDir("$projectDir/schemas")
   dependenciesInfo {
     includeInApk = false

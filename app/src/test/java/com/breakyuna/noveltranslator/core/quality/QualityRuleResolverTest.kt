@@ -219,8 +219,8 @@ class QualityRuleResolverTest {
             )
         )
         val resolved = QualityRuleResolver(loadRuleSets = { rows }).resolveFromRows(rows)
-        // 字面量：点号按原样匹配，不匹配 "abc"
-        assertEquals("a.c abc", resolved.postReplacements!!.apply("a.c abc"))
+        // 字面量：点号按原样匹配（不匹配 "abc"），命中的 "a.c" 被替换
+        assertEquals("X abc", resolved.postReplacements!!.apply("a.c abc"))
     }
 
     @Test

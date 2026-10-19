@@ -310,9 +310,10 @@ class AgentSessionTest {
 
     @Test
     fun multipleCallsInOneRoundExecuteInOrderAndShareOneResultMessage() = runTest {
-        val combined = callBlock("list_books", "{}") + "\n" + callBlock("get_recent_log", """{"limit":5}""")
+        val firstBlock = callBlock("list_books", "{}")
+        val secondBlock = callBlock("get_recent_log", """{"limit":5}""")
         val gateway = ScriptedGateway().enqueue(
-            result(combined, promptTokens = 50, completionTokens = 10),
+            result(firstBlock + "\n" + secondBlock, promptTokens = 50, completionTokens = 10),
             result("汇总完成", promptTokens = 40, completionTokens = 10)
         )
         val host = RecordingToolHost()
@@ -320,11 +321,35 @@ class AgentSessionTest {
 
         session.send("汇总一下")
 
+        // 同一轮内的多个调用按出现顺序串行执行
         assertEquals(listOf("list_books", "get_recent_log:null:5"), host.invocations)
-        val toolResults = session.state.value.messages.filter { it.role == AgentRole.TOOL_RESULT }
-        assertEquals(1, toolResults.size)
-        assertTrue(toolResults.single().content.contains("name=\"list_books\""))
-        assertTrue(toolResults.single().content.contains("name=\"get_recent_log\""))
+
+        val messages = session.state.value.messages
+        assertEquals(
+            listOf(
+                AgentRole.USER,
+                AgentRole.TOOL_CALL, AgentRole.TOOL_RESULT,
+                AgentRole.TOOL_CALL, AgentRole.TOOL_RESULT,
+                AgentRole.ASSISTANT
+            ),
+            messages.map { it.role }
+        )
+        // 每次调用各自落一条 TOOL_CALL / TOOL_RESULT（与持久化“各占一行”一致），
+        // content 保存送入模型的协议原文，供后续回合精确回放
+        val calls = messages.filter { it.role == AgentRole.TOOL_CALL }
+        assertEquals(listOf("list_books", "get_recent_log"), calls.map { it.toolName })
+        assertEquals(firstBlock, calls[0].content)
+        assertEquals(secondBlock, calls[1].content)
+        val toolResults = messages.filter { it.role == AgentRole.TOOL_RESULT }
+        assertEquals(listOf("list_books", "get_recent_log"), toolResults.map { it.toolName })
+        assertTrue(toolResults[0].content.contains("共 2 本书：A、B"))
+        assertTrue(toolResults[1].content.contains("日志 5 条"))
+        assertTrue(toolResults.all { !it.isError })
+
+        // 一轮内的全部结果合并成同一条用户消息回传模型：多个调用共享这一条结果消息
+        assertTrue(gateway.requests[1].userPrompt.contains("tool_result"))
+        assertTrue(gateway.requests[1].userPrompt.contains("共 2 本书：A、B"))
+        assertTrue(gateway.requests[1].userPrompt.contains("日志 5 条"))
         assertEquals(2, gateway.requests.size)
     }
 

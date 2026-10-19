@@ -40,7 +40,10 @@ class EpubTocParserTest {
 
         val entries = EpubTocParser.parseNav(html, "OEBPS/")
 
-        assertEquals(listOf("c1.xhtml", "c2.xhtml"), entries.map { it.docPath })
+        // docPath 契约是 zip 内规范路径（EpubTocEntry KDoc），navDir 前缀必须保留，
+        // 与 ignoresExternalLinksForSpineMatching 对同一 href("c1.xhtml") 的断言一致；
+        // EpubParser 也按 zip 条目名（如 "OEBPS/Text/c1.xhtml"）反查目录条目。
+        assertEquals(listOf("OEBPS/c1.xhtml", "OEBPS/c2.xhtml"), entries.map { it.docPath })
         assertEquals(listOf("第一章", "第二章"), entries.map { it.title })
     }
 

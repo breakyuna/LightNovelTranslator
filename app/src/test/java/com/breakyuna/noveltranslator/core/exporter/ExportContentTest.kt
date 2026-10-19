@@ -108,11 +108,11 @@ class ExportContentTest {
                 segment("原文一", "译文一"),
                 segment("原文二", null),
                 segment(null, "译文三"),
-                segment("空段", "   ")
+                segment("空段", "   ") // 译文空白 → 回退输出原文，不是空段
             ),
             ExportOptions()
         )
-        assertEquals(listOf("译文一", "原文二", "译文三"), blocks.map { it.text })
+        assertEquals(listOf("译文一", "原文二", "译文三", "空段"), blocks.map { it.text })
         assertTrue(blocks.none { it.isOriginal })
     }
 
@@ -170,8 +170,8 @@ class ExportContentTest {
     fun precheckCountsChaptersSegmentsFallbacksAndImages() {
         val (_, _, report) = precheckFixture()
         assertEquals(2, report.totalChapters)
-        assertEquals(5, report.totalSegments)
-        assertEquals(1, report.fallbackSegments)
+        assertEquals(6, report.totalSegments) // 两章共 6 段（含 1 个空段，按 KDoc 计入总数）
+        assertEquals(2, report.fallbackSegments) // 「世界」「missing.png」两段译文缺失，均回退为原文
         assertEquals(1, report.emptySegments)
         assertEquals(2, report.imageMarkers)
         assertEquals(1, report.missingImageMarkers)
@@ -180,7 +180,7 @@ class ExportContentTest {
                 "[IMG:a.png]插图".length + "[IMG:missing.png]图".length,
             report.estimatedCharacters
         )
-        assertEquals(1.0 / 5.0, report.missingTranslationRatio, 1e-9)
+        assertEquals(2.0 / 6.0, report.missingTranslationRatio, 1e-9)
         assertFalse(report.hasBlockingIssues)
         assertTrue(report.hasWarnings)
     }
@@ -189,8 +189,8 @@ class ExportContentTest {
     fun precheckSummaryMentionsCountsFallbackAndMissingImages() {
         val (_, _, report) = precheckFixture()
         val summary = report.summary()
-        assertTrue(summary.contains("共 2 章 / 5 段"))
-        assertTrue(summary.contains("译文缺失 1 段（20%）"))
+        assertTrue(summary.contains("共 2 章 / 6 段"))
+        assertTrue(summary.contains("译文缺失 2 段（33.3%）"))
         assertTrue(summary.contains("1 处图片标记"))
         assertTrue(summary.contains("空段落 1 段"))
     }
@@ -251,7 +251,8 @@ class ExportContentTest {
         assertEquals("a_b", ExportContent.safeFileName("a|b"))
         assertEquals("a_b", ExportContent.safeFileName("a/b"))
         assertEquals("a_b", ExportContent.safeFileName("a\\b"))
-        assertEquals("a_b", ExportContent.safeFileName("a\r\n\tb"))
+        // 与旧版 EditionExporter.safe 一致：逐字符替换，不合并连续下划线（对照下方 "///" → "___"）
+        assertEquals("a___b", ExportContent.safeFileName("a\r\n\tb"))
         assertEquals("edition", ExportContent.safeFileName(""))
         assertEquals("___", ExportContent.safeFileName("///"))
         assertEquals(70, ExportContent.safeFileName("x".repeat(200)).length)

@@ -47,7 +47,8 @@ class AgentToolProtocolTest {
         val parsed = AgentToolProtocol.parseAssistantResponse(text)
 
         assertEquals(1, parsed.calls.size)
-        assertEquals("我先查一下书架。\n然后告诉你。", parsed.visibleText)
+        // 只摘掉调用块本身：块前与块后的换行都保留，仅对结果整体去首尾空白
+        assertEquals("我先查一下书架。\n\n然后告诉你。", parsed.visibleText)
     }
 
     @Test
