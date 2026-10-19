@@ -125,7 +125,17 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
-  implementation(libs.koog.agents)
+  implementation(libs.koog.agents) {
+    // Koog's transitive jackson-module-kotlin 2.21.3 references API 26+ APIs that D8 refuses
+    // to dex for minSdk 24 (core library desugaring does not cover them). Jackson is only used
+    // by Koog's snapshot/persistence features, which this app does not use (persistence is
+    // Room-backed). If a future Koog feature needs it, revisit: either vendor a minSdk-24
+    // compatible jackson or raise minSdk.
+    exclude(group = "com.fasterxml.jackson.core")
+    exclude(group = "com.fasterxml.jackson.module")
+    exclude(group = "com.fasterxml.jackson.databind")
+    exclude(group = "com.fasterxml.jackson.annotation")
+  }
   implementation(libs.jsoup)
   coreLibraryDesugaring(libs.desugar.jdk.libs)
   // ML Kit GenAI requires Android API 26+; see tools:overrideLibrary in AndroidManifest.xml.

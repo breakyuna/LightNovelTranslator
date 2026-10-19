@@ -186,7 +186,7 @@ object GlossaryIo {
 
         val entries = mutableListOf<GlossaryTransferEntry>()
         for (item in items) {
-            if (item !is JsonNode.JsonObject) {
+            if (item !is JsonObject) {
                 errors += GlossaryImportError(item.line, "条目必须是 JSON 对象")
                 continue
             }
@@ -269,22 +269,22 @@ object GlossaryIo {
     }
 
     private fun extractEntryArray(root: JsonNode): List<JsonNode>? = when (root) {
-        is JsonNode.JsonArray -> root.items
-        is JsonNode.JsonObject -> findArrayField(root, depth = 0)?.items
+        is JsonArray -> root.items
+        is JsonObject -> findArrayField(root, depth = 0)?.items
         else -> null
     }
 
     /** Preferred wrapper keys first, then any array-valued field, so `{"glossary": [...]}` works. */
-    private fun findArrayField(node: JsonNode.JsonObject, depth: Int): JsonNode.JsonArray? {
+    private fun findArrayField(node: JsonObject, depth: Int): JsonArray? {
         if (depth > 3) return null
         for (key in WRAPPER_ARRAY_KEYS) {
             val value = node.fields.entries.firstOrNull { it.key.lowercase(Locale.ROOT) == key }?.value
-            if (value is JsonNode.JsonArray) return value
+            if (value is JsonArray) return value
         }
         for (value in node.fields.values) {
             when (value) {
-                is JsonNode.JsonArray -> return value
-                is JsonNode.JsonObject -> findArrayField(value, depth + 1)?.let { return it }
+                is JsonArray -> return value
+                is JsonObject -> findArrayField(value, depth + 1)?.let { return it }
                 else -> Unit
             }
         }
@@ -292,7 +292,7 @@ object GlossaryIo {
     }
 
     private fun readEntry(
-        objectNode: JsonNode.JsonObject,
+        objectNode: JsonObject,
         errors: MutableList<GlossaryImportError>
     ): GlossaryTransferEntry? {
         val fields = objectNode.fields
@@ -321,16 +321,16 @@ object GlossaryIo {
         }
         val aliasNode = field(ALIAS_KEYS)
         val aliases = when (aliasNode) {
-            is JsonNode.JsonArray -> aliasNode.items.mapNotNull { item ->
+            is JsonArray -> aliasNode.items.mapNotNull { item ->
                 when (item) {
-                    is JsonNode.JsonString -> item.value.trim().takeIf { it.isNotEmpty() }
+                    is JsonString -> item.value.trim().takeIf { it.isNotEmpty() }
                     else -> {
                         errors += GlossaryImportError(item.line, "aliases 数组包含非字符串项，已忽略")
                         null
                     }
                 }
             }
-            is JsonNode.JsonString ->
+            is JsonString ->
                 aliasNode.value.split(',', ';', '|').map { it.trim() }.filter { it.isNotEmpty() }
             else -> emptyList()
         }
@@ -358,22 +358,22 @@ object GlossaryIo {
     /** Coerces any scalar node to text; non-scalars (objects/arrays) yield an empty string. */
     private fun scalarText(node: JsonNode?): String = when (node) {
         null -> ""
-        is JsonNode.JsonString -> node.value
-        is JsonNode.JsonNumber -> node.raw
-        is JsonNode.JsonBoolean -> node.value.toString()
-        is JsonNode.JsonNull -> ""
+        is JsonString -> node.value
+        is JsonNumber -> node.raw
+        is JsonBoolean -> node.value.toString()
+        is JsonNull -> ""
         else -> "" // JsonObject / JsonArray 不是标量
     }
 
     private fun booleanField(node: JsonNode?, defaultValue: Boolean): Boolean = when (node) {
         null -> defaultValue
-        is JsonNode.JsonBoolean -> node.value
-        is JsonNode.JsonString -> when (node.value.trim().lowercase(Locale.ROOT)) {
+        is JsonBoolean -> node.value
+        is JsonString -> when (node.value.trim().lowercase(Locale.ROOT)) {
             "true", "1", "yes" -> true
             "false", "0", "no" -> false
             else -> defaultValue
         }
-        is JsonNode.JsonNumber -> node.raw.toDoubleOrNull()?.let { it != 0.0 } ?: defaultValue
+        is JsonNumber -> node.raw.toDoubleOrNull()?.let { it != 0.0 } ?: defaultValue
         else -> defaultValue
     }
 
