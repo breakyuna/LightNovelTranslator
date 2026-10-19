@@ -24,7 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.breakyuna.noveltranslator.core.translation.TranslationContinuity
-import com.breakyuna.noveltranslator.core.translation.TranslationMode
+import com.breakyuna.noveltranslator.data.model.TranslationMode
 import com.breakyuna.noveltranslator.data.model.TranslationProjectV2Entity
 import com.breakyuna.noveltranslator.ui.components.apple.AppDivider
 import com.breakyuna.noveltranslator.ui.components.apple.AppPrimaryButton

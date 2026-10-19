@@ -52,7 +52,7 @@ class InMemoryAgentSessionStore : AgentSessionStore {
     }
 
     override suspend fun updateMessageContent(messageId: Long, content: String) = synchronized(lock) {
-        messagesBySession.forEach { messages ->
+        messagesBySession.values.forEach { messages ->
             val index = messages.indexOfFirst { it.id == messageId }
             if (index >= 0) {
                 messages[index] = messages[index].copy(content = content)

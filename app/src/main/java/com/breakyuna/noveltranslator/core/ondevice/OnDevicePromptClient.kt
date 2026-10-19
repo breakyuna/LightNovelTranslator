@@ -6,7 +6,7 @@ import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
 import com.google.mlkit.genai.prompt.TextPart
 import kotlin.coroutines.EmptyCoroutineContext
-import kotlinx.coroutines.CoroutineContext
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -119,10 +119,11 @@ class OnDevicePromptClient {
 
     private fun buildRequest(prompt: String, config: OnDevicePromptConfig): GenerateContentRequest =
         GenerateContentRequest.Builder(TextPart(prompt)).apply {
-            config.temperature?.let { setTemperature(it) }
-            config.seed?.let { setSeed(it) }
-            config.topK?.let { setTopK(it) }
-            config.candidateCount?.let { setCandidateCount(it) }
-            config.maxOutputTokens?.let { setMaxOutputTokens(it) }
+            // Kotlin 属性语法（官方 DSL 写法）；底层是 Java setter(java.lang.Float/Integer)。
+            config.temperature?.let { temperature = it }
+            config.seed?.let { seed = it }
+            config.topK?.let { topK = it }
+            config.candidateCount?.let { candidateCount = it }
+            config.maxOutputTokens?.let { maxOutputTokens = it }
         }.build()
 }

@@ -146,7 +146,7 @@ object EpubHtmlExtractor {
         fun walkChildren(parent: Node) {
             for (node in parent.childNodes()) {
                 when (node) {
-                    is TextNode -> current.append(node.wholeText())
+                    is TextNode -> current.append(node.wholeText)
                     is Element -> walkElement(node)
                     else -> Unit // Comment / DocumentType / DataNode 不产生正文
                 }

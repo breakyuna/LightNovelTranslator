@@ -56,7 +56,7 @@ data class QualityRuleSetEntity(
 
 /** 槽位存储键常量，供 DAO 查询与 UI 直接引用而不用拼字符串。 */
 object QualityRuleTypes {
-    const val TEXT_PRESERVE: String = QualityRuleType.TEXT_PRESERVE.storageKey
-    const val PRE_REPLACEMENT: String = QualityRuleType.PRE_REPLACEMENT.storageKey
-    const val POST_REPLACEMENT: String = QualityRuleType.POST_REPLACEMENT.storageKey
+    val TEXT_PRESERVE: String = QualityRuleType.TEXT_PRESERVE.storageKey
+    val PRE_REPLACEMENT: String = QualityRuleType.PRE_REPLACEMENT.storageKey
+    val POST_REPLACEMENT: String = QualityRuleType.POST_REPLACEMENT.storageKey
 }

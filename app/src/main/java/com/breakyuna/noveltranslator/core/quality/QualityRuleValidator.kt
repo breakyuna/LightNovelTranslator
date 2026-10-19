@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.core.quality
 
 import com.breakyuna.noveltranslator.core.text.TextProtectionRule
+import kotlin.text.toPattern
 
 /** 校验问题严重级。ERROR 阻止保存，WARNING 只提示。 */
 enum class QualityRuleIssueSeverity { ERROR, WARNING }
@@ -130,7 +131,7 @@ object QualityRuleValidator {
                     issues += replacementGroupWarnings(index, entry.replacement, pattern, regex)
                 } else {
                     // 字面量条目：只提示可能想用正则的明显元字符，不阻断。
-                    val meta = pattern.filter { it in ".*+?^${}()|[]\\" }
+                    val meta = pattern.filter { it in ".*+?^\${}()|[]\\" }
                     if (meta.isNotEmpty()) {
                         issues += warning(
                             index,

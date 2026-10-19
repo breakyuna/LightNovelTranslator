@@ -781,7 +781,7 @@ class BookTranslationEngine(
         chapters: List<LogicalChapterEntity>,
         batchIndex: Int,
         qualityRules: ResolvedQualityRules
-    ) {
+    ): Int {
         require(chapters.isNotEmpty()) { "Cannot process an empty draft unit" }
         val sourceChapters = chapters.mapIndexed { index, chapter ->
             loadSourceChapter(project, chapter, index + 1, qualityRules)
@@ -1794,7 +1794,7 @@ class BookTranslationEngine(
                 project.targetLanguage,
                 project.styleGuide
             )
-            val reviewUserPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, currentDraft)
+            val reviewUserPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, currentDraft, qualityRules.protectionEntries)
             val fixedTokens = (TokenBudgetPlanner.estimate(reviewSystemPrompt + reviewUserPrompt) - reviewTokens)
                 .coerceAtLeast(0)
             val budget = TokenBudgetPlanner.plan(
@@ -1902,7 +1902,7 @@ class BookTranslationEngine(
             project.targetLanguage,
             project.styleGuide
         )
-        val userPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, current)
+        val userPrompt = TranslationProtocol.polishUserPrompt(promptProfile, context, source, current, qualityRules.protectionEntries)
         val request = LlmRequest(
             provider = provider,
             systemPrompt = systemPrompt,

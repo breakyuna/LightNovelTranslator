@@ -5,17 +5,19 @@ package com.breakyuna.noveltranslator.core.glossary
  *
  * Line numbers exist so import errors can point the user at the offending entry
  * (`行号 + 原因`), which Moshi's `JsonReader` path/location strings do not provide.
+ *
+ * 子类为顶层声明（非嵌套）：Kotlin 中嵌套类不能在同一文件内被非限定引用。
  */
 internal sealed class JsonNode {
     abstract val line: Int
-
-    class JsonObject(override val line: Int, val fields: Map<String, JsonNode>) : JsonNode()
-    class JsonArray(override val line: Int, val items: List<JsonNode>) : JsonNode()
-    class JsonString(override val line: Int, val value: String) : JsonNode()
-    class JsonNumber(override val line: Int, val raw: String) : JsonNode()
-    class JsonBoolean(override val line: Int, val value: Boolean) : JsonNode()
-    class JsonNull(override val line: Int) : JsonNode()
 }
+
+internal class JsonObject(override val line: Int, val fields: Map<String, JsonNode>) : JsonNode()
+internal class JsonArray(override val line: Int, val items: List<JsonNode>) : JsonNode()
+internal class JsonString(override val line: Int, val value: String) : JsonNode()
+internal class JsonNumber(override val line: Int, val raw: String) : JsonNode()
+internal class JsonBoolean(override val line: Int, val value: Boolean) : JsonNode()
+internal class JsonNull(override val line: Int) : JsonNode()
 
 /** One parse failure with the 1-based line it occurred on. */
 internal data class JsonError(val line: Int, val message: String)
@@ -44,7 +46,7 @@ internal class LenientJson(private val text: String) {
         val root = try {
             parseValue()
         } catch (error: JsonSyntaxException) {
-            errors += JsonError(error.line, error.message)
+            errors += JsonError(error.line, error.reason)
             null
         }
         if (root != null) {
@@ -120,7 +122,7 @@ internal class LenientJson(private val text: String) {
             val element = try {
                 parseValue()
             } catch (error: JsonSyntaxException) {
-                errors += JsonError(error.line, error.message)
+                errors += JsonError(error.line, error.reason)
                 if (!resyncArrayElement()) break
                 continue
             }
@@ -260,7 +262,7 @@ internal class LenientJson(private val text: String) {
 
     private fun fail(message: String): Nothing = throw JsonSyntaxException(line, message)
 
-    private class JsonSyntaxException(val line: Int, message: String) : Exception(message)
+    private class JsonSyntaxException(val line: Int, val reason: String) : Exception(reason)
 
     companion object {
         /**

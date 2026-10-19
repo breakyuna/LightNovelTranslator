@@ -215,10 +215,11 @@ object TranslationProtocol {
         profile: PromptProfileDraft,
         context: ContextPackage,
         source: ProtocolChapter,
-        translated: ParsedTranslationChapter
+        translated: ParsedTranslationChapter,
+        protectionEntries: List<TextPreserveEntry> = QualityRuleDefaults.textPreserveBaseRules
     ): String = renderUserPromptTemplate(
         profile.polishUserPromptTemplate,
-        polishUserPrompt(context, source, translated)
+        polishUserPrompt(context, source, translated, protectionEntries)
     )
 
     fun repairUserPrompt(
@@ -284,7 +285,8 @@ object TranslationProtocol {
     fun polishUserPrompt(
         context: ContextPackage,
         source: ProtocolChapter,
-        translated: ParsedTranslationChapter
+        translated: ParsedTranslationChapter,
+        protectionEntries: List<TextPreserveEntry> = QualityRuleDefaults.textPreserveBaseRules
     ): String = buildString {
         val requestSource = source.segments.joinToString("\n") { it.originalText }
         val activeLexicon = context.matchedLexicon

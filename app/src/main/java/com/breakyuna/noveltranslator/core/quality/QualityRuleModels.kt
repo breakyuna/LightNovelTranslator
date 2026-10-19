@@ -71,7 +71,7 @@ sealed interface QualityRuleEntry {
  */
 data class TextPreserveRuleEntry(
     val src: String,
-    val note: String = ""
+    override val note: String = ""
 ) : QualityRuleEntry
 
 /**
@@ -85,7 +85,7 @@ data class ReplacementRuleEntry(
     val replacement: String,
     val isRegex: Boolean = false,
     val caseSensitive: Boolean = false,
-    val note: String = ""
+    override val note: String = ""
 ) : QualityRuleEntry
 
 fun TextPreserveRuleEntry.toTextPreserveEntry(): TextPreserveEntry =

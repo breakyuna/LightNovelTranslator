@@ -57,6 +57,10 @@ android {
     // Koog (ai.koog:koog-agents) ships Java 17 bytecode; AGP 9 already requires JDK 17.
     sourceCompatibility = JavaVersion.VERSION_17
     targetCompatibility = JavaVersion.VERSION_17
+    // Koog's transitive jackson-module-kotlin 2.21.x declares minSdk 26; desugaring lets D8
+    // dex it for this app's minSdk 24 (manifest tools:overrideLibrary only silences the merger,
+    // not the dexer).
+    isCoreLibraryDesugaringEnabled = true
   }
   buildFeatures {
     compose = true
@@ -123,6 +127,7 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   implementation(libs.koog.agents)
   implementation(libs.jsoup)
+  coreLibraryDesugaring(libs.desugar.jdk.libs)
   // ML Kit GenAI requires Android API 26+; see tools:overrideLibrary in AndroidManifest.xml.
   // All call sites must guard Build.VERSION.SDK_INT >= 26 and feature availability.
   implementation(libs.mlkit.genai.prompt)

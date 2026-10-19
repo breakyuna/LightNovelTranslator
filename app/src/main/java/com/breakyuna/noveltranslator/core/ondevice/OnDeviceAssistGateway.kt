@@ -2,7 +2,7 @@ package com.breakyuna.noveltranslator.core.ondevice
 
 import android.content.Context
 import kotlin.coroutines.EmptyCoroutineContext
-import kotlinx.coroutines.CoroutineContext
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.ensureActive
 
 /**
