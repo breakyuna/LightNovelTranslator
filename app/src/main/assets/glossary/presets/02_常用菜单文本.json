@@ -1,0 +1,138 @@
+[
+    {
+        "sourceTerm": "スキル",
+        "targetTerm": "技能",
+        "kind": "TERMINOLOGY",
+        "category": "SKILL",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "アイテム",
+        "targetTerm": "道具",
+        "kind": "TERMINOLOGY",
+        "category": "ITEM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "ステータス",
+        "targetTerm": "状态",
+        "kind": "TERMINOLOGY",
+        "category": "SKILL",
+        "aliases": [
+            "ステータス画面"
+        ],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "大事なもの",
+        "targetTerm": "重要物品",
+        "kind": "TERMINOLOGY",
+        "category": "ITEM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "セーブ",
+        "targetTerm": "保存",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "ロード",
+        "targetTerm": "读取",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "オプション",
+        "targetTerm": "选项",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "コンティニュー",
+        "targetTerm": "继续",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "ニューゲーム",
+        "targetTerm": "重新开始",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "タイトルへ",
+        "targetTerm": "返回标题",
+        "kind": "TERMINOLOGY",
+        "category": "CUSTOM",
+        "aliases": [],
+        "notes": "",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "ギルド",
+        "targetTerm": "公会",
+        "kind": "PROPER_NOUN",
+        "category": "LORE",
+        "aliases": [
+            "冒険者ギルド"
+        ],
+        "notes": "轻小说常见组织",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "冒険者",
+        "targetTerm": "冒险者",
+        "kind": "TERMINOLOGY",
+        "category": "LORE",
+        "aliases": [],
+        "notes": "轻小说常见身份",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    }
+]

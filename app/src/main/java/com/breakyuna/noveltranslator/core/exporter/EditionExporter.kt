@@ -9,7 +9,6 @@ import com.breakyuna.noveltranslator.data.model.SegmentRevisionEntity
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStreamWriter
-import java.util.Locale
 import java.util.UUID
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
@@ -19,9 +18,8 @@ import kotlinx.coroutines.ensureActive
 
 /** Exports the selected Edition's effective Revision text; TranslationProject is not an export boundary. */
 class EditionExporter(private val database: AppDatabase, private val files: BookFileManager) {
-    private data class ExportChapter(val index: Int, val title: String, val text: String)
 
-    suspend fun exportTxt(bookId: Long, editionId: Long): File {
+    suspend fun exportTxt(bookId: Long, editionId: Long, options: ExportOptions = ExportOptions()): File {
         val book = database.bookDao().getBook(bookId) ?: error("Book not found")
         val edition = database.bookDao().getEdition(editionId) ?: error("Edition not found")
         require(edition.bookId == bookId)
@@ -33,13 +31,14 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
                 forEachChapter(bookId, editionId) { chapter ->
                     currentCoroutineContext().ensureActive()
                     writer.append(chapter.title).append("\n\n")
-                        .append(chapter.text).append("\n\n\n")
+                    val blocks = ExportContent.chapterBlocks(chapter, options)
+                    writer.append(blocks.joinToString("\n\n") { it.text }).append("\n\n\n")
                 }
             }
         }
     }
 
-    suspend fun exportEpub(bookId: Long, editionId: Long): File {
+    suspend fun exportEpub(bookId: Long, editionId: Long, options: ExportOptions = ExportOptions()): File {
         val book = database.bookDao().getBook(bookId) ?: error("Book not found")
         val edition = database.bookDao().getEdition(editionId) ?: error("Edition not found")
         require(edition.bookId == bookId)
@@ -53,13 +52,16 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
             }
             zip.putNextEntry(mimeEntry); zip.write(mime); zip.closeEntry()
             add(zip, "META-INF/container.xml", """<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>""")
-            add(zip, "OEBPS/style.css", "body{font-family:serif;line-height:1.8;margin:5%}h1{text-align:center}p{text-indent:2em}img{max-width:100%;height:auto}")
+            // `.orig` distinguishes the 原文 side of bilingual pairs (LG uses an opacity style for the same purpose).
+            add(zip, "OEBPS/style.css", "body{font-family:serif;line-height:1.8;margin:5%}h1{text-align:center}p{text-indent:2em}img{max-width:100%;height:auto}.orig{color:#888;font-size:.9em}")
             val manifest = StringBuilder("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/><item id=\"css\" href=\"style.css\" media-type=\"text/css\"/>")
             val spine = StringBuilder()
             val nav = StringBuilder()
-            val images = files.sharedImagesDir(bookId).listFiles()
+            // includeImages=false keeps the export text-only: no image entries and no marker restoration.
+            val images = if (options.includeImages) files.sharedImagesDir(bookId).listFiles()
                 ?.filter { it.isFile && isSafeArchiveName(it.name) }
                 .orEmpty()
+            else emptyList()
             val imageNames = images.mapTo(hashSetOf()) { it.name }
             images.forEachIndexed { index, image ->
                 manifest.append("<item id=\"img$index\" href=\"images/${xml(image.name)}\" media-type=\"${mimeType(image.extension)}\"/>")
@@ -75,7 +77,7 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
                 manifest.append("<item id=\"$id\" href=\"$href\" media-type=\"application/xhtml+xml\"/>")
                 spine.append("<itemref idref=\"$id\"/>")
                 nav.append("<li><a href=\"$href\">${xml(chapter.title)}</a></li>")
-                addChapter(zip, "OEBPS/$href", chapter.title, chapter.text, imageNames)
+                addChapter(zip, "OEBPS/$href", chapter.title, ExportContent.chapterBlocks(chapter, options), imageNames)
             }
             add(zip, "OEBPS/nav.xhtml", xhtml(book.title, "<nav epub:type=\"toc\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><ol>$nav</ol></nav>"))
             add(zip, "OEBPS/content.opf", """<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">book-$bookId-edition-$editionId</dc:identifier><dc:title>${xml(book.title)}</dc:title><dc:creator>${xml(book.author)}</dc:creator><dc:language>${lang(edition.language)}</dc:language></metadata><manifest>$manifest</manifest><spine>$spine</spine></package>""")
@@ -83,10 +85,28 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
         }
     }
 
+    /**
+     * Read-only quality gate for a planned export: counts chapters/segments, per-segment fallback to
+     * the original Edition, empty segments, unresolved `[IMG:` markers and the estimated size.
+     * Pure statistics — nothing is repaired or written here.
+     */
+    suspend fun precheck(bookId: Long, editionId: Long): ExportPrecheckReport {
+        val book = database.bookDao().getBook(bookId) ?: error("Book not found")
+        val edition = database.bookDao().getEdition(editionId) ?: error("Edition not found")
+        require(edition.bookId == bookId)
+        val availableImages = files.sharedImagesDir(bookId).listFiles()
+            ?.filter { it.isFile && isSafeArchiveName(it.name) }
+            .orEmpty()
+            .mapTo(hashSetOf()) { it.name }
+        val chapters = mutableListOf<ExportChapterData>()
+        forEachChapter(bookId, editionId) { chapter -> chapters += chapter }
+        return ExportContent.precheck(chapters, availableImages)
+    }
+
     private suspend fun forEachChapter(
         bookId: Long,
         editionId: Long,
-        action: suspend (ExportChapter) -> Unit
+        action: suspend (ExportChapterData) -> Unit
     ) {
         val dao = database.bookDao()
         val book = dao.getBook(bookId) ?: error("Book not found")
@@ -130,13 +150,12 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
 
             val originalText = resolveChapter(originalChapter, logicalSegments)
             val targetText = resolveChapter(targetChapter, logicalSegments)
-            val text = logicalSegments.mapNotNull { segment ->
-                targetText[segment.id] ?: originalText[segment.id]
-            }.joinToString("\n\n")
-            action(ExportChapter(
+            action(ExportChapterData(
                 logical.chapterIndex,
                 targetChapter?.title ?: originalChapter?.title ?: logical.canonicalTitle,
-                text
+                logicalSegments.map { segment ->
+                    ExportSegment(originalText[segment.id], targetText[segment.id])
+                }
             ))
         }
     }
@@ -145,7 +164,7 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
         zip: ZipOutputStream,
         path: String,
         title: String,
-        text: String,
+        blocks: List<ExportBlock>,
         imageNames: Set<String>
     ) {
         zip.putNextEntry(ZipEntry(path))
@@ -155,12 +174,11 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
         writer.append("</title><link rel=\"stylesheet\" href=\"style.css\"/></head><body><h1>")
         writeXml(writer, title)
         writer.append("</h1>")
-        var paragraphStart = 0
-        for (separator in Regex("\\n\\s*\\n").findAll(text)) {
-            writeParagraph(writer, text, paragraphStart, separator.range.first, imageNames)
-            paragraphStart = separator.range.last + 1
+        for (block in blocks) {
+            for (paragraph in ExportContent.splitParagraphs(block.text)) {
+                writeParagraph(writer, paragraph, imageNames, block.isOriginal)
+            }
         }
-        writeParagraph(writer, text, paragraphStart, text.length, imageNames)
         writer.append("</body></html>")
         writer.flush()
         zip.closeEntry()
@@ -168,35 +186,32 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
 
     private fun writeParagraph(
         writer: OutputStreamWriter,
-        text: String,
-        rawStart: Int,
-        rawEnd: Int,
-        imageNames: Set<String>
+        paragraph: String,
+        imageNames: Set<String>,
+        original: Boolean
     ) {
-        var start = rawStart.coerceIn(0, text.length)
-        var end = rawEnd.coerceIn(start, text.length)
-        while (start < end && text[start].isWhitespace()) start++
-        while (end > start && text[end - 1].isWhitespace()) end--
-        if (start >= end) return
-
+        val start = 0
+        val end = paragraph.length
         val imagePrefix = "[IMG:"
         val imageName = if (end - start > imagePrefix.length + 1 &&
-            text.regionMatches(start, imagePrefix, 0, imagePrefix.length) &&
-            text[end - 1] == ']'
+            paragraph.regionMatches(start, imagePrefix, 0, imagePrefix.length) &&
+            paragraph[end - 1] == ']'
         ) {
-            File(text.substring(start + imagePrefix.length, end - 1)).name
+            File(paragraph.substring(start + imagePrefix.length, end - 1)).name
         } else {
             null
         }
         val isImage = end - start > imagePrefix.length + 1 &&
             imageName != null && imageName in imageNames
-        writer.append("<p>")
+        writer.append("<p")
+        if (original) writer.append(" class=\"orig\"")
+        writer.append(">")
         if (isImage) {
             writer.append("<img src=\"images/")
             writeXml(writer, imageName!!)
             writer.append("\" alt=\"illustration\"/>")
         } else {
-            writeXml(writer, text, start, end)
+            writeXml(writer, paragraph, start, end)
         }
         writer.append("</p>")
     }
@@ -255,19 +270,10 @@ class EditionExporter(private val database: AppDatabase, private val files: Book
     private fun add(zip: ZipOutputStream, path: String, text: String) = add(zip, path, text.toByteArray(Charsets.UTF_8))
     private fun add(zip: ZipOutputStream, path: String, bytes: ByteArray) { zip.putNextEntry(ZipEntry(path)); zip.write(bytes); zip.closeEntry() }
     private fun xhtml(title: String, body: String) = """<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>${xml(title)}</title><link rel="stylesheet" href="style.css"/></head><body>$body</body></html>"""
-    private fun xml(value: String) = value
-        .filterNot(::isForbiddenXmlControl)
-        .replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;").replace("'", "&apos;")
-
-    private fun isForbiddenXmlControl(value: Char): Boolean =
-        value.code == 0 || value.code == 127 || (value.code < 32 && value != '\t' && value != '\n' && value != '\r')
-    private fun safe(value: String) = value.replace(Regex("[\\\\/:*?\"<>|\\r\\n\\t]"), "_")
-        .map { if (it.code < 32 || it.code == 127) '_' else it }
-        .joinToString("")
-        .take(70).ifBlank { "edition" }
-    private fun mimeType(ext: String) = when (ext.lowercase(Locale.ROOT)) { "png" -> "image/png"; "gif" -> "image/gif"; "webp" -> "image/webp"; "svg" -> "image/svg+xml"; else -> "image/jpeg" }
-    private fun isSafeArchiveName(name: String): Boolean = name == File(name).name &&
-        name.isNotBlank() && name != "." && name != ".." &&
-        name.length <= 100 && name.all { it.isLetterOrDigit() || it == '.' || it == '_' || it == '-' }
-    private fun lang(language: String) = when { language.contains("zh", true) || language.contains("Chinese", true) -> "zh"; language.contains("ja", true) -> "ja"; language.contains("ko", true) -> "ko"; else -> "en" }
+    private fun xml(value: String) = ExportContent.escapeXml(value)
+    private fun isForbiddenXmlControl(value: Char) = ExportContent.isForbiddenXmlControl(value)
+    private fun safe(value: String) = ExportContent.safeFileName(value)
+    private fun mimeType(ext: String) = ExportContent.mimeTypeFor(ext)
+    private fun isSafeArchiveName(name: String) = ExportContent.isSafeArchiveName(name)
+    private fun lang(language: String) = ExportContent.languageCode(language)
 }
