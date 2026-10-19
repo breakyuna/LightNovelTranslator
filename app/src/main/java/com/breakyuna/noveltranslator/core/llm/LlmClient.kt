@@ -37,6 +37,8 @@ data class LlmResult(
     val retryAfterMs: Long? = null,
     val requestId: String? = null,
     val usageSource: UsageSource = UsageSource.UNKNOWN,
+    /** Input tokens the provider served from a prompt cache instead of re-processing. */
+    val cachedTokens: Long = 0,
     val operation: String = "TRANSLATION",
     val attempts: List<LlmAttempt> = emptyList()
 )
@@ -212,7 +214,11 @@ class LlmClient : LlmGateway {
         temperature = request.temperature,
         maxTokens = request.maxTokens,
         operation = request.operation,
-        reasoningEffort = request.reasoningEffort
+        reasoningEffort = request.reasoningEffort,
+        // Only the Anthropic client turns a cache hint into wire-level breakpoints; every other
+        // provider either caches implicitly or has no cache at all.
+        promptCacheBreakpoints = request.promptCacheHint != null &&
+            request.provider.providerType == ProviderType.ANTHROPIC_CLAUDE
     ).copy(operation = request.operation)
 
     /** Executes exactly one HTTP request. Retries belong to RetryingLlmGateway. */
@@ -223,7 +229,8 @@ class LlmClient : LlmGateway {
         temperature: Float? = null,
         maxTokens: Int? = null,
         operation: String = "TRANSLATION",
-        reasoningEffort: String? = null
+        reasoningEffort: String? = null,
+        promptCacheBreakpoints: Boolean = false
     ): LlmResult {
         val startedAt = System.currentTimeMillis()
         val estimatedInputTokens = TokenCalculator.estimateTokens(systemPrompt + userPrompt)
@@ -238,7 +245,8 @@ class LlmClient : LlmGateway {
         val result = try {
             when (provider.providerType) {
                 ProviderType.ANTHROPIC_CLAUDE -> callAnthropic(
-                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
+                    provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort,
+                    promptCacheBreakpoints
                 )
                 ProviderType.GEMINI_DIRECT -> callGemini(
                     provider, systemPrompt, userPrompt, temperature, maxTokens, startedAt, reasoningEffort
@@ -283,9 +291,14 @@ class LlmClient : LlmGateway {
         val totalSpeed = String.format(Locale.US, "%.1f", totalTokens / durationSec)
 
         if (result.isSuccess) {
+            val cacheNote = if (result.cachedTokens > 0) {
+                " | 提示词缓存命中: ${result.cachedTokens} tokens"
+            } else {
+                ""
+            }
             SystemLogger.info(
                 tag = "LLM_API",
-                message = "📥 收到响应: ${provider.name}/$model [$operation] | 成功 | 耗时: ${duration}ms (${String.format(Locale.US, "%.2f", durationSec)}s) | Token: 输入=${result.promptTokens}, 输出=${result.completionTokens}, 总计=$totalTokens | 速率: 输出 ${outSpeed} t/s (总计 ${totalSpeed} t/s)"
+                message = "📥 收到响应: ${provider.name}/$model [$operation] | 成功 | 耗时: ${duration}ms (${String.format(Locale.US, "%.2f", durationSec)}s) | Token: 输入=${result.promptTokens}, 输出=${result.completionTokens}, 总计=$totalTokens | 速率: 输出 ${outSpeed} t/s (总计 ${totalSpeed} t/s)$cacheNote"
             )
         } else {
             val reason = result.errorMessage ?: result.errorCategory?.name ?: "UNKNOWN_ERROR"
@@ -401,6 +414,11 @@ class LlmClient : LlmGateway {
         val usage = json.optJSONObject("usage")
         val promptTokens = usage?.optLong("prompt_tokens") ?: TokenCalculator.estimateTokens(systemPrompt + userPrompt)
         val completionTokens = usage?.optLong("completion_tokens") ?: TokenCalculator.estimateTokens(content)
+        // OpenAI reports discounted tokens under prompt_tokens_details.cached_tokens; DeepSeek
+        // reports them as prompt_cache_hit_tokens. Both are already inside prompt_tokens.
+        val cachedTokens = usage?.optJSONObject("prompt_tokens_details")?.optLong("cached_tokens")
+            ?: usage?.optLong("prompt_cache_hit_tokens")
+            ?: 0L
         if (content.isBlank()) return emptyFailure("Provider", finishReason, duration, promptTokens, completionTokens)
         return LlmResult(
             text = content,
@@ -412,6 +430,7 @@ class LlmClient : LlmGateway {
             errorCategory = if (finishReason.equals("length", true)) LlmErrorCategory.TRUNCATED_OUTPUT else null,
             usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
             requestId = payload.requestId ?: json.optString("id").ifBlank { null },
+            cachedTokens = cachedTokens,
             durationMs = duration
         )
     }
@@ -423,7 +442,8 @@ class LlmClient : LlmGateway {
         temperature: Float?,
         maxTokens: Int?,
         startedAt: Long,
-        reasoningEffort: String? = null
+        reasoningEffort: String? = null,
+        promptCacheBreakpoints: Boolean = false
     ): LlmResult {
         val base = provider.baseUrl.trim().removeSuffix("/")
         val endpoint = when {
@@ -446,8 +466,41 @@ class LlmClient : LlmGateway {
                     put("thinking", JSONObject().put("type", "disabled"))
                 }
             }
-            if (systemPrompt.isNotBlank()) put("system", systemPrompt)
-            put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", userPrompt)))
+            // Anthropic accepts either a plain string or an array of content blocks. A block array
+            // carrying cache_control is the only way to mark a cache breakpoint, and the engine's
+            // hint is exactly the signal that the caller wants one.
+            if (systemPrompt.isNotBlank()) {
+                if (promptCacheBreakpoints) {
+                    put("system", JSONArray().put(
+                        JSONObject()
+                            .put("type", "text")
+                            .put("text", systemPrompt)
+                            .put("cache_control", JSONObject().put("type", "ephemeral"))
+                    ))
+                } else {
+                    put("system", systemPrompt)
+                }
+            }
+            put(
+                "messages",
+                JSONArray().put(
+                    JSONObject().put("role", "user").put(
+                        "content",
+                        if (promptCacheBreakpoints) {
+                            // The single user block is the last one, so it terminates the cacheable
+                            // prefix: system prompt plus everything up to the source payload.
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("type", "text")
+                                    .put("text", userPrompt)
+                                    .put("cache_control", JSONObject().put("type", "ephemeral"))
+                            )
+                        } else {
+                            userPrompt
+                        }
+                    )
+                )
+            )
         }
         val requestBuilder = Request.Builder().url(endpoint)
             .header("x-api-key", provider.apiKey.trim())
@@ -481,6 +534,9 @@ class LlmClient : LlmGateway {
         val usage = json.optJSONObject("usage")
         val promptTokens = usage?.optLong("input_tokens") ?: TokenCalculator.estimateTokens(systemPrompt + userPrompt)
         val completionTokens = usage?.optLong("output_tokens") ?: TokenCalculator.estimateTokens(content)
+        // cache_read_input_tokens are already inside input_tokens; keeping them separate lets the
+        // engine report how much of the request the provider did not have to re-process.
+        val cachedTokens = usage?.optLong("cache_read_input_tokens") ?: 0L
         if (content.isBlank()) return emptyFailure("Anthropic", finishReason, duration, promptTokens, completionTokens)
         return LlmResult(
             text = content,
@@ -492,6 +548,7 @@ class LlmClient : LlmGateway {
             errorCategory = if (finishReason.equals("max_tokens", true)) LlmErrorCategory.TRUNCATED_OUTPUT else null,
             usageSource = if (usage != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
             requestId = payload.requestId ?: json.optString("id").ifBlank { null },
+            cachedTokens = cachedTokens,
             durationMs = duration
         )
     }

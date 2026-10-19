@@ -2,6 +2,9 @@ package com.breakyuna.noveltranslator.core.llm
 
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicBoolean
@@ -93,8 +96,13 @@ fun interface DelayProvider {
 class TranslationControlSignal {
     private val paused = AtomicBoolean(false)
     private val cancelled = AtomicBoolean(false)
-    /** Serializes the complete provider call, not just the preflight check. */
-    private val requestGate = Mutex()
+    /**
+     * Number of provider calls currently inside [withRequestPermit]. Parallel chapter workers
+     * each register one call, so the signal must count them instead of serializing them.
+     */
+    private val inFlight = MutableStateFlow(0)
+    /** Serializes the paused/cancelled check together with the in-flight registration. */
+    private val registrationGate = Mutex()
 
     val isPaused: Boolean get() = paused.get()
     val isCancelled: Boolean get() = cancelled.get()
@@ -104,22 +112,35 @@ class TranslationControlSignal {
      * the return of pause a hard boundary: no retry can begin after the caller observes it.
      */
     suspend fun requestPause() {
-        paused.set(true)
-        requestGate.withLock { }
+        registrationGate.withLock { paused.set(true) }
+        awaitDrain()
     }
 
-    /** Marks the signal cancelled and waits until an already-started provider call has finished. */
+    /** Marks the signal cancelled and waits until every already-started provider call has finished. */
     suspend fun requestCancel() {
-        cancelled.set(true)
-        requestGate.withLock { }
+        registrationGate.withLock { cancelled.set(true) }
+        awaitDrain()
     }
 
     fun resume() = paused.set(false)
     fun cancel() = cancelled.set(true)
 
-    /** Checks the signal while holding the same gate as the whole physical provider call. */
-    suspend fun <T> withRequestPermit(block: suspend () -> T): T? = requestGate.withLock {
-        if (paused.get() || cancelled.get()) null else block()
+    /** Checks the signal while registering the physical provider call as in flight. */
+    suspend fun <T> withRequestPermit(block: suspend () -> T): T? {
+        registrationGate.withLock {
+            if (paused.get() || cancelled.get()) return null
+            inFlight.value = inFlight.value + 1
+        }
+        try {
+            return block()
+        } finally {
+            inFlight.value = (inFlight.value - 1).coerceAtLeast(0)
+        }
+    }
+
+    /** Suspends until no registered provider call is running. */
+    private suspend fun awaitDrain() {
+        inFlight.filter { count -> count <= 0 }.first()
     }
 }
 
@@ -161,7 +182,17 @@ object RetryPolicy {
 /** Retry wrapper with injectable waiting, suitable for unit tests with no real sleep. */
 class RetryingLlmGateway(
     private val delegate: LlmGateway,
-    private val delayProvider: DelayProvider = CoroutineDelayProvider
+    private val delayProvider: DelayProvider = CoroutineDelayProvider,
+    /**
+     * Optional request-level scheduler (rate limiting + 429 cooldown + auto concurrency).
+     *
+     * `null` keeps the historical behavior exactly: no pacing, no cooldown, no adjustments.
+     * When present, every physical attempt first waits for [LlmRequestScheduler.awaitDispatchPermit]
+     * and then reports its outcome, so a 429 both backs this request off (RetryPolicy) and cools
+     * the provider for the following ones (scheduler). The scheduler must serve the provider of
+     * the requests this gateway executes; see [LlmRequestSchedulerFactory] for the wiring.
+     */
+    private val scheduler: LlmRequestScheduler? = null
 ) : LlmGateway {
     override suspend fun executeCompletion(request: LlmRequest): LlmResult {
         val attempts = mutableListOf<LlmAttempt>()
@@ -172,6 +203,11 @@ class RetryingLlmGateway(
                 throw kotlinx.coroutines.CancellationException("Translation cancelled")
             }
             awaitResume(signal)
+            // Rate/capacity gate first (may suspend in a 429 cooldown), then the physical call
+            // itself goes through the signal's registration gate. A pause racing this loop is
+            // settled by withRequestPermit below; a cancel during the cooldown throws here and
+            // never reaches the provider.
+            val dispatchVersion = scheduler?.awaitDispatchPermit(signal)
             val result = try {
                 if (signal == null) {
                     delegate.executeCompletion(request)
@@ -210,6 +246,7 @@ class RetryingLlmGateway(
                 }
             )
             attempts += LlmAttempt(attemptNumber, normalizedResult)
+            reportToScheduler(scheduler, dispatchVersion, normalizedResult)
             val decision = RetryPolicy.decide(normalizedResult, attemptNumber)
             if (normalizedResult.isSuccess || !decision.retry) {
                 return normalizedResult.copy(
@@ -222,6 +259,30 @@ class RetryingLlmGateway(
             waitForRetry(decision.delayMs, signal)
             attemptNumber++
         }
+    }
+
+    /**
+     * Feeds one settled attempt to the optional scheduler. Successes climb the auto concurrency,
+     * 429s halve it and cool the provider down, and cancellations are ignored so a user cancel
+     * never punishes the provider. The scheduler verdict is intentionally not acted upon here:
+     * [RetryPolicy] remains the only authority on whether another attempt happens.
+     */
+    private fun reportToScheduler(
+        scheduler: LlmRequestScheduler?,
+        dispatchVersion: Int?,
+        result: LlmResult
+    ) {
+        if (scheduler == null) return
+        val version = dispatchVersion ?: scheduler.concurrencyVersion
+        if (result.isSuccess) {
+            scheduler.onSuccess(version)
+            return
+        }
+        scheduler.onFailure(
+            category = result.errorCategory ?: LlmErrorCategory.UNKNOWN,
+            retryAfterMs = result.retryAfterMs,
+            dispatchVersion = version
+        )
     }
 
     private suspend fun awaitResume(signal: TranslationControlSignal?) {

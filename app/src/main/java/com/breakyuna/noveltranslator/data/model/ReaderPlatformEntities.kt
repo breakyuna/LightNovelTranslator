@@ -179,6 +179,20 @@ data class TranslationProjectV2Entity(
     val promptProtocolVersion: Int = 2,
     val translationMode: String = TranslationMode.FULL_BOOK.name,
     val maxBatchChapters: Int = 1,
+    /**
+     * Chapters translated concurrently inside one book run. 1 keeps the strict serial path;
+     * values above 1 enable the bounded in-book concurrency of [BookTranslationScheduler].
+     */
+    val parallelChapters: Int = 1,
+    /**
+     * SOURCE_TAIL builds preceding context from source text only (no dependency on the previous
+     * chapter's translation); TRANSLATION_TAIL keeps the legacy previous-translation tail.
+     */
+    val continuityMode: String = "SOURCE_TAIL",
+    /** Emits the <META> protocol block and applies chapter/story metadata. Off by default. */
+    val metadataEnabled: Boolean = false,
+    /** Asks the provider for prompt caching when the resolved provider supports it. */
+    val promptCacheEnabled: Boolean = true,
     val seamlessAheadChapters: Int = 5,
     val rangeStart: Int? = null,
     val rangeEnd: Int? = null,
@@ -187,7 +201,10 @@ data class TranslationProjectV2Entity(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
-    init { require(maxBatchChapters in 1..5) }
+    init {
+        require(maxBatchChapters in 1..5)
+        require(parallelChapters in 1..5) { "parallelChapters must stay within 1..5" }
+    }
 }
 
 /**
@@ -199,6 +216,11 @@ data class PromptProfileDraft(
     val translationUserPromptTemplate: String,
     val polishSystemPrompt: String,
     val polishUserPromptTemplate: String,
+    /**
+     * Emits the <META> protocol section in the built-in translation prompt. The engine also
+     * forces this off when the project itself disables metadata.
+     */
+    val includeMetadataRules: Boolean = true,
     val version: Int = 1
 )
 
@@ -225,6 +247,7 @@ data class PromptProfileEntity(
     val translationUserPromptTemplate: String,
     val polishSystemPrompt: String,
     val polishUserPromptTemplate: String,
+    val includeMetadataRules: Boolean = true,
     val createdAt: Long = System.currentTimeMillis()
 ) {
     fun asDraft(): PromptProfileDraft = PromptProfileDraft(
@@ -232,6 +255,7 @@ data class PromptProfileEntity(
         translationUserPromptTemplate = translationUserPromptTemplate,
         polishSystemPrompt = polishSystemPrompt,
         polishUserPromptTemplate = polishUserPromptTemplate,
+        includeMetadataRules = includeMetadataRules,
         version = version
     )
 }

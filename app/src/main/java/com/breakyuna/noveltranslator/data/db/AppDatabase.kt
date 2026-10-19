@@ -8,6 +8,8 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import com.breakyuna.noveltranslator.data.model.AgentMessageEntity
+import com.breakyuna.noveltranslator.data.model.AgentSessionEntity
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.BookEntity
 import com.breakyuna.noveltranslator.data.model.ChapterMemoryEntity
@@ -26,6 +28,7 @@ import com.breakyuna.noveltranslator.data.model.PlatformTranslationRunEntity
 import com.breakyuna.noveltranslator.data.model.PromptProfileEntity
 import com.breakyuna.noveltranslator.data.model.ProviderCacheRecordEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
+import com.breakyuna.noveltranslator.data.model.QualityRuleSetEntity
 import com.breakyuna.noveltranslator.data.model.ReaderProgressEntity
 import com.breakyuna.noveltranslator.data.model.SegmentRevisionEntity
 import com.breakyuna.noveltranslator.data.model.StoryMemoryEntity
@@ -73,9 +76,12 @@ class Converters {
         PlatformTranslationRunEntity::class,
         PlatformTranslationBatchEntity::class,
         PlatformRequestLogEntity::class,
-        PromptProfileEntity::class
+        PromptProfileEntity::class,
+        QualityRuleSetEntity::class,
+        AgentSessionEntity::class,
+        AgentMessageEntity::class
     ],
-    version = 4,
+    version = 6,
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -90,6 +96,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun providerCacheDao(): ProviderCacheDao
     abstract fun platformTaskDao(): PlatformTaskDao
     abstract fun promptProfileDao(): PromptProfileDao
+    abstract fun qualityRuleDao(): QualityRuleDao
+    abstract fun agentSessionDao(): AgentSessionDao
+    abstract fun agentMessageDao(): AgentMessageDao
 
     companion object {
         val MIGRATION_1_2: Migration = object : Migration(1, 2) {
@@ -144,6 +153,116 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Adds the four engine switches to every existing project (all defaults reproduce the
+         * previous behaviour except continuityMode, which is the intended refactor) and creates
+         * the two agent conversation tables.
+         */
+        val MIGRATION_4_5: Migration = object : Migration(4, 5) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.execSQL(
+                    "ALTER TABLE `translation_projects_v2` ADD COLUMN `parallelChapters` INTEGER NOT NULL DEFAULT 1"
+                )
+                database.execSQL(
+                    "ALTER TABLE `translation_projects_v2` ADD COLUMN `continuityMode` TEXT NOT NULL DEFAULT 'SOURCE_TAIL'"
+                )
+                database.execSQL(
+                    "ALTER TABLE `translation_projects_v2` ADD COLUMN `metadataEnabled` INTEGER NOT NULL DEFAULT 0"
+                )
+                database.execSQL(
+                    "ALTER TABLE `translation_projects_v2` ADD COLUMN `promptCacheEnabled` INTEGER NOT NULL DEFAULT 1"
+                )
+                database.execSQL(
+                    "ALTER TABLE `translation_prompt_profiles` ADD COLUMN `includeMetadataRules` INTEGER NOT NULL DEFAULT 1"
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `agent_sessions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `bookId` INTEGER,
+                        `translationProjectId` INTEGER,
+                        `providerId` INTEGER,
+                        `modelName` TEXT,
+                        `state` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `lastMessagePreview` TEXT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sessions_updatedAt` " +
+                        "ON `agent_sessions` (`updatedAt`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sessions_bookId` " +
+                        "ON `agent_sessions` (`bookId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sessions_translationProjectId` " +
+                        "ON `agent_sessions` (`translationProjectId`)"
+                )
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `agent_messages` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `sessionId` INTEGER NOT NULL,
+                        `role` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `toolName` TEXT,
+                        `toolCallId` TEXT,
+                        `toolArgsJson` TEXT,
+                        `toolResultJson` TEXT,
+                        `isError` INTEGER NOT NULL,
+                        `promptTokens` INTEGER NOT NULL,
+                        `completionTokens` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        FOREIGN KEY(`sessionId`) REFERENCES `agent_sessions`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_messages_sessionId` " +
+                        "ON `agent_messages` (`sessionId`)"
+                )
+                database.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_messages_createdAt` " +
+                        "ON `agent_messages` (`createdAt`)"
+                )
+            }
+        }
+
+        /**
+         * 新增质量规则槽位表（文本保护 / 译前替换 / 译后替换）。
+         *
+         * 这是一张全新表，不触碰任何既有表结构语义；迁移后既有工程没有任何
+         * 规则行，由 `QualityRuleResolver` 的回退路径接管，行为与升级前一致。
+         *
+         * `app/schemas/.../6.json` 是手写快照，`identityHash` 为占位符：
+         * 首次构建时 KSP 会按真实 schema 重新生成该文件，届时以生成结果为准
+         * （占位 hash 只影响 MigrationTestHelper 对 5→6 的校验）。
+         */
+        val MIGRATION_5_6: Migration = object : Migration(5, 6) {
+            override fun migrate(database: androidx.sqlite.db.SupportSQLiteDatabase) {
+                database.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `quality_rule_sets` (
+                        `translationProjectId` INTEGER NOT NULL,
+                        `type` TEXT NOT NULL,
+                        `enabled` INTEGER NOT NULL,
+                        `mode` TEXT NOT NULL,
+                        `entriesJson` TEXT NOT NULL,
+                        `revision` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`translationProjectId`, `type`),
+                        FOREIGN KEY(`translationProjectId`) REFERENCES `translation_projects_v2`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -153,7 +272,13 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "light_novel_translation_platform.db"
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { database ->
+                ).addMigrations(
+                    MIGRATION_1_2,
+                    MIGRATION_2_3,
+                    MIGRATION_3_4,
+                    MIGRATION_4_5,
+                    MIGRATION_5_6
+                ).build().also { database ->
                     instance = database
                     CoroutineScope(Dispatchers.IO).launch {
                         seedDefaultProviders(database)
