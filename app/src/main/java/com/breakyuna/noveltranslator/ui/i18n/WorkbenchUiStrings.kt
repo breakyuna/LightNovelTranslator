@@ -280,7 +280,7 @@ data class WorkbenchUiStrings(
     val targetLanguage: String,
     val taskMeta: (Long, String, String, Int) -> String,
     val taskError: String,
-    val onOff: (Boolean) -> String
+    val onOff: (Boolean) -> String,
     val dialogs: WorkbenchDialogStrings
 )
 
@@ -540,7 +540,7 @@ private val ChineseWorkbenchUiStrings = WorkbenchUiStrings(
     targetLanguage = "目标语言",
     taskMeta = { id, provider, model, version -> "任务 #$id · $provider/$model · Prompt v$version" },
     taskError = "异常",
-    onOff = { enabled -> if (enabled) "开" else "关" }
+    onOff = { enabled -> if (enabled) "开" else "关" },
     dialogs = WorkbenchDialogStrings(
         aiSplitIntroTitle = "AI 识别章节边界",
         aiSplitIntroBody = "AI 将读取保留的 TXT 原文，识别完成后自动重建原版的 LogicalChapter 与 Segment。此操作要求尚未创建翻译版本，且不会改写原文内容。",
@@ -837,7 +837,7 @@ private val EnglishWorkbenchUiStrings = WorkbenchUiStrings(
     targetLanguage = "Target language",
     taskMeta = { id, provider, model, version -> "Task #$id · $provider/$model · Prompt v$version" },
     taskError = "Error",
-    onOff = { enabled -> if (enabled) "On" else "Off" }
+    onOff = { enabled -> if (enabled) "On" else "Off" },
     dialogs = WorkbenchDialogStrings(
         aiSplitIntroTitle = "AI chapter detection",
         aiSplitIntroBody = "AI reads the stored TXT source and rebuilds LogicalChapters and Segments for the original edition. This requires that no translation edition exists yet and never rewrites the source text.",
