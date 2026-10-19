@@ -24,6 +24,10 @@ Book（作品）
 - catalog 里有大量未使用的历史依赖声明（firebase、camera、retrofit、coil 等）。用前先确认 `app/build.gradle.kts` 是否真的引入，不要假设存在即可用。
 - SDK：`minSdk 24`、`targetSdk 36`、`compileSdk 36 (minorApiLevel 1)`。ML Kit GenAI 要求 API 26+，已用 `tools:overrideLibrary` 放行 merger，**所有 GenAI 调用点必须守卫 `Build.VERSION.SDK_INT >= 26` 与 feature 可用性**。`versionCode` 在 CI 取 `GITHUB_RUN_NUMBER`，本地为 7。
 - **Android 14+（API 34）正则地雷**：`java.util.regex` 在 API 34 切到 ICU 实现。`core/text/TextProtectionRules` 已对 `(?U)` 做编译兜底；新增正则代码禁止裸用 ICU 不兼容的内联标志，必要时同样 try/catch 兜底。Robolectric 跑 JVM 正则**测不出**这类问题，必须真机验证。
+- **命名分组按名取值为 API 26**：`match.groups[name]` 底层调 `Matcher.start(String)`，minSdk 24 下 lint 直接报错。一律用 `namedGroupIndexes(pattern)` 预解析成组序号再按序号取（core/quality 与 core/text 各有一份实现）。
+- **其他 Kotlin 2.3 实测地雷**（`kotlinx.coroutines.CoroutineContext` 是 HIDDEN 弃用 typealias 要用 `kotlin.coroutines` 版、`resumeWithException` 是 stdlib 扩展需 import、`createTempDir` 是 ERROR 级弃用、`toList()` 对 0/1 元素不可变等）：完整清单见 `docs/plans/2026-10-19-build-and-ci-playbook.md`，写代码前必读。
+- **测试纪律**：新增测试必须落地后可运行才算数；禁构建期间用 Gradle 缓存里的 `kotlin-compiler-embeddable` 做单文件编译 + JUnit 运行验证。**KDoc/设计文档是测试期望的权威来源**，断言前先读实现的文档化意图；失败时先判定"测试错还是实现错"再动手。
+- **CI**：`test/lint/release` 三个并行 job；测试已配 `maxParallelForks`（勿改回单 fork）；artifact 名不能含 `/`；本地无 SDK 时不跑 gradle（CI 是唯一构建验证通道）。
 - 本地验证（README 记录的标准命令）：
 
 ```bash
@@ -103,3 +107,18 @@ app/src/main/java/com/breakyuna/noveltranslator/
 ## 7. 汇报要求
 
 交付时简要说明：用户可见行为变化；根因与关键实现决策；改动的主要模块；实际执行了哪些验证及结果（未执行的如实说明）；是否提交/推送/触发 Actions（没有就明说）；仍存在的真实限制或需实机验证的交互，不用"应该没问题"敷衍。
+
+## 8. 重构实录与文档索引（2026-10-19）
+
+本次大规模重构（翻译引擎/Agent 层/UI/导入导出/端侧辅助）的状态与决策记录在 `docs/plans/`：
+
+| 文档 | 内容 |
+|---|---|
+| `2026-10-19-master-refactor-plan.md` | 主计划、任务分工与执行状态、剩余 backlog |
+| `2026-10-19-build-and-ci-playbook.md` | **实战手册**：Kotlin 2.3/AGP 9/CI 全部实测地雷、CI 结构与耗时数据、测试纪律 |
+| `2026-10-19-architecture-overview.md` | 现役架构总览（模块地图/执行流/配置矩阵） |
+| `lg-parity-gap-analysis.md` | 与 LinguaGacha 的功能对标差距分析 |
+| `2026-10-19-agent-layer-review.md` | Koog Agent 层 API 核实与测试覆盖 |
+| `2026-10-19-build-readiness-checklist.md` | 首次构建验证预案（javap 实证） |
+
+当前工作分支 `refactor/translation-agent-2026-10`（未合 main），CI 三 job（test/lint/release）全绿是唯一合并前置条件。

@@ -79,6 +79,8 @@
 5. OkHttp 被 Koog→ktor-client-okhttp 3.3.3 顶到 5.2.1（`okhttp-android` AAR）；**API 兼容性已逐符号核对通过**，切勿 force 回 4.10.0（ktor 3.x 要求 5.x）。
 
 ### 最终状态
-- **全部重构代码已落盘，全部未经真实构建验证**（执行期遵守禁构建令）。31 个新测试文件 / 约 370 个 `@Test` 待执行。
-- **下一步唯一关键路径：用户执行首次构建**，命令与风险处置见 `docs/plans/2026-10-19-build-readiness-checklist.md`。
-- E 阶段剩余 backlog（不阻塞构建，按需推进）：质量规则设置页 UI、导出选项/预检 UI、术语导入导出 UI、ML Kit 设置页、限流 scheduler 开启（J 报告 §5 有接线代码）、T3 全书写校对台、AgentSessionTest PART5 补完。
+- **全部重构代码已落盘；分支 `refactor/translation-agent-2026-10`（未合 main），CI 三 job 全绿**：550 测试通过、lint 0 错误、签名 Release APK 已上传 artifact（约 20 MB，证书 SHA-256 与固定值一致）。
+- 构建验证过程中修复 6 轮问题：manifest minSdk 阻塞、Java 17、Kotlin 2.3.10/KSP 对齐、jackson dexing、132→0 编译错误、19→0 测试失败、lint NewApi、artifact 命名。全部实录见 `2026-10-19-build-and-ci-playbook.md`。
+- **CI 提速**：31 min → 9m42s（三并行 job + maxParallelForks）。
+- **下一步唯一关键路径**：在真机/模拟器验证核心链路（并行翻译、Agent 助手、EPUB 导入保真、双语导出），确认后合并分支。
+- E 阶段剩余 backlog（不阻塞构建）：质量规则/导出选项/术语导入导出/ML Kit 的设置页 UI、限流 scheduler 开启（`LlmRequestSchedulerFactory` 接入 AppViewModel，J 报告有接线代码）、T3 全书写校对台、`AgentSessionTest` PART5 两个用例、Robolectric 截图重录（`recordRoborazziDebug`）。
