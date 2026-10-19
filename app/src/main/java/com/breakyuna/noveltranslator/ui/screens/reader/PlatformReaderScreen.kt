@@ -7,8 +7,10 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -20,6 +22,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.NavigateBefore
@@ -37,7 +41,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +55,16 @@ import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.components.ReaderRichContent
 import com.breakyuna.noveltranslator.ui.components.ReaderTextStyle
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
+import com.breakyuna.noveltranslator.ui.theme.LocalAppColors
+import com.breakyuna.noveltranslator.ui.theme.Motion
+import com.breakyuna.noveltranslator.ui.theme.PillShape
+import com.breakyuna.noveltranslator.ui.theme.ReaderMintBackground
+import com.breakyuna.noveltranslator.ui.theme.ReaderMintOnBackground
+import com.breakyuna.noveltranslator.ui.theme.ReaderNightBackground
+import com.breakyuna.noveltranslator.ui.theme.ReaderNightOnBackground
+import com.breakyuna.noveltranslator.ui.theme.ReaderPaperBackground
+import com.breakyuna.noveltranslator.ui.theme.ReaderPaperOnBackground
+import com.breakyuna.noveltranslator.ui.theme.Spacing
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -191,15 +207,15 @@ fun PlatformReaderScreen(
     val maxChapterPosition = chapters.lastIndex.coerceAtLeast(1)
     val readerBackground = when (settings.background) {
         ReaderBackground.SYSTEM -> MaterialTheme.colorScheme.background
-        ReaderBackground.PAPER -> Color(0xFFFFF8E7)
-        ReaderBackground.MINT -> Color(0xFFEAF4EE)
-        ReaderBackground.NIGHT -> Color(0xFF121212)
+        ReaderBackground.PAPER -> ReaderPaperBackground
+        ReaderBackground.MINT -> ReaderMintBackground
+        ReaderBackground.NIGHT -> ReaderNightBackground
     }
     val readerTextColor = when (settings.background) {
         ReaderBackground.SYSTEM -> MaterialTheme.colorScheme.onBackground
-        ReaderBackground.PAPER -> Color(0xFF3D3529)
-        ReaderBackground.MINT -> Color(0xFF20352A)
-        ReaderBackground.NIGHT -> Color(0xFFE8E2E8)
+        ReaderBackground.PAPER -> ReaderPaperOnBackground
+        ReaderBackground.MINT -> ReaderMintOnBackground
+        ReaderBackground.NIGHT -> ReaderNightOnBackground
     }
 
     BackHandler(enabled = activePanel != ReaderPanel.NONE) {
@@ -332,7 +348,9 @@ fun PlatformReaderScreen(
                             title = {
                                 Text(
                                     visibleRow?.chapterTitle ?: if (english) "Reader" else "阅读",
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             },
                             navigationIcon = {
@@ -346,7 +364,7 @@ fun PlatformReaderScreen(
                                 }
                             },
                             colors = TopAppBarDefaults.topAppBarColors(
-                                containerColor = readerBackground.copy(alpha = .96f),
+                                containerColor = Color.Transparent,
                                 titleContentColor = readerTextColor,
                                 navigationIconContentColor = readerTextColor,
                                 actionIconContentColor = readerTextColor
@@ -540,23 +558,31 @@ private fun ReaderControlBar(
         modifier = modifier.fillMaxWidth().navigationBarsPadding(),
         color = containerColor.copy(alpha = .98f),
         contentColor = contentColor,
-        tonalElevation = 4.dp,
-        shadowElevation = 8.dp
+        shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
+        border = BorderStroke(0.8.dp, contentColor.copy(alpha = 0.10f)),
+        shadowElevation = 10.dp,
+        tonalElevation = 3.dp
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
-            verticalArrangement = Arrangement.spacedBy(1.dp)
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onPrevious, enabled = chapters.isNotEmpty() && currentChapterPosition > 0) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.NavigateBefore,
-                        contentDescription = if (english) "Previous Chapter" else "上一章",
-                        tint = if (chapters.isNotEmpty() && currentChapterPosition > 0) contentColor else contentColor.copy(alpha = 0.35f),
-                        modifier = Modifier.size(28.dp)
-                    )
+                Surface(
+                    shape = CircleShape,
+                    color = contentColor.copy(alpha = 0.08f),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    IconButton(onClick = onPrevious, enabled = chapters.isNotEmpty() && currentChapterPosition > 0) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.NavigateBefore,
+                            contentDescription = if (english) "Previous Chapter" else "上一章",
+                            tint = if (chapters.isNotEmpty() && currentChapterPosition > 0) contentColor else contentColor.copy(alpha = 0.35f),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
-                Column(Modifier.weight(1f)) {
+                Column(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     Slider(
                         value = progressValue.coerceIn(0f, maxChapterPosition.toFloat()),
                         onValueChange = onProgressChange,
@@ -573,39 +599,57 @@ private fun ReaderControlBar(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(
                             currentChapterTitle ?: if (english) "No chapter" else "暂无章节",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Medium),
                             maxLines = 1,
                             modifier = Modifier.weight(1f, fill = false)
                         )
                         Text(
                             if (chapters.isEmpty()) "0 / 0" else "${currentChapterPosition + 1} / ${chapters.size}",
-                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold)
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
                         )
                     }
                 }
-                IconButton(onClick = onNext, enabled = chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.NavigateNext,
-                        contentDescription = if (english) "Next Chapter" else "下一章",
-                        tint = if (chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) contentColor else contentColor.copy(alpha = 0.35f),
-                        modifier = Modifier.size(28.dp)
-                    )
+                Surface(
+                    shape = CircleShape,
+                    color = contentColor.copy(alpha = 0.08f),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    IconButton(onClick = onNext, enabled = chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.NavigateNext,
+                            contentDescription = if (english) "Next Chapter" else "下一章",
+                            tint = if (chapters.isNotEmpty() && currentChapterPosition < chapters.lastIndex) contentColor else contentColor.copy(alpha = 0.35f),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
                 }
             }
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onOpenDirectory, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp)) {
-                    Icon(Icons.Default.FormatListNumbered, null, Modifier.size(18.dp), tint = contentColor)
-                    Spacer(Modifier.width(5.dp))
-                    Text(if (english) "Contents" else "目录", color = contentColor)
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = CircleShape,
+                    color = contentColor.copy(alpha = 0.08f)
+                ) {
+                    TextButton(onClick = onOpenDirectory, contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Default.FormatListNumbered, null, Modifier.size(17.dp), tint = contentColor)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (english) "Contents" else "目录", color = contentColor, maxLines = 1)
+                    }
                 }
-                TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 2.dp)) {
-                    Icon(Icons.Default.Settings, null, Modifier.size(18.dp), tint = contentColor)
-                    Spacer(Modifier.width(5.dp))
-                    Text(if (english) "Settings" else "设置", color = contentColor)
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = CircleShape,
+                    color = contentColor.copy(alpha = 0.08f)
+                ) {
+                    TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Default.Settings, null, Modifier.size(17.dp), tint = contentColor)
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (english) "Settings" else "设置", color = contentColor, maxLines = 1)
+                    }
                 }
             }
         }
@@ -620,6 +664,7 @@ private fun ReaderSidePanel(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit
 ) {
+    val appColors = LocalAppColors.current
     AnimatedVisibility(
         visible = visible,
         modifier = Modifier.fillMaxSize().zIndex(20f),
@@ -630,7 +675,7 @@ private fun ReaderSidePanel(
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = .34f))
+                    .background(appColors.scrim)
                     .clickable(onClick = onDismiss)
             )
             AnimatedVisibility(
@@ -640,9 +685,9 @@ private fun ReaderSidePanel(
                     .fillMaxHeight()
                     .width(width),
                 enter = if (side == ReaderPanelSide.LEFT) {
-                    slideInHorizontally(tween(180)) { -it }
+                    slideInHorizontally(tween(Motion.DurationMedium)) { -it }
                 } else {
-                    slideInHorizontally(tween(180)) { it }
+                    slideInHorizontally(tween(Motion.DurationMedium)) { it }
                 },
                 exit = if (side == ReaderPanelSide.LEFT) {
                     slideOutHorizontally(tween(150)) { -it }
@@ -653,8 +698,13 @@ private fun ReaderSidePanel(
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 8.dp,
-                    shadowElevation = 14.dp
+                    shape = if (side == ReaderPanelSide.LEFT) {
+                        RoundedCornerShape(topEnd = 26.dp, bottomEnd = 26.dp)
+                    } else {
+                        RoundedCornerShape(topStart = 26.dp, bottomStart = 26.dp)
+                    },
+                    shadowElevation = 14.dp,
+                    tonalElevation = 2.dp
                 ) {
                     content()
                 }
@@ -687,58 +737,143 @@ private fun ReaderDirectoryPanel(
 
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 8.dp),
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 10.dp, top = 14.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Default.FormatListNumbered, null, tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(9.dp))
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(40.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.FormatListNumbered,
+                        null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(if (english) "Contents" else "目录", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text(
+                    if (english) "Contents" else "目录",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
                 Text(
                     if (english) "${chapters.size} chapters" else "共 ${chapters.size} 章",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            IconButton(onClick = onResplit) {
-                Icon(Icons.Default.Settings, if (english) "Chapter parsing" else "重新分章")
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.size(38.dp)
+            ) {
+                IconButton(onClick = onResplit) {
+                    Icon(
+                        Icons.Default.Settings,
+                        if (english) "Chapter parsing" else "重新分章",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             singleLine = true,
+            shape = RoundedCornerShape(14.dp),
             label = { Text(if (english) "Search chapters" else "搜索章节") }
         )
-        HorizontalDivider(Modifier.padding(top = 10.dp))
+        HorizontalDivider(Modifier.padding(top = 12.dp))
         if (filteredChapters.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text(if (english) "No matching chapters" else "没有匹配的章节", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (english) "No matching chapters" else "没有匹配的章节",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         } else {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 items(filteredChapters, key = { it.id }) { chapter ->
-                    ListItem(
-                        modifier = Modifier.clickable { onChapter(chapter.id) },
-                        colors = ListItemDefaults.colors(
-                            containerColor = if (chapter.id == currentChapterId) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = .65f)
-                            } else {
-                                Color.Transparent
-                            }
-                        ),
-                        headlineContent = { Text(chapter.canonicalTitle, maxLines = 2) },
-                        supportingContent = { Text(if (english) "Chapter ${chapter.chapterIndex}" else "第 ${chapter.chapterIndex} 章") }
-                    )
+                    val isCurrent = chapter.id == currentChapterId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (isCurrent) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                                } else {
+                                    Color.Transparent
+                                }
+                            )
+                            .clickable { onChapter(chapter.id) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isCurrent) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceVariant
+                                    }
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "${chapter.chapterIndex}",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontWeight = FontWeight.Bold
+                                ),
+                                color = if (isCurrent) {
+                                    MaterialTheme.colorScheme.onPrimary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                        Text(
+                            chapter.canonicalTitle,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal
+                            ),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun ReaderPanelSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.3.sp
+        ),
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp)
+    )
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -770,7 +905,7 @@ private fun ReaderSettingsPanel(
             }
         }
         item {
-            Text(if (english) "Text" else "文字", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            ReaderPanelSectionTitle(if (english) "Text" else "文字")
             SettingSlider(
                 label = if (english) "Font size" else "字号",
                 valueLabel = "${settings.fontSizeSp.roundToInt()}sp",
@@ -841,7 +976,7 @@ private fun ReaderSettingsPanel(
             }
         }
         item {
-            Text(if (english) "Background" else "背景", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            ReaderPanelSectionTitle(if (english) "Background" else "背景")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 ReaderBackground.entries.forEach { background ->
                     FilterChip(
@@ -853,7 +988,7 @@ private fun ReaderSettingsPanel(
             }
         }
         item {
-            Text(if (english) "Display" else "显示", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            ReaderPanelSectionTitle(if (english) "Display" else "显示")
             ChoiceRow(
                 label = if (english) "Mode" else "显示模式",
                 values = ReaderDisplayMode.entries,
@@ -980,37 +1115,110 @@ private fun ReaderWorkbenchSidebar(
 ) {
     val strings = platformUiStrings()
     val english = strings.bookshelf == "Bookshelf"
-    Column(Modifier.width(300.dp).fillMaxHeight().padding(16.dp)) {
-        Text(if (english) "Translation controls" else "翻译操作", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        if (projects.isEmpty()) {
-            Text(
-                if (english) "Create a translation version in the workbench first." else "请先在翻译工作台中创建译本版本。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 10.dp)
-            )
-        } else {
-            projects.take(3).forEach { project ->
-                Text("${project.targetLanguage} · ${project.state}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    when (project.state) {
-                        "RUNNING" -> TextButton(onClick = { onPause(project.id) }) { Text(strings.pause) }
-                        "PAUSED" -> TextButton(onClick = { onResume(project.id) }) { Text(strings.resume) }
-                        else -> TextButton(onClick = { onRun(project.id) }) { Icon(Icons.Default.PlayArrow, null); Text(strings.start) }
+    Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, modifier = Modifier.width(300.dp).fillMaxHeight()) {
+        Column(Modifier.fillMaxSize().padding(Spacing.l)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.DashboardCustomize,
+                            null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(19.dp)
+                        )
                     }
-                    if (project.state in setOf("RUNNING", "PAUSED")) TextButton(onClick = { onCancel(project.id) }) { Text(strings.stop) }
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    if (english) "Translation controls" else "翻译操作",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            if (projects.isEmpty()) {
+                Text(
+                    if (english) "Create a translation version in the workbench first." else "请先在翻译工作台中创建译本版本。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 10.dp)
+                )
+            } else {
+                projects.take(3).forEach { project ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surface
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                            Text(
+                                "${project.targetLanguage} · ${project.state}",
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = 4.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                when (project.state) {
+                                    "RUNNING" -> TextButton(onClick = { onPause(project.id) }) { Text(strings.pause) }
+                                    "PAUSED" -> TextButton(onClick = { onResume(project.id) }) { Text(strings.resume) }
+                                    else -> TextButton(onClick = { onRun(project.id) }) {
+                                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                                        Text(strings.start)
+                                    }
+                                }
+                                if (project.state in setOf("RUNNING", "PAUSED")) {
+                                    TextButton(onClick = { onCancel(project.id) }) { Text(strings.stop) }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-        }
-        HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        Text(if (english) "Contents" else "目录", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-        LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
-            items(chapters, key = { it.id }) { chapter ->
-                ListItem(
-                    modifier = Modifier.clickable { onChapter(chapter.id) },
-                    headlineContent = { Text(chapter.canonicalTitle, maxLines = 2) },
-                    supportingContent = { Text(if (english) "Chapter ${chapter.chapterIndex}" else "第 ${chapter.chapterIndex} 章") }
-                )
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Text(
+                if (english) "Contents" else "目录",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+            LazyColumn(Modifier.fillMaxWidth().weight(1f)) {
+                items(chapters, key = { it.id }) { chapter ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onChapter(chapter.id) }
+                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "${chapter.chapterIndex}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            chapter.canonicalTitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
         }
     }
@@ -1045,16 +1253,26 @@ private fun ReaderUnit(
             .padding(vertical = 4.dp)
     ) {
         if (showChapterTitle) {
-            Text(
-                row.chapterTitle,
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontSize = (settings.fontSizeSp * 1.35f).sp,
-                    color = textColor,
-                    fontFamily = settings.fontFamily.toComposeFontFamily()
-                ),
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 24.dp, bottom = 12.dp)
-            )
+            Column(modifier = Modifier.padding(top = 28.dp, bottom = 14.dp)) {
+                Box(
+                    modifier = Modifier
+                        .width(28.dp)
+                        .height(3.dp)
+                        .clip(PillShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    row.chapterTitle,
+                    style = MaterialTheme.typography.headlineSmall.copy(
+                        fontSize = (settings.fontSizeSp * 1.3f).sp,
+                        color = textColor,
+                        fontFamily = settings.fontFamily.toComposeFontFamily(),
+                        lineHeight = (settings.fontSizeSp * 1.3f * 1.4f).sp
+                    ),
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
         when (displayMode) {
             ReaderDisplayMode.ORIGINAL -> ReaderRichContent(

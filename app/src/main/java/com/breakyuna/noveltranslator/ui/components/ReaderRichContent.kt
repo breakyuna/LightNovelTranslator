@@ -21,6 +21,8 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
+import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
 import com.breakyuna.noveltranslator.ui.screens.reader.convertChineseVariant
 import java.io.File
 import android.webkit.WebView
@@ -43,8 +45,10 @@ fun ReaderRichContent(
     imageDirectory: File,
     modifier: Modifier = Modifier,
     textStyle: ReaderTextStyle = ReaderTextStyle(),
-    useTraditionalChinese: Boolean = false
+    useTraditionalChinese: Boolean = false,
+    strings: PlatformUiStrings? = null
 ) {
+    val uiStrings = strings ?: platformUiStrings()
     val parts = remember(text) {
         buildList {
             var cursor = 0
@@ -97,12 +101,12 @@ fun ReaderRichContent(
                         if (bitmap != null) {
                         Image(
                             bitmap = bitmap!!,
-                            contentDescription = "小说插图",
+                            contentDescription = uiStrings.illustrationContentDescription,
                             modifier = Modifier.fillMaxWidth().heightIn(max = 720.dp),
                             contentScale = ContentScale.Fit
                         )
                         } else {
-                            Text("插图缺失：${part.fileName}", color = MaterialTheme.colorScheme.error)
+                            Text(uiStrings.illustrationMissing(part.fileName), color = MaterialTheme.colorScheme.error)
                         }
                     }
                     Spacer(Modifier.height(10.dp))

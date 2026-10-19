@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -51,15 +52,91 @@ import com.breakyuna.noveltranslator.core.translation.TranslationProtocol
 import com.breakyuna.noveltranslator.core.translation.TranslationScopePlanner
 import com.breakyuna.noveltranslator.data.model.*
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
+import com.breakyuna.noveltranslator.ui.components.BookCoverThumb
 import com.breakyuna.noveltranslator.ui.components.TARGET_LANGUAGE_OPTIONS
+import com.breakyuna.noveltranslator.ui.components.apple.AppCard
+import com.breakyuna.noveltranslator.ui.components.apple.AppIconBubble
+import com.breakyuna.noveltranslator.ui.components.apple.AppSectionHeader
+import com.breakyuna.noveltranslator.ui.i18n.agentEntryStrings
+import com.breakyuna.noveltranslator.ui.i18n.engineConfigStrings
+import com.breakyuna.noveltranslator.ui.i18n.workbenchUiStrings
+import com.breakyuna.noveltranslator.ui.i18n.WorkbenchUiStrings
+import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
-import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
 import kotlinx.coroutines.flow.flowOf
 
-enum class WorkbenchTab(val title: String, val icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    TASKS("任务控制台", Icons.Default.Dashboard),
-    GLOSSARY("名词与术语表", Icons.Default.Spellcheck),
-    LOGS("运行与系统日志", Icons.Default.Terminal)
+enum class WorkbenchTab(val icon: ImageVector) {
+    TASKS(Icons.Default.Dashboard),
+    GLOSSARY(Icons.Default.Spellcheck),
+    LOGS(Icons.Default.Terminal)
+}
+
+@Composable
+private fun WorkbenchTab.label(wb: WorkbenchUiStrings): String = when (this) {
+    WorkbenchTab.TASKS -> wb.tabTasks
+    WorkbenchTab.GLOSSARY -> wb.tabGlossary
+    WorkbenchTab.LOGS -> wb.tabLogs
+}
+
+@Composable
+private fun WorkbenchTab.description(wb: WorkbenchUiStrings): String = when (this) {
+    WorkbenchTab.TASKS -> wb.tabTasksDescription
+    WorkbenchTab.GLOSSARY -> wb.tabGlossaryDescription
+    WorkbenchTab.LOGS -> wb.tabLogsDescription
+}
+
+@Composable
+private fun stateLabel(state: String, wb: WorkbenchUiStrings): String = when (state) {
+    "RUNNING" -> wb.stateRunning
+    "PAUSED" -> wb.statePaused
+    "COMPLETED" -> wb.stateCompleted
+    "COMPLETED_WITH_WARNINGS" -> wb.stateCompletedWithWarnings
+    "FAILED" -> wb.stateFailed
+    "COMPLETED_WITH_ERRORS" -> wb.stateCompletedWithErrors
+    else -> wb.stateIdle
+}
+
+@Composable
+private fun stateContainerColor(state: String): Color = when (state) {
+    "RUNNING" -> MaterialTheme.colorScheme.primary
+    "PAUSED" -> MaterialTheme.colorScheme.tertiary
+    "COMPLETED" -> LocalAppColors.current.success
+    "COMPLETED_WITH_WARNINGS" -> LocalAppColors.current.warning
+    "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
+    else -> MaterialTheme.colorScheme.surfaceVariant
+}
+
+@Composable
+private fun stateContentColor(state: String): Color = when (state) {
+    "RUNNING", "COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "COMPLETED_WITH_ERRORS" -> Color.White
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+@Composable
+private fun stateBadge(state: String, wb: WorkbenchUiStrings, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        shape = PillShape,
+        color = stateContainerColor(state)
+    ) {
+        Text(
+            text = stateLabel(state, wb),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = stateContentColor(state),
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun statusTint(state: String): Color = when (state) {
+    "FAILED", "ERROR", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
+    "COMPLETED_WITH_WARNINGS", "PARTIAL" -> LocalAppColors.current.warning
+    "RUNNING" -> MaterialTheme.colorScheme.primary
+    "COMPLETED", "SUCCESS" -> LocalAppColors.current.success
+    "PAUSED" -> LocalAppColors.current.warning
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -68,8 +145,12 @@ fun BookWorkbenchDetailScreen(
     bookId: Long,
     viewModel: AppViewModel,
     onNavigateBack: () -> Unit,
-    onOpenReader: (Long, Long?) -> Unit
+    onOpenReader: (Long, Long?) -> Unit,
+    onOpenAgent: () -> Unit = {}
 ) {
+    val wb = workbenchUiStrings()
+    val agentEntry = agentEntryStrings()
+    val appColors = LocalAppColors.current
     val windowSize = rememberWindowSize()
     val useWideWorkbench = windowSize.isExpanded &&
         windowSize.screenWidthDp > windowSize.screenHeightDp
@@ -164,14 +245,18 @@ fun BookWorkbenchDetailScreen(
     val currentBook = book
     if (currentBook == null) {
         Scaffold(
+            containerColor = MaterialTheme.colorScheme.background,
             topBar = {
                 TopAppBar(
-                    title = { Text("工作台") },
+                    title = { Text(wb.workbenchTitle) },
                     navigationIcon = {
                         IconButton(onClick = onNavigateBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, wb.back)
                         }
-                    }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
                 )
             }
         ) { padding ->
@@ -197,19 +282,20 @@ fun BookWorkbenchDetailScreen(
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
                 title = {
                     Column {
                         Text(
-                            "工作台 · ${currentBook.title}",
+                            "${wb.workbenchTitle} · ${currentBook.title}",
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "全书共 ${chapters.size} 章 · ${editions.size} 个版本",
+                            wb.headerSummary(chapters.size, editions.size),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -217,12 +303,15 @@ fun BookWorkbenchDetailScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, wb.back)
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenAgent) {
+                        Icon(Icons.Outlined.SmartToy, agentEntry.entryOpenDescription)
+                    }
                     IconButton(onClick = openSelectedReader) {
-                        Icon(Icons.Default.MenuBook, "阅读译文")
+                        Icon(Icons.Default.MenuBook, wb.readTranslation)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -255,6 +344,8 @@ fun BookWorkbenchDetailScreen(
                                 systemLogs = systemLogs,
                                 providers = allProviders,
                                 viewModel = viewModel,
+                                wb = wb,
+                                appColors = appColors,
                                 onCreateEdition = { showCreateEditionDialog = true },
                                 onScanTerms = { showTermScannerDialog = true },
                                 onOpenReader = openSelectedReader,
@@ -271,7 +362,9 @@ fun BookWorkbenchDetailScreen(
                                 storyMemory = projectStoryMemory,
                                 onScanTerms = { showTermScannerDialog = true },
                                 onAddTerm = { showAddTermDialog = true },
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                wb = wb,
+                                appColors = appColors
                             )
                         }
                         WorkbenchTab.LOGS -> {
@@ -281,7 +374,9 @@ fun BookWorkbenchDetailScreen(
                                 allRuns = allRuns,
                                 systemLogs = systemLogs,
                                 viewModel = viewModel,
-                                debugModeEnabled = debugModeEnabled
+                                debugModeEnabled = debugModeEnabled,
+                                wb = wb,
+                                appColors = appColors
                             )
                         }
                     }
@@ -316,7 +411,9 @@ fun BookWorkbenchDetailScreen(
                     onDeleteEdition = { editionToDelete = it },
                     onScanTerms = { showTermScannerDialog = true },
                     onOpenReader = openSelectedReader,
-                    viewModel = viewModel
+                    viewModel = viewModel,
+                    wb = wb,
+                    appColors = appColors
                 )
                 VerticalDivider()
                 Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
@@ -324,7 +421,8 @@ fun BookWorkbenchDetailScreen(
                         tab = selectedTab,
                         edition = currentTargetEdition,
                         project = currentProject,
-                        run = latestRun
+                        run = latestRun,
+                        wb = wb
                     )
                     tabContent(Modifier.fillMaxWidth().weight(1f))
                 }
@@ -344,6 +442,8 @@ fun BookWorkbenchDetailScreen(
                     promptProfile = promptProfile,
                     providers = allProviders,
                     viewModel = viewModel,
+                    wb = wb,
+                    appColors = appColors,
                     onSelectEdition = { selectedTargetEditionId = it },
                     onCreateEdition = { showCreateEditionDialog = true },
                     onDeleteEdition = { editionToDelete = it }
@@ -359,9 +459,9 @@ fun BookWorkbenchDetailScreen(
                             selected = selectedTab == tab,
                             onClick = { selectedTab = tab },
                             text = {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                     Icon(tab.icon, null, modifier = Modifier.size(16.dp))
-                                    Text(tab.title, maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                    Text(tab.label(wb), maxLines = 1, style = MaterialTheme.typography.labelMedium)
                                 }
                             }
                         )
@@ -382,6 +482,7 @@ fun BookWorkbenchDetailScreen(
         CreateEditionDialog(
             book = currentBook,
             sourceEdition = originalEdition,
+            wb = wb,
             onDismiss = { showCreateEditionDialog = false },
             onConfirm = { sourceId, targetLang, name ->
                 viewModel.createTranslationEdition(currentBook.id, sourceId, targetLang, name) { newEditionId ->
@@ -404,6 +505,7 @@ fun BookWorkbenchDetailScreen(
             totalChapters = chapters.size,
             providers = allProviders,
             targetProjectId = currentProject?.id,
+            wb = wb,
             onDismiss = { showTermScannerDialog = false },
             onCancelScan = { viewModel.cancelGlossaryScan(currentBook.id) },
             onStartScan = { startCh, endCh, provider, targetLang, onProgress, onComplete ->
@@ -429,6 +531,7 @@ fun BookWorkbenchDetailScreen(
     if (showAddTermDialog && currentProject != null) {
         AddLexiconEntryDialog(
             projectId = currentProject.id,
+            wb = wb,
             onDismiss = { showAddTermDialog = false },
             onConfirm = { entry ->
                 viewModel.upsertLexiconEntry(entry)
@@ -441,12 +544,10 @@ fun BookWorkbenchDetailScreen(
         val provider = aiSplitProvider!!
         AlertDialog(
             onDismissRequest = { aiSplitProvider = null },
-            title = { Text("AI 识别章节边界") },
+            shape = DialogShape,
+            title = { Text(wb.aiSplitIntroTitle) },
             text = {
-                Text(
-                    "AI 将读取保留的 TXT 原文，识别完成后自动重建原版的 LogicalChapter 与 Segment。" +
-                        "此操作要求尚未创建翻译版本，且不会改写原文内容。"
-                )
+                Text(wb.aiSplitIntroBody)
             },
             confirmButton = {
                 Button(
@@ -461,22 +562,23 @@ fun BookWorkbenchDetailScreen(
                             onFinished = { aiSplitRunning = false }
                         )
                     }
-                ) { Text("开始识别") }
+                ) { Text(wb.aiSplitStart) }
             },
-            dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text("取消") } }
+            dismissButton = { TextButton(onClick = { aiSplitProvider = null }) { Text(wb.cancel) } }
         )
     }
 
     if (aiSplitRunning) {
         AlertDialog(
             onDismissRequest = {},
-            title = { Text("正在识别章节边界") },
-            text = { Text("AI 正在读取原始 TXT 并分析章节结构，可以停止当前请求。") },
+            shape = DialogShape,
+            title = { Text(wb.aiSplitRunningTitle) },
+            text = { Text(wb.aiSplitRunningBody) },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.cancelAgentBookChapterSplit(currentBook.id)
                     aiSplitRunning = false
-                }) { Text("停止识别") }
+                }) { Text(wb.aiSplitStop) }
             }
         )
     }
@@ -487,7 +589,8 @@ fun BookWorkbenchDetailScreen(
                 aiSplitPreview = null
                 viewModel.discardAgentBookChapterSplit(currentBook.id)
             },
-            title = { Text("确认章节识别结果（${preview.size} 章）") },
+            shape = DialogShape,
+            title = { Text(wb.aiSplitPreviewTitle(preview.size)) },
             text = {
                 LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
                     items(preview.take(80), key = { it.index }) { chapter ->
@@ -499,7 +602,7 @@ fun BookWorkbenchDetailScreen(
                         )
                     }
                     if (preview.size > 80) {
-                        item { Text("其余 ${preview.size - 80} 章省略显示…", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        item { Text(wb.aiSplitPreviewMore(preview.size - 80), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
             },
@@ -509,13 +612,15 @@ fun BookWorkbenchDetailScreen(
                         aiSplitPreview = null
                         viewModel.applyAgentBookChapterSplit(currentBook.id)
                     }
-                ) { Text("确认并应用") }
+                ) { Text(wb.aiSplitApply) }
             },
             dismissButton = {
-                TextButton(onClick = {
-                    aiSplitPreview = null
-                    viewModel.discardAgentBookChapterSplit(currentBook.id)
-                }) { Text("放弃") }
+                TextButton(
+                    onClick = {
+                        aiSplitPreview = null
+                        viewModel.discardAgentBookChapterSplit(currentBook.id)
+                    }
+                ) { Text(wb.aiSplitDiscard) }
             }
         )
     }
@@ -523,6 +628,7 @@ fun BookWorkbenchDetailScreen(
     editionToDelete?.let { edition ->
         AlertDialog(
             onDismissRequest = { editionToDelete = null },
+            shape = DialogShape,
             icon = {
                 Icon(
                     Icons.Default.DeleteOutline,
@@ -530,11 +636,9 @@ fun BookWorkbenchDetailScreen(
                     tint = MaterialTheme.colorScheme.error
                 )
             },
-            title = { Text("删除版本") },
+            title = { Text(wb.deleteEditionTitle) },
             text = {
-                Text(
-                    "确定要删除版本「${edition.name}」吗？\n\n该版本下的所有翻译成果、章节文件、术语表和历史记录将被永久删除。原始版本不受影响。"
-                )
+                Text(wb.deleteEditionMessage(edition.name))
             },
             confirmButton = {
                 Button(
@@ -551,12 +655,12 @@ fun BookWorkbenchDetailScreen(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
-                    Text("确认删除")
+                    Text(wb.confirmDelete)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editionToDelete = null }) {
-                    Text("取消")
+                    Text(wb.cancel)
                 }
             }
         )
@@ -566,9 +670,10 @@ fun BookWorkbenchDetailScreen(
         val targetCh = chapterActionTarget!!
         AlertDialog(
             onDismissRequest = { chapterActionTarget = null },
-            title = { Text("章节操作 · ${targetCh.canonicalTitle}") },
+            shape = DialogShape,
+            title = { Text(wb.chapterActionTitle(targetCh.canonicalTitle)) },
             text = {
-                Text("章节编号: 第 ${targetCh.chapterIndex} 章\n您可以直接重新翻译此章节，或在阅读器中预览此章内容。")
+                Text(wb.chapterActionBody(targetCh.chapterIndex))
             },
             confirmButton = {
                 Row(
@@ -587,7 +692,7 @@ fun BookWorkbenchDetailScreen(
                     ) {
                         Icon(Icons.Default.MenuBook, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("预览此章")
+                        Text(wb.previewChapter)
                     }
                     Button(
                         onClick = {
@@ -601,13 +706,13 @@ fun BookWorkbenchDetailScreen(
                     ) {
                         Icon(Icons.Default.Refresh, null, Modifier.size(16.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("重译此章")
+                        Text(wb.retranslateChapter)
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { chapterActionTarget = null }) {
-                    Text("取消")
+                    Text(wb.cancel)
                 }
             }
         )
@@ -633,7 +738,9 @@ private fun WorkbenchSidebar(
     onDeleteEdition: (EditionEntity) -> Unit,
     onScanTerms: () -> Unit,
     onOpenReader: () -> Unit,
-    viewModel: AppViewModel
+    viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors
 ) {
     var editionMenuExpanded by remember { mutableStateOf(false) }
     val currentState = effectiveTranslationState(project, run)
@@ -664,26 +771,12 @@ private fun WorkbenchSidebar(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        modifier = Modifier.size(54.dp, 76.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shadowElevation = 2.dp
-                    ) {
-                        val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
-                        if (cover != null) {
-                            Image(
-                                bitmap = cover!!,
-                                contentDescription = book.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else {
-                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
+                    BookCoverThumb(
+                        title = book.title,
+                        coverPath = book.coverPath,
+                        width = 54.dp,
+                        height = 76.dp
+                    )
                     Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text(
                             book.title,
@@ -693,14 +786,14 @@ private fun WorkbenchSidebar(
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            book.author.ifBlank { "未知作者" },
+                            book.author.ifBlank { wb.unknownAuthor },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            "$chapterCount 章 · ${editions.size} 个版本",
+                            wb.chaptersEditionsCount(chapterCount, editions.size),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -711,9 +804,10 @@ private fun WorkbenchSidebar(
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .clickable { editionMenuExpanded = true },
-                        color = MaterialTheme.colorScheme.surface
+                        color = MaterialTheme.colorScheme.surface,
+                        border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -722,9 +816,9 @@ private fun WorkbenchSidebar(
                             Icon(Icons.Default.Layers, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                             Spacer(Modifier.width(8.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("当前版本", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(wb.currentEdition, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Text(
-                                    selectedEdition?.name ?: "选择目标译本",
+                                    selectedEdition?.name ?: wb.selectTargetEdition,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
                                     maxLines = 1,
@@ -740,7 +834,7 @@ private fun WorkbenchSidebar(
                         modifier = Modifier.widthIn(min = 260.dp, max = 340.dp)
                     ) {
                         Text(
-                            text = "版本列表 (${editions.size})",
+                            text = wb.editionList(editions.size),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.Bold,
@@ -767,11 +861,11 @@ private fun WorkbenchSidebar(
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                             Surface(
-                                                shape = RoundedCornerShape(4.dp),
+                                                shape = RoundedCornerShape(5.dp),
                                                 color = if (isImported) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
                                             ) {
                                                 Text(
-                                                    if (isImported) "原版" else "AI 译本",
+                                                    if (isImported) wb.importedEdition else wb.aiEdition,
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontSize = 10.sp,
                                                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
@@ -800,7 +894,7 @@ private fun WorkbenchSidebar(
                                         ) {
                                             Icon(
                                                 Icons.Outlined.Delete,
-                                                contentDescription = "删除版本",
+                                                contentDescription = wb.deleteEdition,
                                                 tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
                                                 modifier = Modifier.size(16.dp)
                                             )
@@ -815,7 +909,7 @@ private fun WorkbenchSidebar(
                         }
                         HorizontalDivider()
                         DropdownMenuItem(
-                            text = { Text("新建翻译版本", color = MaterialTheme.colorScheme.primary) },
+                            text = { Text(wb.createTranslationEdition, color = MaterialTheme.colorScheme.primary) },
                             leadingIcon = { Icon(Icons.Default.AddCircleOutline, null, tint = MaterialTheme.colorScheme.primary) },
                             onClick = {
                                 editionMenuExpanded = false
@@ -827,7 +921,7 @@ private fun WorkbenchSidebar(
 
                 HorizontalDivider()
                 Text(
-                    "工作区",
+                    wb.workspaceSection,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp)
@@ -840,7 +934,7 @@ private fun WorkbenchSidebar(
                             icon = { Icon(tab.icon, null, modifier = Modifier.size(20.dp)) },
                             label = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(tab.title, modifier = Modifier.weight(1f), maxLines = 1)
+                                    Text(tab.label(wb), modifier = Modifier.weight(1f), maxLines = 1)
                                     when (tab) {
                                         WorkbenchTab.GLOSSARY -> if (lexiconCount > 0) Text(
                                             lexiconCount.toString(),
@@ -857,7 +951,7 @@ private fun WorkbenchSidebar(
                                     }
                                 }
                             },
-                            shape = RoundedCornerShape(10.dp)
+                            shape = RoundedCornerShape(12.dp)
                         )
                     }
                 }
@@ -871,7 +965,9 @@ private fun WorkbenchSidebar(
                     promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
-                    compact = true
+                    compact = true,
+                    wb = wb,
+                    appColors = appColors
                 )
             }
 
@@ -882,7 +978,7 @@ private fun WorkbenchSidebar(
             ) {
                 if (project != null) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("任务进度", style = MaterialTheme.typography.labelMedium)
+                        Text(wb.taskProgress, style = MaterialTheme.typography.labelMedium)
                         Text("$completedChapters / $chapterCount", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                     }
                     LinearProgressIndicator(
@@ -902,6 +998,7 @@ private fun WorkbenchSidebar(
                             }
                         },
                         enabled = project != null,
+                        shape = ButtonShape,
                         modifier = Modifier.weight(1f)
                     ) {
                         Icon(
@@ -916,30 +1013,30 @@ private fun WorkbenchSidebar(
                         Spacer(Modifier.width(6.dp))
                         Text(
                             when {
-                                project == null -> "请先保存模型配置"
-                                currentState == "RUNNING" -> "暂停"
-                                currentState == "PAUSED" -> "继续"
-                                else -> "开始翻译"
+                                project == null -> wb.saveModelConfigFirst
+                                currentState == "RUNNING" -> wb.pause
+                                currentState == "PAUSED" -> wb.resume
+                                else -> wb.startTranslation
                             },
                             maxLines = 1
                         )
                     }
                     if (project != null && currentState in listOf("RUNNING", "PAUSED")) {
                         IconButton(onClick = { viewModel.cancelBookTranslation(project.id) }) {
-                            Icon(Icons.Default.StopCircle, "终止任务", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Default.StopCircle, wb.terminateTask, tint = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onScanTerms, modifier = Modifier.weight(1f)) {
+                    OutlinedButton(onClick = onScanTerms, modifier = Modifier.weight(1f), shape = ButtonShape) {
                         Icon(Icons.Default.Spellcheck, null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text("扫描术语", maxLines = 1)
+                        Text(wb.scanTerms, maxLines = 1)
                     }
-                    OutlinedButton(onClick = onOpenReader, modifier = Modifier.weight(1f)) {
+                    OutlinedButton(onClick = onOpenReader, modifier = Modifier.weight(1f), shape = ButtonShape) {
                         Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(17.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text("阅读", maxLines = 1)
+                        Text(wb.read, maxLines = 1)
                     }
                 }
             }
@@ -952,13 +1049,9 @@ private fun WideWorkspaceHeader(
     tab: WorkbenchTab,
     edition: EditionEntity?,
     project: TranslationProjectV2Entity?,
-    run: PlatformTranslationRunEntity?
+    run: PlatformTranslationRunEntity?,
+    wb: WorkbenchUiStrings
 ) {
-    val description = when (tab) {
-        WorkbenchTab.TASKS -> "监控进度、控制翻译并处理单章任务"
-        WorkbenchTab.GLOSSARY -> "审核候选术语并维护 Story Memory"
-        WorkbenchTab.LOGS -> "查看任务历史、模型调用和诊断日志"
-    }
     val currentState = effectiveTranslationState(project, run)
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column {
@@ -968,7 +1061,7 @@ private fun WideWorkspaceHeader(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.primaryContainer,
                     modifier = Modifier.size(40.dp)
                 ) {
@@ -977,8 +1070,8 @@ private fun WideWorkspaceHeader(
                     }
                 }
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(tab.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(tab.label(wb), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(tab.description(wb), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (edition != null) {
                     Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceContainer) {
@@ -993,13 +1086,7 @@ private fun WideWorkspaceHeader(
                 }
                 Surface(
                     shape = CircleShape,
-                    color = when (currentState) {
-                        "RUNNING" -> MaterialTheme.colorScheme.primary
-                        "PAUSED" -> MaterialTheme.colorScheme.tertiary
-                        "COMPLETED_WITH_WARNINGS" -> Color(0xFFF57C00)
-                        "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
-                        else -> MaterialTheme.colorScheme.surfaceVariant
-                    },
+                    color = stateContainerColor(currentState),
                     modifier = Modifier.size(9.dp)
                 ) {}
             }
@@ -1018,6 +1105,8 @@ private fun WorkbenchHeroSummary(
     promptProfile: PromptProfileEntity?,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors,
     onSelectEdition: (Long) -> Unit,
     onCreateEdition: () -> Unit,
     onDeleteEdition: (EditionEntity) -> Unit
@@ -1042,6 +1131,7 @@ private fun WorkbenchHeroSummary(
                         book = book,
                         editions = editions,
                         selectedEdition = selectedEdition,
+                        wb = wb,
                         onSelectEdition = onSelectEdition,
                         onCreateEdition = onCreateEdition,
                         onDeleteEdition = onDeleteEdition,
@@ -1057,6 +1147,8 @@ private fun WorkbenchHeroSummary(
                         providers = providers,
                         viewModel = viewModel,
                         compact = false,
+                        wb = wb,
+                        appColors = appColors,
                         modifier = Modifier.widthIn(min = 300.dp, max = 420.dp)
                     )
                 }
@@ -1065,6 +1157,7 @@ private fun WorkbenchHeroSummary(
                     book = book,
                     editions = editions,
                     selectedEdition = selectedEdition,
+                    wb = wb,
                     onSelectEdition = onSelectEdition,
                     onCreateEdition = onCreateEdition,
                     onDeleteEdition = onDeleteEdition,
@@ -1080,6 +1173,7 @@ private fun BookHeroSummary(
     book: BookEntity,
     editions: List<EditionEntity>,
     selectedEdition: EditionEntity?,
+    wb: WorkbenchUiStrings,
     onSelectEdition: (Long) -> Unit,
     onCreateEdition: () -> Unit,
     onDeleteEdition: (EditionEntity) -> Unit,
@@ -1092,26 +1186,12 @@ private fun BookHeroSummary(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Surface(
-            modifier = Modifier.size(52.dp, 72.dp),
-            shape = RoundedCornerShape(6.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            shadowElevation = 2.dp
-        ) {
-            val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 320)
-            if (cover != null) {
-                Image(
-                    bitmap = cover!!,
-                    contentDescription = book.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.MenuBook, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
+        BookCoverThumb(
+            title = book.title,
+            coverPath = book.coverPath,
+            width = 52.dp,
+            height = 72.dp
+        )
 
         Column(
             modifier = Modifier.weight(1f),
@@ -1130,11 +1210,11 @@ private fun BookHeroSummary(
                     overflow = TextOverflow.Ellipsis
                 )
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
+                    shape = PillShape,
                     color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Text(
-                        if (selectedEdition?.type == EditionType.AI_TRANSLATION.name) "AI 译本" else "原版",
+                        if (selectedEdition?.type == EditionType.AI_TRANSLATION.name) wb.aiEdition else wb.importedEdition,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -1143,19 +1223,19 @@ private fun BookHeroSummary(
             }
 
             Text(
-                "${book.author.ifBlank { "未知作者" }} · 原文: ${book.originalLanguage.ifBlank { "Auto" }}",
+                "${book.author.ifBlank { wb.unknownAuthor }} · ${book.originalLanguage.ifBlank { "Auto" }}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
             Box(modifier = Modifier.fillMaxWidth()) {
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
+                    shape = RoundedCornerShape(10.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                    border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(10.dp))
                         .clickable { editionMenuExpanded = true }
                 ) {
                     Row(
@@ -1170,12 +1250,12 @@ private fun BookHeroSummary(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            "当前版本: ",
+                            "${wb.currentEdition}: ",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            selectedEdition?.name ?: "选择版本",
+                            selectedEdition?.name ?: wb.selectTargetEdition,
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
@@ -1184,7 +1264,7 @@ private fun BookHeroSummary(
                         )
                         Icon(
                             if (editionMenuExpanded) Icons.Default.ArrowDropUp else Icons.Default.ArrowDropDown,
-                            contentDescription = "展开版本列表",
+                            contentDescription = null,
                             modifier = Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1197,7 +1277,7 @@ private fun BookHeroSummary(
                     modifier = Modifier.widthIn(min = 280.dp, max = 360.dp)
                 ) {
                     Text(
-                        text = "全部版本 (${editions.size})",
+                        text = wb.editionList(editions.size),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.Bold,
@@ -1225,11 +1305,11 @@ private fun BookHeroSummary(
                                             style = MaterialTheme.typography.bodyMedium
                                         )
                                         Surface(
-                                            shape = RoundedCornerShape(4.dp),
+                                            shape = RoundedCornerShape(5.dp),
                                             color = if (isImported) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.primaryContainer
                                         ) {
                                             Text(
-                                                if (isImported) "原版" else "AI 译本",
+                                                if (isImported) wb.importedEdition else wb.aiEdition,
                                                 style = MaterialTheme.typography.labelSmall,
                                                 fontSize = 10.sp,
                                                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
@@ -1239,7 +1319,7 @@ private fun BookHeroSummary(
                                     }
                                     if (edition.language.isNotBlank() && !isImported) {
                                         Text(
-                                            "语言: ${edition.language}",
+                                            edition.language,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             fontSize = 11.sp
@@ -1266,7 +1346,7 @@ private fun BookHeroSummary(
                                     ) {
                                         Icon(
                                             Icons.Outlined.Delete,
-                                            contentDescription = "删除版本",
+                                            contentDescription = wb.deleteEdition,
                                             tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
                                             modifier = Modifier.size(16.dp)
                                         )
@@ -1285,7 +1365,7 @@ private fun BookHeroSummary(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                "新建翻译版本",
+                                wb.createTranslationEdition,
                                 color = MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.Medium
                             )
@@ -1322,6 +1402,8 @@ private fun TasksAndControlTab(
     systemLogs: List<SystemLogEntry>,
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors,
     onCreateEdition: () -> Unit,
     onScanTerms: () -> Unit,
     onOpenReader: () -> Unit,
@@ -1340,6 +1422,12 @@ private fun TasksAndControlTab(
 
     var taskMonitorExpanded by rememberSaveable(project?.id) { mutableStateOf(true) }
     var chapterMatrixExpanded by rememberSaveable(project?.id) { mutableStateOf(true) }
+    // 引擎配置草稿：工程已存在时由分区自己保存；尚未建工程时先在这里缓存，
+    // 创建任务时随 configureEditionTranslation 一并写入。
+    var engineDraft by remember(project?.id, targetEdition?.id) {
+        mutableStateOf(EngineConfigDraft.fromProject(project))
+    }
+    val engineEditable = effectiveTranslationState(project, run) !in setOf("RUNNING", "PAUSED")
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1358,28 +1446,50 @@ private fun TasksAndControlTab(
                         promptProfile = promptProfile,
                         providers = providers,
                         viewModel = viewModel,
-                        compact = false
+                        compact = false,
+                        engineConfig = engineDraft,
+                        wb = wb,
+                        appColors = appColors
+                    )
+                }
+
+                // 引擎开关在创建任务前就能选好，建工程时一并写入。
+                item {
+                    EngineConfigurationSection(
+                        project = null,
+                        viewModel = viewModel,
+                        strings = engineConfigStrings(),
+                        canEdit = true,
+                        onDraftChange = { engineDraft = it }
                     )
                 }
             } else {
                 item {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f))
+                    AppCard(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                        shape = HeroCardShape,
+                        contentPadding = PaddingValues(Spacing.xl)
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(Icons.Default.Tune, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
-                            Text(
-                                if (targetEdition == null) "未选择版本" else "当前选中为“${targetEdition.name}”（原版）",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
+                            AppIconBubble(
+                                icon = Icons.Default.Tune,
+                                size = 56.dp,
+                                shape = CircleShape,
+                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                tint = MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                "大模型翻译需要基于新建的 AI 译本工程。点击下方按钮新建 AI 译本以配置模型与翻译参数。",
+                                if (targetEdition == null) wb.noEditionSelected else wb.originalEditionSelected(targetEdition.name),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                wb.needAiEditionBody,
                                 style = MaterialTheme.typography.bodySmall,
                                 textAlign = TextAlign.Center,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1390,21 +1500,23 @@ private fun TasksAndControlTab(
                             ) {
                                 Button(
                                     onClick = onCreateEdition,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    shape = ButtonShape
                                 ) {
                                     Icon(Icons.Default.AddCircleOutline, null, Modifier.size(17.dp))
                                     Spacer(Modifier.width(6.dp))
-                                    Text("新建 AI 译本")
+                                    Text(wb.createAiEdition)
                                 }
                                 val splitProvider = providers.firstOrNull()
                                 if (splitProvider != null && targetEdition?.type != EditionType.AI_TRANSLATION.name) {
                                     OutlinedButton(
                                         onClick = { onRequestAiSplit(splitProvider) },
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f),
+                                        shape = ButtonShape
                                     ) {
                                         Icon(Icons.Default.AutoAwesome, null, Modifier.size(17.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text("AI 识别章节")
+                                        Text(wb.aiRecognizeChapters)
                                     }
                                 }
                             }
@@ -1415,14 +1527,10 @@ private fun TasksAndControlTab(
         } else {
             // Task Monitor & Controls Card
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
+                AppCard(shape = GroupedCardShape) {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                            .fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         Row(
@@ -1434,12 +1542,16 @@ private fun TasksAndControlTab(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "翻译任务运行状态",
+                                    wb.taskRunStatus,
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    "模型: ${project.modelName.ifBlank { "默认模型" }} · 模式: ${project.translationMode} · 二次审校: ${if (project.highQualityReview) "开" else "关"}",
+                                    wb.modelModeReview(
+                                        project.modelName.ifBlank { wb.modelName },
+                                        project.translationMode,
+                                        wb.onOff(project.highQualityReview)
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1448,37 +1560,11 @@ private fun TasksAndControlTab(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = when (currentState) {
-                                        "RUNNING" -> MaterialTheme.colorScheme.primary
-                                        "PAUSED" -> MaterialTheme.colorScheme.tertiary
-                                        "COMPLETED" -> Color(0xFF2E7D32)
-                                        "COMPLETED_WITH_WARNINGS" -> Color(0xFFF57C00)
-                                        "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
-                                        else -> MaterialTheme.colorScheme.surfaceVariant
-                                    }
-                                ) {
-                                    Text(
-                                        when (currentState) {
-                                            "RUNNING" -> "正在翻译"
-                                            "PAUSED" -> "已暂停"
-                                            "COMPLETED" -> "已完成"
-                                            "COMPLETED_WITH_WARNINGS" -> "完成但有提示"
-                                            "FAILED" -> "异常中断"
-                                            "COMPLETED_WITH_ERRORS" -> "完成但有错误"
-                                            else -> "待绪"
-                                        },
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (currentState in listOf("RUNNING", "COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "COMPLETED_WITH_ERRORS")) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
+                                stateBadge(currentState, wb)
                                 IconButton(onClick = { taskMonitorExpanded = !taskMonitorExpanded }) {
                                     Icon(
                                         if (taskMonitorExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                        contentDescription = if (taskMonitorExpanded) "收起" else "展开"
+                                        contentDescription = if (taskMonitorExpanded) wb.collapse else wb.expand
                                     )
                                 }
                             }
@@ -1492,7 +1578,7 @@ private fun TasksAndControlTab(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        if (reviewRunning) "初稿已完成，正在二次审校" else "进度: $completedChapters / $totalChapters 章",
+                                        if (reviewRunning) wb.draftDoneReviewing else wb.progressLabel(completedChapters, totalChapters),
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Medium
                                     )
@@ -1517,19 +1603,22 @@ private fun TasksAndControlTab(
                             // Stats Summary Row
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 StatBox(
-                                    title = "Prompt Tokens",
-                                    value = TokenCalculator.formatTokenCount(run?.promptTokens ?: 0L)
+                                    title = wb.promptTokens,
+                                    value = TokenCalculator.formatTokenCount(run?.promptTokens ?: 0L),
+                                    modifier = Modifier.weight(1f)
                                 )
                                 StatBox(
-                                    title = "Completion Tokens",
-                                    value = TokenCalculator.formatTokenCount(run?.completionTokens ?: 0L)
+                                    title = wb.completionTokens,
+                                    value = TokenCalculator.formatTokenCount(run?.completionTokens ?: 0L),
+                                    modifier = Modifier.weight(1f)
                                 )
                                 StatBox(
-                                    title = "预估费用",
-                                    value = TokenCalculator.formatCost(run?.totalCost ?: 0.0, run?.currency ?: "USD")
+                                    title = wb.estimatedCost,
+                                    value = TokenCalculator.formatCost(run?.totalCost ?: 0.0, run?.currency ?: "USD"),
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
 
@@ -1544,52 +1633,57 @@ private fun TasksAndControlTab(
                                         Button(
                                             onClick = { viewModel.pauseBookTranslation(project.id) },
                                             modifier = Modifier.weight(1f),
+                                            shape = ButtonShape,
                                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                                         ) {
                                             Icon(Icons.Default.Pause, null, Modifier.size(18.dp))
                                             Spacer(Modifier.width(6.dp))
-                                            Text("暂停任务")
+                                            Text(wb.pauseTask)
                                         }
                                         OutlinedButton(
                                             onClick = { viewModel.cancelBookTranslation(project.id) },
+                                            shape = ButtonShape,
                                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                                         ) {
                                             Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
                                             Spacer(Modifier.width(4.dp))
-                                            Text("终止")
+                                            Text(wb.terminate)
                                         }
                                     }
                                     "PAUSED" -> {
                                         Button(
                                             onClick = { viewModel.resumeBookTranslation(project.id) },
-                                            modifier = Modifier.weight(1f)
+                                            modifier = Modifier.weight(1f),
+                                            shape = ButtonShape
                                         ) {
                                             Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                             Spacer(Modifier.width(6.dp))
-                                            Text("继续翻译")
+                                            Text(wb.resumeTranslation)
                                         }
                                         OutlinedButton(
                                             onClick = { viewModel.cancelBookTranslation(project.id) },
+                                            shape = ButtonShape,
                                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                                         ) {
                                             Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
                                             Spacer(Modifier.width(4.dp))
-                                            Text("取消")
+                                            Text(wb.terminate)
                                         }
                                     }
                                     else -> {
                                         Button(
                                             onClick = { viewModel.runBookTranslation(project.id) },
-                                            modifier = Modifier.weight(1f)
+                                            modifier = Modifier.weight(1f),
+                                            shape = ButtonShape
                                         ) {
                                             Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                                             Spacer(Modifier.width(6.dp))
                                             Text(
                                                 when {
-                                                    completedChapters > 0 -> "继续翻译剩余章节"
-                                                    project.translationMode == TranslationMode.CHAPTER_RANGE.name -> "开始指定范围翻译"
-                                                    project.translationMode == TranslationMode.SEAMLESS.name -> "补齐阅读缓冲"
-                                                    else -> "开始全书翻译"
+                                                    completedChapters > 0 -> wb.continueRemaining
+                                                    project.translationMode == TranslationMode.CHAPTER_RANGE.name -> wb.startRangeTranslation
+                                                    project.translationMode == TranslationMode.SEAMLESS.name -> wb.startSeamlessTranslation
+                                                    else -> wb.startFullBookTranslation
                                                 }
                                             )
                                         }
@@ -1604,19 +1698,21 @@ private fun TasksAndControlTab(
                             ) {
                                 OutlinedButton(
                                     onClick = onScanTerms,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    shape = ButtonShape
                                 ) {
                                     Icon(Icons.Default.Spellcheck, null, modifier = Modifier.size(17.dp))
                                     Spacer(Modifier.width(5.dp))
-                                    Text("扫描术语", maxLines = 1)
+                                    Text(wb.scanTerms, maxLines = 1)
                                 }
                                 OutlinedButton(
                                     onClick = onOpenReader,
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier.weight(1f),
+                                    shape = ButtonShape
                                 ) {
                                     Icon(Icons.Default.MenuBook, null, modifier = Modifier.size(17.dp))
                                     Spacer(Modifier.width(5.dp))
-                                    Text("阅读译文", maxLines = 1)
+                                    Text(wb.readTranslation, maxLines = 1)
                                 }
                             }
                         }
@@ -1635,7 +1731,9 @@ private fun TasksAndControlTab(
                     promptProfile = promptProfile,
                     providers = providers,
                     viewModel = viewModel,
-                    compact = false
+                    compact = false,
+                    wb = wb,
+                    appColors = appColors
                 )
             }
 
@@ -1644,20 +1742,28 @@ private fun TasksAndControlTab(
                     project = project,
                     totalChapters = totalChapters,
                     viewModel = viewModel,
-                    run = run
+                    run = run,
+                    wb = wb
+                )
+            }
+
+            // Translation engine switches (parallel chapters, continuity, metadata, prompt cache)
+            item {
+                EngineConfigurationSection(
+                    project = project,
+                    viewModel = viewModel,
+                    strings = engineConfigStrings(),
+                    canEdit = engineEditable,
+                    onDraftChange = { engineDraft = it }
                 )
             }
 
             // Chapter Matrix / Status Grid
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
+                AppCard(shape = GroupedCardShape) {
                     Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                            .fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Row(
@@ -1669,12 +1775,12 @@ private fun TasksAndControlTab(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    "章节状态矩阵 (点击章节可重译/预览)",
+                                    wb.chapterMatrixTitle,
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    "共 ${chapters.size} 章",
+                                    wb.totalChapters(chapters.size),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -1682,7 +1788,7 @@ private fun TasksAndControlTab(
                             IconButton(onClick = { chapterMatrixExpanded = !chapterMatrixExpanded }) {
                                 Icon(
                                     if (chapterMatrixExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                    contentDescription = if (chapterMatrixExpanded) "收起" else "展开"
+                                    contentDescription = if (chapterMatrixExpanded) wb.collapse else wb.expand
                                 )
                             }
                         }
@@ -1691,6 +1797,8 @@ private fun TasksAndControlTab(
                             ChapterStatusMatrix(
                                 chapters = chapters,
                                 completedChapters = completedChapters,
+                                appColors = appColors,
+                                wb = wb,
                                 onSelectChapter = onSelectChapterAction
                             )
                         }
@@ -1712,8 +1820,11 @@ private fun ModelStyleConfigurationCard(
     providers: List<ApiProviderEntity>,
     viewModel: AppViewModel,
     compact: Boolean,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors,
     modifier: Modifier = Modifier,
-    run: PlatformTranslationRunEntity? = null
+    run: PlatformTranslationRunEntity? = null,
+    engineConfig: EngineConfigDraft = EngineConfigDraft.fromProject(project)
 ) {
     val originalEdition = editions.firstOrNull { it.id == book.primaryEditionId }
         ?: editions.firstOrNull { it.type == EditionType.IMPORTED.name }
@@ -1731,14 +1842,14 @@ private fun ModelStyleConfigurationCard(
         )
     }
     var styleGuide by rememberSaveable(project?.id, project?.updatedAt, targetEdition?.id) {
-        mutableStateOf(project?.styleGuide?.ifBlank { "保持文学韵味与专有名词一致性" } ?: "保持文学韵味与专有名词一致性")
+        mutableStateOf(project?.styleGuide?.ifBlank { wb.styleGuideLiterary } ?: wb.styleGuideLiterary)
     }
     val sourceLanguage = project?.sourceLanguage
         ?: originalEdition?.language?.takeIf { it.isNotBlank() }
         ?: book.originalLanguage
     val targetLanguage = project?.targetLanguage
         ?: targetEdition?.language?.takeIf { it.isNotBlank() }
-        ?: "目标语言"
+        ?: wb.targetLanguage
     val defaultPromptProfile = remember(sourceLanguage, targetLanguage) {
         TranslationProtocol.defaultPromptProfile()
     }
@@ -1775,14 +1886,12 @@ private fun ModelStyleConfigurationCard(
 
     var isExpanded by rememberSaveable(project?.id, targetEdition?.id) { mutableStateOf(true) }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    AppCard(
+        modifier = modifier,
+        shape = GroupedCardShape
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(if (compact) 12.dp else 14.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(if (compact) 8.dp else 10.dp)
         ) {
             Row(
@@ -1791,12 +1900,12 @@ private fun ModelStyleConfigurationCard(
                     .clickable { isExpanded = !isExpanded },
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.Memory, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(7.dp))
+                AppIconBubble(icon = Icons.Default.Memory, size = 34.dp)
+                Spacer(Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("模型配置", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(wb.modelConfig, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        if (project == null) "保存后创建当前译本任务" else "当前译本使用的供应商与模型",
+                        if (project == null) wb.modelConfigSubtitleNew else wb.modelConfigSubtitleExisting,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -1806,7 +1915,7 @@ private fun ModelStyleConfigurationCard(
                 IconButton(onClick = { isExpanded = !isExpanded }) {
                     Icon(
                         if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = if (isExpanded) "收起" else "展开"
+                        contentDescription = if (isExpanded) wb.collapse else wb.expand
                     )
                 }
             }
@@ -1814,7 +1923,7 @@ private fun ModelStyleConfigurationCard(
             if (isExpanded) {
             if (providers.isEmpty()) {
                 Text(
-                    "暂无可用 AI 供应商，请先在系统设置中添加 API Key。",
+                    wb.noProviderHint,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -1827,7 +1936,7 @@ private fun ModelStyleConfigurationCard(
                         value = activeProvider?.let { "${it.name} (${it.providerType.displayName})" }.orEmpty(),
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("AI 供应商") },
+                        label = { Text(wb.aiProvider) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(providerMenuExpanded) },
                         modifier = Modifier.menuAnchor().fillMaxWidth(),
                         singleLine = true,
@@ -1854,7 +1963,7 @@ private fun ModelStyleConfigurationCard(
                 OutlinedTextField(
                     value = selectedModel,
                     onValueChange = { selectedModel = it.take(200) },
-                    label = { Text("模型名称") },
+                    label = { Text(wb.modelName) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     enabled = canEdit
@@ -1872,11 +1981,12 @@ private fun ModelStyleConfigurationCard(
                                 testResult = null
                                 viewModel.testProvider(provider) { success, message ->
                                     isTestingProvider = false
-                                    testResult = if (success) "连接成功" else "连接失败: $message"
+                                    testResult = if (success) wb.connectionSuccess else wb.connectionFailed(message)
                                 }
                             }
                         },
                         enabled = activeProvider != null && !isTestingProvider,
+                        shape = ButtonShape,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         if (isTestingProvider) {
@@ -1885,13 +1995,13 @@ private fun ModelStyleConfigurationCard(
                             Icon(Icons.Default.NetworkCheck, null, Modifier.size(15.dp))
                         }
                         Spacer(Modifier.width(5.dp))
-                        Text("测试连接")
+                        Text(wb.testConnection)
                     }
                     if (!testResult.isNullOrBlank()) {
                         Text(
                             testResult.orEmpty(),
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (testResult == "连接成功") Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                            color = if (testResult == wb.connectionSuccess) appColors.success else MaterialTheme.colorScheme.error,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f).padding(start = 8.dp)
@@ -1902,7 +2012,7 @@ private fun ModelStyleConfigurationCard(
 
             if (project == null && !canCreateProject) {
                 Text(
-                    "请先通过书籍信息旁的“+”新建 AI 翻译版本，再保存翻译任务。",
+                    wb.createEditionFirstHint,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -1910,12 +2020,12 @@ private fun ModelStyleConfigurationCard(
 
             HorizontalDivider()
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.AutoAwesome, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(7.dp))
+                AppIconBubble(icon = Icons.Default.AutoAwesome, size = 34.dp)
+                Spacer(Modifier.width(10.dp))
                 Column {
-                    Text("风格与提示词定制", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                    Text(wb.styleAndPrompt, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "影响当前译本后续翻译的文学风格与约束",
+                        wb.styleAndPromptSubtitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1928,17 +2038,16 @@ private fun ModelStyleConfigurationCard(
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                listOf("仙侠修真", "西幻魔法", "轻小说", "严谨文学").forEach { preset ->
+                listOf(
+                    wb.stylePresetXianxia to wb.styleGuideXianxia,
+                    wb.stylePresetWestern to wb.styleGuideWestern,
+                    wb.stylePresetLightNovel to wb.styleGuideLightNovel,
+                    wb.stylePresetLiterary to wb.styleGuideLiterary
+                ).forEach { (preset, guide) ->
                     AssistChip(
-                        onClick = {
-                            styleGuide = when (preset) {
-                                "仙侠修真" -> "保留东方仙侠玄幻风格，境界称号统一规范，对话自然流畅"
-                                "西幻魔法" -> "保留西幻史诗与魔法体系设定，地名人名音译典雅"
-                                "轻小说" -> "日系轻小说风格，语气生动鲜明，保留人物个性口吻"
-                                else -> "文学出版级翻译，语句通顺优美，严格保持专有名词一致"
-                            }
-                        },
+                        onClick = { styleGuide = guide },
                         enabled = canEdit,
+                        shape = SmallControlShape,
                         label = { Text(preset, fontSize = 10.sp, maxLines = 1) }
                     )
                 }
@@ -1947,7 +2056,7 @@ private fun ModelStyleConfigurationCard(
             OutlinedTextField(
                 value = styleGuide,
                 onValueChange = { styleGuide = it.take(2_000) },
-                label = { Text("文学风格指导") },
+                label = { Text(wb.literaryStyleGuide) },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = if (compact) 2 else 3,
                 maxLines = if (compact) 4 else 6,
@@ -1961,15 +2070,15 @@ private fun ModelStyleConfigurationCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "翻译与润色提示词",
+                        wb.translationPrompt,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
                     Text(
                         if (promptProfile == null) {
-                            "当前使用默认模板，保存后将记录为第 1 版"
+                            wb.defaultPromptProfileHint
                         } else {
-                            "当前 Prompt Profile · 第 ${promptProfile.version} 版"
+                            wb.promptProfileVersion(promptProfile.version)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1978,11 +2087,12 @@ private fun ModelStyleConfigurationCard(
                 OutlinedButton(
                     onClick = { showPromptEditor = true },
                     enabled = canEdit,
+                    shape = ButtonShape,
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
                     Icon(Icons.Default.EditNote, null, Modifier.size(17.dp))
                     Spacer(Modifier.width(5.dp))
-                    Text("预览 / 编辑")
+                    Text(wb.previewEdit)
                 }
             }
 
@@ -1992,12 +2102,12 @@ private fun ModelStyleConfigurationCard(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("初稿完成后 AI 二次审校 / 润色", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    Text(wb.highQualityReview, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                     Text(
                         if (highQualityReview) {
-                            "整段初稿完成后执行一次；失败或超长会自动保留初稿。"
+                            wb.highQualityReviewOnHint
                         } else {
-                            "默认关闭；开启后每章会增加一次模型调用，仅在初稿完成并通过 QA 后执行。"
+                            wb.highQualityReviewOffHint
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -2040,6 +2150,10 @@ private fun ModelStyleConfigurationCard(
                                 maxBatchChapters = 1,
                                 styleGuide = styleGuide,
                                 highQualityReview = highQualityReview,
+                                parallelChapters = engineConfig.parallelChapters,
+                                continuityMode = engineConfig.continuityMode,
+                                metadataEnabled = engineConfig.metadataEnabled,
+                                promptCacheEnabled = engineConfig.promptCacheEnabled,
                                 promptProfile = promptDraft,
                                 startImmediately = false
                             )
@@ -2047,12 +2161,13 @@ private fun ModelStyleConfigurationCard(
                     }
                 },
                 enabled = canSave && canEdit,
+                shape = ButtonShape,
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(vertical = 7.dp)
             ) {
                 Icon(Icons.Default.Save, null, Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
-                Text(if (project == null) "保存并创建任务" else "保存模型与风格")
+                Text(if (project == null) wb.saveAndCreateTask else wb.saveModelAndStyle)
             }
             }
         }
@@ -2067,6 +2182,7 @@ private fun ModelStyleConfigurationCard(
             version = promptProfile?.version ?: 1,
             canEdit = canEdit,
             projectExists = project != null,
+            wb = wb,
             onDismiss = { showPromptEditor = false },
             onSave = { updated ->
                 promptDraft = updated
@@ -2086,6 +2202,7 @@ private fun PromptProfileEditorDialog(
     version: Int,
     canEdit: Boolean,
     projectExists: Boolean,
+    wb: WorkbenchUiStrings,
     onDismiss: () -> Unit,
     onSave: (PromptProfileDraft) -> Unit
 ) {
@@ -2148,7 +2265,7 @@ private fun PromptProfileEditorDialog(
             modifier = Modifier
                 .fillMaxWidth(0.94f)
                 .fillMaxHeight(0.90f),
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(28.dp),
             tonalElevation = 6.dp
         ) {
             Column(Modifier.fillMaxSize()) {
@@ -2159,15 +2276,15 @@ private fun PromptProfileEditorDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("提示词 Profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(wb.promptProfileTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                         Text(
-                            if (projectExists) "当前第 $version 版 · 保存修改会生成新的版本" else "尚未创建翻译工程 · 保存后写入第 1 版",
+                            if (projectExists) wb.promptProfileVersionHint(version) else wb.promptProfileNewHint,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Default.Close, contentDescription = "关闭")
+                        Icon(Icons.Default.Close, contentDescription = wb.close)
                     }
                 }
 
@@ -2175,13 +2292,13 @@ private fun PromptProfileEditorDialog(
                     Tab(
                         selected = isTranslation,
                         onClick = { selectedPrompt = 0 },
-                        text = { Text("翻译提示词") },
+                        text = { Text(wb.translationPromptTab) },
                         icon = { Icon(Icons.Default.Translate, null, Modifier.size(17.dp)) }
                     )
                     Tab(
                         selected = !isTranslation,
                         onClick = { selectedPrompt = 1 },
-                        text = { Text("润色提示词") },
+                        text = { Text(wb.polishPromptTab) },
                         icon = { Icon(Icons.Default.AutoFixHigh, null, Modifier.size(17.dp)) }
                     )
                 }
@@ -2192,14 +2309,14 @@ private fun PromptProfileEditorDialog(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.End
                 ) {
-                    OutlinedButton(onClick = { previewMode = !previewMode }) {
+                    OutlinedButton(onClick = { previewMode = !previewMode }, shape = ButtonShape) {
                         Icon(
                             if (previewMode) Icons.Default.Edit else Icons.Default.Visibility,
                             null,
                             Modifier.size(17.dp)
                         )
                         Spacer(Modifier.width(5.dp))
-                        Text(if (previewMode) "编辑模板" else "预览最终提示词")
+                        Text(if (previewMode) wb.editTemplate else wb.previewFinalPrompt)
                     }
                 }
 
@@ -2213,20 +2330,20 @@ private fun PromptProfileEditorDialog(
                 ) {
                     if (previewMode) {
                         Text(
-                            "系统提示词（运行时已替换语言、风格等变量）",
+                            wb.systemPromptPreview,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
                         PromptPreviewBlock(renderedSystemPrompt)
                         Text(
-                            "请求提示词（示例正文；实际运行会注入章节、术语和记忆）",
+                            wb.userPromptPreview,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
                         PromptPreviewBlock(renderedUserPrompt)
                     } else {
                         Text(
-                            "系统提示词模板",
+                            wb.systemPromptTemplate,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -2245,11 +2362,11 @@ private fun PromptProfileEditorDialog(
                             maxLines = 16,
                             enabled = canEdit,
                             supportingText = {
-                                Text("可用变量：{{SOURCE_LANGUAGE}}、{{TARGET_LANGUAGE}}、{{STYLE_GUIDE}}")
+                                Text(wb.systemPromptVariablesHint)
                             }
                         )
                         Text(
-                            "请求提示词模板",
+                            wb.userPromptTemplate,
                             style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -2268,7 +2385,7 @@ private fun PromptProfileEditorDialog(
                             maxLines = 12,
                             enabled = canEdit,
                             supportingText = {
-                                Text("建议保留 {{PROMPT_BODY}}，它会被替换为章节、术语、记忆和结构化输出正文")
+                                Text(wb.userPromptVariablesHint)
                             }
                         )
                     }
@@ -2283,17 +2400,17 @@ private fun PromptProfileEditorDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "模板最多 24,000 字符",
+                        wb.templateCharLimit,
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    TextButton(onClick = onDismiss) { Text("取消") }
+                    TextButton(onClick = onDismiss) { Text(wb.cancel) }
                     Spacer(Modifier.width(6.dp))
-                    Button(onClick = { onSave(workingDraft) }, enabled = canEdit) {
+                    Button(onClick = { onSave(workingDraft) }, enabled = canEdit, shape = ButtonShape) {
                         Icon(Icons.Default.Save, null, Modifier.size(17.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text(if (projectExists) "保存新版本" else "应用到新建任务")
+                        Text(if (projectExists) wb.saveNewVersion else wb.applyToNewTask)
                     }
                 }
             }
@@ -2306,7 +2423,7 @@ private fun PromptPreviewBlock(value: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        shape = RoundedCornerShape(10.dp)
+        shape = RoundedCornerShape(12.dp)
     ) {
         Text(
             value,
@@ -2322,6 +2439,7 @@ private fun TaskScaleConfigurationCard(
     project: TranslationProjectV2Entity,
     totalChapters: Int,
     viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
     run: PlatformTranslationRunEntity? = null
 ) {
     var translationMode by rememberSaveable(project.id, project.updatedAt) {
@@ -2346,14 +2464,9 @@ private fun TaskScaleConfigurationCard(
     val canEdit = effectiveTranslationState(project, run) !in setOf("RUNNING", "PAUSED")
     var isExpanded by rememberSaveable(project.id) { mutableStateOf(true) }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
+    AppCard(shape = GroupedCardShape) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
@@ -2364,9 +2477,9 @@ private fun TaskScaleConfigurationCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("任务范围与批处理规模", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(wb.taskScopeTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        "翻译任务运行前可随时调整；保存后下一次启动任务时生效。",
+                        wb.taskScopeSubtitle,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -2380,7 +2493,7 @@ private fun TaskScaleConfigurationCard(
                         color = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Text(
-                            "最多 $totalChapters 章",
+                            wb.maxChaptersBadge(totalChapters),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -2389,7 +2502,7 @@ private fun TaskScaleConfigurationCard(
                     IconButton(onClick = { isExpanded = !isExpanded }) {
                         Icon(
                             if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = if (isExpanded) "收起" else "展开"
+                            contentDescription = if (isExpanded) wb.collapse else wb.expand
                         )
                     }
                 }
@@ -2403,14 +2516,15 @@ private fun TaskScaleConfigurationCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 listOf(
-                    TranslationMode.FULL_BOOK.name to "全书翻译",
-                    TranslationMode.CHAPTER_RANGE.name to "指定范围",
-                    TranslationMode.SEAMLESS.name to "无缝预翻译"
+                    TranslationMode.FULL_BOOK.name to wb.modeFullBook,
+                    TranslationMode.CHAPTER_RANGE.name to wb.modeChapterRange,
+                    TranslationMode.SEAMLESS.name to wb.modeSeamless
                 ).forEach { (mode, label) ->
                     FilterChip(
                         selected = translationMode == mode,
                         onClick = { if (canEdit) translationMode = mode },
                         enabled = canEdit,
+                        shape = SmallControlShape,
                         label = { Text(label, maxLines = 1) }
                     )
                 }
@@ -2424,7 +2538,7 @@ private fun TaskScaleConfigurationCard(
                     OutlinedTextField(
                         value = rangeStartText,
                         onValueChange = { if (canEdit) rangeStartText = it.filter(Char::isDigit) },
-                        label = { Text("起始章节") },
+                        label = { Text(wb.startChapter) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         enabled = canEdit,
@@ -2433,7 +2547,7 @@ private fun TaskScaleConfigurationCard(
                     OutlinedTextField(
                         value = rangeEndText,
                         onValueChange = { if (canEdit) rangeEndText = it.filter(Char::isDigit) },
-                        label = { Text("结束章节") },
+                        label = { Text(wb.endChapter) },
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         enabled = canEdit,
@@ -2442,7 +2556,7 @@ private fun TaskScaleConfigurationCard(
                 }
                 if (!rangeIsValid) {
                     Text(
-                        "请输入有效章节范围，结束章节不能小于起始章节且不能超过全书章节数。",
+                        wb.rangeInvalidHint,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -2455,9 +2569,9 @@ private fun TaskScaleConfigurationCard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("单次批处理章节数", style = MaterialTheme.typography.bodyMedium)
+                    Text(wb.batchChaptersPerRequest, style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "$batchSize 章 / 批次",
+                        wb.chaptersPerBatch(batchSize),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -2472,13 +2586,13 @@ private fun TaskScaleConfigurationCard(
                 )
                 if (!canEdit) {
                     Text(
-                        "任务运行中或已暂停时暂不能修改参数，请先终止任务；修改内容将在下一次启动时生效。",
+                        wb.batchEditLockedHint,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.tertiary
                     )
                 }
                 Text(
-                    "推荐 1～2 章以获得更高的文学翻译精度与专有名词一致性。模型上下文不足时仍会自动降为单章。",
+                    wb.batchRecommendation,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2501,11 +2615,12 @@ private fun TaskScaleConfigurationCard(
                     )
                 },
                 enabled = canEdit && rangeIsValid,
+                shape = ButtonShape,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Save, null, Modifier.size(17.dp))
                 Spacer(Modifier.width(6.dp))
-                Text("保存任务参数")
+                Text(wb.saveTaskParams)
             }
             }
         }
@@ -2516,11 +2631,13 @@ private fun TaskScaleConfigurationCard(
 private fun ChapterStatusMatrix(
     chapters: List<LogicalChapterEntity>,
     completedChapters: Int,
+    appColors: AppColors,
+    wb: WorkbenchUiStrings,
     onSelectChapter: (LogicalChapterEntity) -> Unit
 ) {
     if (chapters.isEmpty()) {
         Text(
-            "暂无章节",
+            wb.noChapters,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2553,17 +2670,17 @@ private fun ChapterStatusMatrix(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(36.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable { onSelectChapter(chapter) },
-                    color = if (isDone) Color(0xFF2E7D32).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                    border = if (isDone) borderModifier(Color(0xFF2E7D32)) else null
+                    color = if (isDone) appColors.success.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
+                    border = if (isDone) BorderStroke(1.dp, appColors.success) else null
                 ) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             "${chapter.chapterIndex}",
                             fontSize = 12.sp,
                             fontWeight = if (isDone) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isDone) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (isDone) appColors.success else MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
                         )
                     }
@@ -2574,21 +2691,21 @@ private fun ChapterStatusMatrix(
 }
 
 @Composable
-private fun borderModifier(color: Color) = androidx.compose.foundation.BorderStroke(1.dp, color)
+private fun borderModifier(color: Color) = BorderStroke(1.dp, color)
 
 @Composable
-private fun StatBox(title: String, value: String) {
+private fun StatBox(title: String, value: String, modifier: Modifier = Modifier) {
     Surface(
-        shape = RoundedCornerShape(8.dp),
+        shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.padding(horizontal = 4.dp)
+        modifier = modifier
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, maxLines = 1)
         }
     }
 }
@@ -2597,6 +2714,7 @@ private fun StatBox(title: String, value: String) {
 private fun LiveProcessLogCard(
     projectId: Long?,
     systemLogs: List<SystemLogEntry>,
+    wb: WorkbenchUiStrings,
     modifier: Modifier = Modifier,
     expandToAvailableSpace: Boolean = false
 ) {
@@ -2622,15 +2740,17 @@ private fun LiveProcessLogCard(
         }.takeLast(200)
     }
 
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF1E1E24))
+    AppCard(
+        modifier = modifier,
+        shape = GroupedCardShape,
+        containerColor = ConsoleBackground,
+        border = BorderStroke(0.8.dp, ConsoleBackground),
+        contentPadding = PaddingValues(14.dp)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(if (expandToAvailableSpace) Modifier.fillMaxHeight() else Modifier)
-                .padding(14.dp),
+                .then(if (expandToAvailableSpace) Modifier.fillMaxHeight() else Modifier),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -2639,12 +2759,12 @@ private fun LiveProcessLogCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Icon(Icons.Default.Terminal, null, tint = Color(0xFF4CAF50), modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Terminal, null, tint = ConsoleSuccess, modifier = Modifier.size(18.dp))
                     Text(
-                        "实时运行与流程日志",
+                        wb.liveLogTitle,
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = Color.White
+                        color = ConsoleOnSurface
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -2652,17 +2772,17 @@ private fun LiveProcessLogCard(
                         onClick = {
                             val text = filteredLogs.joinToString("\n") { "[${it.formattedDate}] [${it.tag}] ${it.message}" }
                             clipboardManager.setText(AnnotatedString(text))
-                            Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, wb.logsCopied, Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.size(28.dp)
                     ) {
-                        Icon(Icons.Default.ContentCopy, "复制日志", tint = Color.LightGray, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.ContentCopy, wb.copyLogs, tint = ConsoleOnSurfaceVariant, modifier = Modifier.size(16.dp))
                     }
                     IconButton(
                         onClick = { SystemLogger.clearLogs() },
                         modifier = Modifier.size(28.dp)
                     ) {
-                        Icon(Icons.Default.DeleteOutline, "清空日志", tint = Color.LightGray, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.DeleteOutline, wb.clearLogs, tint = ConsoleOnSurfaceVariant, modifier = Modifier.size(16.dp))
                     }
                 }
             }
@@ -2672,19 +2792,25 @@ private fun LiveProcessLogCard(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                listOf("ALL" to "全部", "TRANSLATION" to "流程", "LLM_API" to "模型API", "GLOSSARY" to "术语库", "ERROR" to "错误").forEach { (tag, label) ->
+                listOf(
+                    "ALL" to wb.filterAll,
+                    "TRANSLATION" to wb.filterFlow,
+                    "LLM_API" to wb.filterModelApi,
+                    "GLOSSARY" to wb.filterGlossary,
+                    "ERROR" to wb.filterError
+                ).forEach { (tag, label) ->
                     val isSelected = selectedTagFilter == tag
                     Surface(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(4.dp))
+                            .clip(RoundedCornerShape(6.dp))
                             .clickable { selectedTagFilter = tag },
-                        color = if (isSelected) Color(0xFF3F51B5) else Color(0xFF2C2C34)
+                        color = if (isSelected) MaterialTheme.colorScheme.primary else ConsoleBackgroundLight
                     ) {
                         Text(
                             label,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                             style = MaterialTheme.typography.labelSmall,
-                            color = Color.White,
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimary else ConsoleOnSurfaceVariant,
                             fontSize = 10.sp
                         )
                     }
@@ -2705,15 +2831,15 @@ private fun LiveProcessLogCard(
                 } else {
                     Modifier.fillMaxWidth().heightIn(min = 220.dp, max = 360.dp)
                 },
-                shape = RoundedCornerShape(6.dp),
-                color = Color(0xFF141418)
+                shape = RoundedCornerShape(8.dp),
+                color = ConsoleSurface
             ) {
                 if (filteredLogs.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            "暂无匹配的运行日志，启动翻译后此处将实时显示每个阶段进度。",
+                            wb.noMatchingLogs,
                             style = MaterialTheme.typography.bodySmall,
-                            color = Color.Gray,
+                            color = ConsoleOnSurfaceVariant,
                             textAlign = TextAlign.Center,
                             modifier = Modifier.padding(16.dp)
                         )
@@ -2728,14 +2854,14 @@ private fun LiveProcessLogCard(
                     ) {
                         items(filteredLogs, key = { it.id }) { log ->
                             val color = when (log.level) {
-                                LogLevel.ERROR -> Color(0xFFFF5252)
-                                LogLevel.WARN -> Color(0xFFFFD740)
+                                LogLevel.ERROR -> ConsoleError
+                                LogLevel.WARN -> ConsoleWarning
                                 else -> when (log.tag) {
-                                    "TRANSLATION", "BATCH" -> Color(0xFF69F0AE)
-                                    "LLM_API" -> Color(0xFF40C4FF)
-                                    "GLOSSARY" -> Color(0xFFE040FB)
-                                    "QA_CHECK" -> Color(0xFFFFAB40)
-                                    else -> Color(0xFFE0E0E0)
+                                    "TRANSLATION", "BATCH" -> ConsoleSuccess
+                                    "LLM_API" -> ConsoleInfo
+                                    "GLOSSARY" -> ConsoleAccent
+                                    "QA_CHECK" -> ConsoleWarning
+                                    else -> ConsoleOnSurface
                                 }
                             }
                             Column {
@@ -2748,7 +2874,7 @@ private fun LiveProcessLogCard(
                                         "[${log.formattedDate}]",
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 10.sp,
-                                        color = Color.Gray
+                                        color = ConsoleOnSurfaceVariant
                                     )
                                     Text(
                                         "[${log.tag}]",
@@ -2761,7 +2887,7 @@ private fun LiveProcessLogCard(
                                         log.message,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 11.sp,
-                                        color = Color.White,
+                                        color = ConsoleOnSurface,
                                         modifier = Modifier.weight(1f)
                                     )
                                 }
@@ -2770,7 +2896,7 @@ private fun LiveProcessLogCard(
                                         "  └ ${log.details}",
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 10.sp,
-                                        color = Color.LightGray.copy(alpha = 0.8f),
+                                        color = ConsoleOnSurfaceVariant,
                                         modifier = Modifier.padding(start = 24.dp)
                                     )
                                 }
@@ -2783,6 +2909,7 @@ private fun LiveProcessLogCard(
         }
     }
 }
+
 @Composable
 private fun GlossaryManagementTab(
     book: BookEntity,
@@ -2792,7 +2919,9 @@ private fun GlossaryManagementTab(
     storyMemory: List<StoryMemoryEntity>,
     onScanTerms: () -> Unit,
     onAddTerm: () -> Unit,
-    viewModel: AppViewModel
+    viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("ALL") }
@@ -2840,31 +2969,30 @@ private fun GlossaryManagementTab(
     ) {
         // Smart Scanner Banner
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
+            AppCard(
+                shape = HeroCardShape,
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f),
+                border = null
             ) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                         Text(
-                            "🔍 专有术语与人名智能扫描",
+                            wb.glossaryScanBannerTitle,
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            "AI 会完整扫描所选章节并生成待确认候选；只有人工确认后，术语才会进入翻译与 QA。",
+                            wb.glossaryScanBannerBody,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
-                    Button(onClick = onScanTerms) {
-                        Text("一键扫描")
+                    Button(onClick = onScanTerms, shape = ButtonShape) {
+                        Text(wb.scanNow)
                     }
                 }
             }
@@ -2880,18 +3008,20 @@ private fun GlossaryManagementTab(
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("搜索术语与人名...") },
+                    placeholder = { Text(wb.searchTerms) },
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     modifier = Modifier.weight(1f),
+                    shape = ButtonShape,
                     singleLine = true
                 )
                 Button(
                     onClick = onAddTerm,
-                    enabled = project != null
+                    enabled = project != null,
+                    shape = ButtonShape
                 ) {
                     Icon(Icons.Default.Add, null, Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("添加术语")
+                    Text(wb.addTerm)
                 }
             }
         }
@@ -2905,19 +3035,20 @@ private fun GlossaryManagementTab(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 listOf(
-                    "ALL" to "全部 (${officialLexicon.size})",
-                    "CHARACTER" to "人名",
-                    "LOCATION" to "地名",
-                    "SKILL" to "功法技能",
-                    "LORE" to "势力/设定",
-                    "ITEM" to "道具法宝",
-                    "HONORIFIC" to "称谓头衔",
-                    "CUSTOM" to "自定义"
+                    "ALL" to wb.categoryAll(officialLexicon.size),
+                    "CHARACTER" to wb.categoryCharacter,
+                    "LOCATION" to wb.categoryLocation,
+                    "SKILL" to wb.categorySkill,
+                    "LORE" to wb.categoryLore,
+                    "ITEM" to wb.categoryItem,
+                    "HONORIFIC" to wb.categoryHonorific,
+                    "CUSTOM" to wb.categoryCustom
                 ).forEach { (cat, label) ->
                     val isSelected = selectedCategory == cat
                     FilterChip(
                         selected = isSelected,
                         onClick = { selectedCategory = cat },
+                        shape = SmallControlShape,
                         label = { Text(label, fontSize = 12.sp) }
                     )
                 }
@@ -2926,22 +3057,24 @@ private fun GlossaryManagementTab(
 
         if (candidateReviews.isNotEmpty()) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f))
+                AppCard(
+                    shape = GroupedCardShape,
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.55f),
+                    border = null
                 ) {
-                    Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("AI 候选审核 · ${candidateReviews.size}", fontWeight = FontWeight.Bold)
+                                Text(wb.candidateReviewTitle(candidateReviews.size), fontWeight = FontWeight.Bold)
                                 Text(
-                                    "候选只保存证据，不会影响正式翻译；确认后才会进入术语约束。高一致候选才允许批量确认。",
+                                    wb.candidateReviewBody,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onTertiaryContainer
                                 )
                             }
                             Button(
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                                shape = ButtonShape,
                                 onClick = {
                                     viewModel.confirmLexiconCandidatesBatch(selectedHighConfidenceIds) { _, _ ->
                                         selectedCandidateIds = selectedCandidateIds - selectedHighConfidenceIds.toSet()
@@ -2949,7 +3082,7 @@ private fun GlossaryManagementTab(
                                 },
                                 enabled = selectedHighConfidenceIds.isNotEmpty()
                             ) {
-                                Text("批量确认 ${selectedHighConfidenceIds.size}")
+                                Text(wb.batchConfirm(selectedHighConfidenceIds.size))
                             }
                         }
                         Row(
@@ -2959,14 +3092,14 @@ private fun GlossaryManagementTab(
                         ) {
                             TextButton(onClick = {
                                 if (highConfidenceReviews.isEmpty()) {
-                                    viewModel.showMessage("当前没有可批量确认的高一致候选；至少需要两次一致观察、总体一致率不低于 80% 且不能存在译名或类别冲突")
+                                    viewModel.showMessage(wb.noHighConfidenceHint)
                                 } else {
                                     selectedCandidateIds = highConfidenceReviews.mapTo(mutableSetOf()) { it.id }
                                 }
-                            }) { Text("选择高一致候选 (${highConfidenceReviews.size})") }
-                            TextButton(onClick = { selectedCandidateIds = emptySet() }) { Text("清空选择") }
+                            }) { Text(wb.selectHighConfidence(highConfidenceReviews.size)) }
+                            TextButton(onClick = { selectedCandidateIds = emptySet() }) { Text(wb.clearSelection) }
                             Text(
-                                "已选高一致 ${selectedHighConfidenceIds.size}",
+                                wb.selectedHighConfidence(selectedHighConfidenceIds.size),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onTertiaryContainer
                             )
@@ -2978,6 +3111,7 @@ private fun GlossaryManagementTab(
                 LexiconCandidateCard(
                     review = review,
                     selected = review.id in selectedCandidateIds,
+                    wb = wb,
                     onToggle = { checked ->
                         selectedCandidateIds = if (checked) {
                             selectedCandidateIds + review.id
@@ -3018,8 +3152,8 @@ private fun GlossaryManagementTab(
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Default.Spellcheck, null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("暂无匹配的专有术语", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("点击上方【一键扫描】或【添加术语】快速建立专有名词库", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(wb.noMatchingTerms, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(wb.noMatchingTermsHint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -3027,6 +3161,7 @@ private fun GlossaryManagementTab(
             items(filteredLexicon, key = { "lexicon_${it.id}" }) { entry ->
                 LexiconEntryCard(
                     entry = entry,
+                    wb = wb,
                     onConfirm = { viewModel.confirmLexiconEntry(entry) },
                     onDelete = { viewModel.deleteLexiconEntry(entry.id) }
                 )
@@ -3038,6 +3173,7 @@ private fun GlossaryManagementTab(
         val candidate = editingCandidate!!
         CandidateEditDialog(
             review = candidate,
+            wb = wb,
             onDismiss = { editingCandidate = null },
             onConfirm = { target, category, notes ->
                 viewModel.confirmLexiconCandidate(
@@ -3076,14 +3212,15 @@ private fun GlossaryManagementTab(
         )
         AlertDialog(
             onDismissRequest = { conflict = null; pendingImport = null },
-            title = { Text("正式术语冲突") },
+            shape = DialogShape,
+            title = { Text(wb.glossaryConflictTitle) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("原文：${details.candidate.sourceTerm}", fontWeight = FontWeight.Bold)
-                    Text("现有正式译名：${details.existing.targetTerm} (${details.existing.category})")
-                    Text("候选译名：${pending.targetTerm} (${pending.category})")
+                    Text(wb.glossaryConflictSource(details.candidate.sourceTerm), fontWeight = FontWeight.Bold)
+                    Text(wb.glossaryConflictExisting(details.existing.targetTerm, details.existing.category))
+                    Text(wb.glossaryConflictCandidate(pending.targetTerm, pending.category))
                     Text(
-                        "请选择保留现有正式术语，或用候选内容覆盖；不会自动替你选择。",
+                        wb.glossaryConflictBody,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3101,7 +3238,7 @@ private fun GlossaryManagementTab(
                         conflict = null
                         pendingImport = null
                     }
-                }) { Text("Overwrite") }
+                }, shape = ButtonShape) { Text(wb.overwrite) }
             },
             dismissButton = {
                 Row {
@@ -3110,8 +3247,8 @@ private fun GlossaryManagementTab(
                             conflict = null
                             pendingImport = null
                         }
-                    }) { Text("Skip") }
-                    TextButton(onClick = { conflict = null; pendingImport = null }) { Text("取消") }
+                    }) { Text(wb.skip) }
+                    TextButton(onClick = { conflict = null; pendingImport = null }) { Text(wb.cancel) }
                 }
             }
         )
@@ -3128,6 +3265,7 @@ private data class PendingCandidateImport(
 private fun LexiconCandidateCard(
     review: LexiconCandidateReview,
     selected: Boolean,
+    wb: WorkbenchUiStrings,
     onToggle: (Boolean) -> Unit,
     onConfirm: () -> Unit,
     onEdit: () -> Unit,
@@ -3141,14 +3279,13 @@ private fun LexiconCandidateCard(
         )
     val categoryVotes = review.categoryVotes.entries
         .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    AppCard(
+        shape = GroupedCardShape,
         border = if (review.hasTargetConflict || review.hasCategoryConflict) {
             BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.65f))
         } else null
     ) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = selected, onCheckedChange = onToggle)
                 Column(modifier = Modifier.weight(1f)) {
@@ -3158,13 +3295,13 @@ private fun LexiconCandidateCard(
                         Text(review.winnerTargetTerm, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     }
                     Text(
-                        "${review.winnerCategory} · 出现 ${review.observationCount} 次",
+                        "${review.winnerCategory} · ${review.observationCount}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 Surface(
-                    shape = RoundedCornerShape(5.dp),
+                    shape = RoundedCornerShape(6.dp),
                     color = if (review.isHighConfidenceForBatch) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
@@ -3172,7 +3309,7 @@ private fun LexiconCandidateCard(
                     }
                 ) {
                     Text(
-                        if (review.isHighConfidenceForBatch) "高一致" else "单独审核",
+                        if (review.isHighConfidenceForBatch) wb.candidateHighConfidence else wb.candidateManualReview,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (review.isHighConfidenceForBatch) {
@@ -3183,14 +3320,20 @@ private fun LexiconCandidateCard(
                     )
                 }
                 TextButton(onClick = onConfirm) {
-                    Icon(Icons.Default.Check, "确认", Modifier.size(16.dp))
+                    Icon(Icons.Default.Check, wb.confirm, Modifier.size(16.dp))
                     Spacer(Modifier.width(3.dp))
-                    Text("确认")
+                    Text(wb.confirm)
                 }
             }
             if (review.hasTargetConflict || review.hasCategoryConflict) {
                 Text(
-                    "存在译名冲突${if (review.hasCategoryConflict) " / 类别冲突" else ""}",
+                    if (review.hasCategoryConflict && review.hasTargetConflict) {
+                        "${wb.candidateConflictTarget} / ${wb.candidateConflictCategory}"
+                    } else if (review.hasCategoryConflict) {
+                        wb.candidateConflictCategory
+                    } else {
+                        wb.candidateConflictTarget
+                    },
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold
@@ -3205,13 +3348,16 @@ private fun LexiconCandidateCard(
             }
             if (categoryVotes.isNotEmpty()) {
                 Text(
-                    "类别票：" + categoryVotes.joinToString(" · ") { "${it.key} ${it.value}" },
+                    wb.candidateVotes(categoryVotes.joinToString(" · ") { "${it.key} ${it.value}" }),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Text(
-                "首次：第 ${review.aggregate.firstSeenChapterIndex.takeIf { it > 0 } ?: "?"} 章 · 最近：第 ${review.aggregate.lastSeenChapterIndex.takeIf { it > 0 } ?: "?"} 章",
+                wb.firstLastSeen(
+                    review.aggregate.firstSeenChapterIndex.takeIf { it > 0 } ?: 0,
+                    review.aggregate.lastSeenChapterIndex.takeIf { it > 0 } ?: 0
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -3219,8 +3365,8 @@ private fun LexiconCandidateCard(
                 Text(review.winnerNotes, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onEdit) { Text("编辑后确认") }
-                TextButton(onClick = onIgnore) { Text("忽略", color = MaterialTheme.colorScheme.error) }
+                TextButton(onClick = onEdit) { Text(wb.editThenConfirm) }
+                TextButton(onClick = onIgnore) { Text(wb.ignore, color = MaterialTheme.colorScheme.error) }
             }
         }
     }
@@ -3230,6 +3376,7 @@ private fun LexiconCandidateCard(
 @Composable
 private fun CandidateEditDialog(
     review: LexiconCandidateReview,
+    wb: WorkbenchUiStrings,
     onDismiss: () -> Unit,
     onConfirm: (String, String, String) -> Unit
 ) {
@@ -3240,16 +3387,17 @@ private fun CandidateEditDialog(
     val categories = (LexiconCandidateVoting.aiCategories + "CUSTOM").sorted()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("编辑候选 · ${review.sourceTerm}") },
+        shape = DialogShape,
+        title = { Text(wb.editCandidateTitle(review.sourceTerm)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(value = target, onValueChange = { target = it }, label = { Text("规范译名") }, singleLine = true)
+                OutlinedTextField(value = target, onValueChange = { target = it }, label = { Text(wb.standardTranslation) }, singleLine = true)
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     OutlinedTextField(
                         value = category,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("类别") },
+                        label = { Text(wb.category) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
@@ -3259,32 +3407,28 @@ private fun CandidateEditDialog(
                         }
                     }
                 }
-                OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text("备注") }, maxLines = 3)
+                OutlinedTextField(value = notes, onValueChange = { notes = it }, label = { Text(wb.notes) }, maxLines = 3)
             }
         },
         confirmButton = {
-            Button(onClick = { onConfirm(target.trim(), category, notes.trim()) }, enabled = target.isNotBlank() && category.isNotBlank()) {
-                Text("确认并导入")
+            Button(onClick = { onConfirm(target.trim(), category, notes.trim()) }, enabled = target.isNotBlank() && category.isNotBlank(), shape = ButtonShape) {
+                Text(wb.confirmAndImport)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(wb.cancel) } }
     )
 }
 
 @Composable
 private fun LexiconEntryCard(
     entry: LexiconEntryEntity,
+    wb: WorkbenchUiStrings,
     onConfirm: () -> Unit,
     onDelete: () -> Unit
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
+    AppCard(shape = GroupedCardShape) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -3305,7 +3449,7 @@ private fun LexiconEntryCard(
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Surface(
-                        shape = RoundedCornerShape(4.dp),
+                        shape = RoundedCornerShape(5.dp),
                         color = MaterialTheme.colorScheme.secondaryContainer
                     ) {
                         Text(
@@ -3317,11 +3461,11 @@ private fun LexiconEntryCard(
                     }
                     if (entry.source == LexiconSource.AI.name) {
                         Surface(
-                            shape = RoundedCornerShape(4.dp),
+                            shape = RoundedCornerShape(5.dp),
                             color = MaterialTheme.colorScheme.tertiaryContainer
                         ) {
                             Text(
-                                if (entry.reviewStatus == ReviewStatus.CANDIDATE.name) "🤖 待确认" else "🤖 AI 术语",
+                                if (entry.reviewStatus == ReviewStatus.CANDIDATE.name) wb.aiTermPending else wb.aiTermConfirmed,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 style = MaterialTheme.typography.labelSmall,
                                 fontSize = 10.sp
@@ -3342,14 +3486,14 @@ private fun LexiconEntryCard(
 
             if (entry.reviewStatus == ReviewStatus.CANDIDATE.name) {
                 TextButton(onClick = onConfirm) {
-                    Icon(Icons.Default.Check, "确认术语", modifier = Modifier.size(16.dp))
+                    Icon(Icons.Default.Check, wb.confirmTerm, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("确认")
+                    Text(wb.confirm)
                 }
             }
 
             IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.DeleteOutline, "删除", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.DeleteOutline, wb.deleteTerm, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
             }
         }
     }
@@ -3363,7 +3507,9 @@ private fun LogsAndHistoryTab(
     allRuns: List<PlatformTranslationRunEntity>,
     systemLogs: List<SystemLogEntry>,
     viewModel: AppViewModel,
-    debugModeEnabled: Boolean
+    debugModeEnabled: Boolean,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors
 ) {
     var selectedSubTab by rememberSaveable { mutableStateOf(0) }
     var selectedRunId by rememberSaveable(book.id) { mutableStateOf<Long?>(null) }
@@ -3381,12 +3527,12 @@ private fun LogsAndHistoryTab(
 
     Column(modifier = Modifier.fillMaxSize()) {
         ScrollableTabRow(selectedTabIndex = selectedSubTab, edgePadding = 8.dp) {
-            Tab(selected = selectedSubTab == 0, onClick = { selectedSubTab = 0 }, text = { Text("任务执行历史 (${allRuns.size})") })
-            Tab(selected = selectedSubTab == 1, onClick = { selectedSubTab = 1 }, text = { Text("模型调用明细 (${requestLogs.size})") })
+            Tab(selected = selectedSubTab == 0, onClick = { selectedSubTab = 0 }, text = { Text(wb.runHistoryTab(allRuns.size)) })
+            Tab(selected = selectedSubTab == 1, onClick = { selectedSubTab = 1 }, text = { Text(wb.modelCallsTab(requestLogs.size)) })
             if (debugModeEnabled) {
-                Tab(selected = selectedSubTab == 2, onClick = { selectedSubTab = 2 }, text = { Text("Debug 诊断") })
+                Tab(selected = selectedSubTab == 2, onClick = { selectedSubTab = 2 }, text = { Text(wb.debugDiagnosticsTab) })
             }
-            Tab(selected = selectedSubTab == systemTabIndex, onClick = { selectedSubTab = systemTabIndex }, text = { Text("系统全局日志") })
+            Tab(selected = selectedSubTab == systemTabIndex, onClick = { selectedSubTab = systemTabIndex }, text = { Text(wb.systemLogsTab) })
         }
 
         when (selectedSubTab) {
@@ -3399,54 +3545,49 @@ private fun LogsAndHistoryTab(
                     if (allRuns.isEmpty()) {
                         item {
                             Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                                Text("暂无历史执行任务", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(wb.noRunHistory, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     } else {
                         items(allRuns, key = { "run_${it.id}" }) { run ->
-                            Card(
-                                modifier = Modifier.fillMaxWidth().clickable {
+                            AppCard(
+                                shape = GroupedCardShape,
+                                border = if (run.id == selectedRunId) {
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                                } else null,
+                                onClick = {
                                     selectedRunId = run.id
                                     selectedSubTab = if (debugModeEnabled) 2 else 1
-                                },
-                                border = if (run.id == selectedRunId) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null
+                                }
                             ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            "任务 #${run.id} · ${run.providerName}/${run.modelName} · Prompt v${run.promptProfileVersion}",
+                                            wb.taskMeta(run.id, run.providerName, run.modelName, run.promptProfileVersion),
                                             fontWeight = FontWeight.Bold,
-                                            style = MaterialTheme.typography.titleSmall
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f, fill = false)
                                         )
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = when (run.state) {
-                                                "COMPLETED", "SUCCESS" -> Color(0xFF2E7D32)
-                                                "COMPLETED_WITH_WARNINGS", "PARTIAL" -> Color(0xFFF57C00)
-                                                "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
-                                                else -> MaterialTheme.colorScheme.primary
-                                            }
-                                        ) {
-                                            Text(
-                                                run.state,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color.White
-                                            )
-                                        }
+                                        stateBadge(run.state, wb)
                                     }
                                     Text(
-                                        "完成 ${run.completedChapters} 章 · 消耗 ${TokenCalculator.formatTokenCount(run.promptTokens + run.completionTokens)} Tokens · 费用 ${TokenCalculator.formatCost(run.totalCost, run.currency)}",
+                                        wb.runTokenCostSummary(
+                                            run.completedChapters,
+                                            TokenCalculator.formatTokenCount(run.promptTokens + run.completionTokens),
+                                            TokenCalculator.formatCost(run.totalCost, run.currency)
+                                        ),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     if (!run.lastError.isNullOrBlank()) {
                                         Text(
-                                            "异常: ${run.lastError}",
+                                            "${wb.taskError}: ${run.lastError}",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.error
                                         )
@@ -3466,7 +3607,7 @@ private fun LogsAndHistoryTab(
                     if (requestLogs.isEmpty()) {
                         item {
                             Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-                                Text("暂无模型调用记录", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(wb.noModelCalls, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     } else {
@@ -3474,7 +3615,7 @@ private fun LogsAndHistoryTab(
                             val status = requestLogStatus(log)
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
+                                shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainerLow
                             ) {
                                 Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -3485,22 +3626,22 @@ private fun LogsAndHistoryTab(
                                         Text(log.operation, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
                                         Text(
                                             when (status) {
-                                                RequestLogStatus.SUCCESS -> "成功 (${log.durationMs}ms)"
-                                                RequestLogStatus.WARNING -> "需修复"
-                                                RequestLogStatus.INFO -> "信息"
-                                                RequestLogStatus.FAILURE -> "失败"
+                                                RequestLogStatus.SUCCESS -> wb.statusSuccessMs(log.durationMs)
+                                                RequestLogStatus.WARNING -> wb.statusNeedsRepair
+                                                RequestLogStatus.INFO -> wb.statusInfo
+                                                RequestLogStatus.FAILURE -> wb.statusFailure
                                             },
-                                            color = requestLogStatusColor(status),
+                                            color = requestLogStatusColor(status, appColors),
                                             style = MaterialTheme.typography.labelSmall
                                         )
                                     }
                                     Text(
-                                        "Tokens: Prompt ${log.promptTokens}, Completion ${log.completionTokens} · 预估费用: ${TokenCalculator.formatCost(log.estimatedCost, selectedRun?.currency ?: "USD")}",
+                                        "Tokens: ${log.promptTokens} / ${log.completionTokens} · ${TokenCalculator.formatCost(log.estimatedCost, selectedRun?.currency ?: "USD")}",
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                     if (!log.errorMessage.isNullOrBlank()) {
-                                        Text(log.errorMessage, color = requestLogStatusColor(status), style = MaterialTheme.typography.bodySmall)
+                                        Text(log.errorMessage, color = requestLogStatusColor(status, appColors), style = MaterialTheme.typography.bodySmall)
                                     }
                                 }
                             }
@@ -3513,13 +3654,16 @@ private fun LogsAndHistoryTab(
                     run = selectedRun,
                     requestLogs = requestLogs,
                     systemLogs = systemLogs.filter { it.projectId == project?.id },
-                    viewModel = viewModel
+                    viewModel = viewModel,
+                    wb = wb,
+                    appColors = appColors
                 )
             } else {
                 Box(Modifier.fillMaxSize().padding(16.dp)) {
                     LiveProcessLogCard(
                         projectId = project?.id,
                         systemLogs = systemLogs,
+                        wb = wb,
                         modifier = Modifier.fillMaxSize(),
                         expandToAvailableSpace = true
                     )
@@ -3530,6 +3674,7 @@ private fun LogsAndHistoryTab(
                     LiveProcessLogCard(
                         projectId = project?.id,
                         systemLogs = systemLogs,
+                        wb = wb,
                         modifier = Modifier.fillMaxSize(),
                         expandToAvailableSpace = true
                     )
@@ -3544,7 +3689,9 @@ private fun DebugDiagnosticsTab(
     run: PlatformTranslationRunEntity?,
     requestLogs: List<PlatformRequestLogSummary>,
     systemLogs: List<SystemLogEntry>,
-    viewModel: AppViewModel
+    viewModel: AppViewModel,
+    wb: WorkbenchUiStrings,
+    appColors: AppColors
 ) {
     var expandedLogId by rememberSaveable(run?.id) { mutableStateOf<Long?>(null) }
     val runFlow = remember(run?.id, systemLogs) {
@@ -3558,19 +3705,26 @@ private fun DebugDiagnosticsTab(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Text("Debug 仅记录开启后的任务", fontWeight = FontWeight.Bold)
-                    Text("内容可能包含小说正文、提示词和模型完整输出，请勿在公开场合直接分享。", style = MaterialTheme.typography.bodySmall)
+            AppCard(
+                shape = GroupedCardShape,
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                border = null
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(wb.debugNoticeTitle, fontWeight = FontWeight.Bold)
+                    Text(wb.debugNoticeBody, style = MaterialTheme.typography.bodySmall)
                     if (run != null) {
-                        Text("当前任务 #${run.id} · ${run.state} · ${run.providerName}/${run.modelName} · Prompt v${run.promptProfileVersion}", style = MaterialTheme.typography.bodySmall)
-                        if (!run.lastError.isNullOrBlank()) Text("任务失败原因：${run.lastError}", color = MaterialTheme.colorScheme.error)
+                        Text(
+                            wb.debugRunHeader(run.id, run.state, run.providerName, run.modelName, run.promptProfileVersion),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        if (!run.lastError.isNullOrBlank()) Text(wb.debugRunFailure(run.lastError), color = MaterialTheme.colorScheme.error)
                     }
                 }
             }
         }
         if (runFlow.isNotEmpty()) {
-            item { Text("完整执行流程", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+            item { AppSectionHeader(wb.debugFlowTitle) }
             items(runFlow, key = { "flow_${it.id}" }) { entry ->
                 Text(
                     "${entry.formattedTime}  [${entry.tag}] ${entry.message}",
@@ -3580,9 +3734,9 @@ private fun DebugDiagnosticsTab(
                 )
             }
         }
-        item { Text("API 交互与校验", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+        item { AppSectionHeader(wb.debugApiSectionTitle) }
         if (requestLogs.isEmpty()) {
-            item { Text("此任务没有 Debug API 内容；可能是在开启 Debug 模式之前执行的。", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            item { Text(wb.debugNoApiContent, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         } else {
             items(requestLogs, key = { "debug_req_${it.id}" }) { log ->
                 val status = requestLogStatus(log)
@@ -3590,37 +3744,50 @@ private fun DebugDiagnosticsTab(
                 val detail by produceState<PlatformRequestLogEntity?>(initialValue = null, log.id, expanded) {
                     if (expanded) value = viewModel.getRequestLogDetail(log.id)
                 }
-                ElevatedCard(Modifier.fillMaxWidth().clickable { expandedLogId = if (expanded) null else log.id }) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                AppCard(
+                    shape = GroupedCardShape,
+                    onClick = { expandedLogId = if (expanded) null else log.id }
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(log.operation, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                             Text(
                                 when (status) {
-                                    RequestLogStatus.SUCCESS -> "成功"
-                                    RequestLogStatus.WARNING -> "需修复"
-                                    RequestLogStatus.INFO -> "信息"
-                                    RequestLogStatus.FAILURE -> "失败"
+                                    RequestLogStatus.SUCCESS -> wb.statusSuccessMs(log.durationMs)
+                                    RequestLogStatus.WARNING -> wb.statusNeedsRepair
+                                    RequestLogStatus.INFO -> wb.statusInfo
+                                    RequestLogStatus.FAILURE -> wb.statusFailure
                                 },
-                                color = requestLogStatusColor(status)
+                                color = requestLogStatusColor(status, appColors)
                             )
                         }
-                        Text("耗时 ${log.durationMs}ms · 尝试 ${log.attemptCount} 次 · ${log.promptTokens + log.completionTokens} Tokens", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            wb.debugDurationAttempts(
+                                log.durationMs,
+                                log.attemptCount,
+                                log.promptTokens + log.completionTokens
+                            ),
+                            style = MaterialTheme.typography.bodySmall
+                        )
                         if (status != RequestLogStatus.SUCCESS) {
                             Text(
-                                if (status == RequestLogStatus.WARNING) "诊断：${debugFailureExplanation(log)}"
-                                else "失败原因：${debugFailureExplanation(log)}",
-                                color = requestLogStatusColor(status),
+                                if (status == RequestLogStatus.WARNING) {
+                                    wb.debugDiagnosis(debugFailureExplanation(log, wb))
+                                } else {
+                                    wb.debugFailureReason(debugFailureExplanation(log, wb))
+                                },
+                                color = requestLogStatusColor(status, appColors),
                                 style = MaterialTheme.typography.bodySmall
                             )
                         }
                         if (expanded) {
-                            DebugTextBlock("重试轨迹", detail?.attemptTrace)
-                            DebugTextBlock("System Prompt", detail?.systemPrompt)
-                            DebugTextBlock("User Prompt", detail?.userPrompt)
-                            DebugTextBlock("模型响应", detail?.responseText)
-                            DebugTextBlock("错误原文", log.errorMessage)
+                            DebugTextBlock(wb.debugAttemptTrace, detail?.attemptTrace)
+                            DebugTextBlock(wb.debugSystemPrompt, detail?.systemPrompt)
+                            DebugTextBlock(wb.debugUserPrompt, detail?.userPrompt)
+                            DebugTextBlock(wb.debugModelResponse, detail?.responseText)
+                            DebugTextBlock(wb.debugErrorRaw, log.errorMessage)
                         } else {
-                            Text("点击展开完整请求与响应", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            Text(wb.debugExpandHint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
@@ -3633,7 +3800,7 @@ private fun DebugDiagnosticsTab(
 private fun DebugTextBlock(title: String, value: String?) {
     if (value.isNullOrBlank()) return
     Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+    Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.surfaceContainerHighest) {
         Text(
             value,
             Modifier.fillMaxWidth().padding(10.dp),
@@ -3643,14 +3810,14 @@ private fun DebugTextBlock(title: String, value: String?) {
     }
 }
 
-private fun debugFailureExplanation(log: PlatformRequestLogSummary): String = when (log.errorCategory) {
-    LlmErrorCategory.AUTHENTICATION.name -> "API 身份认证失败，请检查 Key、端点和请求协议。${log.errorMessage.orEmpty()}"
-    LlmErrorCategory.RATE_LIMIT.name -> "供应商限流或额度不足，重试次数已耗尽。${log.errorMessage.orEmpty()}"
-    LlmErrorCategory.CONTEXT_OVERFLOW.name -> "输入上下文超过模型限制，需要缩小章节批次。${log.errorMessage.orEmpty()}"
-    LlmErrorCategory.TRUNCATED_OUTPUT.name -> "模型输出达到 Token 上限，续写或重分块未能恢复完整结果。${log.errorMessage.orEmpty()}"
-    LlmErrorCategory.QUALITY_REJECTED.name -> "QA 校验发现缺段、图片标记变化、术语不一致或异常内容：${log.errorMessage.orEmpty()}"
-    LlmErrorCategory.NETWORK_UNAVAILABLE.name, LlmErrorCategory.TIMEOUT.name -> "网络连接或请求超时，自动重试后仍未成功。${log.errorMessage.orEmpty()}"
-    else -> log.errorMessage ?: log.errorCategory ?: "未返回更具体的失败信息"
+private fun debugFailureExplanation(log: PlatformRequestLogSummary, wb: WorkbenchUiStrings): String = when (log.errorCategory) {
+    LlmErrorCategory.AUTHENTICATION.name -> wb.failureAuth(log.errorMessage.orEmpty())
+    LlmErrorCategory.RATE_LIMIT.name -> wb.failureRateLimit(log.errorMessage.orEmpty())
+    LlmErrorCategory.CONTEXT_OVERFLOW.name -> wb.failureContextOverflow(log.errorMessage.orEmpty())
+    LlmErrorCategory.TRUNCATED_OUTPUT.name -> wb.failureTruncated(log.errorMessage.orEmpty())
+    LlmErrorCategory.QUALITY_REJECTED.name -> wb.failureQuality(log.errorMessage.orEmpty())
+    LlmErrorCategory.NETWORK_UNAVAILABLE.name, LlmErrorCategory.TIMEOUT.name -> wb.failureNetwork(log.errorMessage.orEmpty())
+    else -> wb.failureUnknown(log.errorMessage, log.errorCategory)
 }
 
 private fun requestLogStatus(log: PlatformRequestLogSummary): RequestLogStatus {
@@ -3686,9 +3853,9 @@ private fun effectiveTranslationState(
 }
 
 @Composable
-private fun requestLogStatusColor(status: RequestLogStatus): Color = when (status) {
-    RequestLogStatus.SUCCESS -> Color(0xFF2E7D32)
-    RequestLogStatus.WARNING -> Color(0xFFFFA000)
+private fun requestLogStatusColor(status: RequestLogStatus, appColors: AppColors): Color = when (status) {
+    RequestLogStatus.SUCCESS -> appColors.success
+    RequestLogStatus.WARNING -> appColors.warning
     RequestLogStatus.INFO -> MaterialTheme.colorScheme.onSurfaceVariant
     RequestLogStatus.FAILURE -> MaterialTheme.colorScheme.error
 }
@@ -3700,20 +3867,27 @@ private fun requestLogStatusColor(status: RequestLogStatus): Color = when (statu
 private fun CreateEditionDialog(
     book: BookEntity,
     sourceEdition: EditionEntity?,
+    wb: WorkbenchUiStrings,
     onDismiss: () -> Unit,
     onConfirm: (Long, String, String) -> Unit
 ) {
-    var targetLanguage by remember { mutableStateOf("中文 (简体)") }
-    var editionName by remember { mutableStateOf("中文译本 (AI)") }
+    var targetLanguage by remember {
+        mutableStateOf(TARGET_LANGUAGE_OPTIONS.first().displayName)
+    }
+    var editionName by remember {
+        val first = TARGET_LANGUAGE_OPTIONS.first()
+        mutableStateOf("${if (wb.workbenchTitle == "Workbench") first.defaultNameEn else first.defaultNameZh} (AI)")
+    }
     var expandedLang by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("新建译本版本 (Edition)") },
+        shape = DialogShape,
+        title = { Text(wb.createEditionDialogTitle) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "为《${book.title}》创建一个新的翻译目标版本。",
+                    wb.createEditionDialogBody(book.title),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -3726,7 +3900,7 @@ private fun CreateEditionDialog(
                         value = targetLanguage,
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("目标语言") },
+                        label = { Text(wb.targetLanguage) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expandedLang) },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
@@ -3739,7 +3913,7 @@ private fun CreateEditionDialog(
                                 text = { Text(opt.displayName) },
                                 onClick = {
                                     targetLanguage = opt.displayName
-                                    editionName = "${opt.defaultNameZh} (AI)"
+                                    editionName = "${if (wb.workbenchTitle == "Workbench") opt.defaultNameEn else opt.defaultNameZh} (AI)"
                                     expandedLang = false
                                 }
                             )
@@ -3750,7 +3924,7 @@ private fun CreateEditionDialog(
                 OutlinedTextField(
                     value = editionName,
                     onValueChange = { editionName = it },
-                    label = { Text("版本名称") },
+                    label = { Text(wb.editionVersionName) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -3761,13 +3935,14 @@ private fun CreateEditionDialog(
                     if (sourceEdition != null && targetLanguage.isNotBlank()) {
                         onConfirm(sourceEdition.id, targetLanguage, editionName)
                     }
-                }
+                },
+                shape = ButtonShape
             ) {
-                Text("创建")
+                Text(wb.create)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(wb.cancel) }
         }
     )
 }
@@ -3780,6 +3955,7 @@ private fun TermScannerDialog(
     totalChapters: Int,
     providers: List<ApiProviderEntity>,
     targetProjectId: Long?,
+    wb: WorkbenchUiStrings,
     onDismiss: () -> Unit,
     onCancelScan: () -> Unit,
     onStartScan: (Int, Int, ApiProviderEntity, String, (String) -> Unit, (Result<Int>) -> Unit) -> Unit
@@ -3798,10 +3974,11 @@ private fun TermScannerDialog(
 
     AlertDialog(
         onDismissRequest = { if (!isScanning) onDismiss() },
+        shape = DialogShape,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Icon(Icons.Default.Spellcheck, null, tint = MaterialTheme.colorScheme.primary)
-                Text("专有术语与人名智能扫描")
+                Text(wb.termScannerTitle)
             }
         },
         text = {
@@ -3816,20 +3993,21 @@ private fun TermScannerDialog(
                         Text(scanStatusMessage, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
                     }
                 } else if (scanCompletedCount != null) {
+                    val completedCount = scanCompletedCount ?: 0
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF2E7D32), modifier = Modifier.size(48.dp))
+                        Icon(Icons.Default.CheckCircle, null, tint = LocalAppColors.current.success, modifier = Modifier.size(48.dp))
                         Text(
-                            "扫描完成！共形成 $scanCompletedCount 个待审核候选。",
+                            wb.scanCompleteTitle(completedCount),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            "候选已保存观察证据；请在审核区确认后，才会进入正式翻译约束与 QA。",
+                            wb.scanCompleteBody,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -3843,7 +4021,7 @@ private fun TermScannerDialog(
                     ) {
                         Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
                         Text(
-                            "扫描未完成",
+                            wb.scanFailedTitle,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
@@ -3858,13 +4036,13 @@ private fun TermScannerDialog(
                 } else {
                     if (targetProjectId == null) {
                         Text(
-                            "请先创建并选择一个翻译版本，扫描结果需要写入对应工程的术语库。",
+                            wb.termScannerNeedProject,
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
                     Text(
-                        "AI 将分析指定章节正文，提取小说中的角色人名、地名、功法与专有名词。",
+                        wb.termScannerBody,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3876,13 +4054,13 @@ private fun TermScannerDialog(
                         OutlinedTextField(
                             value = startChText,
                             onValueChange = { startChText = it.filter { c -> c.isDigit() } },
-                            label = { Text("起始章节") },
+                            label = { Text(wb.startChapter) },
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
                             value = endChText,
                             onValueChange = { endChText = it.filter { c -> c.isDigit() } },
-                            label = { Text("结束章节") },
+                            label = { Text(wb.endChapter) },
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -3897,7 +4075,7 @@ private fun TermScannerDialog(
                                 value = activeProvider?.name ?: "",
                                 onValueChange = {},
                                 readOnly = true,
-                                label = { Text("分析模型") },
+                                label = { Text(wb.analysisModel) },
                                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expandedProvider) },
                                 modifier = Modifier.menuAnchor().fillMaxWidth()
                             )
@@ -3926,11 +4104,11 @@ private fun TermScannerDialog(
                     onCancelScan()
                     isScanning = false
                     onDismiss()
-                }) { Text("停止扫描") }
+                }) { Text(wb.stopScan) }
             } else if (scanCompletedCount != null) {
-                Button(onClick = onDismiss) { Text("完成") }
+                Button(onClick = onDismiss, shape = ButtonShape) { Text(wb.done) }
             } else if (scanErrorMessage != null) {
-                Button(onClick = { scanErrorMessage = null }) { Text("返回") }
+                Button(onClick = { scanErrorMessage = null }, shape = ButtonShape) { Text(wb.retry) }
             } else if (!isScanning) {
                 Button(
                     onClick = {
@@ -3938,7 +4116,7 @@ private fun TermScannerDialog(
                         val end = endChText.toIntOrNull() ?: totalChapters
                         if (activeProvider != null) {
                             isScanning = true
-                            scanStatusMessage = "正在初始化扫描任务..."
+                            scanStatusMessage = wb.initializingScan
                             onStartScan(
                                 start,
                                 end,
@@ -3953,21 +4131,22 @@ private fun TermScannerDialog(
                                     }.onFailure { error ->
                                         scanCompletedCount = null
                                         scanErrorMessage = error.localizedMessage?.takeIf { it.isNotBlank() }
-                                            ?: "请检查模型配置和网络后重试"
+                                            ?: wb.scanFailedHint
                                     }
                                 }
                             )
                         }
                     },
-                    enabled = activeProvider != null && sourceEdition != null && targetProjectId != null && totalChapters > 0
+                    enabled = activeProvider != null && sourceEdition != null && targetProjectId != null && totalChapters > 0,
+                    shape = ButtonShape
                 ) {
-                    Text("开始扫描")
+                    Text(wb.startScan)
                 }
             }
         },
         dismissButton = {
             if (!isScanning && scanCompletedCount == null) {
-                TextButton(onClick = onDismiss) { Text("取消") }
+                TextButton(onClick = onDismiss) { Text(wb.cancel) }
             }
         }
     )
@@ -3977,6 +4156,7 @@ private fun TermScannerDialog(
 @Composable
 private fun AddLexiconEntryDialog(
     projectId: Long,
+    wb: WorkbenchUiStrings,
     onDismiss: () -> Unit,
     onConfirm: (LexiconEntryEntity) -> Unit
 ) {
@@ -3988,19 +4168,20 @@ private fun AddLexiconEntryDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加专有术语") },
+        shape = DialogShape,
+        title = { Text(wb.addTermTitle) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
                     value = sourceTerm,
                     onValueChange = { sourceTerm = it },
-                    label = { Text("原文术语/人名 (如 林渊)") },
+                    label = { Text(wb.sourceTermLabel) },
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
                     value = targetTerm,
                     onValueChange = { targetTerm = it },
-                    label = { Text("规范译名 (如 Lin Yuan)") },
+                    label = { Text(wb.targetTermLabel) },
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -4010,17 +4191,17 @@ private fun AddLexiconEntryDialog(
                 ) {
                     OutlinedTextField(
                         value = when (category) {
-                            "CHARACTER" -> "👤 角色人名"
-                            "LOCATION" -> "🗺️ 地理地名"
-                            "SKILL" -> "⚔️ 功法技能"
-                            "LORE" -> "🏛️ 宗门/设定"
-                            "ITEM" -> "📜 道具法宝"
-                            "HONORIFIC" -> "🎖️ 称谓头衔"
-                            else -> "自定义"
+                            "CHARACTER" -> wb.categoryCharacter
+                            "LOCATION" -> wb.categoryLocation
+                            "SKILL" -> wb.categorySkill
+                            "LORE" -> wb.categoryLore
+                            "ITEM" -> wb.categoryItem
+                            "HONORIFIC" -> wb.categoryHonorific
+                            else -> wb.categoryCustom
                         },
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("类别") },
+                        label = { Text(wb.category) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expandedCat) },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
@@ -4029,13 +4210,13 @@ private fun AddLexiconEntryDialog(
                         onDismissRequest = { expandedCat = false }
                     ) {
                         listOf(
-                            "CHARACTER" to "👤 角色人名",
-                            "LOCATION" to "🗺️ 地理地名",
-                            "SKILL" to "⚔️ 功法技能",
-                            "LORE" to "🏛️ 宗门/设定",
-                            "ITEM" to "📜 道具法宝",
-                            "HONORIFIC" to "🎖️ 称谓头衔",
-                            "CUSTOM" to "自定义"
+                            "CHARACTER" to wb.categoryCharacter,
+                            "LOCATION" to wb.categoryLocation,
+                            "SKILL" to wb.categorySkill,
+                            "LORE" to wb.categoryLore,
+                            "ITEM" to wb.categoryItem,
+                            "HONORIFIC" to wb.categoryHonorific,
+                            "CUSTOM" to wb.categoryCustom
                         ).forEach { (cat, label) ->
                             DropdownMenuItem(
                                 text = { Text(label) },
@@ -4051,7 +4232,7 @@ private fun AddLexiconEntryDialog(
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("备注说明 (可选)") },
+                    label = { Text(wb.notesLabel) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -4073,13 +4254,14 @@ private fun AddLexiconEntryDialog(
                         )
                     }
                 },
-                enabled = sourceTerm.isNotBlank() && targetTerm.isNotBlank()
+                enabled = sourceTerm.isNotBlank() && targetTerm.isNotBlank(),
+                shape = ButtonShape
             ) {
-                Text("保存")
+                Text(wb.save)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(wb.cancel) }
         }
     )
 }

@@ -28,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -41,16 +42,32 @@ import com.breakyuna.noveltranslator.data.model.PresetModels
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import com.breakyuna.noveltranslator.ui.components.apple.*
 import com.breakyuna.noveltranslator.ui.i18n.AppLanguage
+import com.breakyuna.noveltranslator.ui.i18n.AppStrings
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
+import com.breakyuna.noveltranslator.ui.i18n.agentEntryStrings
 import com.breakyuna.noveltranslator.ui.theme.*
 import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 import java.util.Locale
 
-enum class SettingsSubPage(val title: String, val subtitle: String) {
-    PROVIDERS("模型接口", "配置大模型 API 供应商与计费"),
-    APPEARANCE("外观显示", "深浅色主题模式与语言偏好"),
-    LOGS("系统日志", "运行调试与 API 审计记录"),
-    SYSTEM_INFO("系统信息", "版本详情与本地架构状态")
+enum class SettingsSubPage(val icon: ImageVector) {
+    PROVIDERS(Icons.Outlined.SmartToy),
+    APPEARANCE(Icons.Outlined.Palette),
+    LOGS(Icons.Outlined.ReceiptLong),
+    SYSTEM_INFO(Icons.Outlined.Info)
+}
+
+private fun SettingsSubPage.title(strings: AppStrings): String = when (this) {
+    SettingsSubPage.PROVIDERS -> strings.settingsProvidersTitle
+    SettingsSubPage.APPEARANCE -> strings.settingsAppearanceTitle
+    SettingsSubPage.LOGS -> strings.settingsLogsTitle
+    SettingsSubPage.SYSTEM_INFO -> strings.settingsSystemInfoTitle
+}
+
+private fun SettingsSubPage.subtitle(strings: AppStrings): String = when (this) {
+    SettingsSubPage.PROVIDERS -> strings.settingsProvidersSubtitle
+    SettingsSubPage.APPEARANCE -> strings.settingsAppearanceSubtitle
+    SettingsSubPage.LOGS -> strings.settingsLogsSubtitle
+    SettingsSubPage.SYSTEM_INFO -> strings.settingsSystemInfoSubtitle
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,6 +76,7 @@ fun ApiSettingsScreen(
     viewModel: AppViewModel,
     onBack: () -> Unit,
     initialTab: Int = -1,
+    onOpenAgent: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -137,7 +155,7 @@ fun ApiSettingsScreen(
                 topBar = {
                     AppLargeTitle(
                         title = strings.settingsTitle,
-                        subtitle = "偏好配置与系统管理"
+                        subtitle = strings.settingsSubtitle
                     )
                 }
             ) { paddingValues ->
@@ -147,38 +165,52 @@ fun ApiSettingsScreen(
                         .padding(paddingValues),
                     contentPadding = PaddingValues(
                         horizontal = Spacing.compactHorizontalPadding,
-                        vertical = 12.dp
+                        vertical = Spacing.m
                     ),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(Spacing.l)
                 ) {
                     // Section 1: Preference & Interfaces
                     item {
-                        AppSection(title = "功能设置") {
+                        AppSection(title = strings.settingsSectionPreferences) {
                             // 1. 模型接口 Entrance
                             AppSettingsRow(
-                                title = "模型接口",
-                                subtitle = "管理大模型 API 端点、Token 价格与连通性",
+                                title = strings.settingsProvidersTitle,
+                                subtitle = strings.settingsProvidersSubtitle,
                                 leadingIcon = Icons.Outlined.SmartToy,
-                                iconTint = AccentBlue,
-                                iconBackground = AccentBlue.copy(alpha = 0.12f),
-                                valueText = "${providers.size} 个供应商",
+                                iconTint = MaterialTheme.colorScheme.primary,
+                                iconBackground = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                                valueText = strings.settingsProvidersCount(providers.size),
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.PROVIDERS }
                             )
 
                             AppDivider(startIndent = 58.dp)
 
-                            // 2. 外观显示 Entrance
+                            // 2. AI 助手 Entrance（Agent 对话页）
+                            val agentEntry = agentEntryStrings()
+                            AppSettingsRow(
+                                title = agentEntry.entryTitle,
+                                subtitle = agentEntry.entrySubtitle,
+                                leadingIcon = Icons.Outlined.Forum,
+                                iconTint = AccentPurple,
+                                iconBackground = AccentPurple.copy(alpha = 0.12f),
+                                showChevron = true,
+                                onClick = onOpenAgent
+                            )
+
+                            AppDivider(startIndent = 58.dp)
+
+                            // 3. 外观显示 Entrance
                             val themeLabel = when (themeMode) {
-                                AppThemeMode.SYSTEM -> "跟随系统"
-                                AppThemeMode.LIGHT -> "浅色模式"
-                                AppThemeMode.DARK -> "深色模式"
+                                AppThemeMode.SYSTEM -> strings.themeModeSystem
+                                AppThemeMode.LIGHT -> strings.themeModeLight
+                                AppThemeMode.DARK -> strings.themeModeDark
                             }
                             val langLabel = if (currentLang == AppLanguage.CHINESE) "中文" else "English"
 
                             AppSettingsRow(
-                                title = "外观显示",
-                                subtitle = "深浅色主题模式与应用界面语言",
+                                title = strings.settingsAppearanceTitle,
+                                subtitle = strings.settingsAppearanceSubtitle,
                                 leadingIcon = Icons.Outlined.Palette,
                                 iconTint = AccentPurple,
                                 iconBackground = AccentPurple.copy(alpha = 0.12f),
@@ -191,15 +223,15 @@ fun ApiSettingsScreen(
 
                     // Section 2: Diagnostics & Information
                     item {
-                        AppSection(title = "诊断与系统") {
+                        AppSection(title = strings.settingsSectionDiagnostics) {
                             // 3. 系统日志 Entrance
                             AppSettingsRow(
-                                title = "系统日志",
-                                subtitle = "查看运行时审计、API 调试与翻译异常",
+                                title = strings.settingsLogsTitle,
+                                subtitle = strings.settingsLogsSubtitle,
                                 leadingIcon = Icons.Outlined.ReceiptLong,
                                 iconTint = AccentOrange,
                                 iconBackground = AccentOrange.copy(alpha = 0.12f),
-                                valueText = "${systemLogs.size} 条",
+                                valueText = strings.settingsLogsCount(systemLogs.size),
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.LOGS }
                             )
@@ -207,11 +239,11 @@ fun ApiSettingsScreen(
                             AppDivider(startIndent = 58.dp)
 
                             AppSettingsRow(
-                                title = "Debug 模式",
+                                title = strings.settingsDebugTitle,
                                 subtitle = if (debugModeEnabled) {
-                                    "记录后续翻译任务的完整提示词、模型响应、重试与失败原因"
+                                    strings.settingsDebugOnSubtitle
                                 } else {
-                                    "默认关闭；开启后可在工作台查看完整 API 交互内容"
+                                    strings.settingsDebugOffSubtitle
                                 },
                                 leadingIcon = Icons.Outlined.BugReport,
                                 iconTint = MaterialTheme.colorScheme.error,
@@ -230,12 +262,12 @@ fun ApiSettingsScreen(
 
                             // 4. 系统信息 Entrance
                             AppSettingsRow(
-                                title = "系统信息",
-                                subtitle = "应用版本与翻译工程统计",
+                                title = strings.settingsSystemInfoTitle,
+                                subtitle = strings.settingsSystemInfoSubtitle,
                                 leadingIcon = Icons.Outlined.Info,
                                 iconTint = AccentGreen,
                                 iconBackground = AccentGreen.copy(alpha = 0.12f),
-                                valueText = "v0.7.0 beta",
+                                valueText = strings.settingsAppVersion,
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.SYSTEM_INFO }
                             )
@@ -246,33 +278,23 @@ fun ApiSettingsScreen(
                     val defaultProvider = providers.firstOrNull { it.isDefault } ?: providers.firstOrNull()
                     if (defaultProvider != null) {
                         item {
-                            AppGroupedSurface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { activeSubPage = SettingsSubPage.PROVIDERS },
-                                contentPadding = PaddingValues(16.dp)
+                            AppCard(
+                                shape = GroupedCardShape,
+                                contentPadding = PaddingValues(Spacing.l),
+                                onClick = { activeSubPage = SettingsSubPage.PROVIDERS }
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .background(AccentBlue.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Dns,
-                                            contentDescription = null,
-                                            tint = AccentBlue,
-                                            modifier = Modifier.size(22.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(12.dp))
+                                    AppIconBubble(
+                                        icon = Icons.Outlined.Dns,
+                                        size = 42.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(Spacing.m))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = "当前默认模型: ${defaultProvider.selectedModel}",
+                                            text = strings.settingsDefaultProviderLabel(defaultProvider.selectedModel),
                                             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
@@ -306,7 +328,7 @@ fun ApiSettingsScreen(
                     TopAppBar(
                         title = {
                             Text(
-                                text = currentSubPage.title,
+                                text = currentSubPage.title(strings),
                                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold)
                             )
                         },
@@ -338,19 +360,19 @@ fun ApiSettingsScreen(
                                             val text = systemLogs.joinToString("\n") { "[${it.level}] ${it.tag}: ${it.message}" }
                                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                             clipboard.setPrimaryClip(ClipData.newPlainText("System Logs", text))
-                                            Toast.makeText(context, "日志已复制", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, strings.logsCopiedToast, Toast.LENGTH_SHORT).show()
                                         }
                                     ) {
                                         Icon(
                                             Icons.Outlined.ContentCopy,
-                                            contentDescription = "复制日志",
+                                            contentDescription = strings.settingsLogsTitle,
                                             modifier = Modifier.size(19.dp)
                                         )
                                     }
                                     IconButton(onClick = { viewModel.clearSystemLogs() }) {
                                         Icon(
                                             Icons.Outlined.DeleteOutline,
-                                            contentDescription = "清空日志",
+                                            contentDescription = strings.logEmpty,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }
@@ -375,7 +397,7 @@ fun ApiSettingsScreen(
                                 .padding(paddingValues),
                             contentPadding = PaddingValues(
                                 horizontal = Spacing.compactHorizontalPadding,
-                                vertical = 8.dp
+                                vertical = Spacing.s
                             ),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
@@ -386,7 +408,7 @@ fun ApiSettingsScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "已配置供应商 (${providers.size})",
+                                        text = strings.settingsConfiguredProviders(providers.size),
                                         style = MaterialTheme.typography.labelSmall.copy(
                                             fontWeight = FontWeight.SemiBold,
                                             letterSpacing = 0.5.sp
@@ -408,13 +430,13 @@ fun ApiSettingsScreen(
 
                             if (providers.isEmpty()) {
                                 item {
-                                    AppGroupedSurface(contentPadding = PaddingValues(28.dp)) {
+                                    AppCard(contentPadding = PaddingValues(28.dp)) {
                                         Column(
                                             modifier = Modifier.fillMaxWidth(),
                                             horizontalAlignment = Alignment.CenterHorizontally
                                         ) {
                                             Text(
-                                                text = "暂无配置的 LLM 供应商",
+                                                text = strings.settingsNoProviders,
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -423,7 +445,7 @@ fun ApiSettingsScreen(
                                                 text = strings.addProvider,
                                                 onClick = { showAddDialog = true },
                                                 icon = Icons.Default.Add,
-                                                modifier = Modifier.widthIn(max = 180.dp)
+                                                modifier = Modifier.widthIn(max = 220.dp)
                                             )
                                         }
                                     }
@@ -432,6 +454,7 @@ fun ApiSettingsScreen(
                                 items(providers, key = { it.id }) { provider ->
                                     ProviderCardApple(
                                         provider = provider,
+                                        strings = strings,
                                         isTesting = testingProviderId == provider.id,
                                         testResult = if (testResultMessage?.first == provider.id) testResultMessage?.second else null,
                                         onSetDefault = { viewModel.setDefaultProvider(provider.id) },
@@ -461,15 +484,15 @@ fun ApiSettingsScreen(
                                 .padding(paddingValues),
                             contentPadding = PaddingValues(
                                 horizontal = Spacing.compactHorizontalPadding,
-                                vertical = 8.dp
+                                vertical = Spacing.s
                             ),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             item {
                                 AppSection(title = strings.themeSettingsTitle) {
                                     AppSettingsRow(
-                                        title = "跟随系统",
-                                        subtitle = "根据系统深浅色设置自适应切换",
+                                        title = strings.themeModeSystem,
+                                        subtitle = strings.themeModeSystemSubtitle,
                                         trailingContent = {
                                             RadioButton(
                                                 selected = themeMode == AppThemeMode.SYSTEM,
@@ -480,8 +503,8 @@ fun ApiSettingsScreen(
                                     )
                                     AppDivider(startIndent = 16.dp)
                                     AppSettingsRow(
-                                        title = "浅色模式",
-                                        subtitle = "明亮清爽的经典浅色界面",
+                                        title = strings.themeModeLight,
+                                        subtitle = strings.themeModeLightSubtitle,
                                         trailingContent = {
                                             RadioButton(
                                                 selected = themeMode == AppThemeMode.LIGHT,
@@ -492,8 +515,8 @@ fun ApiSettingsScreen(
                                     )
                                     AppDivider(startIndent = 16.dp)
                                     AppSettingsRow(
-                                        title = "深色模式",
-                                        subtitle = "深邃舒适的暗夜夜间界面",
+                                        title = strings.themeModeDark,
+                                        subtitle = strings.themeModeDarkSubtitle,
                                         trailingContent = {
                                             RadioButton(
                                                 selected = themeMode == AppThemeMode.DARK,
@@ -508,8 +531,8 @@ fun ApiSettingsScreen(
                             item {
                                 AppSection(title = strings.languageSettingTitle) {
                                     AppSettingsRow(
-                                        title = "简体中文 (Chinese)",
-                                        subtitle = "默认界面语言",
+                                        title = strings.languageChineseTitle,
+                                        subtitle = strings.languageChineseSubtitle,
                                         trailingContent = {
                                             RadioButton(
                                                 selected = currentLang == AppLanguage.CHINESE,
@@ -520,8 +543,8 @@ fun ApiSettingsScreen(
                                     )
                                     AppDivider(startIndent = 16.dp)
                                     AppSettingsRow(
-                                        title = "English",
-                                        subtitle = "Full English interface translation",
+                                        title = strings.languageEnglishTitle,
+                                        subtitle = strings.languageEnglishSubtitle,
                                         trailingContent = {
                                             RadioButton(
                                                 selected = currentLang == AppLanguage.ENGLISH,
@@ -546,7 +569,7 @@ fun ApiSettingsScreen(
                                 .padding(paddingValues),
                             contentPadding = PaddingValues(
                                 horizontal = Spacing.compactHorizontalPadding,
-                                vertical = 8.dp
+                                vertical = Spacing.s
                             ),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
@@ -560,31 +583,31 @@ fun ApiSettingsScreen(
                                         FilterChip(
                                             selected = logFilter == "ALL",
                                             onClick = { logFilter = "ALL" },
-                                            label = { Text("全部") },
+                                            label = { Text(strings.logFilterAll) },
                                             shape = SmallControlShape
                                         )
                                         FilterChip(
                                             selected = logFilter == "ERROR",
                                             onClick = { logFilter = "ERROR" },
-                                            label = { Text("错误") },
+                                            label = { Text(strings.logFilterError) },
                                             shape = SmallControlShape
                                         )
                                         FilterChip(
                                             selected = logFilter == "TRANSLATION",
                                             onClick = { logFilter = "TRANSLATION" },
-                                            label = { Text("翻译") },
+                                            label = { Text(strings.logFilterTranslation) },
                                             shape = SmallControlShape
                                         )
                                         FilterChip(
                                             selected = logFilter == "API",
                                             onClick = { logFilter = "API" },
-                                            label = { Text("API") },
+                                            label = { Text(strings.logFilterApi) },
                                             shape = SmallControlShape
                                         )
                                     }
 
                                     Text(
-                                        text = "共 ${filteredLogs.size} 条",
+                                        text = strings.logCountLabel(filteredLogs.size),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -593,10 +616,10 @@ fun ApiSettingsScreen(
 
                             if (filteredLogs.isEmpty()) {
                                 item {
-                                    AppGroupedSurface(contentPadding = PaddingValues(28.dp)) {
+                                    AppCard(contentPadding = PaddingValues(28.dp)) {
                                         Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                                             Text(
-                                                text = "暂无系统运行日志",
+                                                text = strings.logEmpty,
                                                 style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -605,19 +628,21 @@ fun ApiSettingsScreen(
                                 }
                             } else {
                                 items(visibleLogs, key = { it.id }) { log ->
-                                    AppGroupedSurface(contentPadding = PaddingValues(0.dp)) {
+                                    AppCard(
+                                        contentPadding = PaddingValues(0.dp),
+                                        onClick = { expandedLogId = if (expandedLogId == log.id) null else log.id }
+                                    ) {
                                         val isExpanded = expandedLogId == log.id
                                         val levelColor = when (log.level) {
-                                            LogLevel.ERROR -> StatusError
-                                            LogLevel.WARN -> StatusWarning
-                                            LogLevel.INFO -> AccentBlue
+                                            LogLevel.ERROR -> MaterialTheme.colorScheme.error
+                                            LogLevel.WARN -> LocalAppColors.current.warning
+                                            LogLevel.INFO -> MaterialTheme.colorScheme.primary
                                             LogLevel.DEBUG -> MaterialTheme.colorScheme.onSurfaceVariant
                                         }
 
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable { expandedLogId = if (isExpanded) null else log.id }
                                                 .padding(horizontal = 14.dp, vertical = 10.dp)
                                         ) {
                                             Row(
@@ -625,12 +650,12 @@ fun ApiSettingsScreen(
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 Surface(
-                                                    shape = RoundedCornerShape(4.dp),
+                                                    shape = PillShape,
                                                     color = levelColor.copy(alpha = 0.12f)
                                                 ) {
                                                     Text(
                                                         text = log.level.name,
-                                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
                                                         style = MaterialTheme.typography.labelSmall.copy(
                                                             fontWeight = FontWeight.Bold,
                                                             fontSize = 9.sp,
@@ -677,17 +702,29 @@ fun ApiSettingsScreen(
                                 .padding(paddingValues),
                             contentPadding = PaddingValues(
                                 horizontal = Spacing.compactHorizontalPadding,
-                                vertical = 8.dp
+                                vertical = Spacing.s
                             ),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             item {
-                                AppSection(title = "应用程序") {
-                                    AppStatusRow(label = "应用名称", value = "AI Novel Translator", modifier = Modifier.padding(16.dp))
+                                AppSection(title = strings.settingsSystemInfoTitle) {
+                                    AppStatusRow(
+                                        label = strings.settingsAppName,
+                                        value = strings.settingsAppName,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
                                     AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "当前版本", value = "v0.7.0 beta", modifier = Modifier.padding(16.dp))
+                                    AppStatusRow(
+                                        label = strings.settingsVersionLabel,
+                                        value = strings.settingsAppVersion,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
                                     AppDivider(startIndent = 16.dp)
-                                    AppStatusRow(label = "翻译工程", value = "${projects.size} 个工程", modifier = Modifier.padding(16.dp))
+                                    AppStatusRow(
+                                        label = strings.settingsProjectsLabel,
+                                        value = strings.settingsProjectsCount(projects.size),
+                                        modifier = Modifier.padding(16.dp)
+                                    )
                                 }
                             }
                         }
@@ -727,6 +764,7 @@ fun ApiSettingsScreen(
 @Composable
 private fun ProviderCardApple(
     provider: ApiProviderEntity,
+    strings: AppStrings,
     isTesting: Boolean,
     testResult: String?,
     onSetDefault: () -> Unit,
@@ -734,56 +772,40 @@ private fun ProviderCardApple(
     onDelete: () -> Unit,
     onTest: () -> Unit
 ) {
-    val strings = LocalAppStrings.current
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
-    AppGroupedSurface(
+    AppCard(
         modifier = Modifier.testTag("provider_card_${provider.name.lowercase(Locale.ROOT).replace(" ", "_")}"),
-        contentPadding = PaddingValues(16.dp)
+        shape = GroupedCardShape,
+        contentPadding = PaddingValues(Spacing.l)
     ) {
         // Top Header
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = AccentBlue.copy(alpha = 0.12f)
-            ) {
-                Text(
-                    text = provider.providerType.displayName,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        color = AccentBlue
-                    )
-                )
-            }
+            AppBadge(
+                text = provider.providerType.displayName,
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+            )
 
             if (provider.isDefault) {
                 Spacer(modifier = Modifier.width(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = StatusSuccess.copy(alpha = 0.12f)
-                ) {
-                    Text(
-                        text = "默认",
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = StatusSuccess
-                        )
-                    )
-                }
+                AppBadge(
+                    text = strings.providerDefaultBadge,
+                    containerColor = LocalAppColors.current.successContainer,
+                    contentColor = LocalAppColors.current.onSuccessContainer
+                )
             }
 
             Spacer(modifier = Modifier.weight(1f))
 
-            IconButton(onClick = onEdit, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Outlined.Edit, contentDescription = "编辑", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            IconButton(onClick = onEdit, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Outlined.Edit, contentDescription = strings.providerEdit, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = { showDeleteConfirm = true }, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Outlined.DeleteOutline, contentDescription = "删除", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+            IconButton(onClick = { showDeleteConfirm = true }, modifier = Modifier.size(30.dp)) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = strings.providerDelete, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
             }
         }
 
@@ -810,13 +832,13 @@ private fun ProviderCardApple(
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = SmallControlShape,
-                color = if (isSuccess) StatusSuccess.copy(alpha = 0.1f) else StatusError.copy(alpha = 0.1f)
+                color = if (isSuccess) LocalAppColors.current.success.copy(alpha = 0.1f) else MaterialTheme.colorScheme.error.copy(alpha = 0.1f)
             ) {
                 Text(
                     text = msg,
                     modifier = Modifier.padding(8.dp),
                     style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-                    color = if (isSuccess) StatusSuccess else StatusError
+                    color = if (isSuccess) LocalAppColors.current.success else MaterialTheme.colorScheme.error
                 )
             }
         }
@@ -833,7 +855,7 @@ private fun ProviderCardApple(
                     onClick = onSetDefault,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                 ) {
-                    Text("设为默认", style = MaterialTheme.typography.labelMedium)
+                    Text(strings.providerSetDefault, style = MaterialTheme.typography.labelMedium)
                 }
             } else {
                 Spacer(modifier = Modifier.width(1.dp))
@@ -853,7 +875,7 @@ private fun ProviderCardApple(
                     Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                 }
-                Text("测试连通性", style = MaterialTheme.typography.labelSmall)
+                Text(strings.providerTestConnection, style = MaterialTheme.typography.labelSmall)
             }
         }
     }
@@ -861,15 +883,16 @@ private fun ProviderCardApple(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("删除供应商") },
-            text = { Text("确定要删除供应商 \"${provider.name}\" 吗？") },
+            shape = DialogShape,
+            title = { Text(strings.providerDeleteTitle) },
+            text = { Text(strings.providerDeleteMessage(provider.name)) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         onDelete()
                         showDeleteConfirm = false
                     },
-                    colors = ButtonDefaults.textButtonColors(contentColor = StatusError)
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text(strings.delete)
                 }
@@ -878,8 +901,7 @@ private fun ProviderCardApple(
                 TextButton(onClick = { showDeleteConfirm = false }) {
                     Text(strings.cancel)
                 }
-            },
-            shape = DialogShape
+            }
         )
     }
 }
@@ -937,9 +959,10 @@ fun AddEditProviderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = DialogShape,
         title = {
             Text(
-                text = if (provider == null) "添加模型供应商" else "编辑模型供应商",
+                text = if (provider == null) strings.providerAddTitle else strings.providerEditTitle,
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -956,7 +979,7 @@ fun AddEditProviderDialog(
                             value = preset.name,
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("模型厂家 / 协议预设") },
+                            label = { Text(strings.providerPresetLabel) },
                             supportingText = { Text(preset.description) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(presetMenu) },
                             modifier = Modifier.menuAnchor().fillMaxWidth()
@@ -989,7 +1012,7 @@ fun AddEditProviderDialog(
                     OutlinedTextField(
                         value = name,
                         onValueChange = { name = it },
-                        label = { Text("供应商名称") },
+                        label = { Text(strings.providerNameLabel) },
                         shape = SmallControlShape,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1017,7 +1040,7 @@ fun AddEditProviderDialog(
                     OutlinedTextField(
                         value = selectedModel,
                         onValueChange = { selectedModel = it },
-                        label = { Text("模型名称") },
+                        label = { Text(strings.providerModelLabel) },
                         shape = SmallControlShape,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1031,17 +1054,18 @@ fun AddEditProviderDialog(
                                 fetchingModels = false
                                 result.onSuccess {
                                     fetchedModels = it
-                                    fetchMessage = "已从端点获取 ${it.size} 个模型"
-                                }.onFailure { fetchMessage = it.localizedMessage ?: "拉取模型失败" }
+                                    fetchMessage = strings.providerFetchedCount(it.size)
+                                }.onFailure { fetchMessage = it.localizedMessage ?: strings.providerFetchFailed }
                             }
                         },
                         enabled = !fetchingModels && baseUrl.isNotBlank(),
+                        shape = ButtonShape,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         if (fetchingModels) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
                         else Icon(Icons.Default.CloudDownload, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text(if (fetchingModels) "正在拉取…" else "自动从端点拉取模型列表")
+                        Text(if (fetchingModels) strings.providerFetchingModels else strings.providerFetchModels)
                     }
                     fetchMessage?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
@@ -1050,9 +1074,10 @@ fun AddEditProviderDialog(
                         OutlinedTextField(
                             value = modelSearch,
                             onValueChange = { modelSearch = it },
-                            label = { Text("搜索匹配模型") },
+                            label = { Text(strings.providerSearchModel) },
                             leadingIcon = { Icon(Icons.Default.Search, null) },
                             singleLine = true,
+                            shape = SmallControlShape,
                             modifier = Modifier.fillMaxWidth()
                         )
                         val matches = fetchedModels.filter { modelSearch.isBlank() || it.contains(modelSearch, true) }.take(8)
@@ -1060,6 +1085,7 @@ fun AddEditProviderDialog(
                             matches.forEach { model ->
                                 Surface(
                                     modifier = Modifier.fillMaxWidth().clickable { selectedModel = model },
+                                    shape = SmallControlShape,
                                     color = if (selectedModel == model) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
                                 ) {
                                     Text(model, Modifier.padding(horizontal = 12.dp, vertical = 9.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1076,14 +1102,14 @@ fun AddEditProviderDialog(
                         OutlinedTextField(
                             value = inputPrice,
                             onValueChange = { inputPrice = it },
-                            label = { Text("输入 $/M Tok") },
+                            label = { Text(strings.providerInputPriceLabel) },
                             shape = SmallControlShape,
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedTextField(
                             value = outputPrice,
                             onValueChange = { outputPrice = it },
-                            label = { Text("输出 $/M Tok") },
+                            label = { Text(strings.providerOutputPriceLabel) },
                             shape = SmallControlShape,
                             modifier = Modifier.weight(1f)
                         )
@@ -1095,7 +1121,7 @@ fun AddEditProviderDialog(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Checkbox(checked = isDefault, onCheckedChange = { isDefault = it })
-                        Text("设为默认供应商", style = MaterialTheme.typography.bodyMedium)
+                        Text(strings.providerSetAsDefault, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -1115,7 +1141,6 @@ fun AddEditProviderDialog(
             TextButton(onClick = onDismiss) {
                 Text(strings.cancel)
             }
-        },
-        shape = DialogShape
+        }
     )
 }

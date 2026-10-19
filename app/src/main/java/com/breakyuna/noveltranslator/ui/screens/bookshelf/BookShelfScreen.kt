@@ -33,11 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,11 +43,25 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import com.breakyuna.noveltranslator.data.model.ShelfBook
-import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
-import com.breakyuna.noveltranslator.ui.components.rememberAsyncBookImage
+import com.breakyuna.noveltranslator.ui.components.BookCoverFill
+import com.breakyuna.noveltranslator.ui.components.apple.AppBadge
+import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
+import com.breakyuna.noveltranslator.ui.components.apple.AppEmptyState
+import com.breakyuna.noveltranslator.ui.components.apple.AppIconBubble
+import com.breakyuna.noveltranslator.ui.components.apple.AppLargeTitle
+import com.breakyuna.noveltranslator.ui.components.apple.AppSecondaryButton
 import com.breakyuna.noveltranslator.ui.i18n.PlatformUiStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
+import com.breakyuna.noveltranslator.ui.theme.*
+import com.breakyuna.noveltranslator.ui.viewmodel.AppViewModel
 
+/**
+ * Bookshelf: poster grid of covers with long-press drag reordering.
+ *
+ * Visual layer only — every state holder, gesture and ViewModel call is kept
+ * exactly as before so behavior (drag to reorder, selection mode, import
+ * pipeline) is unchanged.
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BookShelfScreen(
@@ -97,27 +109,30 @@ fun BookShelfScreen(
     val isAllSelected = books.isNotEmpty() && selectedBookIds.size == books.size
     val gridState = rememberLazyGridState()
     val currentDisplayedBooks by rememberUpdatedState(displayedBooks)
+    val window = rememberWindowSize()
+    val gridPadding = if (window.isCompact) Spacing.compactHorizontalPadding else Spacing.expandedHorizontalPadding
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             AnimatedContent(
                 targetState = inSelectionMode,
-                transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(150)) },
+                transitionSpec = { fadeIn(tween(Motion.DurationMedium)) togetherWith fadeOut(tween(Motion.DurationFast)) },
                 label = "topBarTransition"
             ) { selecting ->
                 if (selecting) {
                     CenterAlignedTopAppBar(
                         title = {
                             Text(
-                                "已选择 ${selectedBookIds.size} 本图书",
+                                strings.selectedBooks(selectedBookIds.size),
                                 fontWeight = FontWeight.SemiBold,
                                 style = MaterialTheme.typography.titleMedium
                             )
                         },
                         navigationIcon = {
                             TextButton(onClick = { selectedBookIds = emptySet() }) {
-                                Text("取消", fontSize = 16.sp, color = MaterialTheme.colorScheme.primary)
+                                Text(strings.cancel, color = MaterialTheme.colorScheme.primary)
                             }
                         },
                         actions = {
@@ -127,8 +142,7 @@ fun BookShelfScreen(
                                 }
                             ) {
                                 Text(
-                                    if (isAllSelected) "全不选" else "全选",
-                                    fontSize = 16.sp,
+                                    if (isAllSelected) strings.deselectAllBooks else strings.selectAllBooks,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
@@ -138,11 +152,10 @@ fun BookShelfScreen(
                         )
                     )
                 } else {
-                    TopAppBar(
-                        title = {
-                            Text(strings.bookshelf, fontWeight = FontWeight.Bold)
-                        },
-                        actions = {
+                    AppLargeTitle(
+                        title = strings.bookshelf,
+                        subtitle = strings.bookshelfSubtitle,
+                        trailingContent = {
                             IconButton(onClick = { showHidden = true }) {
                                 BadgedBox(badge = { if (hiddenBooks.isNotEmpty()) Badge { Text(hiddenBooks.size.toString()) } }) {
                                     Icon(Icons.Default.Inventory2, strings.removedBooks)
@@ -155,13 +168,13 @@ fun BookShelfScreen(
                             }) {
                                 Icon(Icons.Default.Edit, strings.editShelf)
                             }
-                            IconButton(onClick = launchFilePicker) {
+                            FilledIconButton(
+                                onClick = launchFilePicker,
+                                modifier = Modifier.padding(start = Spacing.xs)
+                            ) {
                                 Icon(Icons.Default.Add, strings.importNovel)
                             }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
+                        }
                     )
                 }
             }
@@ -184,13 +197,13 @@ fun BookShelfScreen(
                         Surface(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 6.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f),
-                            tonalElevation = 2.dp
+                                .padding(horizontal = Spacing.compactHorizontalPadding, vertical = Spacing.s),
+                            shape = GroupedCardShape,
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                            tonalElevation = 0.dp
                         ) {
                             Column(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                                modifier = Modifier.padding(horizontal = Spacing.l, vertical = Spacing.m)
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -198,7 +211,7 @@ fun BookShelfScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "正在批量导入图书 (${progress.completed}/${progress.total})",
+                                        text = strings.importingBooksProgress(progress.completed, progress.total),
                                         style = MaterialTheme.typography.labelLarge,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                                         fontWeight = FontWeight.SemiBold
@@ -209,22 +222,22 @@ fun BookShelfScreen(
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
-                                Spacer(Modifier.height(6.dp))
+                                Spacer(Modifier.height(Spacing.s))
                                 LinearProgressIndicator(
                                     progress = { (progress.completed.toFloat() / maxOf(1, progress.total)).coerceIn(0f, 1f) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(4.dp)
-                                        .clip(RoundedCornerShape(2.dp)),
+                                        .height(5.dp)
+                                        .clip(PillShape),
                                     color = MaterialTheme.colorScheme.primary,
-                                    trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.2f)
+                                    trackColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.18f)
                                 )
                                 if (!progress.currentBookName.isNullOrBlank()) {
-                                    Spacer(Modifier.height(4.dp))
+                                    Spacer(Modifier.height(Spacing.xs))
                                     Text(
                                         text = progress.currentBookName,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f),
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
@@ -235,44 +248,40 @@ fun BookShelfScreen(
                 }
 
                 if (books.isEmpty()) {
-                    Column(
-                        Modifier
-                            .fillMaxSize()
-                            .padding(32.dp),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            Icons.Default.AutoStories,
-                            null,
-                            Modifier.size(64.dp),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = .55f)
+                        AppEmptyState(
+                            icon = Icons.Default.AutoStories,
+                            title = strings.emptyShelfTitle,
+                            description = strings.emptyShelfDescription,
+                            actions = {
+                                AppSecondaryButton(
+                                    text = strings.importFirstBook,
+                                    onClick = launchFilePicker,
+                                    icon = Icons.Default.Add
+                                )
+                                TextButton(onClick = viewModel::createSampleBook) {
+                                    Text(strings.loadSample)
+                                }
+                            }
                         )
-                        Spacer(Modifier.height(18.dp))
-                        Text(strings.emptyShelfTitle, style = MaterialTheme.typography.titleLarge)
-                        Text(
-                            strings.emptyShelfDescription,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(20.dp))
-                        Button(onClick = launchFilePicker) { Text(strings.importFirstBook) }
-                        TextButton(onClick = viewModel::createSampleBook) { Text(strings.loadSample) }
                     }
                 } else {
                     // Bookshelf Grid with Drag & Drop
                     LazyVerticalGrid(
                         state = gridState,
-                        columns = GridCells.Adaptive(114.dp),
+                        columns = GridCells.Adaptive(122.dp),
                         modifier = Modifier.fillMaxSize(),
                         contentPadding = PaddingValues(
-                            start = 16.dp,
-                            end = 16.dp,
-                            top = 8.dp,
-                            bottom = if (inSelectionMode) 88.dp else 16.dp
+                            start = gridPadding,
+                            end = gridPadding,
+                            top = Spacing.s,
+                            bottom = if (inSelectionMode) 96.dp else Spacing.xxl
                         ),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp)
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.l),
+                        verticalArrangement = Arrangement.spacedBy(Spacing.xl)
                     ) {
                         itemsIndexed(displayedBooks, key = { _, book -> book.id }) { index, book ->
                             val isDragging = draggingBookId == book.id
@@ -326,8 +335,8 @@ fun BookShelfScreen(
 
                                             val targetItem = visibleItems.firstOrNull { item ->
                                                 item.key != book.id &&
-                                                currentCenter.x.toInt() in item.offset.x..(item.offset.x + item.size.width) &&
-                                                currentCenter.y.toInt() in item.offset.y..(item.offset.y + item.size.height)
+                                                    currentCenter.x.toInt() in item.offset.x..(item.offset.x + item.size.width) &&
+                                                    currentCenter.y.toInt() in item.offset.y..(item.offset.y + item.size.height)
                                             }
 
                                             if (targetItem != null) {
@@ -414,37 +423,35 @@ fun BookShelfScreen(
                 visible = inSelectionMode,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.l, vertical = Spacing.l)
+                    .navigationBarsPadding(),
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
             ) {
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    shape = PillShape,
                     color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 6.dp,
-                    shadowElevation = 12.dp
+                    shadowElevation = 10.dp,
+                    tonalElevation = 3.dp
                 ) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .navigationBarsPadding()
-                            .height(68.dp)
-                            .padding(horizontal = 24.dp),
-                        horizontalArrangement = Arrangement.SpaceAround,
+                            .padding(horizontal = Spacing.xl, vertical = Spacing.m),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // 清理 (Clean / Archive)
                         BottomBarActionButton(
                             icon = Icons.Outlined.Autorenew,
-                            label = "清理",
+                            label = strings.removeFromShelf,
                             onClick = { showCleanDialog = true }
                         )
 
-                        // 删除 (Delete)
                         BottomBarActionButton(
                             icon = Icons.Outlined.Delete,
-                            label = "删除",
+                            label = strings.deletePermanently,
                             tint = MaterialTheme.colorScheme.error,
                             onClick = { showDeleteDialog = true }
                         )
@@ -458,9 +465,10 @@ fun BookShelfScreen(
     if (showCleanDialog) {
         AlertDialog(
             onDismissRequest = { showCleanDialog = false },
-            title = { Text("清理图书") },
+            shape = DialogShape,
+            title = { Text(strings.cleanBooksDialogTitle) },
             text = {
-                Text("确定将选中的 ${selectedBookIds.size} 本图书移入归档箱（移出书架）吗？图书数据不会丢失，可随时在右上角箱子中恢复。")
+                Text(strings.cleanBooksDialogMessage(selectedBookIds.size))
             },
             confirmButton = {
                 TextButton(
@@ -470,11 +478,11 @@ fun BookShelfScreen(
                         showCleanDialog = false
                     }
                 ) {
-                    Text("确认清理")
+                    Text(strings.confirmCleanBooks)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showCleanDialog = false }) { Text("取消") }
+                TextButton(onClick = { showCleanDialog = false }) { Text(strings.cancel) }
             }
         )
     }
@@ -482,9 +490,10 @@ fun BookShelfScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("永久删除") },
+            shape = DialogShape,
+            title = { Text(strings.deleteBooksDialogTitle) },
             text = {
-                Text("确定永久删除选中的 ${selectedBookIds.size} 本图书吗？包括所有章节和关联翻译版本数据，此操作无法撤销。")
+                Text(strings.deleteBooksDialogMessage(selectedBookIds.size))
             },
             confirmButton = {
                 Button(
@@ -495,11 +504,11 @@ fun BookShelfScreen(
                         showDeleteDialog = false
                     }
                 ) {
-                    Text("永久删除")
+                    Text(strings.deletePermanently)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("取消") }
+                TextButton(onClick = { showDeleteDialog = false }) { Text(strings.cancel) }
             }
         )
     }
@@ -507,6 +516,7 @@ fun BookShelfScreen(
     if (showHidden) {
         AlertDialog(
             onDismissRequest = { showHidden = false },
+            shape = DialogShape,
             title = { Text(strings.removedBooks) },
             text = {
                 Column {
@@ -550,15 +560,26 @@ private fun BottomBarActionButton(
 ) {
     Column(
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(percent = 50))
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = Spacing.l, vertical = Spacing.s),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(icon, contentDescription = label, modifier = Modifier.size(24.dp), tint = tint)
-        Spacer(Modifier.height(3.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall, color = tint, fontWeight = FontWeight.Medium)
+        AppIconBubble(
+            icon = icon,
+            size = 40.dp,
+            shape = CircleShape,
+            containerColor = tint.copy(alpha = 0.10f),
+            tint = tint
+        )
+        Spacer(Modifier.height(Spacing.xs))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = tint,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
@@ -573,8 +594,6 @@ private fun BookCoverCard(
     onLongClick: () -> Unit,
     onDoubleClick: (() -> Unit)?
 ) {
-    val cover by rememberAsyncBookImage(book.coverPath, maxDimension = 480)
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -584,158 +603,93 @@ private fun BookCoverCard(
                 onDoubleClick = onDoubleClick
             )
     ) {
-        // Book Cover with 3D Spine and Layered Depth
-        Surface(
+        // Poster cover
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.72f),
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(0.6.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-            shadowElevation = 2.dp,
-            tonalElevation = 1.dp
+                .aspectRatio(0.72f)
         ) {
-            Box(
+            BookCoverFill(
+                title = book.title,
+                coverPath = book.coverPath,
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f),
-                                MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        )
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                if (cover != null) {
-                    androidx.compose.foundation.Image(
-                        cover!!,
-                        book.title,
-                        Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                    .then(
+                        if (selected) Modifier.border(
+                            width = 2.5.dp,
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = CoverShape
+                        ) else Modifier
                     )
-                } else {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(12.dp)
-                    ) {
-                        Text(
-                            book.title.take(4),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
+            )
 
-                // 3D Realistic Book Spine Lighting Gradient Overlay (Left edge shadow)
+            // Translation badge
+            if (book.hasTranslationProject) {
+                AppBadge(
+                    text = strings.translationBadge,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(Spacing.s)
+                )
+            }
+
+            // Selection indicator
+            if (inSelectionMode) {
                 Box(
                     modifier = Modifier
-                        .fillMaxHeight()
-                        .width(14.dp)
-                        .align(Alignment.CenterStart)
-                        .background(
-                            Brush.horizontalGradient(
-                                listOf(
-                                    Color.Black.copy(alpha = 0.36f),
-                                    Color.Black.copy(alpha = 0.12f),
-                                    Color.Transparent
-                                )
-                            )
+                        .align(Alignment.TopEnd)
+                        .padding(Spacing.s)
+                        .size(24.dp)
+                        .clip(CircleShape)
+                        .then(
+                            if (selected) {
+                                Modifier.background(MaterialTheme.colorScheme.primary)
+                            } else {
+                                Modifier
+                                    .background(Color.Black.copy(alpha = 0.30f))
+                                    .border(1.5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (selected) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = strings.selectedBadge,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.onPrimary
                         )
-                )
-
-                // Book Spine Crease Highlight
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(1.dp)
-                        .padding(start = 13.dp)
-                        .align(Alignment.CenterStart)
-                        .background(Color.White.copy(alpha = 0.18f))
-                )
-
-                // Translation Badge (Frosted Pill Style)
-                if (book.hasTranslationProject) {
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(6.dp),
-                        shape = RoundedCornerShape(5.dp),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f),
-                        border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.35f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                strings.translationBadge,
-                                color = MaterialTheme.colorScheme.onPrimary,
-                                fontSize = 9.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.2.sp
-                            )
-                        }
-                    }
-                }
-
-                // Selection Circle Indicator in bottom-right corner
-                if (inSelectionMode) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(8.dp)
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .then(
-                                if (selected) {
-                                    Modifier.background(MaterialTheme.colorScheme.primary)
-                                } else {
-                                    Modifier
-                                        .background(Color.Black.copy(alpha = 0.35f))
-                                        .border(1.5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
-                                }
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (selected) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = "已选择",
-                                modifier = Modifier.size(16.dp),
-                                tint = Color.White
-                            )
-                        }
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(Spacing.s))
         Text(
             book.title,
             modifier = Modifier.fillMaxWidth(),
             maxLines = 2,
+            minLines = 2,
             overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp
             ),
-            lineHeight = 17.5.sp
+            lineHeight = 17.sp
         )
         Spacer(Modifier.height(2.dp))
         Text(
-            when {
-                book.hasTranslationProject && strings.bookshelf == "Bookshelf" -> "Translation configured"
-                book.hasTranslationProject -> "已配置翻译"
-                strings.bookshelf == "Bookshelf" -> "Translation not configured"
-                else -> "未配置翻译"
+            strings.translationStatusLabel(book.hasTranslationProject),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (book.hasTranslationProject) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
             },
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
@@ -757,6 +711,7 @@ private fun EditShelfBookDialog(
     if (!confirmDelete) {
         AlertDialog(
             onDismissRequest = onDismiss,
+            shape = DialogShape,
             title = { Text(strings.editBook) },
             text = {
                 Column {
@@ -776,6 +731,7 @@ private fun EditShelfBookDialog(
     } else {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
+            shape = DialogShape,
             title = { Text(strings.deleteBookTitle(book.title)) },
             text = { Text(strings.deleteBookMessage) },
             confirmButton = { TextButton(onClick = onDelete, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text(strings.deletePermanently) } },
