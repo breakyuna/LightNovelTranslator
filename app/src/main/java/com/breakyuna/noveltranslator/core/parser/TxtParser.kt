@@ -16,6 +16,14 @@ data class ParsedChapter(
     val wordCount: Int
 )
 
+/**
+ * TXT 导入解析器。
+ *
+ * 空白归一与 EPUB 共用同一套口径（见 [ImportTextNormalizer]）：行内空白
+ * （全角空格 U+3000、制表符）原样保留，不压缩；连续空行在章节落库前折叠为
+ * 单个空行。TXT 额外保留作者的原始行格式（不做行级修剪），与 EPUB 摘除
+ * HTML 排版缩进的策略各自适配来源格式。
+ */
 object TxtParser {
 
     data class CharsetDetection(val charset: Charset, val bomBytes: Int)
@@ -248,7 +256,7 @@ object TxtParser {
             val trimmed = line.trim()
             if (trimmed.isNotEmpty() && matchesHeading(trimmed)) {
                 if (currentContent.isNotBlank()) {
-                    val contentStr = currentContent.toString().trim()
+                    val contentStr = ImportTextNormalizer.foldBlankLines(currentContent.toString().trim())
                     chapters.add(
                         ParsedChapter(
                             index = chapterIndex++,
@@ -266,7 +274,7 @@ object TxtParser {
         }
 
         if (currentContent.isNotBlank()) {
-            val contentStr = currentContent.toString().trim()
+            val contentStr = ImportTextNormalizer.foldBlankLines(currentContent.toString().trim())
             chapters.add(
                 ParsedChapter(
                     index = chapterIndex,
@@ -311,7 +319,8 @@ object TxtParser {
 
         fun drain(title: String): ParsedChapter? {
             if (currentContent.isBlank()) return null
-            val content = currentContent.toString().trim()
+            // 与 EPUB 一致：连续空行折叠为单个空行后再落库。
+            val content = ImportTextNormalizer.foldBlankLines(currentContent.toString().trim())
             val chapter = ParsedChapter(chapterIndex++, title, content, currentWordCount)
             currentContent = StringBuilder()
             currentWordCount = 0
@@ -486,7 +495,7 @@ object TxtParser {
         for (para in paragraphs) {
             val paraWords = countWords(para)
             if (currentWordCount + paraWords > targetWordsPerChunk && currentChunk.isNotBlank()) {
-                val contentStr = currentChunk.toString().trim()
+                val contentStr = ImportTextNormalizer.foldBlankLines(currentChunk.toString().trim())
                 chapters.add(
                     ParsedChapter(
                         index = chapterIndex,
@@ -504,7 +513,7 @@ object TxtParser {
         }
 
         if (currentChunk.isNotBlank()) {
-            val contentStr = currentChunk.toString().trim()
+            val contentStr = ImportTextNormalizer.foldBlankLines(currentChunk.toString().trim())
             chapters.add(
                 ParsedChapter(
                     index = chapterIndex,
