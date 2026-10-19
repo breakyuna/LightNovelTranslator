@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ML Kit GenAI (com.google.mlkit:genai-*) requires Android API 26+ while this app targets 24.
+         AGP 9 forbids android:minSdkVersion in the manifest; only override the library requirement.
+         Every GenAI call site must still check Build.VERSION.SDK_INT >= 26 and feature availability. -->
+    <uses-sdk tools:overrideLibrary="com.google.mlkit.genai.common, com.google.mlkit.genai.prompt, com.google.mlkit.genai.summarization, com.google.mlkit.genai.proofreading, com.fasterxml.jackson.core, com.fasterxml.jackson.module, com.fasterxml.jackson.databind, com.fasterxml.jackson.annotation" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />

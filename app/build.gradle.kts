@@ -54,8 +54,9 @@ android {
     debug { }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    // Koog (ai.koog:koog-agents) ships Java 17 bytecode; AGP 9 already requires JDK 17.
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
   buildFeatures {
     compose = true
@@ -72,6 +73,14 @@ android {
 ksp {
   arg("room.schemaLocation", "$projectDir/schemas")
   arg("room.incremental", "true")
+}
+
+// Built-in Kotlin registers `kotlin` on the Project (AGP 9's android extension has no
+// `kotlin` member). Keep jvmTarget aligned with compileOptions (Java 17).
+kotlin {
+  compilerOptions {
+    jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+  }
 }
 
 dependencies {
@@ -112,4 +121,11 @@ dependencies {
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)
+  implementation(libs.koog.agents)
+  implementation(libs.jsoup)
+  // ML Kit GenAI requires Android API 26+; see tools:overrideLibrary in AndroidManifest.xml.
+  // All call sites must guard Build.VERSION.SDK_INT >= 26 and feature availability.
+  implementation(libs.mlkit.genai.prompt)
+  implementation(libs.mlkit.genai.summarization)
+  implementation(libs.mlkit.genai.proofreading)
 }
