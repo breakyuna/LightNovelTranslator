@@ -76,10 +76,12 @@ object CrashReporter {
                 runCatching { previous?.uncaughtException(thread, error) }
                 if (previous == null) {
                     // 没有前驱处理器意味着这不是 Android 宿主（真机上 RuntimeInit 必然安装
-                    // KillApplicationHandler），而是 Robolectric 之类的纯 JVM。此时 killProcess
-                    // 是空操作、exit(10) 会打死整个测试 JVM 且不留任何诊断信息——改为打印
-                    // 堆栈后返回，让宿主（JVM 默认行为 / 测试框架）自行处置。
+                    // KillApplicationHandler），而是 Robolectric 之类的纯 JVM。此时不能简单地
+                    // "返回"——主线程已随未捕获异常消亡，测试框架会永久挂等；也不能悄悄
+                    // exit(10)——那样不留任何堆栈。对齐 JVM 默认行为：打印堆栈后以退出码 1
+                    // 终止，让测试框架立刻看到失败和真实原因。
                     runCatching { error.printStackTrace() }
+                    runCatching { Runtime.getRuntime().exit(1) }
                 }
             }
             // Load the previous crash record off the crashing path; a cold start must stay fast.

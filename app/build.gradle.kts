@@ -76,6 +76,12 @@ android {
         // 默认 512MB 堆对“全 App 导航 + Compose + ViewModel + Room”的重型测试偏小，
         // 提到 1g（4 fork × 1g + daemon 4g，16GB runner 仍宽裕）。
         test.maxHeapSize = "1g"
+        // 测试 JVM 崩溃（未捕获异常）时 Gradle 默认不转发 stderr，崩溃原因会整段丢失；
+        // 打开标准流转发与完整异常格式，保证堆栈进入 CI 日志。
+        test.testLogging {
+            showStandardStreams = true
+            exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        }
       }
     }
   }
