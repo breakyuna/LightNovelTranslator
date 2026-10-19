@@ -16,8 +16,12 @@ concurrency:
 
 jobs:
   # 三个 job 并行：测试/检查各自只编译自己需要的变体，墙钟时间 = max(各 job) 而非求和。
+  # 当前仅由仓库分支 push / workflow_dispatch 触发，三个 job 都允许写回各分支缓存。
+  # setup-gradle 默认对非默认分支只读；显式开启写入，避免开发分支持续冷构建。
+  # Robolectric 的 android-all 下载独立缓存在 ~/.m2/repository。
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -30,16 +34,48 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Restore Robolectric android-all jars
+        id: robolectric-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: robolectric-android-all-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          restore-keys: |
+            robolectric-android-all-${{ runner.os }}-
 
       - name: Ensure Gradle wrapper is executable
         run: chmod +x gradlew
 
       # maxParallelForks 由 app/build.gradle.kts 按 runner 核数设置（4 核 → 4 fork）。
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest
+        run: ./gradlew testDebugUnitTest --profile
+
+      # 测试失败也保留已下载的依赖，后续修复无需重新下载。
+      - name: Save Robolectric android-all jars
+        if: ${{ !cancelled() && steps.robolectric-cache.outcome == 'success' && steps.robolectric-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.m2/repository
+          key: ${{ steps.robolectric-cache.outputs.cache-primary-key }}
+
+      - name: Upload unit test and build timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/tests/testDebugUnitTest/
+            build/reports/profile/
+          if-no-files-found: ignore
+          retention-days: 7
 
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -52,15 +88,29 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - name: Ensure Gradle wrapper is executable
         run: chmod +x gradlew
 
       - name: Lint
-        run: ./gradlew lintDebug
+        run: ./gradlew lintDebug --profile
+
+      - name: Upload lint and build timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app/build/reports/lint-results-*.xml
+            build/reports/profile/
+          if-no-files-found: ignore
+          retention-days: 7
 
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,6 +123,8 @@ jobs:
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
 
       - name: Ensure Gradle wrapper is executable
         run: chmod +x gradlew
@@ -135,7 +187,16 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew assembleRelease --profile
+
+      - name: Upload release build timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-build-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/reports/profile/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Verify APK signature
         run: |

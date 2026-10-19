@@ -1,7 +1,6 @@
 # 构建与 CI 实战手册（2026-10-19 重构实录）
 
-> 本文记录本次大规模重构中**实测踩过并已验证**的工具链地雷、CI 结构与耗时数据、测试教训。
-> 所有条目都来自真实 CI 运行或 javap/字节码核实，不是文档记忆。新增代码前先读本文。
+> 本文记录本次重构的工具链问题、CI 历史证据与测试教训。2026-10-20 的配置调整尚待 CI 验证，不代表已测得提速效果。新增代码前先读本文，并以 `AGENTS.md` 的本机验证约束为准。
 
 ## 1. 工具链事实（以 `gradle/libs.versions.toml` 为准）
 
@@ -42,9 +41,9 @@
 ## 4. CI 结构与耗时（2026-10-19 实测数据）
 
 **结构**（`.github/workflows/android.yml`）：三个**并行 job**，各自只编译自己需要的变体——
-- `test`：`./gradlew testDebugUnitTest`（不编译 release）
-- `lint`：`./gradlew lintDebug`
-- `release`：签名校验 + `./gradlew assembleRelease` + apksigner 验证 + 上传 artifact
+- `test`：`./gradlew testDebugUnitTest --profile`（不编译 release）
+- `lint`：`./gradlew lintDebug --profile`
+- `release`：签名校验 + `./gradlew assembleRelease --profile` + apksigner 验证 + 上传 artifact
 
 **提速措施与效果**：
 | 措施 | 效果 |
@@ -53,6 +52,15 @@
 | job 并行化（时间从求和变取 max） | 总墙钟再降 |
 
 **实测**：改前 **31 min**（单 job 顺序：配置 2min + release 编译 4.5min + 测试 20min）→ 改后 **9 min 42s**（test 7m11s / lint 9m42s / release 9m35s 三者并行）。
+
+### 2026-10-20：开发分支缓存与失败诊断（待 CI 验证）
+
+- [run #93](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39281267954) 的三个 job 均记录 `cache-read-only: true`、Gradle 缓存未命中与退出时不保存；当前分支为 `refactor/translation-agent-2026-10`，`setup-gradle@v4` 默认只允许默认分支写回缓存。工作流显式设置 `cache-read-only: false`，让当前分支的后续运行能够复用依赖和构建缓存。适用范围为当前的仓库分支 push / `workflow_dispatch`；变更触发来源时重新核对缓存策略。
+- Robolectric 的 `~/.m2/repository` 独立恢复与保存，测试失败后仍保存已下载内容；首次缓存为空仍需下载，精确命中时不重复保存。
+- 保持 `gradle.properties` 中已使用的 Kotlin 编译策略与并行测试配置；本轮不切换编译 daemon。Lint 只关闭 HTML 报告，保留 XML 和原有测试源码检查。
+- 三个 Gradle 命令使用 `--profile` 输出任务耗时报告，随测试报告或 Lint XML 上传为保留 7 天的 artifact；步骤失败后仍尝试上传已生成的报告。job 超时分别为 30 / 25 / 40 分钟，只限制任务执行时间。
+- #93 的测试 / Lint / Release 主要步骤分别为 5m35s / 9m27s / 8m09s；最后一个 job 在创建后约 9m55s 完成，但 GitHub 记录整次运行 33m19s。差额没有对应的构建步骤日志，原因未决；不能据此推断编译耗时，也不能声称 job 超时设置已解决差额。
+- 后续验收：首轮确认缓存写入，下一轮确认恢复命中；读取 profile 报告比较配置、编译、测试与 Lint 的耗时。上述配置与报告上传尚未在 CI 运行，不登记为提速已验证。
 
 **其他事实**：
 - 修改 `build.gradle.kts` 或 `libs.versions.toml` 会使下次运行**部分缓存失效并重新下载依赖**（+2~3 min），不要误判为代码问题
@@ -69,14 +77,14 @@
 - **5 个实现真 bug**（测试立了功）：`toList()` 不可变快照、`(?i)` 组内泄漏、无 OPF 抛错类型不一致、GlossaryIo 排版违反自身 KDoc、`groups[name]` API 26
 
 **纪律（写进 AGENTS.md）**：
-1. 新增测试必须**落地后可运行**才算数；禁构建期间至少用 Gradle 缓存里的 `kotlin-compiler-embeddable` 做单文件编译 + JUnit 运行（`core/text` 的 118 个测试就是这样验证的）
+1. 新增测试需由 CI 或 PC 环境验证；本机只做静态检查，不运行 Gradle、单文件 Kotlin 编译或 JUnit。历史单文件验证方法不作为本机执行入口，约束以 `AGENTS.md` 为准。
 2. **KDoc / 设计文档是测试期望的权威来源**——断言前先读实现的文档化意图
 3. 判定失败时先问"是测试错还是实现错"，用证据说话，不要无脑改期望值
 
-## 6. 当前状态（2026-10-19）
+## 6. 历史状态与当前验证边界
 
 - 工作分支 `refactor/translation-agent-2026-10`（**未合 main**，遵守 AGENTS.md §4 交付边界），12 个提交
-- **CI 三 job 全绿**：550 测试通过、lint 0 错误、签名 Release APK 已上传 artifact（约 20 MB）
-- 全部改动**首次经过真实编译 + 真实测试验证**
+- 早期重构版本曾有三个 job 全绿的记录；该历史结果不覆盖后续提交。最新核查的 #93（`1e8b3dd`）为 Release 和 Lint 通过，测试报告 522 个、1 个失败、1 个跳过。
+- #93 剩余失败位于 `AgentProtocolRobustnessTest.cleanFinalTextStripsResidualBlocksAndStrayTags`：移除落单标签并 `trim()` 后的期望应为 `"残留"`；全角调用块移除后保留两侧换行，期望为 `"结论\n\n以上"`。两处期望已在工作区修正，尚未重新运行 CI。
 - 剩余 backlog（不阻塞构建）：质量规则/导出选项/术语导入导出/ML Kit 的设置页 UI、限流 scheduler 开启（`LlmRequestSchedulerFactory` 接入 AppViewModel）、T3 全书写校对台、`AgentSessionTest` PART5 两个用例、Robolectric 截图重录（`recordRoborazziDebug`）
 - 相关文档：`2026-10-19-master-refactor-plan.md`（主计划与状态）、`lg-parity-gap-analysis.md`（LG 对标）、`2026-10-19-architecture-overview.md`（架构总览）、`2026-10-19-agent-layer-review.md`（Agent 层审查）、`2026-10-19-build-readiness-checklist.md`（构建预案）

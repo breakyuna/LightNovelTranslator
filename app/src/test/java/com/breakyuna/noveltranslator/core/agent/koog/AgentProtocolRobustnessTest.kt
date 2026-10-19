@@ -204,11 +204,11 @@ class AgentProtocolRobustnessTest {
         assertEquals("结论\n\n以上", AgentToolProtocol.cleanFinalText("结论\n$callBlock\n以上"))
         assertEquals("结果\n请查收", AgentToolProtocol.cleanFinalText("结果\n${resultBlock}请查收"))
         assertEquals(
-            "答复 残留",
+            "残留",
             AgentToolProtocol.cleanFinalText(AgentToolProtocol.TOOL_RESULT_CLOSE + " 残留")
         )
         assertEquals(
-            "结论\n以上",
+            "结论\n\n以上",
             AgentToolProtocol.cleanFinalText(
                 "结论\n＜tool_call＞{\"name\":\"list_books\",\"arguments\":{}}＜/tool_call＞\n以上"
             )

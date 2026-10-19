@@ -77,6 +77,12 @@ android {
     }
   }
   sourceSets.getByName("test").assets.srcDir("$projectDir/schemas")
+  lint {
+    // CI 保存 XML 供诊断，省去未使用的 HTML 报告；不改变测试源码的检查范围。
+    htmlReport = false
+    xmlReport = true
+    textReport = false
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
