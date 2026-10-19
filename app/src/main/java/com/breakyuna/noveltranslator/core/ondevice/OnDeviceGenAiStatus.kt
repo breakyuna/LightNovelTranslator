@@ -112,7 +112,7 @@ suspend fun probeOnDeviceGenAi(context: Context): OnDeviceGenAiStatus {
     val proofreadingStatus = runCatching {
         proofreadingClient.checkFeatureStatus().awaitOnDevice()
     }.getOrElse { FeatureStatus.UNAVAILABLE }
-    val baseModelName = runCatching { promptClient.baseModelName() }.getOrNull()
+    val baseModelName = runCatching { promptClient.getBaseModelName() }.getOrNull()
 
     runCatching { promptClient.close() }
     runCatching { summarizationClient.close() }
