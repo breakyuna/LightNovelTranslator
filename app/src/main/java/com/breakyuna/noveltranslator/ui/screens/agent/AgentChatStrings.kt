@@ -1,0 +1,120 @@
+package com.breakyuna.noveltranslator.ui.screens.agent
+
+import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionTexts
+import com.breakyuna.noveltranslator.ui.i18n.AppStrings
+import com.breakyuna.noveltranslator.ui.i18n.EnglishStrings
+
+/**
+ * Agent 对话页的自带文案。
+ *
+ * 阅读平台的 i18n 由 ui/i18n 统一维护（AppStrings + ChineseStrings/EnglishStrings），
+ * 但该目录属于其他改动范围，因此本页自带一套中英文案，避免并发修改冲突。
+ * 集成阶段如需并入统一 i18n，把这里的字段搬进 AppStrings 即可，页面只依赖本类型。
+ */
+data class AgentChatText(
+    val title: String,
+    val subtitleIdle: String,
+    val subtitleRunning: String,
+    val inputPlaceholder: String,
+    val send: String,
+    val cancel: String,
+    val newChat: String,
+    val back: String,
+    val switchSession: String,
+    val thinking: String,
+    val emptyTitle: String,
+    val emptyDescription: String,
+    val youLabel: String,
+    val assistantLabel: String,
+    val toolCallLabel: String,
+    val toolResultLabel: String,
+    val toolResultFailedLabel: String,
+    val cancelled: String,
+    val notConfigured: String,
+    val requestFailedTemplate: String,
+    val turnFailedTemplate: String,
+    val emptyReply: String,
+    val questionAnswerPlaceholder: String,
+    val questionSkip: String,
+    /** 占位符：{input} {output} {requests} */
+    val usageTemplate: String,
+    /** 占位符：{model} */
+    val modelTemplate: String
+)
+
+object AgentChatStrings {
+
+    val chinese = AgentChatText(
+        title = "Agent 对话",
+        subtitleIdle = "可以询问书架、翻译任务与术语情况",
+        subtitleRunning = "正在处理，请稍候",
+        inputPlaceholder = "输入消息，例如：书架上有哪些书？",
+        send = "发送",
+        cancel = "停止",
+        newChat = "新对话",
+        back = "返回",
+        switchSession = "切换会话",
+        thinking = "正在思考或调用工具",
+        emptyTitle = "开始一段对话",
+        emptyDescription = "Agent 可以查询书籍与翻译任务状态，并在你确认后执行翻译相关操作。",
+        youLabel = "你",
+        assistantLabel = "助手",
+        toolCallLabel = "调用工具",
+        toolResultLabel = "工具返回",
+        toolResultFailedLabel = "工具失败",
+        cancelled = "已取消本次请求。",
+        notConfigured = "尚未选择可用的模型提供方，请先在设置中配置。",
+        requestFailedTemplate = "请求失败：{reason}",
+        turnFailedTemplate = "本次对话未能完成：{reason}",
+        emptyReply = "（模型没有返回可用内容）",
+        questionAnswerPlaceholder = "输入回答",
+        questionSkip = "跳过问题，按默认值继续",
+        usageTemplate = "本次会话：输入 {input} tokens · 输出 {output} tokens · {requests} 次请求",
+        modelTemplate = "当前模型：{model}"
+    )
+
+    val english = AgentChatText(
+        title = "Agent Chat",
+        subtitleIdle = "Ask about your shelf, translation jobs and glossary",
+        subtitleRunning = "Working on it",
+        inputPlaceholder = "Type a message, e.g. what books are on my shelf?",
+        send = "Send",
+        cancel = "Stop",
+        newChat = "New chat",
+        back = "Back",
+        switchSession = "Switch conversation",
+        thinking = "Thinking or calling tools",
+        emptyTitle = "Start a conversation",
+        emptyDescription = "The agent can look up books and translation jobs, and run translation actions after you confirm.",
+        youLabel = "You",
+        assistantLabel = "Assistant",
+        toolCallLabel = "Tool call",
+        toolResultLabel = "Tool result",
+        toolResultFailedLabel = "Tool failed",
+        cancelled = "Cancelled this request.",
+        notConfigured = "No model provider selected yet. Configure one in Settings first.",
+        requestFailedTemplate = "Request failed: {reason}",
+        turnFailedTemplate = "This turn failed: {reason}",
+        emptyReply = "(The model returned no content)",
+        questionAnswerPlaceholder = "Type your answer",
+        questionSkip = "Skip and continue with defaults",
+        usageTemplate = "Session: {input} prompt tokens · {output} completion tokens · {requests} requests",
+        modelTemplate = "Model: {model}"
+    )
+
+    /** 与全局语言保持一致：英文界面用英文文案，其余按中文（应用默认中文）。 */
+    fun resolve(appStrings: AppStrings): AgentChatText =
+        if (appStrings === EnglishStrings) english else chinese
+}
+
+/**
+ * 把界面文案映射成会话层的系统消息文案（取消、失败、未配置提供方等）。
+ * 控制器默认中文；需要跟随界面语言时由集成层传入映射结果。
+ */
+fun AgentChatText.toSessionTexts(): AgentSessionTexts = AgentSessionTexts(
+    cancelled = cancelled,
+    requestFailed = requestFailedTemplate,
+    turnFailed = turnFailedTemplate,
+    noProvider = notConfigured,
+    emptyReply = emptyReply
+)

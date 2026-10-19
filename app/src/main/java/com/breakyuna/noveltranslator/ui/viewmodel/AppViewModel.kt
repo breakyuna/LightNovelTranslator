@@ -14,13 +14,33 @@ import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.core.llm.executeCompletion
 import com.breakyuna.noveltranslator.core.parser.*
+import com.breakyuna.noveltranslator.core.quality.QualityRuleDefaults
+import com.breakyuna.noveltranslator.core.quality.QualityRuleEntry
+import com.breakyuna.noveltranslator.core.quality.QualityRuleIssue
+import com.breakyuna.noveltranslator.core.quality.QualityRuleIssueSeverity
+import com.breakyuna.noveltranslator.core.quality.QualityRuleJson
+import com.breakyuna.noveltranslator.core.quality.QualityRuleMode
+import com.breakyuna.noveltranslator.core.quality.QualityRuleType
+import com.breakyuna.noveltranslator.core.quality.QualityRuleValidator
+import com.breakyuna.noveltranslator.core.quality.label
 import com.breakyuna.noveltranslator.core.book.BookFileManager
 import com.breakyuna.noveltranslator.core.book.BookImporter
 import com.breakyuna.noveltranslator.core.book.AcquiredBook
 import com.breakyuna.noveltranslator.core.book.AcquiredChapter
+import com.breakyuna.noveltranslator.core.agent.AgentToolHost
+import com.breakyuna.noveltranslator.core.agent.AgentUserQuestion
+import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionConfig
+import com.breakyuna.noveltranslator.core.agent.koog.AssetsAgentPromptLoader
+import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionStore
+import com.breakyuna.noveltranslator.core.agent.koog.RoomAgentSessionStore
+import com.breakyuna.noveltranslator.ui.screens.agent.AgentChatController
+import com.breakyuna.noveltranslator.core.translation.AnthropicPromptCacheCapability
+import com.breakyuna.noveltranslator.core.translation.AutomaticPromptCacheCapability
 import com.breakyuna.noveltranslator.core.translation.BookTranslationEngine
 import com.breakyuna.noveltranslator.core.translation.BookTranslationScheduler
+import com.breakyuna.noveltranslator.core.translation.CompositePromptCacheCapability
 import com.breakyuna.noveltranslator.core.translation.ContextEngine
+import com.breakyuna.noveltranslator.core.translation.TranslationContinuity
 import com.breakyuna.noveltranslator.core.sample.SampleNovelProvider
 import com.breakyuna.noveltranslator.core.security.ApiKeyCipher
 import com.breakyuna.noveltranslator.data.db.AppDatabase
@@ -33,6 +53,10 @@ import android.content.Context
 import android.provider.OpenableColumns
 import androidx.room.withTransaction
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
@@ -121,12 +145,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val bookPlatformRepo = BookPlatformRepository(db, bookFiles)
     private val contextEngineV2 = ContextEngine(db.lexiconV2Dao(), db.memoryDao())
     private val lexiconCandidateAggregator = LexiconCandidateAggregator(db)
+    /**
+     * Provider-specific prompt caching. The composite dispatches on the provider that the project
+     * resolves at run time, so one engine instance serves Anthropic explicit caching and the
+     * implicit caching of the OpenAI-shaped gateways.
+     */
+    private val promptCacheCapability = CompositePromptCacheCapability(
+        AnthropicPromptCacheCapability,
+        AutomaticPromptCacheCapability
+    )
     private val bookTranslationEngine = BookTranslationEngine(
         db,
         bookFiles,
         llmClient,
         contextEngineV2,
         providerRepo::getProviderById,
+        promptCacheCapability = promptCacheCapability,
         debugEnabled = { _debugModeEnabled.value }
     )
     private val bookTranslationScheduler = BookTranslationScheduler(bookTranslationEngine)
@@ -148,6 +182,300 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val lastSeamlessChapter = ConcurrentHashMap<Long, Long?>()
     /** Full split bodies stay outside Compose state until the user explicitly confirms them. */
     private val pendingChapterSplits = ConcurrentHashMap<Long, List<ParsedChapter>>()
+
+    // ==========================================
+    // Agent layer
+    // ==========================================
+
+    /**
+     * Agent tool boundary. Public because the agent chat controller is constructed by the UI layer
+     * and needs the same host instance the ViewModel uses for its ask_user answers.
+     */
+    val agentToolHost: AgentToolHost = AgentToolHostImpl()
+
+    /** Agent conversation persistence, backed by the agent_sessions / agent_messages tables. */
+    val agentSessionStore: AgentSessionStore by lazy {
+        RoomAgentSessionStore(db.agentSessionDao(), db.agentMessageDao())
+    }
+
+    fun observeAgentSessions(): Flow<List<AgentSessionEntity>> = db.agentSessionDao().observeAll()
+
+    /**
+     * Agent chat controller for the agent screen. Created lazily and owned by the ViewModel scope;
+     * it resolves the provider at session start so a provider change applies to the next chat.
+     */
+    val agentChatController: AgentChatController by lazy {
+        AgentChatController(
+            gateway = llmClient,
+            toolHost = agentToolHost,
+            store = agentSessionStore,
+            configProvider = ::resolveAgentSessionConfig,
+            promptAssetLoader = AssetsAgentPromptLoader(application)
+        )
+    }
+
+    private suspend fun resolveAgentSessionConfig(): AgentSessionConfig? {
+        val provider = providerRepo.getDefaultProvider() ?: return null
+        return AgentSessionConfig(
+            provider = provider,
+            modelName = provider.selectedModel,
+            temperature = provider.temperature,
+            maxTokens = 2_048,
+            reasoningEffort = "low"
+        )
+    }
+
+    private val _agentQuestions = MutableSharedFlow<AgentUserQuestion>(extraBufferCapacity = 8)
+    val agentQuestions: SharedFlow<AgentUserQuestion> = _agentQuestions.asSharedFlow()
+
+    /** Pending ask_user answers; the UI resolves one by id. */
+    private val agentQuestionAnswers = ConcurrentHashMap<String, CompletableDeferred<String>>()
+
+    /** Answers a question the agent asked through [AgentToolHost.askUser]. */
+    fun answerAgentQuestion(id: String, answer: String) {
+        agentQuestionAnswers.remove(id)?.complete(answer)
+    }
+
+    /** Drops a question the user dismissed without answering. */
+    fun dismissAgentQuestion(id: String) {
+        agentQuestionAnswers.remove(id)?.complete(AGENT_QUESTION_DISMISSED)
+    }
+
+    /**
+     * Delegates every agent tool to an existing ViewModel/repository method. No translation,
+     * glossary or splitting logic is duplicated here.
+     */
+    private inner class AgentToolHostImpl : AgentToolHost {
+        override suspend fun listBooks(): String = withContext(Dispatchers.IO) {
+            val books = bookPlatformRepo.allBooks.first()
+            if (books.isEmpty()) return@withContext "书架为空，没有可用的书。"
+            buildString {
+                append("共 ").append(books.size).append(" 本书：")
+                books.forEach { book ->
+                    val chapters = bookPlatformRepo.getChapters(book.id).size
+                    val project = bookPlatformRepo.getTranslationProjects(book.id).firstOrNull()
+                    val projectInfo = project?.let { "工程#${it.id}(状态=${it.state}, 模式=${it.translationMode})" } ?: "无翻译工程"
+                    append("\n- #").append(book.id).append(" 《").append(book.title).append("》")
+                        .append(" 作者=").append(book.author)
+                        .append(" | ").append(chapters).append(" 章 | ").append(projectInfo)
+                }
+            }
+        }
+
+        override suspend fun getBookStatus(bookId: Long): String = withContext(Dispatchers.IO) {
+            val book = bookPlatformRepo.getBook(bookId) ?: return@withContext "找不到 Book#$bookId"
+            val chapters = bookPlatformRepo.getChapters(bookId)
+            val projects = bookPlatformRepo.getTranslationProjects(bookId)
+            val progress = db.readerProgressDao().get(bookId)
+            buildString {
+                append("Book#").append(book.id).append(" 《").append(book.title).append("》")
+                append(" 作者=").append(book.author)
+                append(" 原文语言=").append(book.originalLanguage)
+                append(" 章节数=").append(chapters.size)
+                append(" 阅读进度章节=").append(progress?.logicalChapterId?.let { id ->
+                    chapters.firstOrNull { it.id == id }?.chapterIndex
+                } ?: "未开始")
+                if (projects.isEmpty()) {
+                    append("\n没有翻译工程。")
+                } else {
+                    projects.forEach { project ->
+                        val runs = db.platformTaskDao().observeRunsByProject(project.id).first()
+                        append("\n工程#").append(project.id)
+                            .append(" 状态=").append(project.state)
+                            .append(" 模式=").append(project.translationMode)
+                            .append(" 并发章数=").append(project.parallelChapters)
+                            .append(" 连续性=").append(project.continuityMode)
+                            .append(" 元数据=").append(project.metadataEnabled)
+                            .append(" 提示词缓存=").append(project.promptCacheEnabled)
+                            .append(" 运行记录=").append(runs.size)
+                        runs.lastOrNull()?.let { run ->
+                            append(" (最近一次: ").append(run.state)
+                            append(", 完成 ").append(run.completedChapters)
+                            append(", 失败 ").append(run.failedChapters).append(")")
+                        }
+                    }
+                }
+            }
+        }
+
+        override suspend fun startTranslation(
+            projectId: Long,
+            rangeStart: Int?,
+            rangeEnd: Int?
+        ): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            if (project.state == "RUNNING" || project.state == "PAUSED") {
+                return@withContext "工程 #$projectId 正在运行（${project.state}），已跳过启动。"
+            }
+            if (rangeStart != null && rangeEnd != null) {
+                val chapterCount = bookPlatformRepo.getChapters(project.bookId).size
+                val start = minOf(rangeStart, rangeEnd).coerceAtLeast(1)
+                val end = maxOf(rangeStart, rangeEnd).coerceAtLeast(start)
+                if (start > chapterCount || end > chapterCount) {
+                    return@withContext "章节范围 $start-$end 超出本书章节数 $chapterCount"
+                }
+                val updated = project.copy(
+                    translationMode = TranslationMode.CHAPTER_RANGE.name,
+                    rangeStart = start,
+                    rangeEnd = end
+                )
+                try {
+                    bookPlatformRepo.updateTranslationProject(updated)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    return@withContext "更新章节范围失败：${error.localizedMessage ?: "参数无效"}"
+                }
+            }
+            runBookTranslation(projectId)
+            "已启动工程 #$projectId 的翻译任务。"
+        }
+
+        override suspend fun pauseTranslation(projectId: Long): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            if (project.state != "RUNNING" && project.state != "PAUSED") {
+                return@withContext "工程 #$projectId 当前状态为 ${project.state}，无需暂停。"
+            }
+            pauseBookTranslation(projectId)
+            "已请求暂停工程 #$projectId。"
+        }
+
+        override suspend fun scanGlossary(bookId: Long): String {
+            val project = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
+                ?: return "该书没有翻译工程，无法扫描术语。"
+            val provider = project.providerId?.let { providerRepo.getProviderById(it) }
+                ?: providerRepo.getDefaultProvider()
+                ?: return "没有可用的 API Provider，无法扫描术语。"
+            val chapters = bookPlatformRepo.getChapters(bookId)
+            if (chapters.isEmpty()) return "该书没有章节，无法扫描术语。"
+            val completion = CompletableDeferred<String>()
+            scanGlossaryForBook(
+                bookId = bookId,
+                sourceEditionId = project.sourceEditionId,
+                targetProjectId = project.id,
+                startChapter = 1,
+                endChapter = chapters.size,
+                provider = provider,
+                onComplete = { result ->
+                    completion.complete(
+                        result.fold(
+                            onSuccess = { "术语扫描完成，当前待审核候选 $it 条。" },
+                            onFailure = { "术语扫描失败：${it.localizedMessage ?: "未知错误"}" }
+                        )
+                    )
+                }
+            )
+            return completion.await()
+        }
+
+        override suspend fun resplitChapters(bookId: Long, previewOnly: Boolean): String {
+            val provider = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
+                ?.providerId
+                ?.let { providerRepo.getProviderById(it) }
+                ?: providerRepo.getDefaultProvider()
+                ?: return "没有可用的 API Provider，无法重新分章。"
+            val completion = CompletableDeferred<String>()
+            previewAgentBookChapterSplit(
+                bookId = bookId,
+                provider = provider,
+                onPreview = { preview ->
+                    val summary = buildString {
+                        append("AI 识别到 ").append(preview.size).append(" 个章节：")
+                        preview.take(40).forEach { chapter ->
+                            append("\n- 第").append(chapter.index).append("章 《")
+                                .append(chapter.title).append("》约 ").append(chapter.wordCount).append(" 字")
+                        }
+                        if (preview.size > 40) append("\n... 其余 ").append(preview.size - 40).append(" 章已省略")
+                    }
+                    completion.complete(
+                        if (previewOnly) {
+                            "$summary\n（仅预览，未应用）"
+                        } else {
+                            // Applying rewrites every chapter of the book, so it runs in the
+                            // background and reports its own result to the user.
+                            applyAgentBookChapterSplit(bookId)
+                            "$summary\n已提交应用请求，章节划分正在后台重写。"
+                        }
+                    )
+                },
+                onFinished = {
+                    // A failed split never invokes onPreview; resolve so the agent is not stuck.
+                    completion.complete("AI 章节识别失败，已保留原有章节划分。")
+                }
+            )
+            return completion.await()
+        }
+
+        override suspend fun getRecentLog(projectId: Long?, limit: Int): String {
+            val entries = com.breakyuna.noveltranslator.core.logger.SystemLogger.logsFlow.value
+                .filter { projectId == null || it.projectId == projectId }
+                .takeLast(limit.coerceIn(1, 200))
+            if (entries.isEmpty()) return "没有匹配的日志。"
+            return buildString {
+                append("最近 ").append(entries.size).append(" 条日志：")
+                entries.forEach { entry ->
+                    append("\n[").append(entry.formattedTime).append("] ")
+                        .append(entry.level.name).append('/').append(entry.tag).append(": ")
+                        .append(entry.message)
+                }
+            }
+        }
+
+        override suspend fun askUser(prompt: String, options: List<String>): String {
+            val id = java.util.UUID.randomUUID().toString()
+            val answer = CompletableDeferred<String>()
+            agentQuestionAnswers[id] = answer
+            _agentQuestions.emit(AgentUserQuestion(id = id, prompt = prompt, options = options))
+            return try {
+                withTimeout(AGENT_QUESTION_TIMEOUT_MS) { answer.await() }
+            } catch (timeout: TimeoutCancellationException) {
+                agentQuestionAnswers.remove(id)
+                "用户未在时限内回答，请改用合理默认值继续。"
+            } finally {
+                agentQuestionAnswers.remove(id)
+            }
+        }
+
+        override suspend fun updateTranslationConfig(
+            projectId: Long,
+            parallelChapters: Int?,
+            continuityMode: String?,
+            metadataEnabled: Boolean?,
+            promptCacheEnabled: Boolean?
+        ): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            if (project.state == "RUNNING" || project.state == "PAUSED") {
+                return@withContext "工程 #$projectId 正在运行（${project.state}），请先暂停或取消再修改配置。"
+            }
+            val normalizedMode = continuityMode?.let { mode ->
+                if (mode == TranslationContinuity.TRANSLATION_TAIL) {
+                    TranslationContinuity.TRANSLATION_TAIL
+                } else {
+                    TranslationContinuity.SOURCE_TAIL
+                }
+            }
+            val updated = project.copy(
+                parallelChapters = (parallelChapters ?: project.parallelChapters).coerceIn(1, 5),
+                continuityMode = normalizedMode ?: project.continuityMode,
+                metadataEnabled = metadataEnabled ?: project.metadataEnabled,
+                promptCacheEnabled = promptCacheEnabled ?: project.promptCacheEnabled,
+                updatedAt = System.currentTimeMillis()
+            )
+            try {
+                bookPlatformRepo.updateTranslationProject(updated)
+                "工程 #$projectId 配置已更新: 并发章数=${updated.parallelChapters}, " +
+                    "连续性=${updated.continuityMode}, 元数据=${updated.metadataEnabled}, " +
+                    "提示词缓存=${updated.promptCacheEnabled}"
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                "更新配置失败：${error.localizedMessage ?: "参数无效或任务状态不允许"}"
+            }
+        }
+    }
 
     private val _batchImportProgress = MutableStateFlow<BatchImportProgress?>(null)
     val batchImportProgress: StateFlow<BatchImportProgress?> = _batchImportProgress.asStateFlow()
@@ -466,6 +794,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         modelName: String,
         mode: TranslationMode,
         maxBatchChapters: Int,
+        parallelChapters: Int = 1,
+        continuityMode: String = TranslationContinuity.SOURCE_TAIL,
+        metadataEnabled: Boolean = false,
+        promptCacheEnabled: Boolean = true,
         rangeStart: Int? = null,
         rangeEnd: Int? = null,
         seamlessAheadChapters: Int = 5,
@@ -484,6 +816,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     modelName = modelName,
                     mode = mode,
                     maxBatchChapters = maxBatchChapters,
+                    parallelChapters = parallelChapters,
+                    continuityMode = continuityMode,
+                    metadataEnabled = metadataEnabled,
+                    promptCacheEnabled = promptCacheEnabled,
                     rangeStart = rangeStart,
                     rangeEnd = rangeEnd,
                     seamlessAheadChapters = seamlessAheadChapters,
@@ -493,6 +829,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }.onSuccess { projectId ->
                 showMessage("Edition 翻译任务已配置")
+                viewModelScope.launch(Dispatchers.IO) { ensureDefaultQualityRules(projectId) }
                 if (startImmediately && providerId != null) {
                     launchBookTranslation(projectId, "翻译任务失败")
                 }
@@ -863,6 +1200,115 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun observeBatches(runId: Long): Flow<List<PlatformTranslationBatchEntity>> =
         bookPlatformRepo.observeBatches(runId)
 
+    // ============================================================
+    // 质量规则（文本保护 / 译前替换 / 译后替换）
+    // ============================================================
+
+    /** 观察一个工程的三个质量规则槽位；空列表表示尚未写入默认规则。 */
+    fun observeQualityRules(projectId: Long): Flow<List<QualityRuleSetEntity>> =
+        db.qualityRuleDao().observeByProject(projectId)
+
+    /**
+     * 保存单个槽位。校验失败时不落库，逐条结果（含警告）通过 [onComplete] 回给 UI。
+     *
+     * 校验在 IO 线程完成，因此保存路径本身不会再抛"正则非法"这类可预期错误。
+     */
+    fun saveQualityRules(
+        projectId: Long,
+        type: QualityRuleType,
+        enabled: Boolean,
+        mode: QualityRuleMode,
+        entries: List<QualityRuleEntry>,
+        onComplete: (List<QualityRuleIssue>) -> Unit = {}
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val issues = QualityRuleValidator.validateRuleSet(type, enabled, mode, entries)
+            val blocking = QualityRuleValidator.blockingIssues(issues)
+            if (blocking.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    showMessage("${type.label()}规则校验失败：${blocking.first().message}")
+                    onComplete(issues)
+                }
+                return@launch
+            }
+            runCancellable { writeQualityRuleSet(projectId, type, enabled, mode, entries) }
+                .onSuccess {
+                    withContext(Dispatchers.Main) {
+                        showMessage("${type.label()}规则已保存")
+                        onComplete(issues)
+                    }
+                }
+                .onFailure { error ->
+                    withContext(Dispatchers.Main) {
+                        val failure = error.localizedMessage ?: "规则无效"
+                        showMessage("保存失败：$failure")
+                        onComplete(
+                            issues + QualityRuleIssue(
+                                index = -1,
+                                severity = QualityRuleIssueSeverity.ERROR,
+                                message = failure
+                            )
+                        )
+                    }
+                }
+        }
+    }
+
+    /** 恢复单个槽位的默认值（保护=SMART 基础规则；替换=默认示例且关闭）。 */
+    fun resetQualityRulesToDefault(projectId: Long, type: QualityRuleType) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val defaults = QualityRuleDefaults.defaultRuleSet(projectId, type)
+            runCancellable {
+                writeQualityRuleSet(
+                    projectId = projectId,
+                    type = type,
+                    enabled = defaults.enabled,
+                    mode = defaults.resolvedMode(),
+                    entries = QualityRuleDefaults.defaultEntries(type)
+                )
+            }
+                .onSuccess { withContext(Dispatchers.Main) { showMessage("${type.label()}已恢复默认规则") } }
+                .onFailure { error ->
+                    withContext(Dispatchers.Main) {
+                        showMessage("恢复默认失败：${error.localizedMessage ?: "存储错误"}")
+                    }
+                }
+        }
+    }
+
+    /**
+     * 新建工程时写入默认规则集。
+     *
+     * 只在没有规则行时写入，因此重复调用与"升级老工程"都是安全的；
+     * 引擎侧还有一道同样的回退（解析不到规则就用默认规则集），双保险。
+     */
+    private suspend fun ensureDefaultQualityRules(projectId: Long) {
+        db.qualityRuleDao().ensureDefaultsIfAbsent(
+            projectId,
+            QualityRuleDefaults.defaultRuleSets(projectId)
+        )
+    }
+
+    private suspend fun writeQualityRuleSet(
+        projectId: Long,
+        type: QualityRuleType,
+        enabled: Boolean,
+        mode: QualityRuleMode,
+        entries: List<QualityRuleEntry>
+    ) {
+        val existing = db.qualityRuleDao().get(projectId, type.storageKey)
+        db.qualityRuleDao().upsert(
+            QualityRuleSetEntity(
+                translationProjectId = projectId,
+                type = type.storageKey,
+                enabled = enabled,
+                mode = mode.name,
+                entriesJson = QualityRuleJson.encode(type, entries),
+                revision = (existing?.revision ?: 0) + 1
+            )
+        )
+    }
+
     fun observeRequestLogs(runId: Long): Flow<List<PlatformRequestLogSummary>> =
         bookPlatformRepo.observeRequestLogs(runId)
 
@@ -890,6 +1336,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         seamlessAheadChapters: Int? = null,
         highQualityReview: Boolean? = null,
         promptProfile: PromptProfileDraft? = null,
+        parallelChapters: Int? = null,
+        continuityMode: String? = null,
+        metadataEnabled: Boolean? = null,
+        promptCacheEnabled: Boolean? = null,
         onSuccess: () -> Unit = {}
     ) {
         val job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
@@ -901,6 +1351,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                         modelName = modelName.trim().take(200),
                         translationMode = mode.name,
                         maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                        parallelChapters = (parallelChapters ?: existing.parallelChapters).coerceIn(1, 5),
+                        continuityMode = continuityMode ?: existing.continuityMode,
+                        metadataEnabled = metadataEnabled ?: existing.metadataEnabled,
+                        promptCacheEnabled = promptCacheEnabled ?: existing.promptCacheEnabled,
                         rangeStart = rangeStart,
                         rangeEnd = rangeEnd,
                         seamlessAheadChapters = (seamlessAheadChapters ?: existing.seamlessAheadChapters)
@@ -1687,6 +2141,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     companion object {
         private const val TERM_SCAN_WINDOW_CHARS = 9_000
         private const val TERM_SCAN_OVERLAP_CHARS = 1_000
+        /** How long an ask_user question waits for the user before the agent continues. */
+        private const val AGENT_QUESTION_TIMEOUT_MS = 5 * 60 * 1000L
+        private const val AGENT_QUESTION_DISMISSED = "用户关闭了提问，未作答。"
     }
 
     // ==========================================
