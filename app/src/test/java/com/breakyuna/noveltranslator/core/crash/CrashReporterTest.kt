@@ -5,6 +5,7 @@ import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import java.io.File
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -85,7 +86,7 @@ class CrashReporterTest {
         // CrashReporter 与 SystemLogger 各有独立的内存缓冲，重启模拟要两个都重置——
         // 上面的 CRASH_SETUP 日志还留在 SystemLogger 的内存里。
         CrashReporter.resetForTests()
-        SystemLogger.resetForTests()
+        runBlocking { SystemLogger.resetForTests() }
         assertTrue(SystemLogger.logsFlow.value.isEmpty())
         assertNull(runBlocking { CrashReporter.readLastCrash() })
 
@@ -169,7 +170,7 @@ class CrashReporterTest {
         // StateFlow 不会 complete，直接 collect 会把 runBlocking 永久挂住（该测试此前
         // 从未真正执行过——更早的 fatalCrash 测试会打死 JVM）。用 first 取首个非空发射。
         val observed = runBlocking {
-            CrashReporter.observeLastCrash().first { it != null }
+            CrashReporter.observeLastCrash().filterNotNull().first()
         }
         assertEquals("observed", observed.exceptionMessage)
     }
