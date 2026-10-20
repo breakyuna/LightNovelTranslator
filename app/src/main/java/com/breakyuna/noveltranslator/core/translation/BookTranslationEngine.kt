@@ -35,6 +35,17 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * 一章正文成功落库后的观察者（无人值守模式的后处理入口）。
+ *
+ * 刻意做成**非挂起**：翻译工人调它只是投递一个信号，绝不被后处理的耗时堵住；
+ * 也绝不让后处理异常影响已经付费译好并落库的正文——实现方自行兜底。
+ */
+fun interface ChapterCommittedObserver {
+    fun onChapterCommitted(projectId: Long, chapterIndex: Int)
+}
 
 /**
  * Global scheduler: different books may run concurrently; every book is protected by one mutex.
@@ -57,8 +68,26 @@ class BookTranslationScheduler(
         engine.markScheduled(projectId)
         try {
             val bookId = engine.projectBookId(projectId) ?: return
-            globalSlots.withPermit {
+            val runUnderBookLock: suspend () -> Unit = {
                 bookLocks.getOrPut(bookId) { Mutex() }.withLock { engine.runStrictlySerial(projectId) }
+            }
+            if (globalSlots.tryAcquire()) {
+                // A slot was free, so there is no wait to report.
+                try {
+                    runUnderBookLock()
+                } finally {
+                    globalSlots.release()
+                }
+            } else {
+                // Every global slot is busy. Publishing QUEUED is what keeps the UI honest about
+                // the wait; without it this worker parks silently and Start looks dead. Only three
+                // books may run at once, so this is reachable whenever the user starts a fourth.
+                engine.markQueued(projectId)
+                try {
+                    globalSlots.withPermit { runUnderBookLock() }
+                } finally {
+                    engine.clearQueued(projectId)
+                }
             }
         } finally {
             engine.unmarkScheduled(projectId)
@@ -82,7 +111,9 @@ class BookTranslationEngine(
     private val contextEngine: ContextEngine,
     private val providerResolver: suspend (Long) -> ApiProviderEntity?,
     private val promptCacheCapability: ProviderPromptCacheCapability = NoPromptCacheCapability,
-    private val debugEnabled: () -> Boolean = { false }
+    private val debugEnabled: () -> Boolean = { false },
+    /** 无人值守模式的章级后处理入口；默认 no-op，见 [ChapterCommittedObserver]。 */
+    private val chapterCommittedObserver: ChapterCommittedObserver = ChapterCommittedObserver { _, _ -> }
 ) {
     private data class ChapterRepairOutcome(
         val chapter: ParsedTranslationChapter?,
@@ -112,6 +143,28 @@ class BookTranslationEngine(
         val category: LlmErrorCategory,
         message: String
     ) : IllegalStateException(message)
+
+    /** 单个章内分块的成功结果；段 map 由调用方持锁合并进整章。 */
+    private data class ChunkOutcome(
+        val segments: Map<Int, String>,
+        val promptTokens: Long,
+        val completionTokens: Long,
+        val warningCount: Int
+    )
+
+    /** 章内分块质检不过：由并发驱动收齐后统一标记批次失败，避免多个 worker 抢着写同一行。 */
+    private class ChunkQualityFailure(message: String) : IllegalStateException(message)
+
+    /** 并发分块阶段记录到的第一个失败；致命错误不走这里（直接抛出取消同伴）。 */
+    private sealed interface ChunkFailure {
+        val message: String
+
+        data class Requeue(val error: RecoverableChapterFailure) : ChunkFailure {
+            override val message: String get() = error.message ?: "chunk failed"
+        }
+
+        data class Quality(override val message: String) : ChunkFailure
+    }
 
     /**
      * A transient provider failure that already exhausted the gateway retries. The chapter was not
@@ -143,10 +196,28 @@ class BookTranslationEngine(
         const val MAX_RECOVERABLE_CHAPTER_FAILURES = 5
         /** Paid repair requests allowed per chapter, including the full-chapter fallback. */
         const val MAX_PAID_REPAIRS_PER_CHAPTER = 3
+        /**
+         * 章内分块的目标源文 token 数，对标 LinguaGacha 的 `input_token_limit`
+         * （默认 512、内置预设 768 → `line_limit = max(8, limit/16)` = 32~48 行/请求）。
+         *
+         * LNT 每个请求都要带约 5KB 系统提示词和章级上下文，所以取值比 LG 大；但依然远小于
+         * "整章一个请求"——目的是让长章节拆成多个**可并发**的小请求，而不是一个要跑好几分钟的
+         * 大请求。重复的系统提示词由 [ProviderPromptCacheCapability] 的稳定前缀缓存摊薄。
+         */
+        const val CHUNK_SOURCE_TOKEN_TARGET = 2_400L
+        /** 章内分块并发起步值，对标 LG `AUTO_CONCURRENCY_INITIAL`；实际上限由调度器额度决定。 */
+        const val DEFAULT_CHUNK_CONCURRENCY = 4
+        /** 章内分块并发硬上限，防止单章把 provider 额度吃光（LG 的 `AUTO_CONCURRENCY_MAX` 同理）。 */
+        const val MAX_CHUNK_CONCURRENCY = 8
         /** Backoff ladder for re-queued chapters; the last value is the cap. */
         val RECOVERABLE_BACKOFF_MS = longArrayOf(15_000L, 30_000L, 60_000L)
         /** Hard ceiling for a re-queue wait, even when a provider asks for a longer Retry-After. */
         const val MAX_RECOVERABLE_BACKOFF_MS = 120_000L
+        /**
+         * Paused-wait iterations before the gate is reconciled with the durable project row
+         * (200ms each, so every ~5s). See [awaitResumeFromPause].
+         */
+        const val PAUSED_RECONCILE_TICKS = 25
     }
 
     private val books = database.bookDao()
@@ -208,15 +279,33 @@ class BookTranslationEngine(
     suspend fun pause(projectId: Long) {
         val project = projects.get(projectId) ?: return
         if (project.state in TERMINAL_PROJECT_STATES) return
-        controls.getOrPut(projectId) { ProjectControl() }.requestPause()
+        val control = controls.getOrPut(projectId) { ProjectControl() }
+        // In-memory gate first (no further paid request can start), durable state second, drain
+        // last. Draining before publishing kept the project and Run rows on RUNNING for as long
+        // as the in-flight provider call took — up to the client read timeout, or indefinitely on
+        // a connection that keeps trickling bytes — so the pause button looked dead while the
+        // task was in fact just finishing one request. This mirrors LinguaGacha, which publishes
+        // its stopping state before it waits for the active requests to settle.
+        control.beginPause()
         projects.updateState(projectId, "PAUSED")
         activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "PAUSED", updatedAt = System.currentTimeMillis())) } }
+        control.awaitDrain()
     }
 
     suspend fun resume(projectId: Long): Boolean {
         val project = projects.get(projectId) ?: return false
-        if (project.state !in setOf("RUNNING", "PAUSED", "IDLE", "INTERRUPTED")) return false
         val control = controls.getOrPut(projectId) { ProjectControl() }
+        if (project.state !in setOf("RUNNING", "PAUSED", "IDLE", "INTERRUPTED")) {
+            // The durable row refuses a resume. If no worker owns this project the in-memory gate
+            // is stale, and leaving it paused/cancelled would poison the next explicit run: a
+            // fresh worker reuses this very control object (computeIfAbsent) and would either spin
+            // on the stale pause or be rejected by the stale cancel. Drop it so the next run
+            // starts clean. A live worker keeps its gate — its own cleanup owns it.
+            if (activeRuns[projectId] == null && projectId !in claimedProjects) {
+                controls.remove(projectId, control)
+            }
+            return false
+        }
         if (!control.resume()) return false
         projects.updateState(projectId, "RUNNING")
         activeRuns[projectId]?.let { runId -> tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "RUNNING", updatedAt = System.currentTimeMillis())) } }
@@ -226,7 +315,10 @@ class BookTranslationEngine(
     suspend fun cancel(projectId: Long) {
         val project = projects.get(projectId) ?: return
         if (project.state in TERMINAL_PROJECT_STATES) return
-        controls.getOrPut(projectId) { ProjectControl() }.cancel()
+        val control = controls.getOrPut(projectId) { ProjectControl() }
+        // Same ordering as pause: the gate flips, the durable rows follow, the drain comes last so
+        // a slow in-flight call can never leave the UI claiming the task is still RUNNING.
+        control.beginCancel()
         projects.updateState(projectId, "CANCELLED")
         activeRuns[projectId]?.let { runId ->
             tasks.getRunningBatches(runId).forEach { batch ->
@@ -234,6 +326,7 @@ class BookTranslationEngine(
             }
             tasks.getRun(runId)?.let { tasks.updateRun(it.copy(state = "CANCELLED", updatedAt = System.currentTimeMillis())) }
         }
+        control.awaitDrain()
     }
 
     suspend fun runStrictlySerial(projectId: Long) {
@@ -312,6 +405,9 @@ class BookTranslationEngine(
                 resolved.copy(selectedModel = project.modelName.ifBlank { resolved.selectedModel })
             }
                 ?: error("Translation project has no available provider")
+            // One pacing boundary per run: clears a stale terminal fail-fast so a run started
+            // after the user fixed a key is not punished by the previous run's verdict.
+            (gateway as? DispatchPacing)?.onRunStarted(provider)
             // Provider resolution may suspend while the user pauses or cancels the task. Check the
             // gate before creating a durable run so a late provider result cannot resurrect a
             // cancelled task or make a paused task look newly started.
@@ -332,32 +428,30 @@ class BookTranslationEngine(
                 )
             )
             activeRuns[projectId] = runId
-            // Publish RUNNING through the same pause/cancel gate used before each paid request.
-            // A pause or cancellation may arrive between provider resolution and run insertion;
-            // bypassing this boundary would overwrite that durable decision with RUNNING.
-            awaitBoundary(project.id, control)
+            // The try must open before the first cancellable suspension point below. A pause or
+            // cancellation landing between the Run insert and the body escaped both the inner
+            // catch and the inner finally, so the freshly inserted Run row stayed RUNNING
+            // forever in the task center and the activeRuns entry leaked (which also disabled
+            // clearControlIfIdle until some later run happened to overwrite it).
+            try {
+                // Publish RUNNING through the same pause/cancel gate used before each paid request.
+                // A pause or cancellation may arrive between provider resolution and run insertion;
+                // bypassing this boundary would overwrite that durable decision with RUNNING.
+                awaitBoundary(project.id, control)
             SystemLogger.info(
                 "TRANSLATION",
                 "🚀 启动翻译任务: Project#$projectId (Book#${project.bookId})，使用模型: ${provider.name}/${provider.selectedModel}，待翻译 ${targets.size} 章，待二次审校 ${reviewOnlyTargets.size} 章",
                 projectId = project.id
             )
-            try {
-                // Parallelism and context mode are captured once per run so every chapter of the
-                // run is planned with the same settings.
-                val translationTailMode = project.continuityMode == TranslationContinuity.TRANSLATION_TAIL
+            // Parallelism and context mode are captured once per run so every chapter of the
+            // run is planned with the same settings.
+            val translationTailMode = project.continuityMode == TranslationContinuity.TRANSLATION_TAIL
                 // TRANSLATION_TAIL injects the previous chapter's committed translation into the
                 // next chapter's prompt, so a parallel chapter would read an uncommitted tail and
                 // the preceding context would silently degrade. Force serial execution in that
                 // mode: the workbench UI promises "上章译文 ⇒ 按 1 章串行执行" and this clamp is
                 // what makes that promise true.
                 val parallelChapters = if (translationTailMode) 1 else project.parallelChapters.coerceIn(1, 5)
-                // A project that disabled metadata must never be sent the META rules, otherwise the
-                // model still spends output tokens on a block the engine would discard.
-                val effectivePromptProfile = if (project.metadataEnabled) {
-                    promptProfile
-                } else {
-                    promptProfile.copy(includeMetadataRules = false)
-                }
                 if (parallelChapters > 1) {
                     SystemLogger.info(
                         "TRANSLATION",
@@ -385,19 +479,19 @@ class BookTranslationEngine(
                         projectId = project.id
                     )
                 }
-                if (!project.metadataEnabled) {
-                    SystemLogger.info(
-                        "TRANSLATION",
-                        "🧹 章节元数据(META)已关闭: 提示词不含 META 规则，落库前跳过元数据写入",
-                        projectId = project.id
-                    )
-                }
+                // 元数据已与正文翻译全面解耦：翻译请求不再携带 META，摘要/故事记忆/术语候选
+                // 一律由 Agent 工具用独立请求产出（对标 LG 的 agent + 技能分工）。
+                SystemLogger.info(
+                    "TRANSLATION",
+                    "🧩 章节元数据已解耦: 正文请求只产译文；摘要/故事记忆/术语由 Agent 工具独立请求维护",
+                    projectId = project.id
+                )
                 runDraftChapters(
                     project = project,
                     provider = provider,
                     runId = runId,
                     control = control,
-                    promptProfile = effectivePromptProfile,
+                    promptProfile = promptProfile,
                     targets = targets,
                     parallelChapters = parallelChapters,
                     qualityRules = qualityRules
@@ -549,6 +643,19 @@ class BookTranslationEngine(
     // ============================================================
 
     /** One-line snapshot of the resolved quality rules, so a run log explains the masking it used. */
+    /** 一章成功落库后投递无人值守后处理信号。异常绝不影响已提交的正文。 */
+    private fun notifyChapterCommitted(projectId: Long, chapterIndex: Int) {
+        runCatching { chapterCommittedObserver.onChapterCommitted(projectId, chapterIndex) }
+            .onFailure { error ->
+                SystemLogger.warn(
+                    "UNATTENDED",
+                    "章级后处理投递失败（不影响已落库正文）: ${error.localizedMessage ?: error.javaClass.simpleName}",
+                    projectId = projectId,
+                    chapterIndex = chapterIndex
+                )
+            }
+    }
+
     private fun logQualityRuleSnapshot(projectId: Long, rules: ResolvedQualityRules) {
         val protection = if (rules.protectionEnabled) {
             "${rules.protectionMode.name}(${rules.protectionEntries.size} 条规则)"
@@ -663,6 +770,10 @@ class BookTranslationEngine(
         val started = Channel<Unit>(Channel.UNLIMITED)
         val outstanding = AtomicInteger(targets.size)
         val recoverableFailures = ConcurrentHashMap<Long, Int>()
+        // Chapters currently held by a worker (gate + processing). The pacing gate reads the live
+        // dispatch limit, so a 429-driven halving actually reduces how many chapters are in flight
+        // instead of only changing a number nobody looks at.
+        val inFlightChapters = AtomicInteger(0)
 
         val submitter = launch(Dispatchers.IO) {
             targets.forEach { chapter ->
@@ -684,35 +795,74 @@ class BookTranslationEngine(
                     } catch (closed: ClosedReceiveChannelException) {
                         return@launch
                     }
-                    // Every paid request still passes the shared pause/cancel boundary first.
-                    awaitBoundary(project.id, control)
-                    started.send(Unit)
+                    // Pace the pickup first, then register the chapter: checking before incrementing
+                    // is what keeps the gate from deadlocking itself when the limit drops below the
+                    // number of workers that already hold a chapter.
+                    awaitChapterSlot(project, provider, parallelChapters, inFlightChapters, control)
+                    inFlightChapters.incrementAndGet()
                     try {
-                        processDraftUnit(
-                            project, provider, runId, promptProfile,
-                            listOf(chapter), nextBatchIndex.getAndIncrement(), qualityRules
-                        )
-                        recoverableFailures.remove(chapter.id)
-                        finishChapter()
-                    } catch (requeue: RecoverableChapterFailure) {
-                        val attempts = (recoverableFailures[chapter.id] ?: 0) + 1
-                        if (attempts > MAX_RECOVERABLE_CHAPTER_FAILURES) {
+                        // Every paid request still passes the shared pause/cancel boundary first.
+                        awaitBoundary(project.id, control)
+                        started.send(Unit)
+                        try {
+                            processDraftUnit(
+                                project, provider, runId, promptProfile,
+                                listOf(chapter), nextBatchIndex.getAndIncrement(), qualityRules
+                            )
                             recoverableFailures.remove(chapter.id)
-                            logChapterRetriesExhausted(project, chapter, requeue, attempts)
                             finishChapter()
-                        } else {
-                            recoverableFailures[chapter.id] = attempts
-                            logChapterRequeue(project, chapter, requeue, attempts)
-                            delayForRequeue(project.id, control, requeueBackoffMs(attempts, requeue.retryAfterMs))
-                            // Re-queued behind everything already submitted; the chapter stays
-                            // outstanding, so the queue cannot be closed underneath this send.
-                            work.send(chapter)
+                        } catch (requeue: RecoverableChapterFailure) {
+                            val attempts = (recoverableFailures[chapter.id] ?: 0) + 1
+                            if (attempts > MAX_RECOVERABLE_CHAPTER_FAILURES) {
+                                recoverableFailures.remove(chapter.id)
+                                logChapterRetriesExhausted(project, chapter, requeue, attempts)
+                                finishChapter()
+                            } else {
+                                recoverableFailures[chapter.id] = attempts
+                                logChapterRequeue(project, chapter, requeue, attempts)
+                                delayForRequeue(project.id, control, requeueBackoffMs(attempts, requeue.retryAfterMs))
+                                // Re-queued behind everything already submitted; the chapter stays
+                                // outstanding, so the queue cannot be closed underneath this send.
+                                work.send(chapter)
+                            }
                         }
+                    } finally {
+                        inFlightChapters.decrementAndGet()
                     }
                 }
             }
         }
         (listOf(submitter) + workers).forEach { it.join() }
+    }
+
+    /**
+     * Waits until the live dispatch limit leaves room for one more in-book chapter.
+     *
+     * This is the consumer of the scheduler's auto concurrency. The worker pool is sized once at
+     * launch, so without this gate a 429-driven halving has nothing to act on: the chapters would
+     * keep flowing at the configured parallelism and only the per-request cooldown would slow them.
+     * The gate is deliberately advisory — two workers may both pass a race — because pacing only
+     * needs to slow the pipeline down, not to enforce a hard cap; the request scheduler does that
+     * per physical request.
+     */
+    private suspend fun awaitChapterSlot(
+        project: TranslationProjectV2Entity,
+        provider: ApiProviderEntity,
+        configuredParallel: Int,
+        inFlight: AtomicInteger,
+        control: ProjectControl
+    ) {
+        val pacing = gateway as? DispatchPacing ?: return
+        while (true) {
+            if (control.cancelled.get()) throw CancellationException("Translation cancelled")
+            val limit = pacing.currentDispatchConcurrency(provider, configuredParallel).coerceAtLeast(1)
+            if (inFlight.get() < limit) return
+            if (control.paused.get()) {
+                awaitResumeFromPause(project.id, control)
+                continue
+            }
+            delay(250)
+        }
     }
 
     private fun logChapterRequeue(
@@ -755,8 +905,7 @@ class BookTranslationEngine(
         while (remaining > 0) {
             if (control.cancelled.get()) throw CancellationException("Translation cancelled")
             if (control.paused.get()) {
-                publishActiveState(projectId, "PAUSED")
-                delay(200)
+                awaitResumeFromPause(projectId, control)
                 continue
             }
             val slice = minOf(250L, remaining)
@@ -815,7 +964,7 @@ class BookTranslationEngine(
                 userMaxBatchSize = project.maxBatchChapters,
                 sourceTokenEstimates = sourceTokens.take(actual),
                 fixedContextTokens = fixedTokens,
-                fixedOutputTokens = protocolOutputOverhead(considered, promptProfile.includeMetadataRules)
+                fixedOutputTokens = protocolOutputOverhead(considered, includeMetadataRules = false)
             )
             selectedContext = candidateContext
             selectedBudget = candidateBudget
@@ -856,7 +1005,13 @@ class BookTranslationEngine(
             projectId = project.id,
             chapterIndex = batchSources.first().chapterIndex
         )
-        if (budget.requiresSingleChapterChunking || batchSources.any { it.segments.size > MAX_PROTOCOL_SEGMENTS_PER_REQUEST }) {
+        if (budget.requiresSingleChapterChunking ||
+            batchSources.any { it.segments.size > MAX_PROTOCOL_SEGMENTS_PER_REQUEST } ||
+            // LG 模型：超过目标 token 量的章节一律拆成可并发的小请求，而不是一个整章大请求。
+            // 只对单章批次生效：translateOversizedChapter 处理的是 batchSources.first()，
+            // 多章批次必须留在 translateBatch（规划循环已保证 >48 段的多章批次会被裁成单章）。
+            (batchSources.size == 1 && batchSources.first().segments.sumOf { TokenBudgetPlanner.estimate(it.text) } > CHUNK_SOURCE_TOKEN_TARGET)
+        ) {
             translateOversizedChapter(
                 project,
                 provider,
@@ -899,9 +1054,14 @@ class BookTranslationEngine(
     }
 
     private suspend fun finalizeCancelledRun(projectId: Long, runId: Long) {
+        // A worker unwinding after the run already converged (see reconcilePausedGate) must not
+        // downgrade a finished project to CANCELLED. The Run and batch rows are still reconciled
+        // so nothing is left claiming to be in flight.
+        val currentState = projects.get(projectId)?.state
+        val preserveTerminal = currentState == "COMPLETED" || currentState == "COMPLETED_WITH_WARNINGS"
         try {
             database.withTransaction {
-                projects.updateState(projectId, "CANCELLED")
+                if (!preserveTerminal) projects.updateState(projectId, "CANCELLED")
                 tasks.getRunningBatches(runId).forEach { batch ->
                     tasks.updateBatch(batch.copy(state = "CANCELLED", errorMessage = "cancelled by user"))
                 }
@@ -1053,8 +1213,7 @@ class BookTranslationEngine(
         while (true) {
             if (control.cancelled.get()) throw CancellationException("Translation cancelled")
             if (control.paused.get()) {
-                publishActiveState(projectId, "PAUSED")
-                delay(200)
+                awaitResumeFromPause(projectId, control)
                 continue
             }
             if (!publishRunning) return
@@ -1065,12 +1224,70 @@ class BookTranslationEngine(
         }
     }
 
+    /**
+     * Waits while the gate is paused, periodically reconciling the in-memory gate with the
+     * durable project row.
+     *
+     * Pause and resume always update both sides, so in the normal flow this only ever observes
+     * "still paused". The reconciliation exists because the two sides can disagree — a resume
+     * rejected by the durable-state guard, or a row converged by something else — and a worker
+     * that spins on a stale gate holds a global concurrency slot and the book lock forever while
+     * the UI shows a task that can never finish. The durable row is the user's decision, so it wins.
+     */
+    private suspend fun awaitResumeFromPause(projectId: Long, control: ProjectControl) {
+        var pausedTicks = 0
+        while (control.paused.get() && !control.cancelled.get()) {
+            publishActiveState(projectId, "PAUSED")
+            delay(200)
+            if (++pausedTicks < PAUSED_RECONCILE_TICKS) continue
+            pausedTicks = 0
+            reconcilePausedGate(projectId, control)
+        }
+    }
+
+    /** Applies the durable project row to a paused gate; see [awaitResumeFromPause]. */
+    private suspend fun reconcilePausedGate(projectId: Long, control: ProjectControl) {
+        val durable = projects.get(projectId)?.state
+        // Still paused (or unreadable): keep waiting, exactly as before.
+        if (durable == null || durable == "PAUSED") return
+        // The run already converged: unwind without downgrading that row.
+        if (durable in TERMINAL_PROJECT_STATES) {
+            throw CancellationException("Translation cancelled")
+        }
+        // The durable row no longer endorses the pause, so release the in-memory gate and let the
+        // worker finish its own bookkeeping instead of spinning.
+        control.resume()
+    }
+
     private suspend fun publishActiveState(projectId: Long, state: String) {
         projects.updateState(projectId, state)
         activeRuns[projectId]?.let { runId ->
             tasks.getRun(runId)?.takeIf { it.state != state }?.let { run ->
                 tasks.updateRun(run.copy(state = state, updatedAt = System.currentTimeMillis()))
             }
+        }
+    }
+
+    /**
+     * Publishes the queued state for a worker that is still waiting for one of the global
+     * concurrency slots.
+     *
+     * Without it such a worker parks inside the semaphore with no durable trace at all: the
+     * workbench keeps offering Start, and pressing it only answers "already running" while
+     * nothing is happening — the exact "translation is stuck" report this state exists to
+     * prevent. LinguaGacha models the same wait as its `requested` run state.
+     */
+    internal suspend fun markQueued(projectId: Long) {
+        val current = projects.get(projectId)?.state ?: return
+        // Never overwrite an explicit user decision or a row another worker already owns.
+        if (current in setOf("PAUSED", "CANCELLED", "RUNNING", "QUEUED")) return
+        projects.updateState(projectId, "QUEUED")
+    }
+
+    /** Drops the queued marker once the worker holds a slot; the run itself publishes RUNNING. */
+    internal suspend fun clearQueued(projectId: Long) {
+        if (projects.get(projectId)?.state == "QUEUED") {
+            projects.updateState(projectId, "IDLE")
         }
     }
 
@@ -1662,6 +1879,7 @@ class BookTranslationEngine(
             if (qa.commitAllowed() && translated != null) {
                 awaitCommitBoundary(project.id)
                 commitChapter(project, source, translated)
+                notifyChapterCommitted(project.id, source.chapterIndex)
                 if (qa.hasWarnings()) {
                     warningCount++
                     recordQaDiagnostic(
@@ -1686,14 +1904,19 @@ class BookTranslationEngine(
                 SystemLogger.error("QA_CHECK", "❌ 章节 #${source.chapterIndex} 质检失败且无法自动修复", projectId = project.id, chapterIndex = source.chapterIndex)
             }
         }
-        if (initialMetadataSources.isNotEmpty() && project.metadataEnabled) {
-            applyMetadataSafely(project, initialMetadataSources, completeParsed?.metaJson, runId, batchId)
+        // 元数据已解耦：正文请求不再要求 META，所以"没有 META"是正常情况而不是待修复。
+        // 只有响应确实带了 META（例如用户自定义提示词仍要求它）才落库；摘要/故事记忆/
+        // 术语候选的常规产出路径是 Agent 的独立工具请求。
+        val initialMetaJson = completeParsed?.metaJson?.takeIf { it.isNotBlank() }
+        if (initialMetadataSources.isNotEmpty() && project.metadataEnabled && initialMetaJson != null) {
+            applyMetadataSafely(project, initialMetadataSources, initialMetaJson, runId, batchId)
         }
         if (project.metadataEnabled) {
             repairedMetadata.forEach { (source, metaJson) ->
-                // A repair response is authoritative for the chapter it repaired. If it omitted META,
-                // applyMetadata records PENDING_REPAIR without invalidating the accepted translation.
-                applyMetadataSafely(project, listOf(source), metaJson, runId, batchId)
+                // 修复响应对它修好的那章有权威性；同样地，没带 META 就当没有，不记待修复。
+                metaJson?.takeIf { it.isNotBlank() }?.let { json ->
+                    applyMetadataSafely(project, listOf(source), json, runId, batchId)
+                }
             }
         }
         val totalCost = TokenCalculator.calculateCost(
@@ -2421,7 +2644,10 @@ class BookTranslationEngine(
         promptProfile: PromptProfileDraft,
         qualityRules: ResolvedQualityRules
     ) {
-        val safeSourceBudget = (provider.maxContextTokens * 0.28).toLong().coerceAtLeast(800)
+        val safeSourceBudget = minOf(
+            (provider.maxContextTokens * 0.28).toLong(),
+            CHUNK_SOURCE_TOKEN_TARGET
+        ).coerceAtLeast(800)
         val groups = mutableListOf<List<ProtocolSegment>>()
         var current = mutableListOf<ProtocolSegment>()
         var tokens = 0L
@@ -2460,7 +2686,6 @@ class BookTranslationEngine(
         var prompt = 0L
         var completion = 0L
         var warningCount = 0
-        var previousChunkTranslationTail = checkpoint?.previousChunkTranslationTail.orEmpty()
         val resumeFromChunk = checkpoint?.completedChunks ?: 0
         if (checkpoint != null && resumeFromChunk > 0) {
             translated.putAll(checkpoint.translatedSegments)
@@ -2471,171 +2696,126 @@ class BookTranslationEngine(
                 chapterIndex = source.chapterIndex
             )
         }
-        groups.forEachIndexed { groupIndex, group ->
-            if (groupIndex < resumeFromChunk) return@forEachIndexed
-            val chunkSource = source.copy(segments = group)
-            val systemPrompt = TranslationProtocol.translationSystemPrompt(
-                promptProfile,
-                project.sourceLanguage,
-                project.targetLanguage,
-                project.styleGuide
-            )
-            val userPrompt = TranslationProtocol.translationUserPrompt(
-                promptProfile,
-                context,
-                listOf(chunkSource),
-                previousChunkTranslationTail,
-                chunkLabel = "Chunk ${groupIndex + 1}/${groups.size}"
-            )
-            val request = LlmRequest(
-                provider = provider,
-                systemPrompt = systemPrompt,
-                userPrompt = userPrompt,
-                temperature = provider.temperature,
-                maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
-                operation = "OVERSIZED_CHAPTER_CHUNK",
-                promptCacheHint = prepareCache(project, provider, promptProfile, context),
-                controlSignal = controls[project.id]?.signal,
-                reasoningEffort = "low"
-            )
-            val result = executeCompletionSafely(request)
-            recordUsage(runId, batchId, provider, request, result)
-            awaitCommitBoundary(project.id)
-            prompt += result.promptTokens
-            completion += result.completionTokens
-            val parsedResponse = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
-            val canRecoverTruncated = result.isTruncated && parsedResponse?.chapters?.isNotEmpty() == true
-            if ((!result.isSuccess && !canRecoverTruncated) || (result.isTruncated && !canRecoverTruncated)) {
-                val failure = result.errorMessage ?: "Oversized chapter chunk failed"
-                val effectiveCategory = result.errorCategory ?: if (result.isTruncated) {
-                    LlmErrorCategory.TRUNCATED_OUTPUT
-                } else {
-                    LlmErrorCategory.UNKNOWN
-                }
-                val cost = TokenCalculator.calculateCost(
-                    prompt,
-                    completion,
-                    provider.inputPricePerMillion,
-                    provider.outputPricePerMillion
-                )
-                tasks.updateBatch(
-                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
-                        state = "FAILED",
-                        promptTokens = prompt,
-                        completionTokens = completion,
-                        cost = cost,
-                        errorMessage = failure
-                    )
-                )
-                SystemLogger.error("LLM_API", "❌ 超大章节分块调用失败: $failure", projectId = project.id, chapterIndex = source.chapterIndex)
-                if (TranslationFailurePolicy.isFatal(effectiveCategory)) {
-                    updateRunCounters(runId, completed = 0, failed = 1)
-                    throw FatalTranslationRunException(effectiveCategory, "$effectiveCategory: $failure")
-                }
-                // The chunk checkpoint keeps every completed chunk, so re-queueing the chapter
-                // resumes instead of paying again for the chunks that already succeeded.
-                throw RecoverableChapterFailure(effectiveCategory, result.retryAfterMs, 1, "$effectiveCategory: $failure")
-            }
-            val mandatoryTerms = context.matchedLexicon
-            var parsed = parsedResponse
-                ?.chapters
-                ?.filter { it.shortId == chunkSource.shortId }
-                ?.singleOrNull()
-                ?.let { restoreProtectedChapter(chunkSource, it, qualityRules.postReplacements) }
-            var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
-            if (!qa.commitAllowed()) {
-                val initialRepairScope = DeterministicTranslationQa.repairScope(chunkSource, parsed, qa, mandatoryTerms)
-                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
-                SystemLogger.warn(
-                    "QA_CHECK",
-                    "⚠️ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/${groups.size} 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动自动修复...",
-                    projectId = project.id,
-                    chapterIndex = source.chapterIndex
-                )
-                val repair = runQaRepairLadder(
-                    project = project,
-                    provider = provider,
-                    runId = runId,
-                    batchId = batchId,
-                    context = context,
-                    source = chunkSource,
-                    partial = parsed,
-                    promptProfile = promptProfile,
-                    qa = qa,
-                    initialScope = initialRepairScope,
-                    mandatoryTerms = mandatoryTerms,
-                    previousChunkTranslationTail = previousChunkTranslationTail,
-                    qualityRules = qualityRules
-                )
-                parsed = repair.chapter
-                prompt += repair.promptTokens
-                completion += repair.completionTokens
-                qa = repair.qa
-            }
-            if (!qa.commitAllowed() || parsed == null) {
-                recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", qa.problems + "glossary=${qa.glossaryStatus}")
-                SystemLogger.error(
-                    "QA_CHECK",
-                    "❌ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/${groups.size} 质检失败且自动修复未通过: ${qa.problems.joinToString().ifBlank { "未解析到有效译文" }}",
-                    projectId = project.id,
-                    chapterIndex = source.chapterIndex
-                )
-                tasks.updateBatch(
-                    (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
-                        state = "FAILED",
-                        promptTokens = prompt,
-                        completionTokens = completion,
-                        cost = TokenCalculator.calculateCost(
-                            prompt,
-                            completion,
-                            provider.inputPricePerMillion,
-                            provider.outputPricePerMillion
-                        ),
-                        errorMessage = qa.problems.joinToString()
-                    )
-                )
-                updateRunCounters(runId, completed = 0, failed = 1)
-                SystemLogger.info(
-                    "BATCH",
-                    "✨ 批次处理完毕: 章节 #${source.chapterIndex}, 成功 0 章, 失败 1 章 (分块 ${groupIndex + 1}/${groups.size} 质检未通过未落库)",
-                    projectId = project.id,
-                    chapterIndex = source.chapterIndex
-                )
-                return
-            }
-            if (qa.hasWarnings()) {
-                warningCount++
-                recordQaDiagnostic(
-                    runId,
-                    batchId,
-                    source.chapterIndex,
-                    "QA_CHUNK_VALIDATION_WARNING",
-                    qa.warningMessages()
-                )
-                SystemLogger.warn(
-                    "QA_CHECK",
-                    "⚠️ 章节 #${source.chapterIndex} 分块质检保留警告后继续合并: ${qa.warningMessages().joinToString()}",
-                    projectId = project.id,
-                    chapterIndex = source.chapterIndex
-                )
-            }
-            val validated = parsed ?: error("QA accepted a missing parsed chunk")
-            validated.segments.forEach { (id, text) ->
-                val previous = translated[id]
-                translated[id] = if (previous.isNullOrBlank()) text else "$previous\n\n$text"
-            }
-            previousChunkTranslationTail = validated.segments.values.joinToString("\n").takeLast(900)
-            saveChunkCheckpoint(
-                project = project,
-                source = source,
-                sourceFingerprint = sourceFingerprint,
-                planFingerprint = planFingerprint,
-                totalChunks = groups.size,
-                completedChunks = groupIndex + 1,
-                translatedSegments = translated,
-                previousChunkTranslationTail = previousChunkTranslationTail
-            )
+        // ---- 章内分块并发执行（对标 LG：分块之间无依赖，用并发把长章节拆成多个在飞请求）----
+        // LG 的 chunk 只带源文前文（`preceding_lines_threshold` 默认 0），块与块不互相喂译文；
+        // LNT 原先把上一个分块的译文尾喂给下一个分块，那正是串行依赖、也是长章节慢的根因。
+        // 章级 context（SOURCE_TAIL 模式下只有源文前文）仍然共享，章节级连续性不受影响。
+        val pending = groups.indices.filter { index ->
+            index >= resumeFromChunk && groups[index].any { it.shortId !in translated }
         }
+        if (pending.isNotEmpty()) {
+            val chunkConcurrency = ((gateway as? DispatchPacing)
+                ?.currentDispatchConcurrency(provider, DEFAULT_CHUNK_CONCURRENCY)
+                ?: DEFAULT_CHUNK_CONCURRENCY)
+                .coerceIn(1, minOf(pending.size, MAX_CHUNK_CONCURRENCY))
+            SystemLogger.info(
+                "BATCH",
+                "⚡ 章节 #${source.chapterIndex} 拆分 ${groups.size} 个分块，${pending.size} 个待译，并发 $chunkConcurrency（对标 LG 的小请求 + 高并发模型）",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+            // 已完成分块与用量计数要被多个 worker 同时更新；锁只包住纯内存合并，
+            // checkpoint 落盘在锁外进行，避免文件 I/O 阻塞其他分块。
+            val chunkMergeLock = Mutex()
+            val chunkFailure = AtomicReference<ChunkFailure?>(null)
+            coroutineScope {
+                val work = Channel<Int>(Channel.UNLIMITED)
+                pending.forEach { work.send(it) }
+                work.close()
+                val workers = List(chunkConcurrency) {
+                    launch(Dispatchers.IO) {
+                        for (groupIndex in work) {
+                            try {
+                                val outcome = translateOneChunk(
+                                    project = project,
+                                    provider = provider,
+                                    runId = runId,
+                                    batchId = batchId,
+                                    context = context,
+                                    source = source,
+                                    group = groups[groupIndex],
+                                    groupIndex = groupIndex,
+                                    groupCount = groups.size,
+                                    promptProfile = promptProfile,
+                                    qualityRules = qualityRules
+                                )
+                                // 快照与"已完成前缀"都在锁内算，文件 I/O 在锁外做：
+                                // 既避免并发读写 LinkedHashMap，也不用让其他分块等着写盘。
+                                val snapshot = chunkMergeLock.withLock {
+                                    prompt += outcome.promptTokens
+                                    completion += outcome.completionTokens
+                                    repeat(outcome.warningCount) { warningCount++ }
+                                    outcome.segments.forEach { (id, text) ->
+                                        val existing = translated[id]
+                                        translated[id] =
+                                            if (existing.isNullOrBlank()) text else "$existing\n\n$text"
+                                    }
+                                    translated.toMap() to contiguousCompletedChunks(translated, groups)
+                                }
+                                saveChunkCheckpoint(
+                                    project = project,
+                                    source = source,
+                                    sourceFingerprint = sourceFingerprint,
+                                    planFingerprint = planFingerprint,
+                                    totalChunks = groups.size,
+                                    completedChunks = snapshot.second,
+                                    translatedSegments = snapshot.first,
+                                    // 分块之间不再互相喂译文尾，与 LG 的零前文模型一致。
+                                    previousChunkTranslationTail = ""
+                                )
+                            } catch (cancelled: CancellationException) {
+                                // 暂停/取消必须继续上抛，不能被记成"分块失败"。
+                                throw cancelled
+                            } catch (requeue: RecoverableChapterFailure) {
+                                // 瞬时失败：记下第一个，让同伴把已付费的工作做完并落 checkpoint，
+                                // 全部结束后再抛给驱动层重排队——当场抛会取消同伴、白扔掉在飞请求。
+                                chunkFailure.compareAndSet(null, ChunkFailure.Requeue(requeue))
+                            } catch (quality: ChunkQualityFailure) {
+                                chunkFailure.compareAndSet(null, ChunkFailure.Quality(quality.message))
+                            }
+                        }
+                    }
+                }
+                workers.forEach { it.join() }
+            }
+            chunkFailure.get()?.let { failure ->
+                when (failure) {
+                    is ChunkFailure.Requeue -> throw failure.error
+                    is ChunkFailure.Quality -> {
+                        recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_FAILED", listOf(failure.message))
+                        SystemLogger.error(
+                            "QA_CHECK",
+                            "❌ 章节 #${source.chapterIndex} 分块质检失败且自动修复未通过: ${failure.message}",
+                            projectId = project.id,
+                            chapterIndex = source.chapterIndex
+                        )
+                        tasks.updateBatch(
+                            (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
+                                state = "FAILED",
+                                promptTokens = prompt,
+                                completionTokens = completion,
+                                cost = TokenCalculator.calculateCost(
+                                    prompt,
+                                    completion,
+                                    provider.inputPricePerMillion,
+                                    provider.outputPricePerMillion
+                                ),
+                                errorMessage = failure.message
+                            )
+                        )
+                        updateRunCounters(runId, completed = 0, failed = 1)
+                        SystemLogger.info(
+                            "BATCH",
+                            "✨ 批次处理完毕: 章节 #${source.chapterIndex}, 成功 0 章, 失败 1 章 (分块质检未通过未落库)",
+                            projectId = project.id,
+                            chapterIndex = source.chapterIndex
+                        )
+                        return
+                    }
+                }
+            }
+        }
+
         // A chunk can pass in isolation while two different chunks still produce the same
         // paragraph or leave a cross-boundary structural gap. Validate the merged chapter once
         // more before writing it, using the same warning-vs-blocking policy as normal batches.
@@ -2691,6 +2871,7 @@ class BookTranslationEngine(
         }
         awaitCommitBoundary(project.id)
         commitChapter(project, source, merged)
+        notifyChapterCommitted(project.id, source.chapterIndex)
         clearChunkCheckpoint(project, source)
         tasks.updateBatch(
             (tasks.getBatch(batchId) ?: error("Batch not found")).copy(
@@ -2700,19 +2881,8 @@ class BookTranslationEngine(
                 errorMessage = warningCount.takeIf { it > 0 }?.let { "$it chunk(s) committed with QA warnings" }
             )
         )
-        // A project with metadata disabled never asked for META, so there is nothing to mark as
-        // pending repair and no reason to create a memory row the model was never asked to fill.
-        if (project.metadataEnabled) {
-            database.memoryDao().upsertChapterMemory(
-                ChapterMemoryEntity(
-                    translationProjectId = project.id,
-                    logicalChapterId = source.logicalChapterId,
-                    chapterIndex = source.chapterIndex,
-                    summary = "",
-                    repairState = MemoryRepairState.PENDING_REPAIR.name
-                )
-            )
-        }
+        // 元数据解耦后，正文翻译不再占位写入"待修复"的空记忆行——
+        // 章节摘要由 Agent 的 summarize_chapter 工具按需产出并写入，避免每章都留一行空摘要。
         updateRunCounters(runId, 1, 0)
         SystemLogger.info(
             "STORAGE",
@@ -2726,6 +2896,156 @@ class BookTranslationEngine(
             projectId = project.id,
             chapterIndex = source.chapterIndex
         )
+    }
+
+    /**
+     * 翻译单个分块：请求 → 用量 → 暂停/取消边界 → 解析 → QA → （必要时）修复阶梯。
+     *
+     * 从原来的串行 `forEachIndexed` 里原样抽出，语义逐条保持不变，只是把"合并进整章"与
+     * "写 checkpoint"的责任交还给调用方（并发下必须由调用方持锁做）。
+     *
+     * 失败约定：
+     * - 致命错误（认证/无效请求）→ 抛 [FatalTranslationRunException]，取消同伴分块；
+     * - 瞬时错误 → 抛 [RecoverableChapterFailure]，由调用方收齐后统一重排队；
+     * - 质检不过 → 抛 [ChunkQualityFailure]，由调用方收齐后统一标记批次失败。
+     */
+    private suspend fun translateOneChunk(
+        project: TranslationProjectV2Entity,
+        provider: ApiProviderEntity,
+        runId: Long,
+        batchId: Long,
+        context: ContextPackage,
+        source: ProtocolChapter,
+        group: List<ProtocolSegment>,
+        groupIndex: Int,
+        groupCount: Int,
+        promptProfile: PromptProfileDraft,
+        qualityRules: ResolvedQualityRules
+    ): ChunkOutcome {
+        val chunkSource = source.copy(segments = group)
+        val systemPrompt = TranslationProtocol.translationSystemPrompt(
+            promptProfile,
+            project.sourceLanguage,
+            project.targetLanguage,
+            project.styleGuide
+        )
+        val userPrompt = TranslationProtocol.translationUserPrompt(
+            promptProfile,
+            context,
+            listOf(chunkSource),
+            // 分块之间不再喂上一个分块的译文尾：那是串行依赖的来源（对标 LG 零前文模型）。
+            previousChunkTranslationTail = "",
+            chunkLabel = "Chunk ${groupIndex + 1}/$groupCount"
+        )
+        val request = LlmRequest(
+            provider = provider,
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            temperature = provider.temperature,
+            maxTokens = dynamicOutputLimit(provider, systemPrompt, userPrompt),
+            operation = "OVERSIZED_CHAPTER_CHUNK",
+            promptCacheHint = prepareCache(project, provider, promptProfile, context),
+            controlSignal = controls[project.id]?.signal,
+            reasoningEffort = "low"
+        )
+        val result = executeCompletionSafely(request)
+        recordUsage(runId, batchId, provider, request, result)
+        awaitCommitBoundary(project.id)
+        val parsedResponse = runCatching { TranslationProtocol.parse(result.text) }.getOrNull()
+        val canRecoverTruncated = result.isTruncated && parsedResponse?.chapters?.isNotEmpty() == true
+        if ((!result.isSuccess && !canRecoverTruncated) || (result.isTruncated && !canRecoverTruncated)) {
+            val failure = result.errorMessage ?: "Oversized chapter chunk failed"
+            val effectiveCategory = result.errorCategory ?: if (result.isTruncated) {
+                LlmErrorCategory.TRUNCATED_OUTPUT
+            } else {
+                LlmErrorCategory.UNKNOWN
+            }
+            SystemLogger.error("LLM_API", "❌ 超大章节分块调用失败: $failure", projectId = project.id, chapterIndex = source.chapterIndex)
+            if (TranslationFailurePolicy.isFatal(effectiveCategory)) {
+                throw FatalTranslationRunException(effectiveCategory, "$effectiveCategory: $failure")
+            }
+            // 分块 checkpoint 会保留所有已完成的分块，所以重排队是续跑而不是重新付费。
+            throw RecoverableChapterFailure(effectiveCategory, result.retryAfterMs, 1, "$effectiveCategory: $failure")
+        }
+        val mandatoryTerms = context.matchedLexicon
+        var parsed = parsedResponse
+            ?.chapters
+            ?.filter { it.shortId == chunkSource.shortId }
+            ?.singleOrNull()
+            ?.let { restoreProtectedChapter(chunkSource, it, qualityRules.postReplacements) }
+        // 用量必须把首次请求与修复请求都算上：与串行版本一致，失败调用也要计费。
+        var chunkPromptTokens = result.promptTokens
+        var chunkCompletionTokens = result.completionTokens
+        var qa = DeterministicTranslationQa.validate(chunkSource, parsed, mandatoryTerms)
+        if (!qa.commitAllowed()) {
+            val initialRepairScope = DeterministicTranslationQa.repairScope(chunkSource, parsed, qa, mandatoryTerms)
+            recordQaDiagnostic(runId, batchId, source.chapterIndex, "QA_CHUNK_REPAIR_TRIGGERED", qa.problems)
+            SystemLogger.warn(
+                "QA_CHECK",
+                "⚠️ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/$groupCount 首次质检不合格 [glossary=${qa.glossaryStatus}] (${qa.problems.joinToString()})，启动自动修复...",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+            val repair = runQaRepairLadder(
+                project = project,
+                provider = provider,
+                runId = runId,
+                batchId = batchId,
+                context = context,
+                source = chunkSource,
+                partial = parsed,
+                promptProfile = promptProfile,
+                qa = qa,
+                initialScope = initialRepairScope,
+                mandatoryTerms = mandatoryTerms,
+                previousChunkTranslationTail = "",
+                qualityRules = qualityRules
+            )
+            parsed = repair.chapter
+            chunkPromptTokens += repair.promptTokens
+            chunkCompletionTokens += repair.completionTokens
+            qa = repair.qa
+        }
+        if (!qa.commitAllowed() || parsed == null) {
+            throw ChunkQualityFailure(
+                qa.problems.joinToString().ifBlank { "未解析到有效译文" } + "glossary=${qa.glossaryStatus}"
+            )
+        }
+        if (qa.hasWarnings()) {
+            recordQaDiagnostic(
+                runId,
+                batchId,
+                source.chapterIndex,
+                "QA_CHUNK_VALIDATION_WARNING",
+                qa.warningMessages()
+            )
+            SystemLogger.warn(
+                "QA_CHECK",
+                "⚠️ 章节 #${source.chapterIndex} 分块 ${groupIndex + 1}/$groupCount 质检保留警告后继续合并: ${qa.warningMessages().joinToString()}",
+                projectId = project.id,
+                chapterIndex = source.chapterIndex
+            )
+        }
+        return ChunkOutcome(
+            segments = parsed.segments,
+            promptTokens = chunkPromptTokens,
+            completionTokens = chunkCompletionTokens,
+            warningCount = if (qa.hasWarnings()) 1 else 0
+        )
+    }
+
+    /** 已完成分块的最长连续前缀长度：并发下分块可能乱序完成，checkpoint 只认前缀。 */
+    private fun contiguousCompletedChunks(
+        translated: Map<Int, String>,
+        groups: List<List<ProtocolSegment>>
+    ): Int {
+        var completed = 0
+        while (completed < groups.size &&
+            groups[completed].all { it.shortId in translated }
+        ) {
+            completed++
+        }
+        return completed
     }
 
     private suspend fun commitChapter(
@@ -3178,10 +3498,20 @@ class BookTranslationEngine(
         val cancelled: AtomicBoolean = AtomicBoolean(false),
         val signal: TranslationControlSignal = TranslationControlSignal()
     ) {
-        suspend fun requestPause() {
+        /** Flips both gates to paused without waiting for in-flight provider calls. */
+        suspend fun beginPause() {
             paused.set(true)
-            signal.requestPause()
+            signal.beginPause()
         }
+
+        /** Flips both gates to cancelled without waiting for in-flight provider calls. */
+        suspend fun beginCancel() {
+            cancelled.set(true)
+            signal.beginCancel()
+        }
+
+        /** Waits until every already-started provider call has finished. */
+        suspend fun awaitDrain() = signal.awaitDrain()
 
         fun resume(): Boolean {
             if (cancelled.get()) return false
@@ -3189,12 +3519,6 @@ class BookTranslationEngine(
             signal.resume()
             return true
         }
-
-        suspend fun cancel() {
-            cancelled.set(true)
-            signal.requestCancel()
-        }
-
     }
 }
 

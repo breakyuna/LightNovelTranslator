@@ -89,6 +89,7 @@ private fun WorkbenchTab.description(wb: WorkbenchUiStrings): String = when (thi
 private fun stateLabel(state: String, wb: WorkbenchUiStrings): String = when (state) {
     "RUNNING" -> wb.stateRunning
     "PAUSED" -> wb.statePaused
+    "QUEUED" -> wb.stateQueued
     "COMPLETED" -> wb.stateCompleted
     "COMPLETED_WITH_WARNINGS" -> wb.stateCompletedWithWarnings
     "FAILED" -> wb.stateFailed
@@ -100,6 +101,8 @@ private fun stateLabel(state: String, wb: WorkbenchUiStrings): String = when (st
 private fun stateContainerColor(state: String): Color = when (state) {
     "RUNNING" -> MaterialTheme.colorScheme.primary
     "PAUSED" -> MaterialTheme.colorScheme.tertiary
+    // A queued worker holds no provider slot yet; show it as waiting rather than running.
+    "QUEUED" -> MaterialTheme.colorScheme.secondaryContainer
     "COMPLETED" -> LocalAppColors.current.success
     "COMPLETED_WITH_WARNINGS" -> LocalAppColors.current.warning
     "FAILED", "COMPLETED_WITH_ERRORS" -> MaterialTheme.colorScheme.error
@@ -991,7 +994,7 @@ private fun WorkbenchSidebar(
                         onClick = {
                             if (project != null) {
                                 when (currentState) {
-                                    "RUNNING" -> viewModel.pauseBookTranslation(project.id)
+                                    "RUNNING", "QUEUED" -> viewModel.pauseBookTranslation(project.id)
                                     "PAUSED" -> viewModel.resumeBookTranslation(project.id)
                                     else -> viewModel.runBookTranslation(project.id)
                                 }
@@ -1003,7 +1006,7 @@ private fun WorkbenchSidebar(
                     ) {
                         Icon(
                             when (currentState) {
-                                "RUNNING" -> Icons.Default.Pause
+                                "RUNNING", "QUEUED" -> Icons.Default.Pause
                                 "PAUSED" -> Icons.Default.PlayArrow
                                 else -> Icons.Default.PlayArrow
                             },
@@ -1014,14 +1017,14 @@ private fun WorkbenchSidebar(
                         Text(
                             when {
                                 project == null -> wb.saveModelConfigFirst
-                                currentState == "RUNNING" -> wb.pause
+                                currentState == "RUNNING" || currentState == "QUEUED" -> wb.pause
                                 currentState == "PAUSED" -> wb.resume
                                 else -> wb.startTranslation
                             },
                             maxLines = 1
                         )
                     }
-                    if (project != null && currentState in listOf("RUNNING", "PAUSED")) {
+                    if (project != null && currentState in listOf("RUNNING", "PAUSED", "QUEUED")) {
                         IconButton(onClick = { viewModel.cancelBookTranslation(project.id) }) {
                             Icon(Icons.Default.StopCircle, wb.terminateTask, tint = MaterialTheme.colorScheme.error)
                         }
@@ -3844,7 +3847,7 @@ private fun effectiveTranslationState(
     val projectState = project?.state
     val runState = run?.state
     val terminalRunStates = setOf("COMPLETED", "SUCCESS", "COMPLETED_WITH_WARNINGS", "COMPLETED_WITH_ERRORS", "FAILED", "CANCELLED")
-    val activeProjectStates = setOf("RUNNING", "PAUSED", "INTERRUPTED")
+    val activeProjectStates = setOf("RUNNING", "PAUSED", "QUEUED", "INTERRUPTED")
     return when {
         projectState == null -> runState ?: "IDLE"
         projectState in activeProjectStates && runState?.let { it in terminalRunStates } == true -> runState

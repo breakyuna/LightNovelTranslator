@@ -44,6 +44,7 @@ fun AppNavigation(
         (currentRoute?.startsWith("tasks") == true) ||
         (currentRoute?.startsWith("workbench") == true) ||
         (currentRoute?.startsWith("history") == true) ||
+        (currentRoute?.startsWith("agent") == true) ||
         (currentRoute?.startsWith("settings") == true)
 
     // Handle floating messages
@@ -220,7 +221,14 @@ fun AppNavigation(
                     }
 
                     // ==========================================
-                    // 6. Agent assistant (second-level)
+                    // 6. Agent assistant (Top-Level)
+                    //
+                    // TopLevelDestination.AGENT navigates to the plain route "agent",
+                    // which resolves to this entry because sessionId has a default
+                    // value (same mechanism as TASKS "tasks" / SETTINGS "settings").
+                    // The optional sessionId keeps the "resume a specific
+                    // conversation" entry points (workbench action, settings row)
+                    // working: they pass an explicit sessionId or -1 for "latest".
                     // ==========================================
                     composable(
                         route = AppDestination.AgentChat.route,

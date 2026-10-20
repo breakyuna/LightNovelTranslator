@@ -43,6 +43,10 @@ interface AppStrings {
     val settingsLogsSubtitle: String
     val settingsLogsCount: (Int) -> String
     val settingsDebugTitle: String
+
+    val settingsUnattendedTitle: String
+    val settingsUnattendedOnSubtitle: String
+    val settingsUnattendedOffSubtitle: String
     val settingsDebugOnSubtitle: String
     val settingsDebugOffSubtitle: String
     val settingsSystemInfoTitle: String
@@ -99,6 +103,9 @@ interface AppStrings {
     val providerSearchModel: String
     val providerInputPriceLabel: String
     val providerOutputPriceLabel: String
+    val providerRpmLabel: String
+    val providerConcurrencyLabel: String
+    val providerPacingHint: String
     val providerSetAsDefault: String
 }
 
@@ -131,6 +138,10 @@ object ChineseStrings : AppStrings {
     override val settingsLogsSubtitle = "查看运行时审计、API 调试与翻译异常"
     override val settingsLogsCount: (Int) -> String = { count -> "$count 条" }
     override val settingsDebugTitle = "Debug 模式"
+
+    override val settingsUnattendedTitle = "无人值守：自动整理记忆与术语"
+    override val settingsUnattendedOnSubtitle = "每章落库后自动跑一次独立请求生成章节摘要与故事记忆，并归集术语候选；达到跨章高置信门槛的术语才自动入库。会产生额外付费请求。"
+    override val settingsUnattendedOffSubtitle = "关闭时章节摘要与术语归集只在你或助手明确要求时进行。"
     override val settingsDebugOnSubtitle = "记录后续翻译任务的完整提示词、模型响应、重试与失败原因"
     override val settingsDebugOffSubtitle = "默认关闭；开启后可在工作台查看完整 API 交互内容"
     override val settingsSystemInfoTitle = "系统信息"
@@ -183,6 +194,9 @@ object ChineseStrings : AppStrings {
     override val providerSearchModel = "搜索匹配模型"
     override val providerInputPriceLabel = "输入 $/M Tok"
     override val providerOutputPriceLabel = "输出 $/M Tok"
+    override val providerRpmLabel = "每分钟请求上限 (RPM)"
+    override val providerConcurrencyLabel = "并发请求上限"
+    override val providerPacingHint = "填 0 = 自动档（云端默认 60 次/分、并发 4，被限流时自动减半）。填非 0 = 固定额度，不再自动调整。"
     override val providerSetAsDefault = "设为默认供应商"
 }
 
@@ -215,6 +229,10 @@ object EnglishStrings : AppStrings {
     override val settingsLogsSubtitle = "Runtime audit, API debugging and translation errors"
     override val settingsLogsCount: (Int) -> String = { count -> "$count entries" }
     override val settingsDebugTitle = "Debug mode"
+
+    override val settingsUnattendedTitle = "Unattended companion"
+    override val settingsUnattendedOnSubtitle = "After each committed chapter, runs one independent request to write chapter/story memory and collect term candidates. Only terms that reach the cross-chapter confidence bar are auto-imported. Costs extra API calls."
+    override val settingsUnattendedOffSubtitle = "When off, chapter summaries and term collection happen only when you or the assistant ask."
     override val settingsDebugOnSubtitle = "Records full prompts, model responses, retries and failure reasons for later tasks"
     override val settingsDebugOffSubtitle = "Off by default; enabling shows full API interactions in the workbench"
     override val settingsSystemInfoTitle = "System info"
@@ -267,6 +285,9 @@ object EnglishStrings : AppStrings {
     override val providerSearchModel = "Search matching models"
     override val providerInputPriceLabel = "Input $/M Tok"
     override val providerOutputPriceLabel = "Output $/M Tok"
+    override val providerRpmLabel = "Requests per minute (RPM)"
+    override val providerConcurrencyLabel = "Concurrent requests"
+    override val providerPacingHint = "0 = auto (cloud defaults to 60 rpm / concurrency 4, halved on 429). Non-zero pins the limit and disables auto-tuning."
     override val providerSetAsDefault = "Set as default provider"
 }
 

@@ -197,29 +197,6 @@ fun EngineConfigurationSection(
         AppDivider()
 
         AppSettingsRow(
-            title = strings.metadataTitle,
-            subtitle = if (metadataEnabled) {
-                strings.metadataOnSubtitle
-            } else {
-                strings.metadataOffSubtitle
-            },
-            leadingIcon = Icons.Outlined.Psychology,
-            iconTint = AccentPurple,
-            iconBackground = AccentPurple.copy(alpha = 0.12f),
-            showChevron = false,
-            onClick = { if (canEdit) metadataEnabled = !metadataEnabled },
-            trailingContent = {
-                Switch(
-                    checked = metadataEnabled,
-                    onCheckedChange = { enabled -> if (canEdit) metadataEnabled = enabled },
-                    enabled = canEdit
-                )
-            }
-        )
-
-        AppDivider()
-
-        AppSettingsRow(
             title = strings.promptCacheTitle,
             subtitle = if (promptCacheEnabled) {
                 strings.promptCacheOnSubtitle

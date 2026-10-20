@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.ui.screens.agent
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -101,6 +102,9 @@ fun AgentChatHostScreen(
 
     val controller = viewModel.agentChatController
     val controllerState by controller.state.collectAsStateWithLifecycle()
+    // 流式预览单独订阅：它每个 token 变一次，不能混在 controllerState 里，
+    // 否则右侧信息栏（含数十条诊断日志）会跟着每个 token 重组一次。
+    val streamingText by controller.streamingText.collectAsStateWithLifecycle()
     val modelName by controller.modelName.collectAsStateWithLifecycle()
     val sessions by remember(viewModel) { viewModel.observeAgentSessions() }
         .collectAsState(initial = emptyList())
@@ -158,6 +162,45 @@ fun AgentChatHostScreen(
         }
     }
 
+    // 下面这些回调用 remember 包住：AgentChatScreen 每个流式 token 重组一次，若每次都传
+    // 新实例，右侧信息栏（含数十条诊断日志）和对话流里每一行消息都会被拖着一起重组。
+    // 真正需要跟着 token 变的只有流式预览本身。
+    val startNewChatAction = remember { controller::startNewChat }
+    val openSessionsAction = remember<() -> Unit> { { showSessionSheet = true } }
+    val openModelPanelAction = remember<() -> Unit> { { showModelSheet = true } }
+    val openDiagnosticsAction = remember<() -> Unit> { { showDiagnosticsSheet = true } }
+    val copyChatTextAction =
+        remember<(String) -> Unit> { { text -> copyText(text, chatStrings.copied) } }
+    // 信息侧栏内容同样记住：它依赖的数据在流式期间不变，没理由每个 token 重建一次。
+    val infoPanelContent: @Composable ColumnScope.() -> Unit = remember(
+        entryStrings,
+        controllerState,
+        displayModelName,
+        providerLabel,
+        lastCrash,
+        systemLogs
+    ) {
+        {
+            AgentInfoPanel(
+                strings = entryStrings,
+                state = controllerState,
+                modelName = displayModelName,
+                providerLabel = providerLabel,
+                crash = lastCrash,
+                logs = systemLogs,
+                onOpenModelPanel = { showModelSheet = true },
+                onCancel = controller::cancel,
+                onClearCrash = viewModel::clearAgentLastCrash,
+                onExportLogs = { exportLogs() },
+                onCopyLogs = {
+                    scope.launch {
+                        copyText(viewModel.exportAgentLogsWithHistory(), entryStrings.copiedLabel)
+                    }
+                }
+            )
+        }
+    }
+
     fun copyText(text: String, message: String) {
         clipboardManager.setText(AnnotatedString(text))
         scope.launch { snackbarHostState.showSnackbar(message) }
@@ -201,31 +244,14 @@ fun AgentChatHostScreen(
             modifier = Modifier.padding(bottom = padding.calculateBottomPadding()),
             modelName = displayModelName,
             providerLabel = providerLabel,
-            onNewChat = controller::startNewChat,
+            onNewChat = startNewChatAction,
             onBack = onBack,
-            onOpenSessions = { showSessionSheet = true },
-            onOpenModelPanel = { showModelSheet = true },
-            onOpenDiagnostics = { showDiagnosticsSheet = true },
-            onCopyText = { text -> copyText(text, chatStrings.copied) },
-            infoPanel = {
-                AgentInfoPanel(
-                    strings = entryStrings,
-                    state = controllerState,
-                    modelName = displayModelName,
-                    providerLabel = providerLabel,
-                    crash = lastCrash,
-                    logs = systemLogs,
-                    onOpenModelPanel = { showModelSheet = true },
-                    onCancel = controller::cancel,
-                    onClearCrash = viewModel::clearAgentLastCrash,
-                    onExportLogs = { exportLogs() },
-                    onCopyLogs = {
-                        scope.launch {
-                            copyText(viewModel.exportAgentLogsWithHistory(), entryStrings.copiedLabel)
-                        }
-                    }
-                )
-            },
+            onOpenSessions = openSessionsAction,
+            onOpenModelPanel = openModelPanelAction,
+            onOpenDiagnostics = openDiagnosticsAction,
+            onCopyText = copyChatTextAction,
+            streamingText = streamingText,
+            infoPanel = infoPanelContent,
             question = pendingQuestion,
             onAnswerQuestion = { answer ->
                 val question = pendingQuestion

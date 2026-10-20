@@ -26,6 +26,10 @@ import kotlinx.coroutines.CancellationException
  *
  * 每个回合的工具轮数、历史长度、压缩阈值都来自 [AgentSessionConfig]；
  * 取消信号在每一轮工具执行前检查，保证“暂停/取消后不再发起新的付费请求”。
+ *
+ * 流式：每一轮请求前后分别回调 [AgentTurnSink.onStreamReset] / [AgentTurnSink.onStreamSettled]，
+ * 让会话层把模型生成的增量文本以预览形式送到界面。预览只覆盖"这一轮正在生成"的窗口，
+ * 工具行与最终答复落库后立即让位，因此流式不改变任何持久化内容与计费口径。
  */
 fun lntAgentStrategy(
     toolHost: AgentToolHost,
@@ -41,6 +45,8 @@ fun lntAgentStrategy(
 
         // 本地挂起函数：发送一次请求并回传用量。message 为 null 时沿用当前 prompt 直接请求。
         suspend fun requestWithUsage(message: String?): Message.Assistant {
+            // 每轮请求都是全新的生成：先清掉上一轮的预览，避免旧文本残留。
+            sink.onStreamReset()
             val response = if (message == null) {
                 llm.writeSession { requestLLM() }
             } else {
@@ -50,6 +56,8 @@ fun lntAgentStrategy(
                 response.metaInfo.inputTokensCount ?: 0,
                 response.metaInfo.outputTokensCount ?: 0
             )
+            // 工具行 / 最终答复已经接管展示，预览必须让位。
+            sink.onStreamSettled()
             return response
         }
 

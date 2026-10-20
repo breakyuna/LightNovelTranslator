@@ -68,8 +68,7 @@ object TranslationProtocol {
 
     fun systemPrompt(
         sourceLanguage: String,
-        targetLanguage: String,
-        includeMetadataRules: Boolean = true
+        targetLanguage: String
     ): String {
         val base = """
         You are a professional literary translator from $sourceLanguage to $targetLanguage, specializing in long-form novels.
@@ -99,27 +98,11 @@ object TranslationProtocol {
         <C id="chapter"><S id="segment">escaped translated text</S></C>
         </TRANSLATION>
         """.trimIndent()
-        // META is an optional side channel. When a project disables metadata the model is never
-        // asked for it, which removes a whole JSON section from every request and every response.
-        val metadata = if (includeMetadataRules) {
-            // The leading newline keeps <META> on its own line, exactly like the previous prompt.
-            "\n" + """
-
-            <META>{"chapterMemory":[...],"storyMemoryDelta":[...],"lexiconCandidates":[...]}</META>
-
-            META is compact incremental metadata and is independent from translation validity. Use these fields when present:
-            chapterMemory: {"chapterId": number, "chapterIndex": number, "summary": string, "entities": string[],
-              "stateChanges": string[], "newFacts": string[], "unresolvedThreads": string[]}
-            storyMemoryDelta: {"operation": "ADD"|"UPDATE", "key": string, "value": string, "entities": string[]}
-            lexiconCandidates: {"source": string, "target": string, "category": "CHARACTER"|"LOCATION"|"LORE"|"SKILL"|"ITEM"|"HONORIFIC", "notes": string}
-            Only return lexicon candidates whose source is an exact substring of the supplied source and which are genuinely
-            work-specific names or concepts. Never turn an unconfirmed candidate into a confirmed translation rule.
-            If metadata cannot be produced, return empty arrays or omit META; the validated translation remains usable.
-            """.trimIndent()
-        } else {
-            ""
-        }
-        return base + "\n\n" + shape + metadata
+        // 全面解耦（对标 LinguaGacha）：翻译请求只产正文。
+        // 摘要 / 故事记忆 / 术语候选改由 Agent 工具用独立请求产出——AI 同时输出正文与元数据时，
+        // 输出越长结构与质量越不稳定，且元数据 JSON 会拖慢每一个正文请求。
+        // <META> 的解析与落库能力保留，供专用元数据请求使用。
+        return base + "\n\n" + shape
     }
 
     /**
@@ -132,21 +115,13 @@ object TranslationProtocol {
         sourceLanguage: String,
         targetLanguage: String,
         styleGuide: String,
-        fallback: String = systemPrompt(sourceLanguage, targetLanguage),
-        includeMetadataRules: Boolean = true
+        fallback: String = systemPrompt(sourceLanguage, targetLanguage)
     ): String {
         val rendered = template.trim().ifBlank { fallback }
             .replace(SOURCE_LANGUAGE_PLACEHOLDER, escape(sourceLanguage))
             .replace(TARGET_LANGUAGE_PLACEHOLDER, escape(targetLanguage))
             .replace(STYLE_GUIDE_PLACEHOLDER, escape(styleGuide.take(2_000)))
-        // A saved profile that predates the metadata switch keeps its own META text; only the
-        // built-in fallback is rebuilt without it.
-        val effectiveFallback = if (includeMetadataRules) {
-            fallback
-        } else {
-            systemPrompt(sourceLanguage, targetLanguage, includeMetadataRules = false)
-        }
-        val resolved = if (template.isBlank()) effectiveFallback else rendered
+        val resolved = if (template.isBlank()) fallback else rendered
         // User-editable templates remain supported, but these protocol invariants cannot be
         // removed by deleting text from the editor. Keeping them at the end also makes the final
         // rendered prompt auditable in Debug mode.
@@ -158,7 +133,7 @@ object TranslationProtocol {
         Translate every supplied segment completely and return only the protocol response.
         Preserve each Chapter and Segment ID exactly once and in source order; never merge, split,
         reorder, omit, duplicate, or return empty segments. Preserve protected markers byte-for-byte,
-        XML-escape text inside S elements, and do not output explanations outside TRANSLATION/META.
+        XML-escape text inside S elements, and do not output explanations outside the TRANSLATION block.
     """.trimIndent()
 
     fun renderUserPromptTemplate(template: String, body: String): String {
@@ -182,8 +157,7 @@ object TranslationProtocol {
         profile.translationSystemPrompt,
         sourceLanguage,
         targetLanguage,
-        styleGuide,
-        includeMetadataRules = profile.includeMetadataRules
+        styleGuide
     )
 
     fun translationUserPrompt(
@@ -207,8 +181,7 @@ object TranslationProtocol {
         sourceLanguage,
         targetLanguage,
         styleGuide,
-        fallback = polishSystemPrompt(sourceLanguage, targetLanguage, profile.includeMetadataRules),
-        includeMetadataRules = profile.includeMetadataRules
+        fallback = polishSystemPrompt(sourceLanguage, targetLanguage)
     )
 
     fun polishUserPrompt(
@@ -241,15 +214,10 @@ object TranslationProtocol {
      */
     fun polishSystemPrompt(
         sourceLanguage: String,
-        targetLanguage: String,
-        includeMetadataRules: Boolean = true
+        targetLanguage: String
     ): String {
-        // Kept out of the raw string so trimIndent cannot indent the continuation line.
-        val metadataNote = if (includeMetadataRules) {
-            " META is optional and should be omitted\nunless it contains empty arrays; never derive new glossary or story facts during this pass."
-        } else {
-            "\nNever derive new glossary or story facts during this pass."
-        }
+        // 与正文翻译同一立场：审校请求也不产元数据。摘要/记忆/术语由 Agent 工具独立请求产出。
+        val metadataNote = "\nNever derive new glossary or story facts during this pass."
         return """
         You are a senior literary copy editor reviewing an accepted $targetLanguage novel translation
         from $sourceLanguage. This is a second-pass editorial review, not a fresh translation.
@@ -361,24 +329,20 @@ object TranslationProtocol {
                     .append(" [entities=").append(escape(it.entities.take(500))).append("]\n")
             }
         }
-        if (context.recentContext.isNotBlank()) append("\n[RECENT_CONTEXT]\n").append(escape(context.recentContext)).append('\n')
-        if (context.previousChapterOriginalTail.isNotBlank()) {
-            append("\n[PREVIOUS_CHAPTER_ORIGINAL_TAIL]\n")
-                .append(escape(context.previousChapterOriginalTail.takeLast(900))).append('\n')
+        // 近期章节摘要属于"故事记忆"家族，保留；LG 默认零前文，LNT 用记忆替代前文尾。
+        if (context.recentContext.isNotBlank()) {
+            append("\n[RECENT_CONTEXT]\n").append(escape(context.recentContext)).append('\n')
         }
+        // 全面解耦 + 请求瘦身（对标 LG `preceding_lines_threshold = 0`）：
+        // 前文章节源文尾 / 前块译文尾 / 分块说明全部移除——它们既摊薄 prompt 缓存命中率，
+        // 又是串行依赖的来源。需要"上章译文"的项目仍走 TRANSLATION_TAIL，那时
+        // previousChapterTranslationTail 非空、且引擎已把该模式钳位为串行，不会与并发冲突。
         if (context.previousChapterTranslationTail.isNotBlank()) {
             append("\n[PREVIOUS_CHAPTER_TRANSLATION_TAIL]\n")
                 .append(escape(context.previousChapterTranslationTail.takeLast(900))).append('\n')
         }
-        if (previousChunkTranslationTail.isNotBlank()) {
-            append("\n[PREVIOUS_CHUNK_TRANSLATION_TAIL]\n")
-                .append(escape(previousChunkTranslationTail.takeLast(900))).append('\n')
-        }
         if (!chunkLabel.isNullOrBlank()) {
-            append("\n[CURRENT_CHUNK]\n")
-                .append(escape(chunkLabel)).append('\n')
-                .append("Translate only the SOURCE segments in this chunk. The chunk label and all ")
-                .append("context/tail blocks are reference data and must never be copied into output.\n")
+            append("\n[CURRENT_CHUNK]\n").append(escape(chunkLabel)).append('\n')
         }
         append("\n[SOURCE]\n")
         chapters.forEach { chapter ->

@@ -60,7 +60,37 @@ class AgentSession(
 
     private var agent: FunctionalAIAgent<String, AgentTurnResult>? = null
 
+    /**
+     * 流式预览缓冲。只在一次模型请求的生命周期内追加，请求结束即清空，因此永不落库。
+     * 增量从 IO 调度器写入、重置发生在回合协程里，统一加锁保护。
+     */
+    private val streamBuffer = StringBuilder()
+
+    /** 供执行器推送文本增量；写入 [_state] 供对话流末尾的预览气泡渲染。 */
+    private val streamObserver: (String) -> Unit = { delta ->
+        if (delta.isNotEmpty()) {
+            val snapshot = synchronized(streamBuffer) {
+                streamBuffer.append(delta)
+                streamBuffer.toString()
+            }
+            _state.update { it.copy(streamingText = snapshot) }
+        }
+    }
+
+    private fun resetStreamPreview() {
+        synchronized(streamBuffer) { streamBuffer.setLength(0) }
+        _state.update { it.copy(streamingText = "") }
+    }
+
     private val sink = object : AgentTurnSink {
+
+        override suspend fun onStreamReset() {
+            resetStreamPreview()
+        }
+
+        override suspend fun onStreamSettled() {
+            resetStreamPreview()
+        }
 
         override suspend fun onToolCall(name: String, argumentsJson: String, rawBlock: String) {
             appendMessage(
@@ -131,6 +161,8 @@ class AgentSession(
             return
         }
         running = true
+        // 上一回合可能因异常没走到 onStreamSettled，这里兜底清空预览。
+        resetStreamPreview()
         // 快照必须早于追加当前用户消息：策略会自行把 input 作为最新 user 消息加入。
         seedSnapshot = truncateToTurns(snapshotHistory(), config.maxHistoryTurns)
         val sessionId = ensureSessionId(trimmed)
@@ -172,6 +204,8 @@ class AgentSession(
         } finally {
             running = false
             _state.update { it.copy(isRunning = false) }
+            // 最终答复/错误消息已落库，流式预览必须让位，避免同一段文本出现两份。
+            resetStreamPreview()
             // 重置信号，避免上一回合的取消影响下一回合（执行器经 lambda 读取最新信号）。
             signal = TranslationControlSignal()
         }
@@ -235,7 +269,13 @@ class AgentSession(
             id = config.effectiveModelName.ifBlank { "unknown-model" },
             capabilities = listOf(LLMCapability.Temperature)
         )
-        val executor = LntPromptExecutor(gateway, config, toolHost.toolSpecs()) { signal }
+        val executor = LntPromptExecutor(
+            gateway = gateway,
+            config = config,
+            toolSpecs = toolHost.toolSpecs(),
+            signalProvider = { signal },
+            streamObserver = streamObserver
+        )
         val systemPrompt = AgentPrompts.buildSystemPrompt(
             basePrompt = AgentPrompts.resolveBasePrompt(promptAssetLoader, systemPromptOverride),
             specs = toolHost.toolSpecs(),

@@ -39,6 +39,16 @@ class AgentChatController(
     private val _state = MutableStateFlow(AgentSessionState())
     val state: StateFlow<AgentSessionState> = _state.asStateFlow()
 
+    /**
+     * 流式预览文本，与 [state] 分开暴露。
+     *
+     * 界面里只有对话流末尾的预览气泡需要它。把它从 [state] 里拆走，信息侧栏、信息条与
+     * 标题栏就不会因为模型每吐一个 token 就重组一次——侧栏的诊断面板有数十条日志，
+     * 那是流式期间最贵的重组，也是"流式看起来不流畅"的主因。
+     */
+    private val _streamingText = MutableStateFlow("")
+    val streamingText: StateFlow<String> = _streamingText.asStateFlow()
+
     /** 首次发送后解析到的模型名，供界面展示；未解析前为 null。 */
     private val _modelName = MutableStateFlow<String?>(null)
     val modelName: StateFlow<String?> = _modelName.asStateFlow()
@@ -67,6 +77,7 @@ class AgentChatController(
         session?.startNewChat()
         replaceSession(null)
         _state.value = AgentSessionState()
+        _streamingText.value = ""
     }
 
     /** 打开历史会话并加载其消息。 */
@@ -92,6 +103,7 @@ class AgentChatController(
     private suspend fun createSession(sessionId: Long? = null): AgentSession? {
         val config = configProvider() ?: run {
             _state.value = AgentSessionState(error = texts.notConfigured)
+            _streamingText.value = ""
             return null
         }
         _modelName.value = config.effectiveModelName
@@ -106,7 +118,11 @@ class AgentChatController(
         )
         replaceSession(created)
         stateJob = scope.launch {
-            created.state.collect { snapshot -> _state.value = snapshot }
+            created.state.collect { snapshot ->
+                _streamingText.value = snapshot.streamingText
+                // 交给界面的 state 不再携带流式预览：它只表示已落库的消息、用量与错误。
+                _state.value = snapshot.copy(streamingText = "")
+            }
         }
         return created
     }

@@ -67,6 +67,26 @@ fun resolveRequestLimits(provider: ApiProviderEntity): RequestLimits =
     }
 
 /**
+ * 叠加用户显式额度后的最终裁决，语义对标 LinguaGacha `resolve_request_limits`：
+ * 显式 concurrency/rpm 任一非零 → 固定额度（`autoConcurrency = false`）；
+ * 两者都为 0 → 保持 [resolveRequestLimits] 的自动探测启发式。
+ *
+ * 只配置了一侧时，另一侧取该 provider 的启发式默认值——否则"只填 RPM"会把并发悄悄压成 1，
+ * 看起来像限流其实是被串行化了。
+ */
+fun resolveRequestLimits(provider: ApiProviderEntity, override: RequestPacingOverride): RequestLimits {
+    val explicit = override.sanitized()
+    val auto = resolveRequestLimits(provider)
+    if (explicit.rpmLimit == 0 && explicit.concurrencyLimit == 0) return auto
+    return RequestLimits(
+        autoConcurrency = false,
+        concurrencyLimit = (if (explicit.concurrencyLimit > 0) explicit.concurrencyLimit else auto.concurrencyLimit)
+            .coerceAtLeast(AUTO_CONCURRENCY_MIN),
+        rpmLimit = if (explicit.rpmLimit > 0) explicit.rpmLimit else auto.rpmLimit
+    )
+}
+
+/**
  * 单个 provider 资源的速率时钟，对标 LinguaGacha `TranslationRequestRate`。
  *
  * 两种派发模式互斥：
@@ -170,17 +190,26 @@ class RequestRate(
  * 新任务开始而重置节奏。键只做内存归一化，绝不含 API Key。
  *
  * endpoint 归一化去掉尾斜杠并统一小写，避免同一 provider 因 URL 书写差异分裂成两个时钟。
+ *
+ * @param pacing 用户显式额度来源；null 表示全部走启发式自动档（默认，保持历史行为）。
  */
-class RequestRatePool(private val clock: () -> Long = System::currentTimeMillis) {
+class RequestRatePool(
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val pacing: RequestPacingStore? = null
+) {
 
     private val rates = ConcurrentHashMap<String, RequestRate>()
+
+    /** 当前生效的额度：显式配置优先，否则启发式。 */
+    private fun limitsFor(provider: ApiProviderEntity): RequestLimits =
+        resolveRequestLimits(provider, pacing?.get(provider.id) ?: RequestPacingOverride())
 
     /**
      * 归一化键：provider id + endpoint + model + 额度。额度参与键，
      * 让显式限流配置（后续落到 provider 设置）变化时自动换用新时钟。
      */
     fun keyFor(provider: ApiProviderEntity): String {
-        val limits = resolveRequestLimits(provider)
+        val limits = limitsFor(provider)
         return listOf(
             provider.id.toString(),
             normalizeEndpoint(provider.baseUrl),
@@ -195,7 +224,7 @@ class RequestRatePool(private val clock: () -> Long = System::currentTimeMillis)
     fun resolve(provider: ApiProviderEntity): RequestRate {
         val key = keyFor(provider)
         return rates.getOrPut(key) {
-            val limits = resolveRequestLimits(provider)
+            val limits = limitsFor(provider)
             RequestRate(
                 rpsLimit = limits.concurrencyLimit,
                 rpmLimit = limits.rpmLimit,

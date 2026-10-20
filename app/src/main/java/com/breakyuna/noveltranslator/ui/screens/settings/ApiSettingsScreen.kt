@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -32,10 +33,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.breakyuna.noveltranslator.core.llm.RequestPacingOverride
 import com.breakyuna.noveltranslator.core.logger.LogLevel
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.PresetModels
@@ -87,6 +90,7 @@ fun ApiSettingsScreen(
     val projects by viewModel.platformTranslationProjects.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val debugModeEnabled by viewModel.debugModeEnabled.collectAsState()
+    val unattendedEnabled by viewModel.unattendedCompanionEnabled.collectAsState()
 
     var activeSubPage by remember {
         mutableStateOf(
@@ -234,6 +238,28 @@ fun ApiSettingsScreen(
                                 valueText = strings.settingsLogsCount(systemLogs.size),
                                 showChevron = true,
                                 onClick = { activeSubPage = SettingsSubPage.LOGS }
+                            )
+
+                            AppDivider(startIndent = 58.dp)
+
+                            AppSettingsRow(
+                                title = strings.settingsUnattendedTitle,
+                                subtitle = if (unattendedEnabled) {
+                                    strings.settingsUnattendedOnSubtitle
+                                } else {
+                                    strings.settingsUnattendedOffSubtitle
+                                },
+                                leadingIcon = Icons.Outlined.AutoAwesome,
+                                iconTint = AccentPurple,
+                                iconBackground = AccentPurple.copy(alpha = 0.12f),
+                                showChevron = false,
+                                trailingContent = {
+                                    Switch(
+                                        checked = unattendedEnabled,
+                                        onCheckedChange = viewModel::setUnattendedCompanionEnabled
+                                    )
+                                },
+                                onClick = { viewModel.setUnattendedCompanionEnabled(!unattendedEnabled) }
                             )
 
                             AppDivider(startIndent = 58.dp)
@@ -740,8 +766,9 @@ fun ApiSettingsScreen(
             provider = null,
             onFetchModels = viewModel::fetchModelsFromEndpoint,
             onDismiss = { showAddDialog = false },
-            onSave = { newProvider ->
-                viewModel.saveProvider(newProvider)
+            onSave = { newProvider, pacing ->
+                // saveProvider 内部用 insert 返回的 rowId 落限流值，新建也能一次配好。
+                viewModel.saveProvider(newProvider, pacing)
                 showAddDialog = false
             }
         )
@@ -753,10 +780,11 @@ fun ApiSettingsScreen(
             provider = provider,
             onFetchModels = viewModel::fetchModelsFromEndpoint,
             onDismiss = { editingProvider = null },
-            onSave = { updatedProvider ->
-                viewModel.saveProvider(updatedProvider)
+            onSave = { updatedProvider, pacing ->
+                viewModel.saveProvider(updatedProvider, pacing)
                 editingProvider = null
-            }
+            },
+            initialPacing = viewModel.requestPacingFor(provider.id)
         )
     }
 }
@@ -912,7 +940,10 @@ fun AddEditProviderDialog(
     provider: ApiProviderEntity?,
     onFetchModels: (ApiProviderEntity, (Result<List<String>>) -> Unit) -> Unit,
     onDismiss: () -> Unit,
-    onSave: (ApiProviderEntity) -> Unit
+    /** 一并提交限流额度：新建时 provider id 由 insert 产生，由保存链路负责落值。 */
+    onSave: (ApiProviderEntity, RequestPacingOverride) -> Unit,
+    /** 已保存的显式限流额度；0 = 自动档。 */
+    initialPacing: RequestPacingOverride = RequestPacingOverride()
 ) {
     val strings = LocalAppStrings.current
     val initialPreset = remember(provider) {
@@ -936,6 +967,13 @@ fun AddEditProviderDialog(
     var currency by remember { mutableStateOf(provider?.currency ?: initialPreset.currency) }
     var maxContextTokens by remember { mutableStateOf(provider?.maxContextTokens ?: initialPreset.defaultMaxContextTokens) }
     var isDefault by remember { mutableStateOf(provider?.isDefault ?: false) }
+    // 限流额度：空串表示"未配置/自动档"，避免用户为了填 0 而先删字符。
+    var rpmText by remember {
+        mutableStateOf(initialPacing.rpmLimit.takeIf { it > 0 }?.toString() ?: "")
+    }
+    var concurrencyText by remember {
+        mutableStateOf(initialPacing.concurrencyLimit.takeIf { it > 0 }?.toString() ?: "")
+    }
     var fetchedModels by remember { mutableStateOf(initialPreset.recommendedModels) }
     var modelSearch by remember { mutableStateOf("") }
     var fetchingModels by remember { mutableStateOf(false) }
@@ -956,6 +994,12 @@ fun AddEditProviderDialog(
             maxContextTokens = maxContextTokens, isDefault = isDefault
         )
     }
+
+    /** 非法输入按 0（自动档）处理：限流是保险丝，永远不该因为填错而挡住保存。 */
+    fun buildPacing(): RequestPacingOverride = RequestPacingOverride(
+        rpmLimit = rpmText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0,
+        concurrencyLimit = concurrencyText.trim().toIntOrNull()?.coerceAtLeast(0) ?: 0
+    ).sanitized()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1115,6 +1159,41 @@ fun AddEditProviderDialog(
                         )
                     }
                 }
+                // 请求级限流：留空即自动档。填了任一非零值就会固定额度、关闭自动升降。
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = rpmText,
+                            onValueChange = { rpmText = it.filter { ch -> ch.isDigit() }.take(4) },
+                            label = { Text(strings.providerRpmLabel) },
+                            placeholder = { Text("60") },
+                            singleLine = true,
+                            shape = SmallControlShape,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = concurrencyText,
+                            onValueChange = { concurrencyText = it.filter { ch -> ch.isDigit() }.take(2) },
+                            label = { Text(strings.providerConcurrencyLabel) },
+                            placeholder = { Text("4") },
+                            singleLine = true,
+                            shape = SmallControlShape,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+                item {
+                    Text(
+                        text = strings.providerPacingHint,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 item {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -1128,9 +1207,7 @@ fun AddEditProviderDialog(
         },
         confirmButton = {
             Button(
-                onClick = {
-                    onSave(buildProvider())
-                },
+                onClick = { onSave(buildProvider(), buildPacing()) },
                 enabled = name.isNotBlank() && baseUrl.isNotBlank() && selectedModel.isNotBlank(),
                 shape = ButtonShape
             ) {

@@ -1165,14 +1165,14 @@ private fun ReaderWorkbenchSidebar(
                                 horizontalArrangement = Arrangement.End
                             ) {
                                 when (project.state) {
-                                    "RUNNING" -> TextButton(onClick = { onPause(project.id) }) { Text(strings.pause) }
+                                    "RUNNING", "QUEUED" -> TextButton(onClick = { onPause(project.id) }) { Text(strings.pause) }
                                     "PAUSED" -> TextButton(onClick = { onResume(project.id) }) { Text(strings.resume) }
                                     else -> TextButton(onClick = { onRun(project.id) }) {
                                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
                                         Text(strings.start)
                                     }
                                 }
-                                if (project.state in setOf("RUNNING", "PAUSED")) {
+                                if (project.state in setOf("RUNNING", "PAUSED", "QUEUED")) {
                                     TextButton(onClick = { onCancel(project.id) }) { Text(strings.stop) }
                                 }
                             }

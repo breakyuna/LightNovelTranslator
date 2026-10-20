@@ -20,11 +20,14 @@ sealed class AppDestination(val route: String) {
     }
 
     /**
-     * Agent assistant chat. Second-level route: the bottom bar and the rail stay
-     * hidden while it is on top, like the reader and the workbench.
+     * Agent assistant chat. Top-level route: the bottom bar and the rail stay
+     * visible while it is on top (see [TopLevelDestination.AGENT]), unlike the
+     * reader and the workbench.
      *
      * [sessionId] is optional; a negative value means "resume the most recent
-     * conversation", which is what the plain entry points navigate to.
+     * conversation", which is what the plain entry points navigate to. Because
+     * the argument has a default value, the bare route "agent" registered by
+     * [TopLevelDestination.AGENT] resolves to this same destination.
      */
     object AgentChat : AppDestination("agent?sessionId={sessionId}") {
         fun createRoute(sessionId: Long? = null) = "agent?sessionId=${sessionId ?: -1L}"

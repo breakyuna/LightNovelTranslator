@@ -70,6 +70,14 @@ data class AgentSessionConfig(
      * provider 不支持导致 400 时 LlmClient 自动去掉 tools 重试，不会打断回合。
      */
     val nativeToolsEnabled: Boolean = false,
+    /**
+     * 是否启用流式输出。
+     *
+     * 开启时执行器优先走 SSE，把模型生成的文本增量经流式预览送到界面；provider 不支持
+     * 或流没有产出任何增量时自动整段回退非流式，回合内容、工具协议与计费口径都不变。
+     * 关闭时行为与此前完全一致（一次性拿到完整答复）。
+     */
+    val streamingEnabled: Boolean = true,
     /** 单回合最大工具调用轮数，同时写入协议提示词。 */
     val maxToolRounds: Int = 6,
     /** 跨回合注入历史的用户回合数上限，超出后丢弃最旧回合。 */
@@ -107,6 +115,15 @@ interface AgentTurnSink {
 
     /** 触发历史压缩时回调一次。 */
     suspend fun onCompressed()
+
+    /** 一次模型请求开始前回调：清空上一轮遗留的流式预览。 */
+    suspend fun onStreamReset() { /* 默认不处理流式预览 */ }
+
+    /**
+     * 一次模型请求结束后回调：真实消息（工具行 / 最终答复）已接管展示，
+     * 流式预览必须让位，避免同一段文本出现两份。
+     */
+    suspend fun onStreamSettled() { /* 默认不处理流式预览 */ }
 }
 
 /** 一个回合（一次用户输入到最终答复）的结果。 */
@@ -131,5 +148,12 @@ data class AgentSessionState(
     val messages: List<AgentMessage> = emptyList(),
     val isRunning: Boolean = false,
     val error: String? = null,
-    val usage: AgentUsage = AgentUsage()
+    val usage: AgentUsage = AgentUsage(),
+    /**
+     * 当前正在流式生成的原文。
+     *
+     * 只在一次模型请求的生命周期内有效：请求结束（工具行 / 最终答复接管展示）即清空，
+     * 因此它永远不是 [messages] 的一部分，也不会被持久化。
+     */
+    val streamingText: String = ""
 )

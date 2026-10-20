@@ -78,7 +78,6 @@ interface AgentToolHost {
         projectId: Long,
         parallelChapters: Int?,
         continuityMode: String?,
-        metadataEnabled: Boolean?,
         promptCacheEnabled: Boolean?
     ): String
 
@@ -138,6 +137,17 @@ interface AgentToolHost {
 
     /** 汇总一个工程的 Token 用量与费用（历次运行累计）。 */
     suspend fun getTranslationCost(projectId: Long): String = NOT_WIRED_MESSAGE
+
+    /**
+     * 对单章执行一次**独立**的摘要/记忆请求并落库。
+     *
+     * 元数据已与正文翻译解耦：这个工具是章节摘要与故事记忆的常规产出路径，
+     * 对标 LinguaGacha 由 Agent 技能与工具负责元数据的分工。
+     */
+    suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String
+
+    /** 读取一个工程当前的故事记忆与最近章节摘要，供 Agent 判断连续性后处理。 */
+    suspend fun getStoryMemory(projectId: Long): String
 
     /** Catalog rendered into the agent system prompt. Stable, so it needs no host state. */
     fun toolSpecs(): List<AgentToolSpec> = AGENT_TOOL_SPECS
@@ -237,9 +247,6 @@ interface AgentToolHost {
                             projectId = projectId,
                             parallelChapters = requiredLong("parallel_chapters")?.takeIf { it > 0 }?.toInt(),
                             continuityMode = args.optString("continuity_mode").trim().takeIf(String::isNotBlank),
-                            metadataEnabled = args.opt("metadata_enabled")?.let { value ->
-                                value as? Boolean ?: value.toString().toBooleanStrictOrNull()
-                            },
                             promptCacheEnabled = args.opt("prompt_cache_enabled")?.let { value ->
                                 value as? Boolean ?: value.toString().toBooleanStrictOrNull()
                             }
@@ -376,6 +383,27 @@ interface AgentToolHost {
                     }
                 }
 
+                TOOL_SUMMARIZE_CHAPTER -> {
+                    val bookId = requiredLong("book_id")
+                    val chapterIndex = requiredLong("chapter_index")?.takeIf { it > 0 }?.toInt()
+                    if (bookId == null || bookId <= 0) {
+                        "缺少或非法的 book_id 参数"
+                    } else if (chapterIndex == null) {
+                        "缺少或非法的 chapter_index 参数：应为正整数章号"
+                    } else {
+                        summarizeChapter(bookId, chapterIndex)
+                    }
+                }
+
+                TOOL_GET_STORY_MEMORY -> {
+                    val projectId = requiredLong("project_id")
+                    if (projectId == null || projectId <= 0) {
+                        "缺少或非法的 project_id 参数"
+                    } else {
+                        getStoryMemory(projectId)
+                    }
+                }
+
                 else -> return AgentToolOutcome.failure("unknown_tool", "未知工具: $name")
             }
         } catch (cancelled: CancellationException) {
@@ -409,6 +437,8 @@ interface AgentToolHost {
         const val TOOL_GET_QUALITY_RULES = "get_quality_rules"
         const val TOOL_SET_QUALITY_RULES = "set_quality_rules"
         const val TOOL_GET_TRANSLATION_COST = "get_translation_cost"
+        const val TOOL_SUMMARIZE_CHAPTER = "summarize_chapter"
+        const val TOOL_GET_STORY_MEMORY = "get_story_memory"
 
         private val AGENT_TOOL_SPECS: List<AgentToolSpec> = listOf(
             AgentToolSpec(
@@ -453,8 +483,8 @@ interface AgentToolHost {
             ),
             AgentToolSpec(
                 name = TOOL_UPDATE_TRANSLATION_CONFIG,
-                description = "修改翻译工程开关：parallel_chapters（同书并发章数 1-5）、continuity_mode（SOURCE_TAIL 或 TRANSLATION_TAIL）、metadata_enabled、prompt_cache_enabled。只能传需要修改的字段。",
-                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"parallel_chapters":{"type":"integer","description":"并发章数，1-5"},"continuity_mode":{"type":"string","enum":["SOURCE_TAIL","TRANSLATION_TAIL"]},"metadata_enabled":{"type":"boolean"},"prompt_cache_enabled":{"type":"boolean"}},"required":["project_id"],"additionalProperties":false}"""
+                description = "修改翻译工程开关：parallel_chapters（同书并发章数 1-5）、continuity_mode（SOURCE_TAIL 或 TRANSLATION_TAIL）、prompt_cache_enabled。只能传需要修改的字段。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"parallel_chapters":{"type":"integer","description":"并发章数，1-5"},"continuity_mode":{"type":"string","enum":["SOURCE_TAIL","TRANSLATION_TAIL"]},"prompt_cache_enabled":{"type":"boolean"}},"required":["project_id"],"additionalProperties":false}"""
             ),
             AgentToolSpec(
                 name = TOOL_CREATE_TRANSLATION_PROJECT,
@@ -475,6 +505,16 @@ interface AgentToolHost {
                 name = TOOL_EXPORT_EDITION,
                 description = "把一个翻译工程的译文导出为 TXT 或 EPUB 文件，可双语对照。导出前先告知用户格式与文件名。",
                 parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"format":{"type":"string","enum":["txt","epub"],"description":"导出格式，默认 txt"},"bilingual":{"type":"boolean","description":"是否双语对照导出，默认否"}},"required":["project_id"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_SUMMARIZE_CHAPTER,
+                description = "对某一章执行一次独立的摘要与故事记忆更新请求并落库。会产生付费 API 请求，调用前必须向用户确认。元数据与正文翻译已解耦，摘要是章节记忆的唯一产出路径。",
+                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"},"chapter_index":{"type":"integer","description":"章号，从 1 开始"}},"required":["book_id","chapter_index"],"additionalProperties":false}"""
+            ),
+            AgentToolSpec(
+                name = TOOL_GET_STORY_MEMORY,
+                description = "读取一个翻译工程当前的故事记忆与最近章节摘要。翻译前建立上下文、或判断某条记忆是否过期时使用。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"}},"required":["project_id"],"additionalProperties":false}"""
             ),
             AgentToolSpec(
                 name = TOOL_LIST_GLOSSARY,

@@ -101,6 +101,7 @@ fun AppNavigationRail(
                             TopLevelDestination.BOOKSHELF -> currentRoute?.startsWith("bookshelf") == true
                             TopLevelDestination.HISTORY -> currentRoute?.startsWith("history") == true
                             TopLevelDestination.TASKS -> currentRoute?.startsWith("tasks") == true || currentRoute?.startsWith("workbench") == true
+                            TopLevelDestination.AGENT -> currentRoute?.startsWith("agent") == true
                             TopLevelDestination.SETTINGS -> currentRoute?.startsWith("settings") == true
                         }
                         val iconScale by animateFloatAsState(

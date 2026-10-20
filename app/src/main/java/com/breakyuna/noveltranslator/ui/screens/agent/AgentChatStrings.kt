@@ -69,8 +69,12 @@ data class AgentChatText(
     val modelPanelEntry: String,
     /** 顶部诊断入口的无障碍描述 */
     val diagnosticsEntry: String,
-    /** 宽屏信息侧栏折叠开关的无障碍描述 */
-    val sidebarToggle: String
+    /** 信息栏展开时的收起按钮无障碍描述 */
+    val sidebarHide: String,
+    /** 信息栏收起后的展开按钮无障碍描述 */
+    val sidebarShow: String,
+    /** 流式生成中的气泡尾部提示 */
+    val streamingHint: String
 )
 
 object AgentChatStrings {
@@ -119,7 +123,9 @@ object AgentChatStrings {
         copied = "已复制到剪贴板",
         modelPanelEntry = "模型与工具",
         diagnosticsEntry = "诊断",
-        sidebarToggle = "信息栏"
+        sidebarHide = "收起信息栏",
+        sidebarShow = "展开信息栏",
+        streamingHint = "正在生成"
     )
 
     val english = AgentChatText(
@@ -166,7 +172,9 @@ object AgentChatStrings {
         copied = "Copied to clipboard",
         modelPanelEntry = "Model & tools",
         diagnosticsEntry = "Diagnostics",
-        sidebarToggle = "Info panel"
+        sidebarHide = "Hide info panel",
+        sidebarShow = "Show info panel",
+        streamingHint = "Generating"
     )
 
     /** 与全局语言保持一致：英文界面用英文文案，其余按中文（应用默认中文）。 */

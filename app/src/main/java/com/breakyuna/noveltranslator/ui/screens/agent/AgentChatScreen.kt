@@ -33,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.BugReport
@@ -65,6 +66,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.breakyuna.noveltranslator.core.agent.koog.AgentMessage
 import com.breakyuna.noveltranslator.core.agent.koog.AgentRole
 import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionState
+import com.breakyuna.noveltranslator.core.agent.koog.AgentToolProtocol
 import com.breakyuna.noveltranslator.core.agent.koog.AgentUsage
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
 import com.breakyuna.noveltranslator.ui.components.apple.AppBadge
@@ -80,16 +82,31 @@ private val SidebarWeight = 0.58f
 /** 气泡最大宽度，避免平板 / 横屏下单行文字拉得过长。 */
 private val BubbleMaxWidth = 320.dp
 
+/** 流式预览在 LazyColumn 里的 key：它不是持久消息，不能用消息 id。 */
+private const val StreamingPreviewKey = "agent-streaming-preview"
+
+/** 是否停在底部附近：用户主动上翻时不抢滚动位置。 */
+private fun LazyListState.isNearBottom(itemCount: Int): Boolean {
+    val lastVisible = layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: return true
+    return lastVisible >= itemCount - 2
+}
+
 /**
  * Agent 对话页（纯展示层）。
  *
  * 所有状态经 [state] 注入，交互经回调上抛，不直接依赖数据库或 provider；需要完整行为时
  * 使用持有 [AgentChatController] 的重载。文案来自本页自带的 [AgentChatStrings]，跟随全局语言。
  *
- * 布局自适应：竖屏 / 紧凑宽度时单列（信息 chips + 对话流 + 输入区）；横屏且宽屏
- * （[rememberWindowSize] 判定 isExpanded 且宽大于高）时右侧展开 [infoPanel] 信息侧栏，
- * 侧栏可在标题栏折叠。宽屏下的运行状态、用量与诊断都经 [infoPanel] 展示，因此不再重复
- * 绘制底部状态条。
+ * 布局自适应：宽屏（[rememberWindowSize] 判定 isExpanded，不分横竖屏）时右侧展开
+ * [infoPanel] 信息侧栏；紧凑宽度时信息挤成顶部信息条。两种布局都能经标题栏的 Info 按钮
+ * 收回信息区——宽屏收回侧栏后聊天列顶部退回紧凑信息条，紧凑宽度收回后只留模型面板与
+ * 诊断入口，都不会丢掉功能入口。宽屏侧栏展开时的运行状态、用量与诊断都经 [infoPanel]
+ * 展示，因此不重复绘制底部状态条。
+ *
+ * 流式：模型生成期间，[AgentSessionState.streamingText] 的增量以预览气泡形式挂在对话流
+ * 末尾，最终答复落库后由正式消息接管。预览文本经 [AgentToolProtocol.cleanFinalText] 剥掉
+ * 正在生成的协议块，不会把调用标签闪给用户。预览文本经 [streamingText] 单独传入，
+ * 信息侧栏 / 信息条 / 标题栏不参与每个 token 的重组。
  */
 @Composable
 fun AgentChatScreen(
@@ -106,6 +123,12 @@ fun AgentChatScreen(
     onOpenDiagnostics: (() -> Unit)? = null,
     onCopyText: ((String) -> Unit)? = null,
     infoPanel: (@Composable ColumnScope.() -> Unit)? = null,
+    /**
+     * 流式预览文本。与 [state] 分开传，信息侧栏 / 信息条 / 标题栏才不会因为每个 token
+     * 重组一次；null 时回退读 [AgentSessionState.streamingText]，方便只持有 state 的
+     * 纯展示调用方。
+     */
+    streamingText: String? = null,
     question: AgentChatQuestion? = null,
     onAnswerQuestion: (String) -> Unit = {},
     onDismissQuestion: () -> Unit = {}
@@ -114,20 +137,38 @@ fun AgentChatScreen(
     val strings = remember(appStrings) { AgentChatStrings.resolve(appStrings) }
     val listState = rememberLazyListState()
     val windowSize = rememberWindowSize()
-    val useSidebar = infoPanel != null &&
-        windowSize.isExpanded &&
-        windowSize.screenWidthDp > windowSize.screenHeightDp
-    var sidebarVisible by rememberSaveable { mutableStateOf(true) }
+    // 宽屏（不分方向）才放得下右侧侧栏；紧凑宽度用顶部信息条。
+    val useSidebar = infoPanel != null && windowSize.isExpanded
+    // 信息区收起状态：宽屏收回右侧侧栏，紧凑宽度收回顶部信息条。跨旋转保持。
+    var infoVisible by rememberSaveable { mutableStateOf(true) }
+    // 没有侧栏时也要能收回顶部信息条；一条入口都没有时不画这个按钮。
+    val canToggleInfo = infoPanel != null || onOpenModelPanel != null || onOpenDiagnostics != null
+    // 预览要剥掉正在生成的协议块：模型输出调用块时不该把标签闪给用户。
+    // 纯散文（最常见）不必跑协议正则——流式每帧都会走到这里。
+    val rawStreamingText = streamingText ?: state.streamingText
+    val streamingPreview = remember(rawStreamingText) {
+        val raw = rawStreamingText
+        if (raw.contains('<')) AgentToolProtocol.cleanFinalText(raw) else raw.trim()
+    }
+    val hasStreaming = streamingPreview.isNotBlank()
+    // 流式预览算一个虚拟条目，滚动与空态判断都要把它计入。
+    val itemCount = state.messages.size + if (hasStreaming) 1 else 0
 
-    LaunchedEffect(state.messages.size, state.isRunning) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.lastIndex)
-        }
+    // 新消息落库（或流式预览条目首次出现）时平滑滚动到底部。
+    LaunchedEffect(itemCount, state.isRunning) {
+        if (itemCount == 0) return@LaunchedEffect
+        if (listState.isNearBottom(itemCount)) listState.animateScrollToItem(itemCount - 1)
+    }
+
+    // 流式增量增长时贴着底部走。用瞬时滚动：每个 token 都重启一次动画会让滚动永远完不成。
+    LaunchedEffect(streamingPreview) {
+        if (streamingPreview.isBlank() || itemCount == 0) return@LaunchedEffect
+        if (listState.isNearBottom(itemCount)) listState.scrollToItem(itemCount - 1)
     }
 
     Column(modifier = modifier.fillMaxSize()) {
         val trailingContent: (@Composable RowScope.() -> Unit)? =
-            if (onNewChat != null || onBack != null || onOpenSessions != null || useSidebar) {
+            if (onNewChat != null || onBack != null || onOpenSessions != null || canToggleInfo) {
                 {
                     if (onBack != null) {
                         IconButton(onClick = onBack) {
@@ -150,11 +191,12 @@ fun AgentChatScreen(
                             Icon(imageVector = Icons.Outlined.Add, contentDescription = strings.newChat)
                         }
                     }
-                    if (useSidebar) {
-                        IconButton(onClick = { sidebarVisible = !sidebarVisible }) {
+                    if (canToggleInfo) {
+                        IconButton(onClick = { infoVisible = !infoVisible }) {
                             Icon(
-                                imageVector = Icons.Outlined.Info,
-                                contentDescription = strings.sidebarToggle
+                                imageVector = if (infoVisible) Icons.Filled.Info else Icons.Outlined.Info,
+                                contentDescription =
+                                if (infoVisible) strings.sidebarHide else strings.sidebarShow
                             )
                         }
                     }
@@ -169,14 +211,13 @@ fun AgentChatScreen(
         )
 
         if (useSidebar && infoPanel != null) {
-            // 横屏宽屏：聊天列 + 右侧信息侧栏，输入区留在布局流内，不会被键盘/侧栏遮挡。
-            // 侧栏折叠时聊天列顶部退回紧凑信息条，避免模型 / 用量信息一起消失。
-            val showCompactInfo = !sidebarVisible
+            // 宽屏：聊天列 + 右侧信息侧栏，输入区留在布局流内，不会被键盘/侧栏遮挡。
+            // 侧栏收回时聊天列顶部退回紧凑信息条，避免模型 / 用量信息一起消失。
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 Column(modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()) {
-                    if (showCompactInfo) {
+                    if (!infoVisible) {
                         AgentInfoBar(
                             modelName = modelName,
                             providerLabel = providerLabel,
@@ -188,6 +229,7 @@ fun AgentChatScreen(
                     }
                     AgentTranscript(
                         state = state,
+                        streamingPreview = streamingPreview,
                         listState = listState,
                         strings = strings,
                         onCopyText = onCopyText,
@@ -196,7 +238,7 @@ fun AgentChatScreen(
                             .weight(1f)
                     )
                 }
-                if (sidebarVisible) {
+                if (infoVisible) {
                     Box(
                         modifier = Modifier
                             .width(0.8.dp)
@@ -229,10 +271,13 @@ fun AgentChatScreen(
                 usage = state.usage,
                 strings = strings,
                 onOpenModelPanel = onOpenModelPanel,
-                onOpenDiagnostics = onOpenDiagnostics
+                onOpenDiagnostics = onOpenDiagnostics,
+                // 信息区收回时只留入口按钮：不丢模型面板 / 诊断，也不占对话流的高度。
+                actionsOnly = !infoVisible
             )
             AgentTranscript(
                 state = state,
+                streamingPreview = streamingPreview,
                 listState = listState,
                 strings = strings,
                 onCopyText = onCopyText,
@@ -250,11 +295,12 @@ fun AgentChatScreen(
             )
         }
 
-        // 宽屏且侧栏展开时，运行状态 / 错误由信息侧栏展示；其余情况（单列、侧栏折叠）画底部状态条。
-        if (!useSidebar || !sidebarVisible) {
+        // 宽屏且侧栏展开时，运行状态 / 错误由信息侧栏展示；其余情况（单列、信息区收回）画底部状态条。
+        if (!useSidebar || !infoVisible) {
             AgentStatusPanel(
                 state = state,
                 strings = strings,
+                hasStreaming = hasStreaming,
                 onCancel = onCancel
             )
         }
@@ -279,12 +325,14 @@ fun AgentChatScreen(
     providerLabel: String? = null,
     onCopyText: ((String) -> Unit)? = null,
     infoPanel: (@Composable ColumnScope.() -> Unit)? = null,
+    streamingText: String? = null,
     question: AgentChatQuestion? = null,
     onAnswerQuestion: (String) -> Unit = {},
     onDismissQuestion: () -> Unit = {}
 ) {
     val state by controller.state.collectAsStateWithLifecycle()
     val modelName by controller.modelName.collectAsStateWithLifecycle()
+    val streamingText by controller.streamingText.collectAsStateWithLifecycle()
     AgentChatScreen(
         state = state,
         onSend = controller::send,
@@ -299,6 +347,7 @@ fun AgentChatScreen(
         onOpenDiagnostics = onOpenDiagnostics,
         onCopyText = onCopyText,
         infoPanel = infoPanel,
+        streamingText = streamingText,
         question = question,
         onAnswerQuestion = onAnswerQuestion,
         onDismissQuestion = onDismissQuestion
@@ -315,7 +364,12 @@ data class AgentChatQuestion(
     val options: List<String> = emptyList()
 )
 
-/** 单列时的顶部信息条：模型 / 提供方 / 用量 chip，以及模型面板与诊断入口。 */
+/**
+ * 单列时的顶部信息条：模型 / 提供方 / 用量 chip，以及模型面板与诊断入口。
+ *
+ * [actionsOnly] 为真时只画入口按钮（信息区被用户收回后的最小形态）：功能入口不丢，
+ * 但不再占用对话流的垂直空间。
+ */
 @Composable
 private fun AgentInfoBar(
     modelName: String?,
@@ -324,7 +378,8 @@ private fun AgentInfoBar(
     strings: AgentChatText,
     onOpenModelPanel: (() -> Unit)?,
     onOpenDiagnostics: (() -> Unit)?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    actionsOnly: Boolean = false
 ) {
     Row(
         modifier = modifier
@@ -337,32 +392,36 @@ private fun AgentInfoBar(
             ),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        LazyRow(
-            modifier = Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
-        ) {
-            item {
-                AppBadge(
-                    text = modelName ?: strings.modelUnknown,
-                    icon = Icons.Outlined.SmartToy,
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                )
-            }
-            item {
-                AppBadge(
-                    text = providerLabel ?: strings.providerUnknown,
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            item {
-                AppBadge(
-                    text = strings.usageShortTemplate
-                        .replace("{input}", usage.promptTokens.toString())
-                        .replace("{output}", usage.completionTokens.toString())
-                        .replace("{requests}", usage.requestCount.toString())
-                )
+        if (actionsOnly) {
+            Spacer(modifier = Modifier.weight(1f))
+        } else {
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+            ) {
+                item {
+                    AppBadge(
+                        text = modelName ?: strings.modelUnknown,
+                        icon = Icons.Outlined.SmartToy,
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+                item {
+                    AppBadge(
+                        text = providerLabel ?: strings.providerUnknown,
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                item {
+                    AppBadge(
+                        text = strings.usageShortTemplate
+                            .replace("{input}", usage.promptTokens.toString())
+                            .replace("{output}", usage.completionTokens.toString())
+                            .replace("{requests}", usage.requestCount.toString())
+                    )
+                }
             }
         }
         if (onOpenModelPanel != null) {
@@ -384,16 +443,18 @@ private fun AgentInfoBar(
     }
 }
 
-/** 对话流：空态用 [AppEmptyState]，有消息时用带稳定 key 的 LazyColumn。 */
+/** 对话流：空态用 [AppEmptyState]，有消息（或流式预览）时用带稳定 key 的 LazyColumn。 */
 @Composable
 private fun AgentTranscript(
     state: AgentSessionState,
+    streamingPreview: String,
     listState: LazyListState,
     strings: AgentChatText,
     onCopyText: ((String) -> Unit)?,
     modifier: Modifier = Modifier
 ) {
-    if (state.messages.isEmpty()) {
+    val hasStreaming = streamingPreview.isNotBlank()
+    if (state.messages.isEmpty() && !hasStreaming) {
         AppEmptyState(
             icon = Icons.Outlined.SmartToy,
             title = strings.emptyTitle,
@@ -412,6 +473,74 @@ private fun AgentTranscript(
         ) {
             items(state.messages, key = { it.id }) { message ->
                 AgentMessageRow(message = message, strings = strings, onCopyText = onCopyText)
+            }
+            if (hasStreaming) {
+                item(key = StreamingPreviewKey) {
+                    AgentStreamingRow(text = streamingPreview, strings = strings)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 流式预览行：最终答复落库前，把正在生成的文本先画出来。
+ * 与助手气泡同一套形状，尾部带一个光标色块表示"还在生成"；不做长按复制——
+ * 内容还没生成完，复制半段没有意义。
+ */
+@Composable
+private fun AgentStreamingRow(
+    text: String,
+    strings: AgentChatText,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.Start
+    ) {
+        Column(modifier = Modifier.widthIn(max = BubbleMaxWidth)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = strings.assistantLabel,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(Spacing.xs))
+                Text(
+                    text = strings.streamingHint,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = 4.dp,
+                    bottomEnd = 16.dp
+                ),
+                tonalElevation = 0.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.Bottom
+                ) {
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(width = 2.dp, height = 14.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = RoundedCornerShape(1.dp)
+                            )
+                    )
+                }
             }
         }
     }
@@ -593,11 +722,12 @@ private fun AgentMessageRow(
     }
 }
 
-/** 单列时的底部状态条：思考中 + 停止按钮 + 错误信息。 */
+/** 单列时的底部状态条：思考中 + 停止按钮 + 错误信息。[hasStreaming] 为真时提示"正在生成"。 */
 @Composable
 private fun AgentStatusPanel(
     state: AgentSessionState,
     strings: AgentChatText,
+    hasStreaming: Boolean,
     onCancel: () -> Unit
 ) {
     Column(modifier = Modifier.padding(horizontal = Spacing.compactHorizontalPadding)) {
@@ -609,7 +739,7 @@ private fun AgentStatusPanel(
                 )
                 Spacer(modifier = Modifier.width(Spacing.s))
                 Text(
-                    text = strings.thinking,
+                    text = if (hasStreaming) strings.streamingHint else strings.thinking,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

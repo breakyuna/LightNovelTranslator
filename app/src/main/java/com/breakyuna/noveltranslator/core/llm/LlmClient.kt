@@ -4,6 +4,10 @@ import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -62,6 +66,14 @@ class LlmClient : LlmGateway {
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(180, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
+        // Hard ceiling for one complete call. readTimeout only bounds a silent gap, so a server
+        // that keeps trickling bytes (or a stuck SSE body) can hold a call — and with it the
+        // engine's pause/cancel drain and a whole global concurrency slot — indefinitely.
+        // LinguaGacha closes the same hole with a local per-request timeout that wins over the
+        // server's pace; 10 minutes is deliberately far above any legitimate chapter generation
+        // so it only fires on a genuinely stuck connection. Expiry surfaces as InterruptedIOException
+        // → TIMEOUT → retryable, so the normal retry ladder handles it.
+        .callTimeout(10, TimeUnit.MINUTES)
         .build()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -324,6 +336,408 @@ class LlmClient : LlmGateway {
         return result
     }
 
+    /**
+     * 流式执行：按 provider 形状走 SSE，文本增量边到边转发，最后给出与非流式同构的
+     * [LlmResult]。
+     *
+     * 两条兜底保证内容不丢（都不会造成重复计费：HTTP 层失败的响应不计费）：
+     * 1. HTTP 层就失败（未计费）时整段回退 [executeCompletion]，规避 provider 不认
+     *    `stream` / `stream_options` 的兼容差异；
+     * 2. 流一个增量都没产出时同样回退非流式，避免把空响应当成失败。
+     *
+     * 整个 flow 固定 `flowOn(Dispatchers.IO)`：SSE 的逐行读取是阻塞 IO，
+     * 不能在主线程跑（Agent 会话跑在 Main.immediate 上）。
+     */
+    override fun executeStreaming(request: LlmRequest): Flow<LlmStreamChunk> = flow {
+        val startedAt = System.currentTimeMillis()
+        val accumulated = StringBuilder()
+        var streamed = false
+        var completed: LlmResult? = null
+        var failure: LlmResult? = null
+
+        when (request.provider.providerType) {
+            ProviderType.ANTHROPIC_CLAUDE -> streamAnthropic(request, startedAt)
+            ProviderType.GEMINI_DIRECT -> streamGemini(request, startedAt)
+            else -> streamOpenAiCompatible(request, startedAt)
+        }.collect { chunk ->
+            when (chunk) {
+                is LlmStreamChunk.TextDelta -> {
+                    streamed = true
+                    accumulated.append(chunk.text)
+                    emit(chunk)
+                }
+                is LlmStreamChunk.ToolCalls -> emit(chunk)
+                is LlmStreamChunk.Completed -> completed = chunk.result
+                is LlmStreamChunk.Failed -> failure = chunk.result
+            }
+        }
+
+        val httpRejected = failure != null && failure.httpStatus != null && !streamed
+        val nothingAtAll = completed == null && failure == null && !streamed
+        if (httpRejected || nothingAtAll) {
+            // 整段回退非流式：内容与计费口径都与 [executeCompletion] 一致。
+            val fallback = executeCompletion(request)
+            if (fallback.isSuccess) {
+                if (fallback.text.isNotBlank()) {
+                    // 全文已经拿到了，但界面不能"等待 → 全文突然出现"：按小分片回放，
+                    // 让它仍有逐字反馈。分片与总时长都设了上限，回放是展示层的润色，
+                    // 不能把回合时长拉长到影响使用。
+                    replayTextAsDeltas(
+                        text = fallback.text,
+                        chunkChars = REPLAY_CHUNK_CHARS,
+                        delayMs = REPLAY_CHUNK_DELAY_MS,
+                        budgetMs = REPLAY_MAX_MS
+                    ).collect { emit(it) }
+                }
+                if (fallback.toolCalls.isNotEmpty()) {
+                    emit(LlmStreamChunk.ToolCalls(fallback.toolCalls))
+                }
+                emit(LlmStreamChunk.Completed(fallback))
+            } else {
+                emit(LlmStreamChunk.Failed(fallback))
+            }
+            return@flow
+        }
+
+        // 已经吐过文本之后的失败必须原样上报：RetryingLlmGateway 不会为部分输出重试。
+        failure?.let {
+            emit(LlmStreamChunk.Failed(it))
+            return@flow
+        }
+
+        val effective = completed ?: LlmResult(
+            text = accumulated.toString(),
+            promptTokens = TokenCalculator.estimateTokens(request.systemPrompt + request.userPrompt),
+            completionTokens = TokenCalculator.estimateTokens(accumulated.toString()),
+            isSuccess = true,
+            usageSource = UsageSource.ESTIMATED,
+            operation = request.operation
+        )
+        if (streamed || effective.toolCalls.isNotEmpty()) {
+            emit(LlmStreamChunk.Completed(effective))
+        } else {
+            emit(
+                LlmStreamChunk.Failed(
+                    effective.copy(
+                        isSuccess = false,
+                        errorCategory = LlmErrorCategory.EMPTY_RESPONSE,
+                        errorMessage = "模型返回了空内容"
+                    )
+                )
+            )
+        }
+    }.flowOn(Dispatchers.IO)
+
+    /**
+     * SSE 公共骨架：发请求 → 非 2xx 转失败帧 → 逐帧喂给 [consume] → 收尾时用 [result] 折算。
+     * 取消必须继续上抛；其余异常按非流式口径分类成失败帧。
+     */
+    private fun streamSse(
+        httpRequest: Request,
+        startedAt: Long,
+        llmRequest: LlmRequest,
+        consume: (JSONObject) -> String,
+        result: () -> LlmResult
+    ): Flow<LlmStreamChunk> = flow {
+        val call = client.newCall(httpRequest)
+        try {
+            val response = call.execute()
+            response.use {
+                if (!it.isSuccessful) {
+                    emit(
+                        LlmStreamChunk.Failed(
+                            httpFailure(payloadOf(it), System.currentTimeMillis() - startedAt)
+                        )
+                    )
+                    return@flow
+                }
+                readSseFrames(it, call).collect { frame ->
+                    val delta = consume(frame)
+                    if (delta.isNotEmpty()) emit(LlmStreamChunk.TextDelta(delta))
+                }
+            }
+            emit(LlmStreamChunk.Completed(result()))
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            emit(
+                LlmStreamChunk.Failed(
+                    streamExceptionResult(error, llmRequest, System.currentTimeMillis() - startedAt)
+                )
+            )
+        } finally {
+            // 正常结束时空操作；异常/取消时打断可能仍在读取的连接。
+            call.cancel()
+        }
+    }
+
+    /** OpenAI 兼容形状的 SSE：文本走 `delta.content`，工具调用参数按 index 增量合并。 */
+    private fun streamOpenAiCompatible(request: LlmRequest, startedAt: Long): Flow<LlmStreamChunk> {
+        val provider = request.provider
+        val base = provider.baseUrl.trim().removeSuffix("/")
+        val endpoint = when {
+            base.endsWith("/chat/completions") -> base
+            base.endsWith("/v1") -> "$base/chat/completions"
+            else -> "$base/v1/chat/completions"
+        }
+        validateEndpoint(endpoint, provider.providerType)
+        val model = provider.selectedModel.ifBlank { "gpt-4o-mini" }
+        val isReasoningModel = isOpenAiReasoningModel(
+            model,
+            URI(endpoint).host.equals("api.openai.com", true)
+        )
+        val accumulator = OpenAiStreamAccumulator()
+        val body = JSONObject().apply {
+            put("model", model)
+            if (!isReasoningModel) put("temperature", request.temperature ?: provider.temperature)
+            if (request.maxTokens != null && request.maxTokens > 0) {
+                put(if (isReasoningModel) "max_completion_tokens" else "max_tokens", request.maxTokens)
+            }
+            if (!request.reasoningEffort.isNullOrBlank() && isReasoningModel) {
+                put("reasoning_effort", request.reasoningEffort.lowercase(Locale.ROOT))
+            }
+            request.tools?.takeIf { it.isNotEmpty() }?.let { specs ->
+                buildOpenAiTools(specs)?.let { tools -> put("tools", JSONArray(tools)) }
+            }
+            put("stream", true)
+            // include_usage 让最后一个帧带上 usage；不认这个字段的 provider 由 400 回退覆盖。
+            put("stream_options", JSONObject().put("include_usage", true))
+            put("messages", JSONArray().apply {
+                if (request.systemPrompt.isNotBlank()) {
+                    put(JSONObject().put("role", "system").put("content", request.systemPrompt))
+                }
+                put(JSONObject().put("role", "user").put("content", request.userPrompt))
+            })
+        }
+        val builder = Request.Builder().url(endpoint).post(body.toString().toRequestBody(jsonMediaType))
+        provider.apiKey.trim().takeIf { it.isNotBlank() }?.let { builder.header("Authorization", "Bearer $it") }
+        applyCustomHeaders(builder, provider)
+        return streamSse(builder.build(), startedAt, request, accumulator::consume) {
+            openAiStreamResult(accumulator, request, startedAt)
+        }
+    }
+
+    /** Anthropic 的 SSE：正文来自 `content_block_delta` 的 `text_delta`。 */
+    private fun streamAnthropic(request: LlmRequest, startedAt: Long): Flow<LlmStreamChunk> {
+        val provider = request.provider
+        val base = provider.baseUrl.trim().removeSuffix("/")
+        val endpoint = when {
+            base.endsWith("/messages") -> base
+            base.endsWith("/v1") -> "$base/messages"
+            else -> "$base/v1/messages"
+        }
+        validateEndpoint(endpoint, provider.providerType)
+        require(provider.apiKey.isNotBlank()) { "Anthropic API key is required" }
+        val model = provider.selectedModel.ifBlank { "claude-haiku-4-5-20251001" }
+        val isClaude37Plus = model.contains("claude-3-7", ignoreCase = true) ||
+            model.contains("claude-4", ignoreCase = true)
+        val body = JSONObject().apply {
+            put("model", model)
+            put("stream", true)
+            put("max_tokens", request.maxTokens ?: minOf(16_384, provider.maxContextTokens / 2))
+            put("temperature", request.temperature ?: provider.temperature)
+            if (!request.reasoningEffort.isNullOrBlank() && isClaude37Plus) {
+                val effort = request.reasoningEffort.lowercase(Locale.ROOT)
+                if (effort == "none" || effort == "disabled") {
+                    put("thinking", JSONObject().put("type", "disabled"))
+                }
+            }
+            if (request.systemPrompt.isNotBlank()) put("system", request.systemPrompt)
+            put(
+                "messages",
+                JSONArray().put(
+                    JSONObject().put("role", "user").put("content", request.userPrompt)
+                )
+            )
+        }
+        val builder = Request.Builder().url(endpoint)
+            .header("x-api-key", provider.apiKey.trim())
+            .header("anthropic-version", "2023-06-01")
+            .post(body.toString().toRequestBody(jsonMediaType))
+        applyCustomHeaders(builder, provider)
+        val accumulator = AnthropicStreamAccumulator()
+        return streamSse(builder.build(), startedAt, request, accumulator::consume) {
+            anthropicStreamResult(accumulator, request, startedAt)
+        }
+    }
+
+    /** Gemini 的 SSE：`streamGenerateContent?alt=sse`，每帧一个候选，parts 顺序拼接。 */
+    private fun streamGemini(request: LlmRequest, startedAt: Long): Flow<LlmStreamChunk> {
+        val provider = request.provider
+        val model = provider.selectedModel.ifBlank { "gemini-2.5-flash" }
+        val apiKey = provider.apiKey.trim()
+        require(apiKey.isNotBlank()) { "Gemini API key is required" }
+        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$model:streamGenerateContent?alt=sse"
+        val supportsThinking = model.contains("2.5", ignoreCase = true) ||
+            model.contains("2.0", ignoreCase = true) ||
+            model.contains("thinking", ignoreCase = true) ||
+            model.contains("gemini-3", ignoreCase = true)
+        val body = JSONObject().apply {
+            put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", request.userPrompt))
+                    )
+                )
+            )
+            if (request.systemPrompt.isNotBlank()) {
+                put(
+                    "systemInstruction",
+                    JSONObject().put(
+                        "parts",
+                        JSONArray().put(JSONObject().put("text", request.systemPrompt))
+                    )
+                )
+            }
+            put("generationConfig", JSONObject().apply {
+                put("temperature", request.temperature ?: provider.temperature)
+                if (request.maxTokens != null && request.maxTokens > 0) {
+                    put("maxOutputTokens", request.maxTokens)
+                }
+                if (!request.reasoningEffort.isNullOrBlank() && supportsThinking) {
+                    val effort = request.reasoningEffort.lowercase(Locale.ROOT)
+                    when (effort) {
+                        "none", "disabled" -> put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+                        "low", "minimal" -> put("thinkingConfig", JSONObject().put("thinkingBudget", 1024))
+                        "high", "max" -> put("thinkingConfig", JSONObject().put("thinkingBudget", 8192))
+                    }
+                }
+            })
+        }
+        val builder = Request.Builder().url(endpoint)
+            .header("x-goog-api-key", apiKey)
+            .post(body.toString().toRequestBody(jsonMediaType))
+        applyCustomHeaders(builder, provider)
+        val accumulator = GeminiStreamAccumulator()
+        return streamSse(builder.build(), startedAt, request, accumulator::consume) {
+            geminiStreamResult(accumulator, request, startedAt)
+        }
+    }
+
+    /** 把 OpenAI 兼容 SSE 的累积状态折算成与非流式同构的 [LlmResult]。 */
+    private fun openAiStreamResult(
+        accumulator: OpenAiStreamAccumulator,
+        request: LlmRequest,
+        startedAt: Long
+    ): LlmResult {
+        val duration = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+        val text = accumulator.text()
+        val calls = accumulator.toolCalls()
+        val finishReason = accumulator.finishReason
+        val truncated = finishReason.equals("length", true)
+        return LlmResult(
+            text = text,
+            promptTokens = accumulator.promptTokens
+                ?: TokenCalculator.estimateTokens(request.systemPrompt + request.userPrompt),
+            completionTokens = accumulator.completionTokens ?: TokenCalculator.estimateTokens(text),
+            isSuccess = text.isNotBlank() || calls.isNotEmpty(),
+            finishReason = finishReason,
+            isTruncated = truncated,
+            errorCategory = when {
+                truncated -> LlmErrorCategory.TRUNCATED_OUTPUT
+                text.isBlank() && calls.isEmpty() -> LlmErrorCategory.EMPTY_RESPONSE
+                else -> null
+            },
+            // 截断与非流式一样不盲目重试：重复请求只会再付一次费。
+            retryable = false,
+            errorMessage = if (truncated) "Provider response was truncated ($finishReason)" else null,
+            usageSource = if (accumulator.promptTokens != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            cachedTokens = accumulator.cachedTokens,
+            durationMs = duration,
+            operation = request.operation,
+            toolCalls = calls
+        )
+    }
+
+    /** 把 Anthropic SSE 的累积状态折算成与非流式同构的 [LlmResult]。 */
+    private fun anthropicStreamResult(
+        accumulator: AnthropicStreamAccumulator,
+        request: LlmRequest,
+        startedAt: Long
+    ): LlmResult {
+        val duration = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+        val text = accumulator.text()
+        val finishReason = accumulator.stopReason
+        val truncated = finishReason.equals("max_tokens", true)
+        return LlmResult(
+            text = text,
+            promptTokens = accumulator.inputTokens
+                ?: TokenCalculator.estimateTokens(request.systemPrompt + request.userPrompt),
+            completionTokens = accumulator.outputTokens ?: TokenCalculator.estimateTokens(text),
+            isSuccess = text.isNotBlank(),
+            finishReason = finishReason,
+            isTruncated = truncated,
+            errorCategory = when {
+                truncated -> LlmErrorCategory.TRUNCATED_OUTPUT
+                text.isBlank() -> LlmErrorCategory.EMPTY_RESPONSE
+                else -> null
+            },
+            retryable = false,
+            usageSource = if (accumulator.inputTokens != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            cachedTokens = accumulator.cachedTokens,
+            durationMs = duration,
+            operation = request.operation
+        )
+    }
+
+    /** 把 Gemini SSE 的累积状态折算成与非流式同构的 [LlmResult]。 */
+    private fun geminiStreamResult(
+        accumulator: GeminiStreamAccumulator,
+        request: LlmRequest,
+        startedAt: Long
+    ): LlmResult {
+        val duration = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+        val text = accumulator.text()
+        val finishReason = accumulator.finishReason
+        val truncated = finishReason.equals("MAX_TOKENS", true)
+        return LlmResult(
+            text = text,
+            promptTokens = accumulator.promptTokens
+                ?: TokenCalculator.estimateTokens(request.systemPrompt + request.userPrompt),
+            completionTokens = accumulator.completionTokens ?: TokenCalculator.estimateTokens(text),
+            isSuccess = text.isNotBlank(),
+            finishReason = finishReason,
+            isTruncated = truncated,
+            errorCategory = when {
+                truncated -> LlmErrorCategory.TRUNCATED_OUTPUT
+                text.isBlank() -> LlmErrorCategory.EMPTY_RESPONSE
+                else -> null
+            },
+            retryable = false,
+            usageSource = if (accumulator.promptTokens != null) UsageSource.ACTUAL else UsageSource.ESTIMATED,
+            durationMs = duration,
+            operation = request.operation
+        )
+    }
+
+    /** 把错误响应读成 [HttpPayload]，供 SSE 路径复用 [httpFailure] 的分类与脱敏。 */
+    private fun payloadOf(response: Response) = HttpPayload(
+        code = response.code,
+        body = readResponseBodyLimited(response),
+        retryAfterMs = parseRetryAfter(response.header("Retry-After")),
+        requestId = response.header("x-request-id") ?: response.header("request-id")
+    )
+
+    /** 流式管道内的异常 → 与非流式一致分类的失败结果；取消必须继续上抛。 */
+    private fun streamExceptionResult(
+        error: Throwable,
+        request: LlmRequest,
+        duration: Long
+    ): LlmResult = LlmResult(
+        text = "",
+        promptTokens = 0,
+        completionTokens = 0,
+        isSuccess = false,
+        errorCategory = classifyException(error),
+        retryable = isRetryableCategory(classifyException(error)),
+        errorMessage = safeErrorMessage(error),
+        usageSource = UsageSource.UNKNOWN,
+        durationMs = duration,
+        operation = request.operation
+    )
+
     private fun isRetryableCategory(category: LlmErrorCategory): Boolean = when (category) {
         LlmErrorCategory.NETWORK_UNAVAILABLE,
         LlmErrorCategory.TIMEOUT,
@@ -355,6 +769,22 @@ class LlmClient : LlmGateway {
         else -> LlmErrorCategory.UNKNOWN
     }
 
+    /**
+     * 推理模型判定，[callOpenAiCompatible] 与 [streamOpenAiCompatible] 共用：
+     * OpenAI 官方域名上的 `o*` / `gpt-5`，以及名字里带 o1/o3/o4/r1/reasoner/reasoning 的模型
+     * 都走推理参数分支（不下发 temperature、改用 max_completion_tokens）。
+     */
+    private fun isOpenAiReasoningModel(model: String, officialHost: Boolean): Boolean {
+        val official = officialHost && (model.startsWith("o") || model.startsWith("gpt-5"))
+        return official ||
+            model.contains("o1", ignoreCase = true) ||
+            model.contains("o3", ignoreCase = true) ||
+            model.contains("o4", ignoreCase = true) ||
+            model.contains("r1", ignoreCase = true) ||
+            model.contains("reasoner", ignoreCase = true) ||
+            model.contains("reasoning", ignoreCase = true)
+    }
+
     private suspend fun callOpenAiCompatible(
         provider: ApiProviderEntity,
         systemPrompt: String,
@@ -375,13 +805,7 @@ class LlmClient : LlmGateway {
         val model = provider.selectedModel.ifBlank { "gpt-4o-mini" }
         val officialReasoningModel = URI(endpoint).host.equals("api.openai.com", true) &&
             (model.startsWith("o") || model.startsWith("gpt-5"))
-        val isReasoningModel = officialReasoningModel ||
-            model.contains("o1", ignoreCase = true) ||
-            model.contains("o3", ignoreCase = true) ||
-            model.contains("o4", ignoreCase = true) ||
-            model.contains("r1", ignoreCase = true) ||
-            model.contains("reasoner", ignoreCase = true) ||
-            model.contains("reasoning", ignoreCase = true)
+        val isReasoningModel = isOpenAiReasoningModel(model, officialReasoningModel)
         // 原生 function calling：工具目录非空时才携带 tools；tool_choice 用各 API 的默认 auto。
         val toolSpecs = buildOpenAiTools(tools)
         val body = JSONObject().apply {
@@ -879,5 +1303,14 @@ class LlmClient : LlmGateway {
     companion object {
         private const val MAX_ERROR_CHARS = 4096
         private const val MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+        /** 回退非流式时的分片字符数：2 个字符约等于一个 token，视觉上就是逐字。 */
+        private const val REPLAY_CHUNK_CHARS = 2
+
+        /** 回退非流式时的分片间隔（毫秒）：约 500 字/秒，"快速"但不瞬间。 */
+        private const val REPLAY_CHUNK_DELAY_MS = 4L
+
+        /** 回放预算上限：超出后剩余部分一次给完，避免长答复把回合拖太久。 */
+        private const val REPLAY_MAX_MS = 3_000L
     }
 }

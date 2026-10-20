@@ -14,9 +14,11 @@ import com.breakyuna.noveltranslator.core.llm.LlmErrorCategory
 import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmRequest
 import com.breakyuna.noveltranslator.core.llm.LlmResult
+import com.breakyuna.noveltranslator.core.llm.LlmStreamChunk
 import com.breakyuna.noveltranslator.core.llm.LlmToolSpec
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
+import com.breakyuna.noveltranslator.core.llm.UsageSource
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import kotlinx.coroutines.flow.Flow
@@ -46,13 +48,23 @@ class AgentLlmFailureException(val result: LlmResult) : Exception(
  *
  * 提供方、模型、温度、Token 上限等在 [AgentSessionConfig] 中固定，取消信号经
  * [signalProvider] 动态读取，避免取消后执行器持有已失效的旧信号。
+ *
+ * 流式：配置开启且注入了 [streamObserver] 时，[execute] 改走
+ * [LlmGateway.executeStreaming]，把文本增量同步送给观察者，同时本地累积出与非流式
+ * 同构的 [LlmResult]。Koog 的回合循环、工具协议、计费与落库全部不变——流式只改变
+ * "用户何时看到字"，不改变"回合何时结束"。
  */
 class LntPromptExecutor(
     private val gateway: LlmGateway,
     private val config: AgentSessionConfig,
     /** Agent 工具目录：nativeToolsEnabled 时映射为 provider 原生 tools 数组。 */
     private val toolSpecs: List<AgentToolSpec> = emptyList(),
-    private val signalProvider: () -> TranslationControlSignal? = { null }
+    private val signalProvider: () -> TranslationControlSignal? = { null },
+    /**
+     * 流式增量观察者。非空且 [AgentSessionConfig.streamingEnabled] 为真时启用流式；
+     * 由会话层注入，负责把增量文本送进 UI 状态。
+     */
+    private val streamObserver: ((String) -> Unit)? = null
 ) : PromptExecutor() {
 
     override suspend fun execute(
@@ -75,19 +87,22 @@ class LntPromptExecutor(
         } else {
             null
         }
-        val result = gateway.executeCompletion(
-            LlmRequest(
-                provider = provider,
-                systemPrompt = flattened.system,
-                userPrompt = flattened.user,
-                temperature = config.effectiveAgentTemperature,
-                maxTokens = config.maxTokens,
-                operation = config.operation,
-                controlSignal = signalProvider(),
-                reasoningEffort = config.reasoningEffort,
-                tools = nativeTools
-            )
+        val llmRequest = LlmRequest(
+            provider = provider,
+            systemPrompt = flattened.system,
+            userPrompt = flattened.user,
+            temperature = config.effectiveAgentTemperature,
+            maxTokens = config.maxTokens,
+            operation = config.operation,
+            controlSignal = signalProvider(),
+            reasoningEffort = config.reasoningEffort,
+            tools = nativeTools
         )
+        val result = if (streamObserver != null && config.streamingEnabled) {
+            executeStreamingRequest(llmRequest)
+        } else {
+            gateway.executeCompletion(llmRequest)
+        }
         // 原生 tool_calls 转换回文本协议调用块，交给同一套回合循环（执行/回执/历史不变）。
         val callBlocks = result.toolCalls
             .filter { it.name.isNotBlank() }
@@ -137,13 +152,64 @@ class LntPromptExecutor(
         )
     }
 
-    /** 对话式编排不使用流式返回；显式失败，避免调用方误以为支持流式。 */
+    /**
+     * 走 SSE 完成同一次请求：文本增量同步送给 [streamObserver]，同时本地累积出与非流式
+     * 同构的 [LlmResult]（文本、原生工具调用、用量）。
+     *
+     * 兜底规则：
+     * - 明确的失败（含 HTTP 层失败）直接回传，由上层决定重试或结束回合；
+     * - 流给出了增量但没有结束事件时，按已收到的文本估算用量判成功，不丢掉已生成的内容；
+     * - 流一个增量都没有（例如 gateway 未实现 SSE 却也没发文本）才整段回退非流式。
+     *
+     * 取消会以 [kotlinx.coroutines.CancellationException] 原样抛出，与 Koog 的回合取消一致。
+     */
+    private suspend fun executeStreamingRequest(request: LlmRequest): LlmResult {
+        val observer = streamObserver ?: return gateway.executeCompletion(request)
+        val text = StringBuilder()
+        val toolCalls = mutableListOf<LlmToolCall>()
+        var streamed = false
+        var completed: LlmResult? = null
+        var failure: LlmResult? = null
+
+        gateway.executeStreaming(request).collect { chunk ->
+            when (chunk) {
+                is LlmStreamChunk.TextDelta -> {
+                    streamed = true
+                    text.append(chunk.text)
+                    observer(chunk.text)
+                }
+                is LlmStreamChunk.ToolCalls -> toolCalls += chunk.calls
+                is LlmStreamChunk.Completed -> completed = chunk.result
+                is LlmStreamChunk.Failed -> failure = chunk.result
+            }
+        }
+
+        failure?.let { return it }
+        completed?.let {
+            return it.copy(text = text.toString(), toolCalls = toolCalls)
+        }
+        if (!streamed) return gateway.executeCompletion(request)
+        return LlmResult(
+            text = text.toString(),
+            promptTokens = TokenCalculator.estimateTokens(request.systemPrompt + request.userPrompt),
+            completionTokens = TokenCalculator.estimateTokens(text.toString()),
+            isSuccess = true,
+            usageSource = UsageSource.ESTIMATED,
+            operation = request.operation,
+            toolCalls = toolCalls
+        )
+    }
+
+    /**
+     * 对话式编排的回合由 [execute] 驱动（流式在 [execute] 内部完成），Koog 的
+     * `executeStreaming` 入口不参与：显式失败，避免调用方误以为支持流式。
+     */
     override fun executeStreaming(
         prompt: Prompt,
         model: LLModel,
         tools: List<ToolDescriptor>
     ): Flow<StreamFrame> = flow {
-        throw UnsupportedOperationException("LNT Agent 编排不支持流式执行")
+        throw UnsupportedOperationException("LNT Agent 编排的流式在 execute 内部完成，不经过 Koog executeStreaming")
     }
 
     /** 未接入内容审核，显式失败而不是返回虚构结果。 */
