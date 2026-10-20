@@ -105,9 +105,11 @@ class AgentTurnHardeningTest {
             projectId: Long,
             parallelChapters: Int?,
             continuityMode: String?,
-            metadataEnabled: Boolean?,
             promptCacheEnabled: Boolean?
         ): String = "配置已更新"
+
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
     private fun result(text: String, promptTokens: Long = 10L, completionTokens: Long = 4L) =

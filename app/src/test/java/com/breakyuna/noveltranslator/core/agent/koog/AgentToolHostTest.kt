@@ -78,12 +78,14 @@ class AgentToolHostTest {
             projectId: Long,
             parallelChapters: Int?,
             continuityMode: String?,
-            metadataEnabled: Boolean?,
             promptCacheEnabled: Boolean?
         ): String {
-            invocations += "update_translation_config:$projectId:$parallelChapters:$continuityMode:$metadataEnabled:$promptCacheEnabled"
+            invocations += "update_translation_config:$projectId:$parallelChapters:$continuityMode:$promptCacheEnabled"
             return "配置已更新"
         }
+
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
     private fun execute(host: AgentToolHost, name: String, argumentsJson: String): AgentToolOutcome =

@@ -37,9 +37,10 @@ class AgentToolDispatchTest {
             projectId: Long,
             parallelChapters: Int?,
             continuityMode: String?,
-            metadataEnabled: Boolean?,
             promptCacheEnabled: Boolean?
         ): String = "配置"
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
     private suspend fun call(name: String, args: String): AgentToolOutcome =

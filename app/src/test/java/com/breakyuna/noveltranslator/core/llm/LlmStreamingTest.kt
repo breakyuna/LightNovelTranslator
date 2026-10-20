@@ -205,9 +205,11 @@ class LlmStreamingTest {
                 Result.success(emptyList())
         }
 
-        val chunks = gateway.executeStreaming(
-            LlmRequest(provider(), "system", "user")
-        ).toList()
+        val chunks = runBlocking {
+            gateway.executeStreaming(
+                LlmRequest(provider(), "system", "user")
+            ).toList()
+        }
 
         assertEquals(1, gateway.completionCalls)
         assertEquals(LlmStreamChunk.TextDelta("完整答复"), chunks.first())
@@ -225,9 +227,11 @@ class LlmStreamingTest {
                 Result.success(emptyList())
         }
 
-        val chunks = gateway.executeStreaming(
-            LlmRequest(provider(), "system", "user")
-        ).toList()
+        val chunks = runBlocking {
+            gateway.executeStreaming(
+                LlmRequest(provider(), "system", "user")
+            ).toList()
+        }
 
         val failed = chunks.single() as LlmStreamChunk.Failed
         assertEquals(LlmErrorCategory.EMPTY_RESPONSE, failed.result.errorCategory)
@@ -251,9 +255,11 @@ class LlmStreamingTest {
                 Result.success(emptyList())
         }
 
-        val chunks = gateway.executeStreaming(
-            LlmRequest(provider(), "system", "user")
-        ).toList()
+        val chunks = runBlocking {
+            gateway.executeStreaming(
+                LlmRequest(provider(), "system", "user")
+            ).toList()
+        }
 
         assertEquals(LlmStreamChunk.TextDelta("我来查一下"), chunks[0])
         val toolCalls = chunks[1] as LlmStreamChunk.ToolCalls
