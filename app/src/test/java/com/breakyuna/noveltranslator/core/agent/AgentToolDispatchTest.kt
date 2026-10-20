@@ -187,7 +187,9 @@ class AgentToolDispatchTest {
             AgentToolHost.TOOL_REMOVE_GLOSSARY_ENTRY,
             AgentToolHost.TOOL_GET_QUALITY_RULES,
             AgentToolHost.TOOL_SET_QUALITY_RULES,
-            AgentToolHost.TOOL_GET_TRANSLATION_COST
+            AgentToolHost.TOOL_GET_TRANSLATION_COST,
+            AgentToolHost.TOOL_SUMMARIZE_CHAPTER,
+            AgentToolHost.TOOL_GET_STORY_MEMORY
         )
         val catalogNames = host.toolSpecs().map { it.name }.toSet()
 

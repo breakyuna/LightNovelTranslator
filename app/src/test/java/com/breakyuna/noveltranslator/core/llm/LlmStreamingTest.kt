@@ -276,7 +276,8 @@ class LlmStreamingTest {
         val deltas = replayTextAsDeltas(
             text = text,
             chunkChars = 2,
-            delayMs = 0L,
+            // delayMs 必须为正：实现约定"<=0 即调用方不要求润色，一次给完"。
+            delayMs = 1L,
             budgetMs = 10_000L
         ).toList().filterIsInstance<LlmStreamChunk.TextDelta>().map { it.text }
 

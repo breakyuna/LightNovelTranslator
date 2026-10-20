@@ -60,12 +60,15 @@ class LntPromptExecutor(
     private val config: AgentSessionConfig,
     /** Agent 工具目录：nativeToolsEnabled 时映射为 provider 原生 tools 数组。 */
     private val toolSpecs: List<AgentToolSpec> = emptyList(),
-    private val signalProvider: () -> TranslationControlSignal? = { null },
     /**
      * 流式增量观察者。非空且 [AgentSessionConfig.streamingEnabled] 为真时启用流式；
      * 由会话层注入，负责把增量文本送进 UI 状态。
      */
-    private val streamObserver: ((String) -> Unit)? = null
+    private val streamObserver: ((String) -> Unit)? = null,
+    // signalProvider 必须是最后一个参数：历史调用点用尾部 lambda 传它
+    // （如 LntPromptExecutor(gateway, config) { signal }）。新增参数若排在它后面，
+    // 尾部 lambda 会静默绑错对象——那正是 run #110 里 controlSignal 变 null 的原因。
+    private val signalProvider: () -> TranslationControlSignal? = { null }
 ) : PromptExecutor() {
 
     override suspend fun execute(

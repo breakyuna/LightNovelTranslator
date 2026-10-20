@@ -228,17 +228,17 @@ class AgentToolHostTest {
         execute(
             host,
             AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG,
-            """{"project_id":3,"parallel_chapters":0,"continuity_mode":"  ","metadata_enabled":"true","prompt_cache_enabled":"yes"}"""
+            """{"project_id":3,"parallel_chapters":0,"continuity_mode":"  ","prompt_cache_enabled":"yes"}"""
         )
         execute(
             host,
             AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG,
-            """{"project_id":3,"parallel_chapters":"4","continuity_mode":"TRANSLATION_TAIL","metadata_enabled":false,"prompt_cache_enabled":true}"""
+            """{"project_id":3,"parallel_chapters":"4","continuity_mode":"TRANSLATION_TAIL","prompt_cache_enabled":true}"""
         )
         assertEquals(
             listOf(
-                "update_translation_config:3:null:null:true:null",
-                "update_translation_config:3:4:TRANSLATION_TAIL:false:true"
+                "update_translation_config:3:null:null:null",
+                "update_translation_config:3:4:TRANSLATION_TAIL:true"
             ),
             host.invocations
         )
@@ -321,6 +321,8 @@ class AgentToolHostTest {
             AgentToolHost.TOOL_CANCEL_TRANSLATION,
             AgentToolHost.TOOL_RESUME_TRANSLATION,
             AgentToolHost.TOOL_EXPORT_EDITION,
+            AgentToolHost.TOOL_SUMMARIZE_CHAPTER,
+            AgentToolHost.TOOL_GET_STORY_MEMORY,
             AgentToolHost.TOOL_LIST_GLOSSARY,
             AgentToolHost.TOOL_ADD_GLOSSARY_ENTRY,
             AgentToolHost.TOOL_REMOVE_GLOSSARY_ENTRY,
