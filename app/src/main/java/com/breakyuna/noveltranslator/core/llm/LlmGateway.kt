@@ -310,7 +310,7 @@ class RetryingLlmGateway(
      * windows — are per provider resource. [scheduler] stays for tests and single-provider setups.
      */
     private val schedulerProvider: ((ApiProviderEntity) -> LlmRequestScheduler?)? = null
-) : LlmGateway(), DispatchPacing {
+) : LlmGateway, DispatchPacing {
 
     /** The scheduler that owns [request]'s provider, if pacing is wired at all. */
     private fun schedulerFor(request: LlmRequest): LlmRequestScheduler? =

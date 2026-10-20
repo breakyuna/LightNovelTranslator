@@ -164,6 +164,35 @@ fun AgentChatHostScreen(
 
     // 下面这些回调用 remember 包住：AgentChatScreen 每个流式 token 重组一次，若每次都传
     // 新实例，右侧信息栏（含数十条诊断日志）和对话流里每一行消息都会被拖着一起重组。
+    fun copyText(text: String, message: String) {
+        clipboardManager.setText(AnnotatedString(text))
+        scope.launch { snackbarHostState.showSnackbar(message) }
+    }
+
+    /** 导出日志：优先系统分享；空日志/文本过大/没有可用分享入口时退回剪贴板。 */
+    fun exportLogs() {
+        // 读持久化 JSONL（suspend）：崩溃重启后仍能导出崩溃前的记录。
+        scope.launch {
+            val text = viewModel.exportAgentLogsWithHistory()
+            if (text.isBlank()) {
+                snackbarHostState.showSnackbar(entryStrings.logsEmpty)
+                return@launch
+            }
+            if (text.length > ShareTextLimit) {
+                copyText(text, entryStrings.copiedLabel)
+                return@launch
+            }
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+            }
+            val started = runCatching {
+                context.startActivity(Intent.createChooser(send, entryStrings.logsExport))
+            }.isSuccess
+            if (!started) copyText(text, entryStrings.copiedLabel)
+        }
+    }
+
     // 真正需要跟着 token 变的只有流式预览本身。
     val startNewChatAction = remember { controller::startNewChat }
     val openSessionsAction = remember<() -> Unit> { { showSessionSheet = true } }
@@ -198,35 +227,6 @@ fun AgentChatHostScreen(
                     }
                 }
             )
-        }
-    }
-
-    fun copyText(text: String, message: String) {
-        clipboardManager.setText(AnnotatedString(text))
-        scope.launch { snackbarHostState.showSnackbar(message) }
-    }
-
-    /** 导出日志：优先系统分享；空日志/文本过大/没有可用分享入口时退回剪贴板。 */
-    fun exportLogs() {
-        // 读持久化 JSONL（suspend）：崩溃重启后仍能导出崩溃前的记录。
-        scope.launch {
-            val text = viewModel.exportAgentLogsWithHistory()
-            if (text.isBlank()) {
-                snackbarHostState.showSnackbar(entryStrings.logsEmpty)
-                return@launch
-            }
-            if (text.length > ShareTextLimit) {
-                copyText(text, entryStrings.copiedLabel)
-                return@launch
-            }
-            val send = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, text)
-            }
-            val started = runCatching {
-                context.startActivity(Intent.createChooser(send, entryStrings.logsExport))
-            }.isSuccess
-            if (!started) copyText(text, entryStrings.copiedLabel)
         }
     }
 

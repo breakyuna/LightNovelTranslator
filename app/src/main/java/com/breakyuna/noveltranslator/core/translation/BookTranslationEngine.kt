@@ -2771,7 +2771,7 @@ class BookTranslationEngine(
                                 // 全部结束后再抛给驱动层重排队——当场抛会取消同伴、白扔掉在飞请求。
                                 chunkFailure.compareAndSet(null, ChunkFailure.Requeue(requeue))
                             } catch (quality: ChunkQualityFailure) {
-                                chunkFailure.compareAndSet(null, ChunkFailure.Quality(quality.message))
+                                chunkFailure.compareAndSet(null, ChunkFailure.Quality(quality.message.orEmpty()))
                             }
                         }
                     }

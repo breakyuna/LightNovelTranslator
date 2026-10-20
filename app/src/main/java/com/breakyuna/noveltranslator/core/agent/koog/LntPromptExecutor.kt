@@ -15,6 +15,7 @@ import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import com.breakyuna.noveltranslator.core.llm.LlmRequest
 import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.core.llm.LlmStreamChunk
+import com.breakyuna.noveltranslator.core.llm.LlmToolCall
 import com.breakyuna.noveltranslator.core.llm.LlmToolSpec
 import com.breakyuna.noveltranslator.core.llm.TokenCalculator
 import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
@@ -178,7 +179,7 @@ class LntPromptExecutor(
                     text.append(chunk.text)
                     observer(chunk.text)
                 }
-                is LlmStreamChunk.ToolCalls -> toolCalls += chunk.calls
+                is LlmStreamChunk.ToolCalls -> toolCalls.addAll(chunk.calls)
                 is LlmStreamChunk.Completed -> completed = chunk.result
                 is LlmStreamChunk.Failed -> failure = chunk.result
             }

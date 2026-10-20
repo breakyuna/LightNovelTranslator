@@ -51,6 +51,7 @@ import com.breakyuna.noveltranslator.core.translation.AnthropicPromptCacheCapabi
 import com.breakyuna.noveltranslator.core.translation.AutomaticPromptCacheCapability
 import com.breakyuna.noveltranslator.core.translation.BookTranslationEngine
 import com.breakyuna.noveltranslator.core.translation.BookTranslationScheduler
+import com.breakyuna.noveltranslator.core.translation.ChapterCommittedObserver
 import com.breakyuna.noveltranslator.core.translation.CompositePromptCacheCapability
 import com.breakyuna.noveltranslator.core.translation.ContextEngine
 import com.breakyuna.noveltranslator.core.translation.TranslationContinuity
@@ -841,6 +842,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+
+        /**
+         * 对单章跑一次独立的摘要请求，落库章节记忆并应用故事记忆增量。
+         *
+         * 这是元数据解耦后的常规产出路径：正文翻译请求不再携带 META，摘要改由 Agent 按需触发，
+         * 对标 LinguaGacha「元数据由 Agent 技能与工具负责」的分工。失败只影响记忆，不影响正文。
+         */
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
+                ?: return@withContext "该书没有翻译工程，无法归集章节记忆（请先创建译文版本）"
+            val chapters = bookPlatformRepo.getChapters(bookId)
+            if (chapters.none { it.chapterIndex == chapterIndex }) {
+                return@withContext "找不到第 $chapterIndex 章（本书共 ${chapters.size} 章）"
+            }
+            // 与无人值守模式共用同一条实现：一套请求、一套解析、一套落库。
+            val summary = summarizeChapterIntoMemory(project.id, chapterIndex)
+                ?: return@withContext "第 $chapterIndex 章摘要失败：无法读取源文、Provider 不可用、请求失败或响应无法解析。原有记忆未改动。"
+            "第 $chapterIndex 章摘要已生成并写入记忆：\n$summary"
+        }
+
+        override suspend fun getStoryMemory(projectId: Long): String = withContext(Dispatchers.IO) {
+            val project = bookPlatformRepo.getTranslationProject(projectId)
+                ?: return@withContext "找不到翻译工程 #$projectId"
+            val facts = db.memoryDao().getStoryMemory(project.id)
+            val recent = db.memoryDao().getRecentChapterMemory(projectId, Int.MAX_VALUE, 10)
+            if (facts.isEmpty() && recent.isEmpty()) {
+                return@withContext "该工程还没有任何故事记忆或章节摘要。可以用 summarize_chapter 逐章生成。"
+            }
+            buildString {
+                append("工程 #").append(projectId).append(" 的记忆（")
+                    .append(facts.size).append(" 条故事记忆）\n")
+                facts.take(40).forEach { fact ->
+                    append("- [第").append(fact.lastUpdatedChapterIndex).append("章] ")
+                        .append(fact.factKey).append(" = ").append(fact.factValue)
+                    if (fact.entities.isNotBlank()) append("（实体: ").append(fact.entities).append("）")
+                    append('\n')
+                }
+                if (recent.isNotEmpty()) {
+                    append("\n最近 ").append(recent.size).append(" 章摘要：\n")
+                    recent.sortedBy { it.chapterIndex }.forEach { memory ->
+                        append("- 第").append(memory.chapterIndex).append("章: ").append(memory.summary).append('\n')
+                    }
+                }
+            }
+        }
+
     }
 
     private val _batchImportProgress = MutableStateFlow<BatchImportProgress?>(null)
@@ -2570,96 +2617,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // Agent 工具：章节摘要 / 故事记忆（与正文翻译解耦的独立请求）
     // ============================================================
 
-    /**
-     * 对单章跑一次独立的摘要请求，落库章节记忆并应用故事记忆增量。
-     *
-     * 这是元数据解耦后的常规产出路径：正文翻译请求不再携带 META，摘要改由 Agent 按需触发，
-     * 对标 LinguaGacha「元数据由 Agent 技能与工具负责」的分工。失败只影响记忆，不影响正文。
-     */
-    override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = withContext(Dispatchers.IO) {
-        val project = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
-            ?: return@withContext "该书没有翻译工程，无法归集章节记忆（请先创建译文版本）"
-        val chapters = bookPlatformRepo.getChapters(bookId)
-        if (chapters.none { it.chapterIndex == chapterIndex }) {
-            return@withContext "找不到第 $chapterIndex 章（本书共 ${chapters.size} 章）"
-        }
-        // 与无人值守模式共用同一条实现：一套请求、一套解析、一套落库。
-        val summary = summarizeChapterIntoMemory(project.id, chapterIndex)
-            ?: return@withContext "第 $chapterIndex 章摘要失败：无法读取源文、Provider 不可用、请求失败或响应无法解析。原有记忆未改动。"
-        "第 $chapterIndex 章摘要已生成并写入记忆：\n$summary"
-    }
-
-    override suspend fun getStoryMemory(projectId: Long): String = withContext(Dispatchers.IO) {
-        val project = bookPlatformRepo.getTranslationProject(projectId)
-            ?: return@withContext "找不到翻译工程 #$projectId"
-        val facts = db.memoryDao().getStoryMemory(project.id)
-        val recent = db.memoryDao().getRecentChapterMemory(projectId, Int.MAX_VALUE, 10)
-        if (facts.isEmpty() && recent.isEmpty()) {
-            return@withContext "该工程还没有任何故事记忆或章节摘要。可以用 summarize_chapter 逐章生成。"
-        }
-        buildString {
-            append("工程 #").append(projectId).append(" 的记忆（")
-                .append(facts.size).append(" 条故事记忆）\n")
-            facts.take(40).forEach { fact ->
-                append("- [第").append(fact.lastUpdatedChapterIndex).append("章] ")
-                    .append(fact.factKey).append(" = ").append(fact.factValue)
-                if (fact.entities.isNotBlank()) append("（实体: ").append(fact.entities).append("）")
-                append('\n')
-            }
-            if (recent.isNotEmpty()) {
-                append("\n最近 ").append(recent.size).append(" 章摘要：\n")
-                recent.sortedBy { it.chapterIndex }.forEach { memory ->
-                    append("- 第").append(memory.chapterIndex).append("章: ").append(memory.summary).append('\n')
-                }
-            }
-        }
-    }
-
-    // ============================================================
-    // 无人值守：章级后处理（独立请求，失败绝不影响已落库正文）
-    // ============================================================
-
-    /**
-     * 一章正文落库后的自动后处理入口（引擎经 [ChapterCommittedObserver] 调用）。
-     *
-     * 非挂起、即刻返回：真正的活投到 [viewModelScope]，翻译工人永不被堵住。
-     * 串行化：同一工程同时只允许一个后处理任务，避免并发章节把 provider 打满。
-     */
-    private fun onChapterCommittedForCompanion(projectId: Long, chapterIndex: Int) {
-        if (!_unattendedCompanionEnabled.value) return
-        val key = "unattended:$projectId"
-        viewModelScope.launch(Dispatchers.IO) {
-            // 同一工程排队执行：后处理是廉价补充，不该和正文翻译抢额度。
-            companionJobs[key]?.join()
-            if (!_unattendedCompanionEnabled.value) return@launch
-            val job = viewModelScope.launch(Dispatchers.IO) {
-                runCatching {
-                    SystemLogger.info(
-                        "UNATTENDED",
-                        "🤖 章级后处理开始: 工程 #$projectId 第 $chapterIndex 章",
-                        projectId = projectId,
-                        chapterIndex = chapterIndex
-                    )
-                    summarizeChapterIntoMemory(projectId, chapterIndex)
-                    collectChapterGlossaryCandidates(projectId, chapterIndex)
-                }.onFailure { error ->
-                    if (error is CancellationException) throw error
-                    SystemLogger.warn(
-                        "UNATTENDED",
-                        "章级后处理失败（不影响已落库正文）: 工程 #$projectId 第 $chapterIndex 章 · " +
-                            (error.localizedMessage ?: error.javaClass.simpleName),
-                        projectId = projectId,
-                        chapterIndex = chapterIndex
-                    )
-                }
-            }
-            companionJobs[key] = job
-            job.join()
-            companionJobs.remove(key, job)
-        }
-    }
-
-    /**
      * 章节记忆落库（无人值守与 agent 的 summarize_chapter 工具共用同一实现）。
      * @return 摘要文本；失败返回 null（由调用方决定是否汇报）。
      */
@@ -2867,7 +2824,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         fun strings(key: String): List<String> = (root[key] as? List<*>)
             ?.mapNotNull { it?.toString()?.trim()?.takeIf(String::isNotBlank) }
             .orEmpty()
-        val deltas = (root["storyMemoryDelta"] as? List<?>).orEmpty().mapNotNull { row ->
+        val deltas = (root["storyMemoryDelta"] as? List<*>).orEmpty().mapNotNull { row ->
             val map = row as? Map<*, *> ?: return@mapNotNull null
             StoryMemoryDeltaPayload(
                 operation = map["operation"]?.toString()?.trim()?.uppercase(Locale.ROOT) ?: "ADD",
