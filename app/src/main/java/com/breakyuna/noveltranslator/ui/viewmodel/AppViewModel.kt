@@ -2616,7 +2616,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ============================================================
     // Agent 工具：章节摘要 / 故事记忆（与正文翻译解耦的独立请求）
     // ============================================================
+    // ============================================================
 
+    // ============================================================
+    // 无人值守：章级后处理（独立请求，失败绝不影响已落库正文）
+    // ============================================================
+
+    /**
+     * 一章正文落库后的自动后处理入口（引擎经 [ChapterCommittedObserver] 调用）。
+     *
+     * 非挂起、即刻返回：真正的活投到 [viewModelScope]，翻译工人永不被堵住。
+     * 串行化：同一工程同时只允许一个后处理任务，避免并发章节把 provider 打满。
+     */
+    private fun onChapterCommittedForCompanion(projectId: Long, chapterIndex: Int) {
+        if (!_unattendedCompanionEnabled.value) return
+        val key = "unattended:$projectId"
+        viewModelScope.launch(Dispatchers.IO) {
+            // 同一工程排队执行：后处理是廉价补充，不该和正文翻译抢额度。
+            companionJobs[key]?.join()
+            if (!_unattendedCompanionEnabled.value) return@launch
+            val job = viewModelScope.launch(Dispatchers.IO) {
+                runCatching {
+                    SystemLogger.info(
+                        "UNATTENDED",
+                        "🤖 章级后处理开始: 工程 #$projectId 第 $chapterIndex 章",
+                        projectId = projectId,
+                        chapterIndex = chapterIndex
+                    )
+                    summarizeChapterIntoMemory(projectId, chapterIndex)
+                    collectChapterGlossaryCandidates(projectId, chapterIndex)
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    SystemLogger.warn(
+                        "UNATTENDED",
+                        "章级后处理失败（不影响已落库正文）: 工程 #$projectId 第 $chapterIndex 章 · " +
+                            (error.localizedMessage ?: error.javaClass.simpleName),
+                        projectId = projectId,
+                        chapterIndex = chapterIndex
+                    )
+                }
+            }
+            companionJobs[key] = job
+            job.join()
+            companionJobs.remove(key, job)
+        }
+    }
+    /**
      * 章节记忆落库（无人值守与 agent 的 summarize_chapter 工具共用同一实现）。
      * @return 摘要文本；失败返回 null（由调用方决定是否汇报）。
      */
