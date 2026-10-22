@@ -1,5 +1,7 @@
 # 原生 LG 目标架构
 
+当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它只覆盖 TXT 工程、人工校对与系统文件导入导出；本轮源码尚待 CI。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §20。
+
 这是拟实施设计，现状与授权见 [总入口](README.md)。功能验收以 [功能矩阵](FEATURE_MATRIX.md) 为准，实施依赖见 [任务计划](IMPLEMENTATION_PLAN.md)。
 
 ## 1. 架构选择与依赖

@@ -76,6 +76,7 @@ jobs:
             core/**/build/test-results/
             core/**/build/reports/tests/
             core/storage/schemas/
+            app/src/test/screenshots/native-*.png
             build/reports/profile/
           if-no-files-found: ignore
           retention-days: 7

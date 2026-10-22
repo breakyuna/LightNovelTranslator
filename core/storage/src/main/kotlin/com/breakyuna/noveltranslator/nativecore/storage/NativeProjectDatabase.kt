@@ -112,6 +112,30 @@ internal object NativeProjectDatabase {
         }
     }
 
+    /** v1 import is intentionally strict: unknown tables/triggers/views cannot be discarded. */
+    fun validateSchema(db: SQLiteDatabase) {
+        if (scalar(db, "SELECT COUNT(*) FROM sqlite_master") > 24) fail(TextProjectException.Reason.INVALID_FORMAT)
+        val expected = schema.associate { sql -> sql.substringAfter("CREATE TABLE ").substringBefore(' ').trim() to normalize(sql) }
+        val seen = mutableSetOf<String>()
+        db.rawQuery("SELECT type, name, sql FROM sqlite_master", null).use { cursor ->
+            while (cursor.moveToNext()) {
+                val type = cursor.getString(0)
+                val name = cursor.getString(1)
+                if (name in setOf("sqlite_autoindex_assets_1", "sqlite_autoindex_asset_chunks_1",
+                        "sqlite_autoindex_items_1", "sqlite_autoindex_write_receipts_1") && type == "index" && cursor.isNull(2)) continue
+                if (name == "sqlite_sequence" && type == "table" && !cursor.isNull(2) &&
+                    normalize(cursor.getString(2)) == "CREATETABLEsqlite_sequence(name,seq)") continue
+                if (type != "table" || name !in expected || cursor.isNull(2)) fail(TextProjectException.Reason.INVALID_FORMAT)
+                val sql = cursor.getString(2)
+                if (sql.length > 8192 || normalize(sql) != expected[name]) fail(TextProjectException.Reason.INVALID_FORMAT)
+                seen.add(name)
+            }
+        }
+        if (seen != expected.keys) fail(TextProjectException.Reason.INVALID_FORMAT)
+    }
+
+    private fun normalize(sql: String): String = sql.replace(Regex("\\s+"), "").replace("\"", "")
+
     /**
      * Rejects WAL projects before opening them. Android resets the connection journal mode on
      * every read-write open (platform default is TRUNCATE) and rollback journal modes are not

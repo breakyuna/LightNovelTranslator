@@ -11,7 +11,7 @@
 - agent/storage/formats/workspace 使用 Android Library 与 AGP 9 内置 Kotlin。agent 已补模型请求/只读工具边界原型，见 [AGENT_CONTRACT](AGENT_CONTRACT.md)；engine 增加审批与变更批次协调原型，见 [APPROVAL_CONTRACT](APPROVAL_CONTRACT.md)；storage 的原生 TXT 适配边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)；formats/workspace 仍只有构建声明和 Manifest。
 - 除 domain 自身外，各模块对 `:core:domain` 统一使用 `api`：公开签名直接出现 `RunIdentity`、`AgentMessage`、`RunLease`、`PreparedChangeSet` 等类型，若用 `implementation` 会把这些类型从消费者编译类路径隐藏。`tools/rebuild/check_structure.py` 已把该边写入静态检查。
 - 静态检查同时为每个模块建立顶层声明索引：`nativecore.<module>.<Name>` 形式的导入若在该模块不存在即失败。CI run 39764281126 的 `test` 正是被这类错误导入（`domain.ApprovalGrantRejected`）拦下，现在本机静态检查即可发现。
-- app 声明上述模块依赖，SDK 版本统一来自 catalog；应用 ID、签名、升级版本、旧库与启动导航不变。
+- app 声明上述模块依赖，SDK 版本统一来自 catalog；应用 ID、签名、升级版本与旧库保留；MainActivity 已在本轮源码改接 nativeapp 工程入口，尚待 CI/设备验证。
 - 新 Kotlin 包为 `com.breakyuna.noveltranslator.nativecore`，用于隔离旧 `app/.../core` 迁移来源，避免误将旧类引入新模块。
 - 旧 Koog 仍在旧 app 链路，尚未迁移，也未把旧 Jackson 排除复制到新模块。R02 在外部最小编译后再验证检查点依赖。
 
@@ -139,3 +139,10 @@ python3 tools/rebuild/coverage_report.py \
 未完成：Room `AppStore` 适配器、`ProjectWriteStore` 消费 grant、`workspace_apply`/工具接线、U02 审批界面、进程恢复与差异渲染；
 `AgentToolRegistry` 仍拒绝全部 `PROJECT_WRITE` 工具。详见 [APPROVAL_CONTRACT](APPROVAL_CONTRACT.md)。
 本机审查未实际构建或执行测试；既有原型的外部 CI 证据见 HANDOFF。APPROVAL_CONTRACT §5 新增的消费绑定、不可变正文与跨库恢复是待实现要求，现有原型测试不覆盖它。
+
+
+## 本轮原生入口与导入边界
+
+静态追踪：MainActivity → NativeProjectApp → NativeProjectViewModel → TextProjectPort；写入仍由 ProjectWriteStore 拥有。系统文件选择结果绑定发起时的命令/工程身份；列表只保留分页摘要，编辑器按 ID 读取单条完整正文。导入先复制到自有 staging，执行 schema、预算、原稿摘要、条目指纹、修订链和回执校验，再以新的本地实例发布；本机 registration.json 仅用于自有目录的登记恢复，不从外部工程导入授权。
+
+此次扩展静态检查覆盖 nativeapp 声明分隔符、禁止旧业务/网络旁路导入、五语资源键和占位符、资源引用与启动入口。它不能代替 Kotlin 编译、Android 生命周期/SAF、Compose 截图或设备验证。新用例和限制见 HANDOFF §20；此前 CI 证据仅覆盖已提交版本。

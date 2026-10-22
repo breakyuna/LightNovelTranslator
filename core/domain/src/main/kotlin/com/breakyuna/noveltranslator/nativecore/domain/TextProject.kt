@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
 import java.io.OutputStream
+import java.io.InputStream
 import java.security.MessageDigest
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -183,10 +184,16 @@ interface TextProjectPort {
     ): TextProjectSummary
 
     suspend fun open(ref: LocalProjectRef): TextProjectSummary
+    suspend fun importProject(commandId: CommandId, source: () -> InputStream): TextProjectSummary
+    suspend fun copyProject(commandId: CommandId, ref: LocalProjectRef): TextProjectSummary
+    suspend fun recoverProjects(): ProjectRecoveryReport
+    suspend fun cleanupTemporaryOutputs(): Int
+    suspend fun item(ref: LocalProjectRef, itemId: ItemId): TextItemDetails?
     suspend fun items(ref: LocalProjectRef, revision: Long, afterId: Long = 0, limit: Int = 100): TextItemPage
     suspend fun edit(command: ManualTextEdit): ManualEditReceipt
     suspend fun receipt(ref: LocalProjectRef, commandId: CommandId): ManualEditReceipt?
     suspend fun saveProject(ref: LocalProjectRef, destination: () -> OutputStream)
     suspend fun exportTxt(ref: LocalProjectRef, destination: () -> OutputStream)
+    suspend fun exportBilingual(ref: LocalProjectRef, deduplicateSame: Boolean = true, destination: () -> OutputStream)
     suspend fun exportOriginal(ref: LocalProjectRef, destination: () -> OutputStream)
 }

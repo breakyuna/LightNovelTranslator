@@ -15,6 +15,7 @@ errors = []
 # Known Kotlin 2.3 / Android API landmines from AGENTS.md. Detection is textual;
 # it cannot prove that an expression is safe in every context.
 LANDMINE_PATTERNS = {
+    r'\bfun\s+(?:import|when|is|in|class|object)\s*\(': 'hard Kotlin keywords cannot be unescaped function names',
     r'\bcreateTempDir\s*\(': 'createTempDir is an ERROR-level deprecation',
     r'\.groups\s*\[\s*["A-Za-z_]': 'named regex group access is API 26+; resolve group indexes instead',
     r'\(\?[a-zA-Z]*U\)': 'inline (?U) regex flag is ICU-incompatible on API 34+',
@@ -217,6 +218,35 @@ for name in MODULES:
 app = (ROOT / 'app/build.gradle.kts').read_text()
 require({':core:' + name for name in MODULES} <= set(re.findall(r'project\("([^"]+)"\)', app)),
         'app must assemble every native module')
+native_ui = ROOT / 'app/src/main/java/com/breakyuna/noveltranslator/nativeapp'
+if native_ui.is_dir():
+    resource_root = ROOT / 'app/src/main/res'
+    resources = {}
+    for locale in ('values', 'values-zh', 'values-ja', 'values-ko', 'values-de'):
+        resource = resource_root / locale / 'native_strings.xml'
+        require(resource.is_file(), f'native UI: missing {locale} resources')
+        if resource.is_file():
+            resources[locale] = {element.attrib['name']: element.text or '' for element in ET.parse(resource).getroot()}
+    default = resources.get('values', {})
+    for locale, values in resources.items():
+        require(values.keys() == default.keys(), f'native UI: resource key drift in {locale}')
+        for key in values.keys() & default.keys():
+            require(sorted(re.findall(r'%\d+\$[ds]', values[key])) == sorted(re.findall(r'%\d+\$[ds]', default[key])),
+                    f'native UI: format argument drift in {locale}/{key}')
+    for source in sorted(native_ui.glob('*.kt')):
+        body = source.read_text()
+        require(kotlin_delimiters_balanced(body), f'{source.name}: unbalanced Kotlin delimiters')
+        for reference in re.findall(r'R\.string\.(native_\w+)', body):
+            require(reference in default, f'{source.name}: missing resource {reference}')
+        for imported in re.findall(r'^import\s+([^\s]+)', body, re.M):
+            require(not imported.startswith(('com.breakyuna.noveltranslator.core.',
+                                             'com.breakyuna.noveltranslator.ui.', 'okhttp3.', 'ai.koog.')),
+                    f'{source.name}: native UI must use native application/storage ports: {imported}')
+        for pattern, reason in LANDMINE_PATTERNS.items():
+            require(not re.search(pattern, body), f'{source.name}: {reason}')
+    entry = (ROOT / 'app/src/main/java/com/breakyuna/noveltranslator/MainActivity.kt').read_text()
+    require('NativeProjectApp(viewModel)' in entry and 'ui.viewmodel.AppViewModel' not in entry,
+            'launcher must enter native projects without initializing the legacy AppViewModel')
 # Agent tool arguments come from the model: Number.toInt/toLong truncates (1.5 -> 1) and
 # optInt/optLong clamp silently. Only the reviewed integralLongOrNull helper may convert.
 for source in sorted((ROOT / 'app/src/main/java/com/breakyuna/noveltranslator/core/agent').glob('*.kt')):

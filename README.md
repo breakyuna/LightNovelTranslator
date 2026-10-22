@@ -1,6 +1,6 @@
 # LightNovelTranslator
 
-> **原生 LG 全面重构已启动（2026-10-22）**：目标为工程与 Agent 工作流中心的原生 Android 产品，完整对齐 LG Termux，仅保留并改造 Koog 接入框架。已固定首份源码快照，正在补齐行为核对；七模块声明、运行协调及类型化模型/只读工具边界原型已落地，尚未构建验证，新产品功能尚未接入。目标见 [重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md)，实际进度见 [交接记录](docs/plans/2026-10-22-native-lg-rebuild/HANDOFF.md)。下文仍描述旧阅读平台，供理解现状与数据迁移使用。
+> **原生 LG 全面重构进行中（2026-10-22）**：目标为工程与 Agent 工作流中心的原生 Android 产品，完整对齐 LG Termux，仅保留并改造 Koog 接入框架。TXT 原生 `.lnt` 存储基线已有 CI 证据；本轮新增工程导入、复制、恢复及原生工程首页、Agent 入口、工作台和人工校对界面，尚待 CI、视觉与设备验证。Agent 与自动翻译尚未接通。目标见 [重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md)，唯一实际进度记录见 [交接记录](docs/plans/2026-10-22-native-lg-rebuild/HANDOFF.md)。下文描述旧阅读平台，供理解迁移来源使用，不代表新入口已具备这些功能。
 
 LightNovelTranslator 是一款面向长篇小说的 Android 阅读与 AI 翻译应用。它以"书"为中心：导入本地 TXT、EPUB 或粘贴文本后即可阅读；需要翻译时，应用会从原文 Edition 生成一个可持续更新、可校对、可追溯的新 Edition，而不是把书拆成孤立的翻译任务。
 

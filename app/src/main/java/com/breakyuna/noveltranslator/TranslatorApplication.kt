@@ -3,8 +3,10 @@ package com.breakyuna.noveltranslator
 import android.app.Application
 import com.breakyuna.noveltranslator.core.crash.CrashReporter
 import com.breakyuna.noveltranslator.core.logger.SystemLogger
+import com.breakyuna.noveltranslator.nativeapp.NativeAppGraph
 
 class TranslatorApplication : Application() {
+    val nativeGraph: NativeAppGraph by lazy { NativeAppGraph(this) }
     override fun onCreate() {
         super.onCreate()
         // Order matters: the logger must be initialized first so a crash record can include

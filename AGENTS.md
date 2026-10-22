@@ -16,7 +16,7 @@ Project（工程）
 
 工程首页、打开工程默认进入 Agent、完整功能范围和 Koog 保留清单，以 [原生 LG 重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md) 为准。旧书架、阅读器、章节/Edition 模型、翻译引擎和 UI 均进入替换范围，不再要求保留旧首页、导航或视觉体系。
 
-当前源代码仍主要是旧阅读平台；`README.md`、2026-08-25 设计及 2026-10-19 计划用于理解现状和数据迁移，不约束新产品定位。`REFACTOR_REPORT.md` 是历史快照。计划编写不自动启动产品重构，按用户当前授权范围执行；旧数据须先保护、迁移和验证，不能因重构直接删除。
+当前保留大量旧阅读平台源码作为迁移来源，MainActivity 已在源码中改接 nativeapp 原生工程入口（本轮尚待 CI/设备验证）；`README.md`、2026-08-25 设计及 2026-10-19 计划用于理解现状和数据迁移，不约束新产品定位。`REFACTOR_REPORT.md` 是历史快照。计划编写不自动启动产品重构，按用户当前授权范围执行；旧数据须先保护、迁移和验证，不能因重构直接删除。
 
 ## 2. 构建、测试与验证命令
 
@@ -74,10 +74,12 @@ app/src/main/java/com/breakyuna/noveltranslator/
     ├── i18n/           # AppStrings（Kotlin 实现，见 §4）
     ├── navigation/     # AppDestination、TopLevelDestination、AppBottomBar、AppNavigationRail、AppNavigation
     ├── screens/        # bookshelf、history、reader、workspace、tasks、settings
-    └── viewmodel/      # AppViewModel（当前唯一 ViewModel）
+    └── viewmodel/      # AppViewModel（旧阅读平台 ViewModel）
 ```
 
-首轮实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块声明，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 当前为 Kotlin/JVM；其余为 Android Library。engine 已有进程内运行协调和协程生命周期原型；agent 已有类型化请求/只读工具边界，但统一网关、持久化生产适配与 Koog 尚未接入；storage 已新增独立 Room 工程索引、原生 `.lnt` TXT 数据库与手工事务写入适配器，仍未构建验证或接入 UI；formats/workspace 业务尚未实现。旧模块骨架的 CI 证据不覆盖新增存储，也不代表完整产品能力。实际进度见重构 HANDOFF。
+实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM；其余为 Android Library。engine 已有进程内协调与生命周期原型；agent 已有类型化请求/只读工具边界，统一网关、持久审批和 Koog 尚未生产接入。storage 的独立 Room 索引、原生 `.lnt` TXT 数据库、手工事务与一致快照已有指定提交的 CI 证据；新增外部导入、复制、恢复、双语导出和临时产物清理尚待 CI。formats/workspace 完整业务尚未实现。
+
+新入口位于 `app/.../nativeapp`：`NativeAppGraph` 注入共享运行协调器和存储端口；`NativeProjectViewModel` 管理工程、分页预览、单条草稿与系统文件选择结果；`NativeProjectApp` 提供工程首页、Agent 入口、工作台、人工校对和编辑器，文案使用五语 Android 资源。MainActivity 已改接此入口，但尚未构建或视觉验证；Agent 和自动翻译明确显示未接通，不调用旧引擎冒充新实现。旧源码与用户文件保留，旧库尚未迁移。实际进度与验证边界只记入重构 HANDOFF。
 
 理解旧行为时追踪 UI → AppViewModel → Repository / DAO → Engine / BookFileManager。新链路按 UI → 应用服务 → 业务核心/存储端口组织，Agent 与手动操作共用写入口，不再向旧 `AppViewModel` 继续集中新业务。用 `rg` 定位实际调用链。
 

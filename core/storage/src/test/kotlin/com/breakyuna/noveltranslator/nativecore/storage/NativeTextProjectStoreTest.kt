@@ -186,7 +186,7 @@ class NativeTextProjectStoreTest {
                 override fun close() { throw IOException("Synthetic provider close failure") }
             } }
             fail("Expected close failure")
-        } catch (_: IOException) { }
+        } catch (error: TextProjectException) { assertEquals(TextProjectException.Reason.STORAGE_IO, error.reason) }
         assertEquals(2L, store.open(project.ref).revision)
         assertTrue(File(context.cacheDir, "native_project_snapshots").listFiles()!!.any { it.extension == "lnt" })
     }
