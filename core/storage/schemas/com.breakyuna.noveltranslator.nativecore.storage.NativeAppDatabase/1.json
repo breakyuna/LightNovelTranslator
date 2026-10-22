@@ -1,0 +1,66 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "0b84556b9a56b52b1339db182d79d430",
+    "entities": [
+      {
+        "tableName": "project_instances",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`instanceId` TEXT NOT NULL, `projectId` TEXT NOT NULL, `generation` INTEGER NOT NULL, `creationCommand` TEXT NOT NULL, `creationDigest` TEXT NOT NULL, PRIMARY KEY(`instanceId`))",
+        "fields": [
+          {
+            "fieldPath": "instanceId",
+            "columnName": "instanceId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "projectId",
+            "columnName": "projectId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "generation",
+            "columnName": "generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creationCommand",
+            "columnName": "creationCommand",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creationDigest",
+            "columnName": "creationDigest",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "instanceId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_project_instances_creationCommand",
+            "unique": true,
+            "columnNames": [
+              "creationCommand"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_project_instances_creationCommand` ON `${TABLE_NAME}` (`creationCommand`)"
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0b84556b9a56b52b1339db182d79d430')"
+    ]
+  }
+}

@@ -22,7 +22,7 @@
 | `.lnt` `item_revisions` | 各次已提交的译文/状态、前后指纹、命令、实例/代际和时间 |
 | `.lnt` `write_receipts` | 按实例/代际/命令唯一的完整意图摘要、对象、终态、修订和时间；包括不写入终态 |
 
-领域端口在 `core/domain/.../TextProject.kt`；SQLite SQL 在 `core/storage/.../NativeProjectDatabase.kt`，手工事务在 `ProjectWriteStore.kt`；应用 IO 适配器是 `NativeTextProjectStore`。新 Room 的 KSP schema 导出目录为 `core/storage/schemas`，首份权威 JSON 必须在 PC/CI 生成、审阅并提交；本机不伪造导出结果。
+领域端口在 `core/domain/.../TextProject.kt`；SQLite SQL 在 `core/storage/.../NativeProjectDatabase.kt`，手工事务在 `ProjectWriteStore.kt`；应用 IO 适配器是 `NativeTextProjectStore`。新 Room 的 KSP schema 导出目录为 `core/storage/schemas`；首份权威 `1.json` 已由 CI run 39789360824（提交 `224da53`）生成、审阅并提交，后续 schema 变更仍须先由 PC/CI 生成新版本文件再改迁移。
 
 `TextProjectPort` 提供：
 

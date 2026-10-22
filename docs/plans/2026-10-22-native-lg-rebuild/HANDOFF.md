@@ -383,8 +383,15 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 - 只读核对 AOSP `SQLiteConnection`、`SQLiteDatabaseConfiguration`、`SQLiteGlobal` 与 `frameworks/base` 资源值，确认平台默认 journal 模式与 open 时强制设置的行为。
 - 本机静态审查，未构建、未运行 JVM/Robolectric 测试或 Lint，未触发 Actions；第 11—13 节 CI 结果不覆盖本轮代码。
 
+### CI 证据（第八轮）
+
+- 提交 `224da53` 推送到 `refactor/translation-agent-2026-10`（未动 `main`/`beta`），以 `workflow_dispatch` 触发 [run 39789360824](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39789360824)：test / lint / release 三个 job 全部 success（test 6m27s、lint 7m06s、release 6m53s）。
+- test job 实际编译并执行 `:core:storage:kspDebugKotlin`、`compileDebugKotlin`、`compileDebugUnitTestKotlin`、`testDebugUnitTest` 与 `:core:domain:test`：`NativeTextProjectStoreTest` 17/17、`TxtDocumentTest` 3/3、`TextProjectFingerprintTest` 3/3 通过，skipped 0、failures 0。这是 §18 切片首次真实构建与运行。
+- CI 生成 Room schema `core/storage/schemas/...NativeAppDatabase/1.json`，已对照 `NativeAppDatabase.kt` 审阅并提交；没有手写或伪造的 schema。
+- 该结果只证明 storage 切片可编译、单测通过、签名 Release 可产出；不证明真机 SAF/journal 行为、UI 接线或完整产品能力。
+
 ### 仍未完成
 
-1. CI/PC 必须验证 KSP/Room、Robolectric native SQLite 与新增 3 例；Robolectric 是否复刻 AOSP journal 行为未确认，真机仍需一次打开/重开验证。
+1. KSP/Room、Robolectric native SQLite 与 23 例已由 run 39789360824 证明；真机仍需验证 journal 打开/重开、SAF 关闭失败、锁屏、进程死亡与磁盘满，不能以单测替代。
 2. 版本迁移、外部 `.lnt` 导入、覆盖恢复/代际推进、`.lg`/Pi 兼容、完整 schema 与备份、SAF 交付、UI/网关/批翻/Service 均未实现。
 3. 快照临时产物在取消/失败时仍留在 cacheDir（失败保留是有意设计），清理入口未实现。
