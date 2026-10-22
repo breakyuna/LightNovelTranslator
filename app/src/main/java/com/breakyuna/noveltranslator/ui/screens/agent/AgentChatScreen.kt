@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -62,7 +61,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.breakyuna.noveltranslator.core.agent.koog.AgentMessage
 import com.breakyuna.noveltranslator.core.agent.koog.AgentRole
 import com.breakyuna.noveltranslator.core.agent.koog.AgentSessionState
@@ -94,8 +92,9 @@ private fun LazyListState.isNearBottom(itemCount: Int): Boolean {
 /**
  * Agent 对话页（纯展示层）。
  *
- * 所有状态经 [state] 注入，交互经回调上抛，不直接依赖数据库或 provider；需要完整行为时
- * 使用持有 [AgentChatController] 的重载。文案来自本页自带的 [AgentChatStrings]，跟随全局语言。
+ * 所有状态经 [state] 注入，交互经回调上抛，不直接依赖数据库或 provider；完整行为由
+ * [com.breakyuna.noveltranslator.ui.screens.agent.AgentChatHost] 收集控制器状态后传入。
+ * 文案来自本页自带的 [AgentChatStrings]，跟随全局语言。
  *
  * 布局自适应：宽屏（[rememberWindowSize] 判定 isExpanded，不分横竖屏）时右侧展开
  * [infoPanel] 信息侧栏；紧凑宽度时信息挤成顶部信息条。两种布局都能经标题栏的 Info 按钮
@@ -135,7 +134,8 @@ fun AgentChatScreen(
 ) {
     val appStrings = LocalAppStrings.current
     val strings = remember(appStrings) { AgentChatStrings.resolve(appStrings) }
-    val listState = rememberLazyListState()
+    // 列表状态按会话区分：切换会话必须回到新会话的位置，不能沿用上一个会话的滚动偏移。
+    val listState = remember(state.sessionId) { LazyListState() }
     val windowSize = rememberWindowSize()
     // 宽屏（不分方向）才放得下右侧侧栏；紧凑宽度用顶部信息条。
     val useSidebar = infoPanel != null && windowSize.isExpanded
@@ -307,51 +307,11 @@ fun AgentChatScreen(
 
         AgentInputBar(
             enabled = !state.isRunning,
+            draftKey = state.sessionId,
             strings = strings,
             onSend = onSend
         )
     }
-}
-
-/** 便捷重载：直接绑定控制器，省去调用方手工收集状态。 */
-@Composable
-fun AgentChatScreen(
-    controller: AgentChatController,
-    modifier: Modifier = Modifier,
-    onBack: (() -> Unit)? = null,
-    onOpenSessions: (() -> Unit)? = null,
-    onOpenModelPanel: (() -> Unit)? = null,
-    onOpenDiagnostics: (() -> Unit)? = null,
-    providerLabel: String? = null,
-    onCopyText: ((String) -> Unit)? = null,
-    infoPanel: (@Composable ColumnScope.() -> Unit)? = null,
-    streamingText: String? = null,
-    question: AgentChatQuestion? = null,
-    onAnswerQuestion: (String) -> Unit = {},
-    onDismissQuestion: () -> Unit = {}
-) {
-    val state by controller.state.collectAsStateWithLifecycle()
-    val modelName by controller.modelName.collectAsStateWithLifecycle()
-    val streamingText by controller.streamingText.collectAsStateWithLifecycle()
-    AgentChatScreen(
-        state = state,
-        onSend = controller::send,
-        onCancel = controller::cancel,
-        modifier = modifier,
-        modelName = modelName,
-        providerLabel = providerLabel,
-        onNewChat = controller::startNewChat,
-        onBack = onBack,
-        onOpenSessions = onOpenSessions,
-        onOpenModelPanel = onOpenModelPanel,
-        onOpenDiagnostics = onOpenDiagnostics,
-        onCopyText = onCopyText,
-        infoPanel = infoPanel,
-        streamingText = streamingText,
-        question = question,
-        onAnswerQuestion = onAnswerQuestion,
-        onDismissQuestion = onDismissQuestion
-    )
 }
 
 /**
@@ -658,6 +618,7 @@ private fun AgentMessageRow(
                     shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp),
                     modifier = Modifier.combinedClickable(
                         onClick = {},
+                        onLongClickLabel = strings.copyMessage,
                         onLongClick = { copy(message.content) }
                     )
                 ) {
@@ -687,6 +648,7 @@ private fun AgentMessageRow(
                     tonalElevation = 0.dp,
                     modifier = Modifier.combinedClickable(
                         onClick = {},
+                        onLongClickLabel = strings.copyMessage,
                         onLongClick = { copy(message.content) }
                     )
                 ) {
@@ -758,14 +720,20 @@ private fun AgentStatusPanel(
     }
 }
 
-/** 底部输入区：运行中禁用发送，保留 IME 发送动作与多行输入。 */
+/**
+ * 底部输入区：运行中禁用发送，保留 IME 发送动作与多行输入。
+ *
+ * [draftKey] 是草稿归属的会话 id：切换会话时草稿必须清空，否则会把上一段对话没发出去的
+ * 文字带进新会话（甚至误发）。
+ */
 @Composable
 private fun AgentInputBar(
     enabled: Boolean,
+    draftKey: Long?,
     strings: AgentChatText,
     onSend: (String) -> Unit
 ) {
-    var input by rememberSaveable { mutableStateOf("") }
+    var input by rememberSaveable(draftKey) { mutableStateOf("") }
     Row(
         modifier = Modifier
             .fillMaxWidth()

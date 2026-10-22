@@ -48,6 +48,12 @@ class RoomAgentSessionStore(
     override suspend fun updateMessageContent(messageId: Long, content: String) =
         messageDao.updateContent(messageId, content)
 
+    /** 先清消息、再删会话行：agent_messages 对 agent_sessions 有外键，顺序反了会撞约束。 */
+    override suspend fun deleteSession(sessionId: Long) {
+        messageDao.deleteBySession(sessionId)
+        sessionDao.deleteById(sessionId)
+    }
+
     override suspend fun loadMessages(sessionId: Long): List<AgentMessage> =
         messageDao.getBySession(sessionId).map { it.toModel() }
 
@@ -60,6 +66,8 @@ class RoomAgentSessionStore(
         role = role.storageKey,
         content = content,
         toolName = toolName,
+        // 协议以文本块（TOOL_CALL / TOOL_RESULT + content）为准，重建历史不依赖 OpenAI 风格的
+        // call id；AgentMessage 也没有对应字段，因此这一列保持 null，不伪造 id 造成"有配对"的错觉。
         toolCallId = null,
         toolArgsJson = toolArgsJson,
         toolResultJson = toolResultJson,

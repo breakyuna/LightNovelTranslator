@@ -93,6 +93,22 @@ class AgentSessionStoreTest {
     }
 
     @Test
+    fun deleteSessionDropsMessagesAndEmptiesObservation() = runTest {
+        val store = InMemoryAgentSessionStore()
+        val session = store.createSession("s", null, null)
+        val flow = store.observeMessages(session)
+        store.appendMessage(session, message(AgentRole.USER, "问题"))
+        store.appendMessage(session, message(AgentRole.ASSISTANT, "回答"))
+        assertEquals(2, flow.first().size)
+
+        store.deleteSession(session)
+
+        // 会话删除后不能留下孤儿消息：查询该会话必须为空，而不是继续返回已删会话的内容。
+        assertTrue(store.loadMessages(session).isEmpty())
+        assertTrue(flow.first().isEmpty())
+    }
+
+    @Test
     fun agentRoleStorageKeysRoundTrip() {
         assertEquals("USER", AgentRole.USER.storageKey)
         assertEquals("ASSISTANT", AgentRole.ASSISTANT.storageKey)

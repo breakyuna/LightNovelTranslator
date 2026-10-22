@@ -29,9 +29,6 @@ data class AgentChatText(
     val emptyDescription: String,
     val youLabel: String,
     val assistantLabel: String,
-    val toolCallLabel: String,
-    val toolResultLabel: String,
-    val toolResultFailedLabel: String,
     val cancelled: String,
     val notConfigured: String,
     val requestFailedTemplate: String,
@@ -39,10 +36,6 @@ data class AgentChatText(
     val emptyReply: String,
     val questionAnswerPlaceholder: String,
     val questionSkip: String,
-    /** 占位符：{input} {output} {requests} */
-    val usageTemplate: String,
-    /** 占位符：{model} */
-    val modelTemplate: String,
     // ---- 工具调用 / 回执摘要行 ----
     /** 占位符：{tool} */
     val toolCallSummaryTemplate: String,
@@ -63,6 +56,7 @@ data class AgentChatText(
     val usageShortTemplate: String,
     val modelUnknown: String,
     val providerUnknown: String,
+    /** 长按气泡复制的无障碍标签 */
     val copyMessage: String,
     val copied: String,
     /** 顶部模型面板入口的无障碍描述 */
@@ -74,7 +68,11 @@ data class AgentChatText(
     /** 信息栏收起后的展开按钮无障碍描述 */
     val sidebarShow: String,
     /** 流式生成中的气泡尾部提示 */
-    val streamingHint: String
+    val streamingHint: String,
+    /** 写进 Agent 运行环境段的回复语言（展示名），让英文界面拿到英文答复 */
+    val replyLanguage: String,
+    /** 回合进行中尝试新建 / 切换会话时的提示 */
+    val sessionBusy: String
 )
 
 object AgentChatStrings {
@@ -94,9 +92,6 @@ object AgentChatStrings {
         emptyDescription = "Agent 可以查询书籍与翻译任务状态，并在你确认后执行翻译相关操作。",
         youLabel = "你",
         assistantLabel = "助手",
-        toolCallLabel = "调用工具",
-        toolResultLabel = "工具返回",
-        toolResultFailedLabel = "工具失败",
         cancelled = "已取消本次请求。",
         notConfigured = "尚未选择可用的模型提供方，请先在设置中配置。",
         requestFailedTemplate = "请求失败：{reason}",
@@ -104,8 +99,6 @@ object AgentChatStrings {
         emptyReply = "（模型没有返回可用内容）",
         questionAnswerPlaceholder = "输入回答",
         questionSkip = "跳过问题，按默认值继续",
-        usageTemplate = "本次会话：输入 {input} tokens · 输出 {output} tokens · {requests} 次请求",
-        modelTemplate = "当前模型：{model}",
         toolCallSummaryTemplate = "调用 {tool}",
         toolResultSummaryTemplate = "{tool} 已返回",
         toolResultFailedSummaryTemplate = "{tool} 调用失败",
@@ -125,7 +118,9 @@ object AgentChatStrings {
         diagnosticsEntry = "诊断",
         sidebarHide = "收起信息栏",
         sidebarShow = "展开信息栏",
-        streamingHint = "正在生成"
+        streamingHint = "正在生成",
+        replyLanguage = "中文",
+        sessionBusy = "正在处理本次请求，请先停止再切换会话"
     )
 
     val english = AgentChatText(
@@ -143,9 +138,6 @@ object AgentChatStrings {
         emptyDescription = "The agent can look up books and translation jobs, and run translation actions after you confirm.",
         youLabel = "You",
         assistantLabel = "Assistant",
-        toolCallLabel = "Tool call",
-        toolResultLabel = "Tool result",
-        toolResultFailedLabel = "Tool failed",
         cancelled = "Cancelled this request.",
         notConfigured = "No model provider selected yet. Configure one in Settings first.",
         requestFailedTemplate = "Request failed: {reason}",
@@ -153,8 +145,6 @@ object AgentChatStrings {
         emptyReply = "(The model returned no content)",
         questionAnswerPlaceholder = "Type your answer",
         questionSkip = "Skip and continue with defaults",
-        usageTemplate = "Session: {input} prompt tokens · {output} completion tokens · {requests} requests",
-        modelTemplate = "Model: {model}",
         toolCallSummaryTemplate = "Calling {tool}",
         toolResultSummaryTemplate = "{tool} returned",
         toolResultFailedSummaryTemplate = "{tool} failed",
@@ -174,7 +164,9 @@ object AgentChatStrings {
         diagnosticsEntry = "Diagnostics",
         sidebarHide = "Hide info panel",
         sidebarShow = "Show info panel",
-        streamingHint = "Generating"
+        streamingHint = "Generating",
+        replyLanguage = "English",
+        sessionBusy = "Still working on this request; stop it before switching conversations"
     )
 
     /** 与全局语言保持一致：英文界面用英文文案，其余按中文（应用默认中文）。 */

@@ -54,8 +54,13 @@ class AgentToolHostTest {
             return "已请求暂停工程 #$projectId"
         }
 
-        override suspend fun scanGlossary(bookId: Long): String {
-            invocations += "scan_glossary:$bookId"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String {
+            invocations += "scan_glossary:$bookId:$startChapter:$endChapter:$projectId"
             return "术语扫描完成"
         }
 
@@ -84,7 +89,10 @@ class AgentToolHostTest {
             return "配置已更新"
         }
 
-        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long?): String {
+            invocations += "summarize_chapter:$bookId:$chapterIndex:$projectId"
+            return "摘要"
+        }
         override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
@@ -130,19 +138,40 @@ class AgentToolHostTest {
     }
 
     @Test
-    fun startTranslationPassesPositiveRangeAndFiltersNonPositive() {
+    fun startTranslationPassesRangeAndAcceptsSingleEndedRange() {
         val host = RecordingToolHost()
         execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_start":2,"range_end":9}""")
-        execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_start":0,"range_end":-1}""")
+        // 只给一端也照传：另一端由宿主补成首页 / 末页，不能被静默丢弃后整本开跑。
+        execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_start":20}""")
+        execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_end":"7"}""")
         execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":"5","range_start":"3","range_end":"4"}""")
         assertEquals(
             listOf(
                 "start_translation:5:2:9",
-                "start_translation:5:null:null",
+                "start_translation:5:20:null",
+                "start_translation:5:null:7",
                 "start_translation:5:3:4"
             ),
             host.invocations
         )
+    }
+
+    @Test
+    fun startTranslationRejectsInvalidOrReversedRange() {
+        val host = RecordingToolHost()
+        assertEquals(
+            "非法的 range_start 参数：章号是从 1 开始的整数，省略表示从第一章开始",
+            execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_start":0}""").output
+        )
+        assertEquals(
+            "非法的 range_end 参数：章号是从 1 开始的整数，省略表示翻到最后一章",
+            execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_end":-1}""").output
+        )
+        assertEquals(
+            "章节范围不合法：range_start(9) 大于 range_end(2)",
+            execute(host, AgentToolHost.TOOL_START_TRANSLATION, """{"project_id":5,"range_start":9,"range_end":2}""").output
+        )
+        assertTrue(host.invocations.isEmpty())
     }
 
     @Test
@@ -167,7 +196,74 @@ class AgentToolHostTest {
         val host = RecordingToolHost()
         val outcome = execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8}""")
         assertTrue(outcome.ok)
-        assertEquals(listOf("scan_glossary:8"), host.invocations)
+        assertEquals(listOf("scan_glossary:8:null:null:null"), host.invocations)
+    }
+
+    @Test
+    fun scanGlossaryPassesChapterRange() {
+        val host = RecordingToolHost()
+        execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"start_chapter":3,"end_chapter":12}""")
+        // 只给一端时另一端保持 null，由宿主补成首页/末页。
+        execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"start_chapter":20}""")
+        execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"end_chapter":"40"}""")
+        assertEquals(
+            listOf(
+                "scan_glossary:8:3:12:null",
+                "scan_glossary:8:20:null:null",
+                "scan_glossary:8:null:40:null"
+            ),
+            host.invocations
+        )
+    }
+
+    @Test
+    fun scanGlossaryPassesProjectIdAndRejectsInvalidOne() {
+        val host = RecordingToolHost()
+        execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"project_id":13}""")
+        assertEquals(listOf("scan_glossary:8:null:null:13"), host.invocations)
+        // 非法 project_id 不能被当成「没给」而静默落到别的工程。
+        assertEquals(
+            "非法的 project_id 参数：应为该书下的翻译工程 id",
+            execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"project_id":"abc"}""").output
+        )
+        assertEquals(1, host.invocations.size)
+    }
+
+    @Test
+    fun summarizeChapterPassesProjectId() {
+        val host = RecordingToolHost()
+        execute(host, AgentToolHost.TOOL_SUMMARIZE_CHAPTER, """{"book_id":3,"chapter_index":4}""")
+        execute(host, AgentToolHost.TOOL_SUMMARIZE_CHAPTER, """{"book_id":3,"chapter_index":4,"project_id":9}""")
+        assertEquals(
+            "非法的 project_id 参数：应为该书下的翻译工程 id",
+            execute(host, AgentToolHost.TOOL_SUMMARIZE_CHAPTER, """{"book_id":3,"chapter_index":4,"project_id":0}""").output
+        )
+        assertEquals(
+            listOf(
+                "summarize_chapter:3:4:null",
+                "summarize_chapter:3:4:9"
+            ),
+            host.invocations
+        )
+    }
+
+    @Test
+    fun scanGlossaryRejectsInvalidRangeInsteadOfScanningWholeBook() {
+        val host = RecordingToolHost()
+        // 非法章节号不能被当成「没给」，否则会静默变成整本付费扫描。
+        assertEquals(
+            "非法的 start_chapter 参数：章号是从 1 开始的整数，省略表示从第一章开始",
+            execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"start_chapter":0}""").output
+        )
+        assertEquals(
+            "非法的 end_chapter 参数：章号是从 1 开始的整数，省略表示扫到最后一章",
+            execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"end_chapter":"abc"}""").output
+        )
+        assertEquals(
+            "章节范围不合法：start_chapter(30) 大于 end_chapter(10)",
+            execute(host, AgentToolHost.TOOL_SCAN_GLOSSARY, """{"book_id":8,"start_chapter":30,"end_chapter":10}""").output
+        )
+        assertTrue(host.invocations.isEmpty())
     }
 
     @Test

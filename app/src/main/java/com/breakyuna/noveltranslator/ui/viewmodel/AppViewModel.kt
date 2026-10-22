@@ -224,8 +224,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val seamlessJobs = ConcurrentHashMap<Long, Job>()
     /** The start action waits for the latest in-flight configuration write for the same project. */
     private val translationConfigJobs = ConcurrentHashMap<Long, Job>()
-    /** 无人值守章级后处理任务，按工程串行（key = "unattended:$projectId"）。 */
-    private val companionJobs = ConcurrentHashMap<String, Job>()
+    /**
+     * 无人值守章级后处理的串行闸门：按工程互斥。
+     *
+     * 之前是「查任务表 → 有就 join → 写入新 job」，并发章节可能同时通过检查而并发跑起来
+     * （parallelChapters 1-5 时确实会发生），两个后处理同时打同一个 provider。
+     */
+    private val companionLocks = ConcurrentHashMap<Long, Mutex>()
     private val translationConfigLocks = ConcurrentHashMap<Long, Mutex>()
     /** Every translation worker waits until stale durable RUNNING/PAUSED rows are recovered. */
     private val translationRecoveryJob: Job
@@ -259,10 +264,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun observeAgentSessions(): Flow<List<AgentSessionEntity>> = db.agentSessionDao().observeAll()
 
     /**
+     * 删除一段 Agent 会话及其消息。
+     *
+     * 数据层早有删除入口却无人调用，会话只增不减；这里接线并保证先删消息再删会话行，
+     * 否则外键约束异常会直接冒到界面。
+     */
+    suspend fun deleteAgentSession(sessionId: Long): Boolean = withContext(Dispatchers.IO) {
+        try {
+            agentSessionStore.deleteSession(sessionId)
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            SystemLogger.warn(
+                "AGENT_SESSION",
+                "删除会话失败: session=$sessionId · " +
+                    (error.localizedMessage ?: error.javaClass.simpleName)
+            )
+            false
+        }
+    }
+
+    /**
      * Agent chat controller for the agent screen. Created lazily and owned by the ViewModel scope;
      * it resolves the provider at session start so a provider change applies to the next chat.
+     *
+     * 用显式 delegate 持有，[onCleared] 才能判断它是否被创建过并停掉它自己的 scope——否则
+     * 页面销毁后回合协程还会继续跑一次付费请求。
      */
-    val agentChatController: AgentChatController by lazy {
+    private val agentChatControllerDelegate = lazy {
         AgentChatController(
             gateway = llmClient,
             toolHost = agentToolHost,
@@ -271,6 +301,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             promptAssetLoader = AssetsAgentPromptLoader(application)
         )
     }
+
+    val agentChatController: AgentChatController by agentChatControllerDelegate
 
     private suspend fun resolveAgentSessionConfig(): AgentSessionConfig? {
         val selection = _agentModelSelection.value
@@ -287,7 +319,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             agentTemperature = AGENT_TEMPERATURE,
             maxTokens = 2_048,
             reasoningEffort = effort.takeIf { it != AGENT_REASONING_OFF },
-            nativeToolsEnabled = _agentNativeToolsEnabled.value
+            nativeToolsEnabled = _agentNativeToolsEnabled.value,
+            // Agent 对话同样是付费请求：每次尝试（含失败）记一条 LLM_AUXILIARY，
+            // 与术语扫描、章节记忆等辅助请求同一口径，可在日志/导出里审计。
+            onRequestUsage = { result ->
+                logAuxiliaryUsage(
+                    operation = "AGENT_CHAT",
+                    bookId = null,
+                    provider = provider,
+                    result = result
+                )
+            }
         )
     }
 
@@ -355,20 +397,48 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     suspend fun exportAgentLogsWithHistory(): String = SystemLogger.exportText()
 
-    private val _agentQuestions = MutableSharedFlow<AgentUserQuestion>(extraBufferCapacity = 8)
-    val agentQuestions: SharedFlow<AgentUserQuestion> = _agentQuestions.asSharedFlow()
+    /**
+     * 当前待用户回答的 ask_user 问题。
+     *
+     * 用 StateFlow 而不是一次性事件流：问题必须能被**重新组合后的**界面重新读到。
+     * 事件流（replay=0）在用户切页/旋屏取消收集时会直接丢事件，工具侧却仍在等回答，
+     * 结果就是面板消失、回合空等满 5 分钟。
+     */
+    private val _agentPendingQuestion = MutableStateFlow<AgentUserQuestion?>(null)
+    val agentPendingQuestion: StateFlow<AgentUserQuestion?> = _agentPendingQuestion.asStateFlow()
 
     /** Pending ask_user answers; the UI resolves one by id. */
     private val agentQuestionAnswers = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
-    /** Answers a question the agent asked through [AgentToolHost.askUser]. */
-    fun answerAgentQuestion(id: String, answer: String) {
-        agentQuestionAnswers.remove(id)?.complete(answer)
-    }
+    /**
+     * Answers a question the agent asked through [AgentToolHost.askUser].
+     *
+     * @return false 表示该问题已超时、已被停止作废或已被回答——界面不该再假装提交成功。
+     */
+    fun answerAgentQuestion(id: String, answer: String): Boolean = resolveAgentQuestion(id, answer)
 
     /** Drops a question the user dismissed without answering. */
-    fun dismissAgentQuestion(id: String) {
-        agentQuestionAnswers.remove(id)?.complete(AGENT_QUESTION_DISMISSED)
+    fun dismissAgentQuestion(id: String): Boolean =
+        resolveAgentQuestion(id, AGENT_QUESTION_DISMISSED)
+
+    /**
+     * 作废当前待答问题（用户点"停止"时调用）。
+     *
+     * 只置取消信号不会让卡在 [AgentToolHost.askUser] 里的工具返回，回合要等满超时才结束；
+     * 这里直接回执"未作答"，停止按钮因此立即生效。
+     */
+    fun cancelPendingAgentQuestion(): Boolean {
+        val pending = _agentPendingQuestion.value ?: return false
+        return dismissAgentQuestion(pending.id)
+    }
+
+    private fun resolveAgentQuestion(id: String, answer: String): Boolean {
+        val pending = _agentPendingQuestion.value
+        if (pending?.id != id) return false
+        val deferred = agentQuestionAnswers.remove(id) ?: return false
+        _agentPendingQuestion.value = null
+        deferred.complete(answer)
+        return true
     }
 
     /**
@@ -438,12 +508,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             if (project.state in setOf("RUNNING", "PAUSED", "QUEUED")) {
                 return@withContext "工程 #$projectId 正在运行（${project.state}），已跳过启动。"
             }
-            if (rangeStart != null && rangeEnd != null) {
+            if (rangeStart != null || rangeEnd != null) {
+                // 只给一端时按"从第 N 章到结尾 / 从第 1 章到第 N 章"补齐：此前单端范围被
+                // 静默忽略，模型以为只翻第 20~30 章，实际整本都在产生付费请求。
+                // 范围按章序（1 起、含两端）计算，与 TranslationScopePlanner 的口径一致。
                 val chapterCount = bookPlatformRepo.getChapters(project.bookId).size
-                val start = minOf(rangeStart, rangeEnd).coerceAtLeast(1)
-                val end = maxOf(rangeStart, rangeEnd).coerceAtLeast(start)
+                if (chapterCount <= 0) {
+                    return@withContext "本书没有章节，无法按章节范围启动翻译。"
+                }
+                val start = rangeStart ?: 1
+                val end = rangeEnd ?: chapterCount
                 if (start > chapterCount || end > chapterCount) {
                     return@withContext "章节范围 $start-$end 超出本书章节数 $chapterCount"
+                }
+                if (start > end) {
+                    return@withContext "章节范围不合法：range_start($start) 大于 range_end($end)，本书共 $chapterCount 章。"
                 }
                 val updated = project.copy(
                     translationMode = TranslationMode.CHAPTER_RANGE.name,
@@ -472,27 +551,58 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "已请求暂停工程 #$projectId。"
         }
 
-        override suspend fun scanGlossary(bookId: Long): String {
-            val project = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
-                ?: return "该书没有翻译工程，无法扫描术语。"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String {
+            val projects = bookPlatformRepo.getTranslationProjects(bookId)
+            if (projects.isEmpty()) return "该书没有翻译工程，无法扫描术语。"
+            // 候选按工程落库：多工程时静默取第一个会把术语写错工程，所以改为回执列表要模型选。
+            val project = when {
+                projectId != null -> projects.firstOrNull { it.id == projectId }
+                    ?: return "工程 #$projectId 不属于书籍 #$bookId。该书的工程：" +
+                        projects.joinToString("；") { "#${it.id}" } + "。"
+                projects.size == 1 -> projects.first()
+                else -> return "书籍 #$bookId 有 ${projects.size} 个翻译工程：" +
+                    projects.joinToString("；") { "#${it.id}（目标语言 ${it.targetLanguage}，模式 ${it.translationMode}）" } +
+                    "。术语候选按工程落库，请用 project_id 指定目标工程。"
+            }
             val provider = project.providerId?.let { providerRepo.getProviderById(it) }
                 ?: providerRepo.getDefaultProvider()
                 ?: return "没有可用的 API Provider，无法扫描术语。"
             val chapters = bookPlatformRepo.getChapters(bookId)
             if (chapters.isEmpty()) return "该书没有章节，无法扫描术语。"
+            // 章号按真实章节索引校验，不静默改动用户/模型给的范围：扫描会产生付费请求，
+            // 悄悄扫成别的区间比直接报错更糟。范围越界时把该书真实区间回给模型，便于它修正。
+            val firstIndex = chapters.first().chapterIndex
+            val lastIndex = chapters.last().chapterIndex
+            val requestedStart = startChapter ?: firstIndex
+            val requestedEnd = endChapter ?: lastIndex
+            if (requestedStart !in firstIndex..lastIndex || requestedEnd !in firstIndex..lastIndex) {
+                return "章节范围超出本书范围：请求第 $requestedStart ~ $requestedEnd 章，" +
+                    "本书章号是 $firstIndex ~ $lastIndex。请按这个区间重新指定。"
+            }
+            if (requestedStart > requestedEnd) {
+                return "章节范围不合法：start_chapter($requestedStart) 大于 end_chapter($requestedEnd)。"
+            }
             val completion = CompletableDeferred<String>()
             scanGlossaryForBook(
                 bookId = bookId,
                 sourceEditionId = project.sourceEditionId,
                 targetProjectId = project.id,
-                startChapter = 1,
-                endChapter = chapters.size,
+                startChapter = requestedStart,
+                endChapter = requestedEnd,
                 provider = provider,
                 onComplete = { result ->
                     completion.complete(
                         result.fold(
-                            onSuccess = { "术语扫描完成，当前待审核候选 $it 条。" },
-                            onFailure = { "术语扫描失败：${it.localizedMessage ?: "未知错误"}" }
+                            onSuccess = {
+                                "术语扫描完成（第 $requestedStart ~ $requestedEnd 章），" +
+                                    "当前待审核候选 $it 条。"
+                            },
+                            onFailure = { "术语扫描失败（第 $requestedStart ~ $requestedEnd 章）：${it.localizedMessage ?: "未知错误"}" }
                         )
                     )
                 }
@@ -555,16 +665,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
         override suspend fun askUser(prompt: String, options: List<String>): String {
             val id = java.util.UUID.randomUUID().toString()
+            val question = AgentUserQuestion(id = id, prompt = prompt, options = options)
             val answer = CompletableDeferred<String>()
             agentQuestionAnswers[id] = answer
-            _agentQuestions.emit(AgentUserQuestion(id = id, prompt = prompt, options = options))
+            _agentPendingQuestion.value = question
             return try {
                 withTimeout(AGENT_QUESTION_TIMEOUT_MS) { answer.await() }
             } catch (timeout: TimeoutCancellationException) {
-                agentQuestionAnswers.remove(id)
                 "用户未在时限内回答，请改用合理默认值继续。"
             } finally {
                 agentQuestionAnswers.remove(id)
+                // 超时/取消同样要收起面板：否则界面停在一个已失效的问题上，
+                // 用户作答时被静默丢弃（此前正是这个行为）。
+                _agentPendingQuestion.compareAndSet(question, null)
             }
         }
 
@@ -724,11 +837,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             projectId: Long,
             sourceTerm: String,
             targetTerm: String,
-            kind: String?,
+            category: String?,
             note: String?
         ): String = withContext(Dispatchers.IO) {
             bookPlatformRepo.getTranslationProject(projectId)
                 ?: return@withContext "找不到翻译工程 #$projectId"
+            // category 用 TermCategory 名称（界面/模型/落库校验同一套取值）；
+            // kind 由 category 推导，不再由模型传入。
+            val normalizedCategory = category?.trim()?.uppercase(Locale.ROOT)
+                ?.takeIf { it in AgentToolHost.GLOSSARY_CATEGORIES }
+                ?: TermCategory.CUSTOM.name
             val existing = bookPlatformRepo.observeLexicon(projectId).first()
                 .firstOrNull { it.sourceTerm.equals(sourceTerm, ignoreCase = true) }
             if (existing != null) {
@@ -746,16 +864,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     translationProjectId = projectId,
                     sourceTerm = sourceTerm,
                     targetTerm = targetTerm,
-                    kind = LexiconKind.entries.firstOrNull { it.name.equals(kind, ignoreCase = true) }?.name
-                        ?: LexiconKind.PROPER_NOUN.name,
-                    category = kind?.trim()?.take(50)?.takeIf(String::isNotBlank) ?: "CUSTOM",
+                    kind = kindForCategory(normalizedCategory),
+                    category = normalizedCategory,
                     notes = note.orEmpty(),
                     source = LexiconSource.MANUAL.name,
                     reviewStatus = ReviewStatus.CONFIRMED.name
                 )
             )
-            "已添加术语 #$id：$sourceTerm → $targetTerm。"
+            "已添加术语 #$id：$sourceTerm → $targetTerm（类别 $normalizedCategory）。"
         }
+
+        /**
+         * 术语类别 → 术语种类（技能/物品属"术语"型，其余按专名处理）。
+         * 与 `LexiconCandidateImportPlanner.createOfficialEntry` 的推导保持同一口径。
+         */
+        private fun kindForCategory(category: String): String =
+            if (category == TermCategory.SKILL.name || category == TermCategory.ITEM.name) {
+                LexiconKind.TERMINOLOGY.name
+            } else {
+                LexiconKind.PROPER_NOUN.name
+            }
 
         override suspend fun removeGlossaryEntry(projectId: Long, entryId: Long): String = withContext(Dispatchers.IO) {
             bookPlatformRepo.getTranslationProject(projectId)
@@ -849,9 +977,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
          * 这是元数据解耦后的常规产出路径：正文翻译请求不再携带 META，摘要改由 Agent 按需触发，
          * 对标 LinguaGacha「元数据由 Agent 技能与工具负责」的分工。失败只影响记忆，不影响正文。
          */
-        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = withContext(Dispatchers.IO) {
-            val project = bookPlatformRepo.getTranslationProjects(bookId).firstOrNull()
-                ?: return@withContext "该书没有翻译工程，无法归集章节记忆（请先创建译文版本）"
+        override suspend fun summarizeChapter(
+            bookId: Long,
+            chapterIndex: Int,
+            projectId: Long?
+        ): String = withContext(Dispatchers.IO) {
+            val projects = bookPlatformRepo.getTranslationProjects(bookId)
+            if (projects.isEmpty()) {
+                return@withContext "该书没有翻译工程，无法归集章节记忆（请先创建译文版本）"
+            }
+            // 记忆按工程落库：多工程时静默取第一个会把摘要写错工程。
+            val project = when {
+                projectId != null -> projects.firstOrNull { it.id == projectId }
+                    ?: return@withContext "工程 #$projectId 不属于书籍 #$bookId。该书的工程：" +
+                        projects.joinToString("；") { "#${it.id}" } + "。"
+                projects.size == 1 -> projects.first()
+                else -> return@withContext "书籍 #$bookId 有 ${projects.size} 个翻译工程：" +
+                    projects.joinToString("；") { "#${it.id}（目标语言 ${it.targetLanguage}，模式 ${it.translationMode}）" } +
+                    "。章节记忆按工程落库，请用 project_id 指定目标工程。"
+            }
             val chapters = bookPlatformRepo.getChapters(bookId)
             if (chapters.none { it.chapterIndex == chapterIndex }) {
                 return@withContext "找不到第 $chapterIndex 章（本书共 ${chapters.size} 章）"
@@ -859,7 +1003,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             // 与无人值守模式共用同一条实现：一套请求、一套解析、一套落库。
             val summary = summarizeChapterIntoMemory(project.id, chapterIndex)
                 ?: return@withContext "第 $chapterIndex 章摘要失败：无法读取源文、Provider 不可用、请求失败或响应无法解析。原有记忆未改动。"
-            "第 $chapterIndex 章摘要已生成并写入记忆：\n$summary"
+            "第 $chapterIndex 章摘要已生成并写入记忆（工程 #${project.id}）：\n$summary"
         }
 
         override suspend fun getStoryMemory(projectId: Long): String = withContext(Dispatchers.IO) {
@@ -1436,7 +1580,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun logAuxiliaryUsage(
         operation: String,
-        bookId: Long,
+        /** null 表示这次请求不属于某一本书（例如 Agent 对话）。 */
+        bookId: Long?,
         provider: ApiProviderEntity,
         result: LlmResult,
         projectId: Long? = null,
@@ -1449,7 +1594,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             provider.outputPricePerMillion
         )
         val details = buildString {
-            append("bookId=").append(bookId)
+            append("bookId=").append(bookId ?: "-")
             append("; model=").append(provider.name).append('/').append(provider.selectedModel)
             append("; promptTokens=").append(result.promptTokens)
             append("; completionTokens=").append(result.completionTokens)
@@ -2250,6 +2395,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (ce: CancellationException) {
                 // A cancelled scan keeps every aggregate persisted by completed windows.
+                // 但取消也必须回执：Agent 的 scan_glossary 工具在 await 这个结果，
+                // 不回执会让回合无限挂住（取消来源可能是删除书籍或工作台手动取消，
+                // 与等待方的协程无关，光靠 await 抛不出异常）。
+                withContext(NonCancellable + Dispatchers.Main) {
+                    onComplete(
+                        Result.failure(
+                            IllegalStateException("术语扫描已取消，已完成窗口的候选已保留")
+                        )
+                    )
+                }
                 throw ce
             } catch (e: Exception) {
                 com.breakyuna.noveltranslator.core.logger.SystemLogger.error(
@@ -2630,12 +2785,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun onChapterCommittedForCompanion(projectId: Long, chapterIndex: Int) {
         if (!_unattendedCompanionEnabled.value) return
-        val key = "unattended:$projectId"
+        val lock = companionLocks.getOrPut(projectId) { Mutex() }
         viewModelScope.launch(Dispatchers.IO) {
-            // 同一工程排队执行：后处理是廉价补充，不该和正文翻译抢额度。
-            companionJobs[key]?.join()
-            if (!_unattendedCompanionEnabled.value) return@launch
-            val job = viewModelScope.launch(Dispatchers.IO) {
+            // 同一工程严格串行：后处理是廉价补充，不该和正文翻译抢额度。
+            // 用 Mutex 而不是"检查-写入"的任务表，避免并发章节同时通过检查。
+            lock.withLock {
+                if (!_unattendedCompanionEnabled.value) return@withLock
                 runCatching {
                     SystemLogger.info(
                         "UNATTENDED",
@@ -2656,9 +2811,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             }
-            companionJobs[key] = job
-            job.join()
-            companionJobs.remove(key, job)
         }
     }
     /**
@@ -2693,6 +2845,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 )
             )
         }.getOrNull() ?: return null
+        // 审计：这条付费请求此前完全没有记录，Token/费用在日志里查不到。
+        logAuxiliaryUsage(
+            operation = "CHAPTER_MEMORY",
+            bookId = project.bookId,
+            provider = provider,
+            result = result,
+            projectId = projectId,
+            chapterIndex = chapterIndex
+        )
         if (!result.isSuccess) return null
         val memory = runCatching { parseChapterMemory(result.text) }.getOrNull() ?: return null
         val summary = memory.summary.ifBlank { return null }
@@ -2974,6 +3135,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             deletingTranslationProjects.clear()
         }
         lastSeamlessChapter.clear()
+        // 控制器有自己的 CoroutineScope（回合协程不属于 viewModelScope）：不显式 dispose，
+        // 页面销毁后它还会继续跑完当前回合。没创建过就不创建。
+        if (agentChatControllerDelegate.isInitialized()) agentChatController.dispose()
         super.onCleared()
     }
 

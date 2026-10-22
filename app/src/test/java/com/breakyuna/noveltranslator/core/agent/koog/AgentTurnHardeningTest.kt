@@ -84,8 +84,13 @@ class AgentTurnHardeningTest {
             return "已暂停"
         }
 
-        override suspend fun scanGlossary(bookId: Long): String {
-            invocations += "scan_glossary:$bookId"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String {
+            invocations += "scan_glossary:$bookId:$startChapter:$endChapter:$projectId"
             return "扫描完成"
         }
 
@@ -108,7 +113,7 @@ class AgentTurnHardeningTest {
             promptCacheEnabled: Boolean?
         ): String = "配置已更新"
 
-        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long?): String = "摘要"
         override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 

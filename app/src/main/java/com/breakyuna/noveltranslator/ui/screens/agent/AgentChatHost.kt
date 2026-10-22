@@ -18,18 +18,22 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.SmartToy
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,9 +83,10 @@ private var autoOpenedLatestSession = false
  *   [initialSessionId] 有值时打开指定会话，为空时恢复最近一段会话；
  * - 会话列表：读取 [AppViewModel.observeAgentSessions] 提供的新建 / 切换入口
  *   （归档需要数据层入口，当前不可用）；
- * - ask_user：收集 [AppViewModel.agentQuestions]，用户作答 / 跳过时回调
- *   [AppViewModel.answerAgentQuestion] / [AppViewModel.dismissAgentQuestion]，
- *   解除被阻塞的工具调用；
+ * - ask_user：读 [AppViewModel.agentPendingQuestion]（StateFlow，切页/旋屏后仍能重新读到），
+ *   用户作答 / 跳过时回调 [AppViewModel.answerAgentQuestion] /
+ *   [AppViewModel.dismissAgentQuestion]，解除被阻塞的工具调用；点"停止"时经
+ *   [AppViewModel.cancelPendingAgentQuestion] 一并作废，避免工具空等超时；
  * - 模型与工具：读取 provider 列表与 [AppViewModel.agentModelSelection] /
  *   [AppViewModel.agentReasoningEffort] / [AppViewModel.agentNativeToolsEnabled]，
  *   经底部弹窗修改后写回，并用 Snackbar 提示"对新对话生效"；
@@ -107,7 +112,7 @@ fun AgentChatHostScreen(
     val streamingText by controller.streamingText.collectAsStateWithLifecycle()
     val modelName by controller.modelName.collectAsStateWithLifecycle()
     val sessions by remember(viewModel) { viewModel.observeAgentSessions() }
-        .collectAsState(initial = emptyList())
+        .collectAsStateWithLifecycle(initialValue = emptyList())
     val providers by viewModel.allProviders.collectAsStateWithLifecycle()
     val modelSelection by viewModel.agentModelSelection.collectAsStateWithLifecycle()
     val reasoningEffort by viewModel.agentReasoningEffort.collectAsStateWithLifecycle()
@@ -118,7 +123,15 @@ fun AgentChatHostScreen(
     var showSessionSheet by rememberSaveable { mutableStateOf(false) }
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showDiagnosticsSheet by rememberSaveable { mutableStateOf(false) }
-    var pendingQuestion by remember { mutableStateOf<AgentChatQuestion?>(null) }
+    // 待确认删除的会话 id（会话实体不可序列化，这里只存 id，标题按列表现查）。
+    var pendingDeleteSessionId by remember { mutableStateOf<Long?>(null) }
+    // ask_user：问题源是 ViewModel 的 StateFlow，不再用页面内 remember 缓存一次性事件。
+    val pendingQuestion by viewModel.agentPendingQuestion.collectAsStateWithLifecycle()
+    val question = remember(pendingQuestion) {
+        pendingQuestion?.let { q ->
+            AgentChatQuestion(id = q.id, prompt = q.prompt, options = q.options)
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -138,27 +151,24 @@ fun AgentChatHostScreen(
         ?: modelSelection.modelName?.takeIf { it.isNotBlank() }
         ?: activeProvider?.selectedModel
 
+    // 界面语言 → 控制器文案与 Agent 回复语言（对之后新建的会话生效）。
+    LaunchedEffect(controller, chatStrings) {
+        controller.updateTexts(chatStrings)
+    }
+
     LaunchedEffect(controller, initialSessionId) {
         if (initialSessionId != null) {
             controller.openSession(initialSessionId)
         } else if (!autoOpenedLatestSession) {
-            autoOpenedLatestSession = true
             val current = controller.state.value
             if (current.sessionId == null && current.messages.isEmpty()) {
                 val latest = viewModel.observeAgentSessions().first().firstOrNull()
+                // 先读再置位：读取被取消（离开页面）时保留机会，下次进入仍能恢复最近会话。
+                autoOpenedLatestSession = true
                 if (latest != null) controller.openSession(latest.id)
+            } else {
+                autoOpenedLatestSession = true
             }
-        }
-    }
-
-    // ask_user：Agent 通过工具提问时弹出面板，作答后恢复被阻塞的工具调用。
-    LaunchedEffect(viewModel) {
-        viewModel.agentQuestions.collect { question ->
-            pendingQuestion = AgentChatQuestion(
-                id = question.id,
-                prompt = question.prompt,
-                options = question.options
-            )
         }
     }
 
@@ -194,12 +204,40 @@ fun AgentChatHostScreen(
     }
 
     // 真正需要跟着 token 变的只有流式预览本身。
-    val startNewChatAction = remember { controller::startNewChat }
+    // 回合进行中新建 / 切换会被控制器拒绝（返回 false）：这里明说原因，避免点了没反应。
+    val startNewChatAction = remember(controller, chatStrings) {
+        {
+            if (!controller.startNewChat()) {
+                scope.launch { snackbarHostState.showSnackbar(chatStrings.sessionBusy) }
+            }
+        }
+    }
     val openSessionsAction = remember<() -> Unit> { { showSessionSheet = true } }
     val openModelPanelAction = remember<() -> Unit> { { showModelSheet = true } }
     val openDiagnosticsAction = remember<() -> Unit> { { showDiagnosticsSheet = true } }
-    val copyChatTextAction =
-        remember<(String) -> Unit> { { text -> copyText(text, chatStrings.copied) } }
+    // 停止 = 置取消信号 + 作废待答问题：只置信号时，卡在 ask_user 里的工具会继续等到超时。
+    val cancelTurnAction = remember(viewModel, controller) {
+        {
+            viewModel.cancelPendingAgentQuestion()
+            controller.cancel()
+        }
+    }
+    val copyChatTextAction = remember(chatStrings) { { text: String ->
+        copyText(text, chatStrings.copied)
+    } }
+    // 作答/跳过同样按当前问题记住：问题不变时回调实例不变，面板不因父级重组而重建。
+    // 末尾显式 Unit：ViewModel 的这两个方法返回"问题是否仍有效"，而回调类型是 () -> Unit，
+    // 让 lambda 直接从 Boolean 推断成 (String) -> Boolean? 会与 onAnswerQuestion 的类型不匹配。
+    val answerQuestionAction = remember(question, viewModel) { { answer: String ->
+        question?.let { viewModel.answerAgentQuestion(it.id, answer) }
+        Unit
+    } }
+    val dismissQuestionAction = remember(question, viewModel) {
+        {
+            question?.let { viewModel.dismissAgentQuestion(it.id) }
+            Unit
+        }
+    }
     // 信息侧栏内容同样记住：它依赖的数据在流式期间不变，没理由每个 token 重建一次。
     val infoPanelContent: @Composable ColumnScope.() -> Unit = remember(
         entryStrings,
@@ -218,7 +256,7 @@ fun AgentChatHostScreen(
                 crash = lastCrash,
                 logs = systemLogs,
                 onOpenModelPanel = { showModelSheet = true },
-                onCancel = controller::cancel,
+                onCancel = cancelTurnAction,
                 onClearCrash = viewModel::clearAgentLastCrash,
                 onExportLogs = { exportLogs() },
                 onCopyLogs = {
@@ -240,7 +278,7 @@ fun AgentChatHostScreen(
         AgentChatScreen(
             state = controllerState,
             onSend = controller::send,
-            onCancel = controller::cancel,
+            onCancel = cancelTurnAction,
             modifier = Modifier.padding(bottom = padding.calculateBottomPadding()),
             modelName = displayModelName,
             providerLabel = providerLabel,
@@ -252,17 +290,9 @@ fun AgentChatHostScreen(
             onCopyText = copyChatTextAction,
             streamingText = streamingText,
             infoPanel = infoPanelContent,
-            question = pendingQuestion,
-            onAnswerQuestion = { answer ->
-                val question = pendingQuestion
-                pendingQuestion = null
-                question?.let { viewModel.answerAgentQuestion(it.id, answer) }
-            },
-            onDismissQuestion = {
-                val question = pendingQuestion
-                pendingQuestion = null
-                question?.let { viewModel.dismissAgentQuestion(it.id) }
-            }
+            question = question,
+            onAnswerQuestion = answerQuestionAction,
+            onDismissQuestion = dismissQuestionAction
         )
     }
 
@@ -271,15 +301,66 @@ fun AgentChatHostScreen(
             sessions = sessions,
             currentSessionId = controllerState.sessionId,
             strings = entryStrings,
+            // 回合进行中禁止切换 / 新建 / 删除：正在跑的会话被换掉会让工具调用失去界面，
+            // 删除当前会话更会让后续消息写回已删除的行。
+            actionsEnabled = !controllerState.isRunning,
             onDismiss = { showSessionSheet = false },
             onSelect = { sessionId ->
-                showSessionSheet = false
-                controller.openSession(sessionId)
+                if (controller.openSession(sessionId)) {
+                    showSessionSheet = false
+                } else {
+                    scope.launch { snackbarHostState.showSnackbar(chatStrings.sessionBusy) }
+                }
             },
             onNewChat = {
                 showSessionSheet = false
-                controller.startNewChat()
-            }
+                startNewChatAction()
+            },
+            onDelete = { session -> pendingDeleteSessionId = session.id }
+        )
+    }
+
+    pendingDeleteSessionId?.let { sessionId ->
+        val target = sessions.firstOrNull { it.id == sessionId }
+        AlertDialog(
+            onDismissRequest = { pendingDeleteSessionId = null },
+            title = { Text(entryStrings.sessionsDeleteTitle) },
+            text = {
+                Text(
+                    entryStrings.sessionsDeleteMessage(
+                        target?.title?.takeIf { it.isNotBlank() }
+                            ?: target?.lastMessagePreview
+                            ?: entryStrings.sessionsUntitled
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingDeleteSessionId = null
+                        scope.launch {
+                            val deleted = viewModel.deleteAgentSession(sessionId)
+                            if (!deleted) {
+                                snackbarHostState.showSnackbar(entryStrings.sessionsDeleteFailed)
+                                return@launch
+                            }
+                            // 删掉的正是当前会话：控制器必须丢掉引用，否则下一次发送会写回
+                            // 已被删除的会话行（数据层删除 + 旧 sessionId 是最坏组合）。
+                            if (controller.state.value.sessionId == sessionId) controller.startNewChat()
+                            snackbarHostState.showSnackbar(entryStrings.sessionsDeleted)
+                        }
+                    }
+                ) {
+                    Text(entryStrings.sessionsDeleteConfirm)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteSessionId = null }) {
+                    Text(entryStrings.sessionsDeleteCancel)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = GroupedCardShape
         )
     }
 
@@ -359,16 +440,23 @@ fun AgentChatHostScreen(
     }
 }
 
-/** 会话列表面板：新建、切换；归档暂无可用的数据层入口，只在页脚说明。 */
+/**
+ * 会话列表面板：新建、切换、删除；归档暂无可用的数据层入口，只在页脚说明。
+ *
+ * [actionsEnabled] 为假（回合进行中）时切换与新建都会被控制器拒绝，这里直接把入口禁用，
+ * 用户看到的是"不可点"，而不是点了没反应。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AgentSessionSheet(
     sessions: List<AgentSessionEntity>,
     currentSessionId: Long?,
     strings: AgentEntryStrings,
+    actionsEnabled: Boolean,
     onDismiss: () -> Unit,
     onSelect: (Long) -> Unit,
-    onNewChat: () -> Unit
+    onNewChat: () -> Unit,
+    onDelete: (AgentSessionEntity) -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState()
     ModalBottomSheet(
@@ -405,6 +493,7 @@ private fun AgentSessionSheet(
                 text = strings.sessionsNew,
                 onClick = onNewChat,
                 icon = Icons.Outlined.Add,
+                enabled = actionsEnabled,
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -426,7 +515,9 @@ private fun AgentSessionSheet(
                             currentLabel = strings.sessionsCurrent,
                             updatedTemplate = strings.sessionsUpdatedTemplate,
                             untitled = strings.sessionsUntitled,
-                            onClick = { onSelect(session.id) }
+                            deleteLabel = strings.sessionsDelete,
+                            onClick = if (actionsEnabled) ({ onSelect(session.id) }) else null,
+                            onDelete = if (actionsEnabled) ({ onDelete(session) }) else null
                         )
                     }
                 }
@@ -448,7 +539,9 @@ private fun AgentSessionRow(
     currentLabel: String,
     updatedTemplate: (String) -> String,
     untitled: String,
-    onClick: () -> Unit
+    deleteLabel: String,
+    onClick: (() -> Unit)?,
+    onDelete: (() -> Unit)?
 ) {
     AppCard(
         modifier = Modifier.fillMaxWidth(),
@@ -486,6 +579,16 @@ private fun AgentSessionRow(
             if (isCurrent) {
                 Spacer(modifier = Modifier.width(Spacing.s))
                 AppBadge(text = currentLabel)
+            }
+            if (onDelete != null) {
+                Spacer(modifier = Modifier.width(Spacing.xs))
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = deleteLabel,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

@@ -107,6 +107,10 @@ class LntPromptExecutor(
         } else {
             gateway.executeCompletion(llmRequest)
         }
+        // 审计：每次请求（含失败）都把用量交给集成层记日志，Agent 对话不再是无账可查的付费路径。
+        // 回调失败只记一条警告：审计不能反过来打断用户的回合。
+        runCatching { config.onRequestUsage?.invoke(result) }
+            .onFailure { SystemLogger.warn(TAG, "用量回调失败: ${it.javaClass.simpleName}") }
         // 原生 tool_calls 转换回文本协议调用块，交给同一套回合循环（执行/回执/历史不变）。
         val callBlocks = result.toolCalls
             .filter { it.name.isNotBlank() }

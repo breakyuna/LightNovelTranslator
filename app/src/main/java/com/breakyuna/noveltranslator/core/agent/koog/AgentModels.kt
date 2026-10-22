@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.core.agent.koog
 
+import com.breakyuna.noveltranslator.core.llm.LlmResult
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 
 /** 消息角色，取值与 agent_messages 表的 role 列一一对应。 */
@@ -86,6 +87,20 @@ data class AgentSessionConfig(
     val compressAfterMessages: Int = 24,
     /** 展平后用户侧文本的字符预算，超出后保留头尾并标注截断。 */
     val maxTranscriptChars: Int = 60_000,
+    /**
+     * 对话回复语言（展示名，如 "中文" / "English"）。
+     *
+     * 写进运行环境段交给模型；此前是硬编码 "中文"，英文界面下用户会拿到中文答复。
+     * 由集成层按界面语言注入，默认中文只用于没有 UI 上下文的调用方与测试。
+     */
+    val replyLanguage: String = "中文",
+    /**
+     * 每次 LLM 请求结束后回调（含失败），携带用量与错误分类。
+     *
+     * 供集成层把 Agent 对话的 Token / 费用写进审计日志——这条付费路径此前完全无记录。
+     * 回调发生在回合协程内，必须轻量且不得抛异常；只传 [LlmResult]，不含提示词或正文。
+     */
+    val onRequestUsage: ((LlmResult) -> Unit)? = null,
     val operation: String = "AGENT_CHAT"
 ) {
     val effectiveModelName: String

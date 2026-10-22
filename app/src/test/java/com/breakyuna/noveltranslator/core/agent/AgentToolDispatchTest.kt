@@ -29,7 +29,12 @@ class AgentToolDispatchTest {
         override suspend fun getBookStatus(bookId: Long): String = "状态"
         override suspend fun startTranslation(projectId: Long, rangeStart: Int?, rangeEnd: Int?): String = "启动"
         override suspend fun pauseTranslation(projectId: Long): String = "暂停"
-        override suspend fun scanGlossary(bookId: Long): String = "扫描"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String = "扫描"
         override suspend fun resplitChapters(bookId: Long, previewOnly: Boolean): String = "重分"
         override suspend fun getRecentLog(projectId: Long?, limit: Int): String = "日志"
         override suspend fun askUser(prompt: String, options: List<String>): String = "回答"
@@ -39,7 +44,49 @@ class AgentToolDispatchTest {
             continuityMode: String?,
             promptCacheEnabled: Boolean?
         ): String = "配置"
-        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long?): String = "摘要"
+        override suspend fun getStoryMemory(projectId: Long): String = "记忆"
+    }
+
+    /**
+     * 记录 add_glossary_entry 实际收到的 category。
+     *
+     * 必须是真覆写：`executeTool` 是接口默认方法，内部对 `addGlossaryEntry` 的调用是
+     * 虚拟分派，用委托（`by host`）会走回被委托者的默认实现，记不到任何东西。
+     */
+    private class GlossaryRecordingHost : AgentToolHost {
+        val categories = mutableListOf<String?>()
+
+        override suspend fun listBooks(): String = "书架"
+        override suspend fun getBookStatus(bookId: Long): String = "状态"
+        override suspend fun startTranslation(projectId: Long, rangeStart: Int?, rangeEnd: Int?): String = "启动"
+        override suspend fun pauseTranslation(projectId: Long): String = "暂停"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String = "扫描"
+        override suspend fun resplitChapters(bookId: Long, previewOnly: Boolean): String = "重分"
+        override suspend fun getRecentLog(projectId: Long?, limit: Int): String = "日志"
+        override suspend fun askUser(prompt: String, options: List<String>): String = "回答"
+        override suspend fun updateTranslationConfig(
+            projectId: Long,
+            parallelChapters: Int?,
+            continuityMode: String?,
+            promptCacheEnabled: Boolean?
+        ): String = "配置"
+        override suspend fun addGlossaryEntry(
+            projectId: Long,
+            sourceTerm: String,
+            targetTerm: String,
+            category: String?,
+            note: String?
+        ): String {
+            categories += category
+            return "已添加术语"
+        }
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long?): String = "摘要"
         override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
@@ -101,6 +148,29 @@ class AgentToolDispatchTest {
         assertTrue(outcome.ok)
         assertTrue(outcome.output.contains("target_term"))
         assertTrue(outcome.output.contains("source_term"))
+    }
+
+    @Test
+    fun addGlossaryEntryPassesNormalizedCategoryAndRejectsUnknownOnes() = runTest {
+        val capturingHost = GlossaryRecordingHost()
+
+        val ok = capturingHost.executeTool(
+            AgentToolHost.TOOL_ADD_GLOSSARY_ENTRY,
+            """{"project_id":1,"source_term":"韩立","target_term":"Han Li","category":"character"}"""
+        )
+        assertTrue(ok.ok)
+        // 大小写归一后原样下发；kind 由集成层按 category 推导，不再让模型传。
+        assertEquals(listOf<String?>("CHARACTER"), capturingHost.categories)
+
+        val bad = capturingHost.executeTool(
+            AgentToolHost.TOOL_ADD_GLOSSARY_ENTRY,
+            """{"project_id":1,"source_term":"韩立","target_term":"Han Li","category":"人名"}"""
+        )
+        assertTrue(bad.ok)
+        assertTrue(bad.output.contains("非法的 category"))
+        // 回执必须回传合法取值，模型才有机会一次改对。
+        assertTrue(bad.output.contains("CHARACTER"))
+        assertEquals("非法类别不得触达宿主", 1, capturingHost.categories.size)
     }
 
     @Test

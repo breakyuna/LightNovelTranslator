@@ -16,6 +16,14 @@ interface AgentSessionStore {
 
     suspend fun appendMessage(sessionId: Long, message: AgentMessage): Long
 
+    /**
+     * 删除整个会话及其消息。
+     *
+     * 实现必须先清消息再删会话行：agent_messages 对 agent_sessions 有外键，
+     * 顺序反了会抛 FK 约束异常（除非数据库开了 CASCADE，不能假设）。
+     */
+    suspend fun deleteSession(sessionId: Long)
+
     suspend fun updateMessageContent(messageId: Long, content: String)
 
     /**
@@ -70,6 +78,12 @@ class InMemoryAgentSessionStore : AgentSessionStore {
 
     override suspend fun loadMessages(sessionId: Long): List<AgentMessage> = synchronized(lock) {
         snapshotOf(sessionId)
+    }
+
+    override suspend fun deleteSession(sessionId: Long) = synchronized(lock) {
+        messagesBySession.remove(sessionId)
+        flows.remove(sessionId)?.value = emptyList()
+        Unit
     }
 
     override fun observeMessages(sessionId: Long): Flow<List<AgentMessage>> =

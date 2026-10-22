@@ -1,7 +1,9 @@
 package com.breakyuna.noveltranslator.core.agent
 
+import com.breakyuna.noveltranslator.data.model.TermCategory
 import kotlinx.coroutines.CancellationException
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * One agent-callable tool as advertised to the model.
@@ -65,7 +67,23 @@ interface AgentToolHost {
 
     suspend fun pauseTranslation(projectId: Long): String
 
-    suspend fun scanGlossary(bookId: Long): String
+    /**
+     * 扫描一本书（或其中一个章节范围）的专有术语，产出待审核候选。
+     *
+     * [startChapter] / [endChapter] 是 1 起的章号，闭区间。两者都省略表示整本；
+     * 只给一端时实现把另一端补成该书的首页 / 末页（"从第 20 章扫到结尾"）。
+     * 实现必须按真实章号校验请求范围，越界时明确报错而不是静默改成别的范围——
+     * 这个工具会产生付费请求，扫错范围比报错更糟。回执必须写明实际扫描的章号区间。
+     *
+     * [projectId] 指定候选落到哪个翻译工程；省略时实现只能在"该书只有一个工程"时
+     * 自动选择，多工程必须回执候选列表让模型明确指定，不能静默取第一个。
+     */
+    suspend fun scanGlossary(
+        bookId: Long,
+        startChapter: Int? = null,
+        endChapter: Int? = null,
+        projectId: Long? = null
+    ): String
 
     suspend fun resplitChapters(bookId: Long, previewOnly: Boolean): String
 
@@ -112,12 +130,19 @@ interface AgentToolHost {
     /** 列出工程术语表条目，可按关键词过滤。 */
     suspend fun listGlossary(projectId: Long, keyword: String? = null): String = NOT_WIRED_MESSAGE
 
-    /** 新增一条术语（源文 → 译文）。 */
+    /**
+     * 新增一条术语（源文 → 译文）。
+     *
+     * [category] 取 TermCategory 的名称（CHARACTER / LOCATION / LORE / SKILL / ITEM /
+     * HONORIFIC / CUSTOM，缺省 CUSTOM）。kind（PROPER_NOUN / TERMINOLOGY）由 category
+     * 推导，不再作为独立参数暴露：此前模型按文档传"人名/地名"这类词，落库校验
+     * 直接抛 Unknown glossary category，工具必然失败。
+     */
     suspend fun addGlossaryEntry(
         projectId: Long,
         sourceTerm: String,
         targetTerm: String,
-        kind: String? = null,
+        category: String? = null,
         note: String? = null
     ): String = NOT_WIRED_MESSAGE
 
@@ -143,8 +168,10 @@ interface AgentToolHost {
      *
      * 元数据已与正文翻译解耦：这个工具是章节摘要与故事记忆的常规产出路径，
      * 对标 LinguaGacha 由 Agent 技能与工具负责元数据的分工。
+     *
+     * [projectId] 指定记忆写进哪个翻译工程；省略时只在"该书只有一个工程"时自动选择。
      */
-    suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String
+    suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long? = null): String
 
     /** 读取一个工程当前的故事记忆与最近章节摘要，供 Agent 判断连续性后处理。 */
     suspend fun getStoryMemory(projectId: Long): String
@@ -168,6 +195,27 @@ interface AgentToolHost {
                 (value as? Number)?.toLong() ?: value.toString().trim().toLongOrNull()
             }
         }
+        // Pair.first = 参数是否合法（缺省 / null 视为合法），Pair.second = 解析出的正整数值。
+        // 与 requiredLong 不同，这里区分「没给」和「给了但非法」，避免把非法章节号静默当成整本扫描。
+        val optionalPositiveInt: (String) -> Pair<Boolean, Int?> = { key ->
+            if (!args.has(key) || args.isNull(key)) {
+                true to null
+            } else {
+                val raw = args.opt(key)
+                val parsed = (raw as? Number)?.toInt() ?: raw?.toString()?.trim()?.toIntOrNull()
+                (parsed != null && parsed > 0) to parsed
+            }
+        }
+        /** 可选的正整数 id：区分「没给」（合法、null）与「给了但非法」，避免静默回落到别的工程。 */
+        val optionalPositiveLong: (String) -> Pair<Boolean, Long?> = { key ->
+            if (!args.has(key) || args.isNull(key)) {
+                true to null
+            } else {
+                val raw = args.opt(key)
+                val parsed = (raw as? Number)?.toLong() ?: raw?.toString()?.trim()?.toLongOrNull()
+                (parsed != null && parsed > 0) to parsed
+            }
+        }
         val output = try {
             when (name) {
                 TOOL_LIST_BOOKS -> listBooks()
@@ -183,13 +231,18 @@ interface AgentToolHost {
 
                 TOOL_START_TRANSLATION -> {
                     val projectId = requiredLong("project_id")
-                    if (projectId == null || projectId <= 0) {
-                        "缺少或非法的 project_id 参数"
-                    } else {
-                        startTranslation(
+                    val (startValid, rangeStart) = optionalPositiveInt("range_start")
+                    val (endValid, rangeEnd) = optionalPositiveInt("range_end")
+                    when {
+                        projectId == null || projectId <= 0 -> "缺少或非法的 project_id 参数"
+                        !startValid -> "非法的 range_start 参数：章号是从 1 开始的整数，省略表示从第一章开始"
+                        !endValid -> "非法的 range_end 参数：章号是从 1 开始的整数，省略表示翻到最后一章"
+                        rangeStart != null && rangeEnd != null && rangeStart > rangeEnd ->
+                            "章节范围不合法：range_start($rangeStart) 大于 range_end($rangeEnd)"
+                        else -> startTranslation(
                             projectId = projectId,
-                            rangeStart = requiredLong("range_start")?.takeIf { it > 0 }?.toInt(),
-                            rangeEnd = requiredLong("range_end")?.takeIf { it > 0 }?.toInt()
+                            rangeStart = rangeStart,
+                            rangeEnd = rangeEnd
                         )
                     }
                 }
@@ -205,10 +258,17 @@ interface AgentToolHost {
 
                 TOOL_SCAN_GLOSSARY -> {
                     val bookId = requiredLong("book_id")
-                    if (bookId == null || bookId <= 0) {
-                        "缺少或非法的 book_id 参数"
-                    } else {
-                        scanGlossary(bookId)
+                    val (startValid, startChapter) = optionalPositiveInt("start_chapter")
+                    val (endValid, endChapter) = optionalPositiveInt("end_chapter")
+                    val (projectValid, projectId) = optionalPositiveLong("project_id")
+                    when {
+                        bookId == null || bookId <= 0 -> "缺少或非法的 book_id 参数"
+                        !projectValid -> "非法的 project_id 参数：应为该书下的翻译工程 id"
+                        !startValid -> "非法的 start_chapter 参数：章号是从 1 开始的整数，省略表示从第一章开始"
+                        !endValid -> "非法的 end_chapter 参数：章号是从 1 开始的整数，省略表示扫到最后一章"
+                        startChapter != null && endChapter != null && startChapter > endChapter ->
+                            "章节范围不合法：start_chapter($startChapter) 大于 end_chapter($endChapter)"
+                        else -> scanGlossary(bookId, startChapter, endChapter, projectId)
                     }
                 }
 
@@ -316,16 +376,22 @@ interface AgentToolHost {
                     val projectId = requiredLong("project_id")
                     val sourceTerm = args.optString("source_term").trim()
                     val targetTerm = args.optString("target_term").trim()
-                    if (projectId == null || projectId <= 0) {
-                        "缺少或非法的 project_id 参数"
-                    } else if (sourceTerm.isEmpty() || targetTerm.isEmpty()) {
-                        "缺少 source_term 或 target_term 参数：术语必须同时给出源文与译文"
-                    } else {
-                        addGlossaryEntry(
+                    // category 是 TermCategory 名称；kind 只作旧名兼容（同一套取值，旧的
+                    // "人名/地名"式取值一律回绝并回传合法取值，让模型一次改对）。
+                    val rawCategory = args.optString("category").trim()
+                        .ifBlank { args.optString("kind").trim() }
+                    val category = rawCategory.uppercase(Locale.ROOT).takeIf(String::isNotBlank)
+                    when {
+                        projectId == null || projectId <= 0 -> "缺少或非法的 project_id 参数"
+                        sourceTerm.isEmpty() || targetTerm.isEmpty() ->
+                            "缺少 source_term 或 target_term 参数：术语必须同时给出源文与译文"
+                        category != null && category !in GLOSSARY_CATEGORIES ->
+                            "非法的 category 参数：应为 " + GLOSSARY_CATEGORIES.joinToString(" / ")
+                        else -> addGlossaryEntry(
                             projectId = projectId,
                             sourceTerm = sourceTerm,
                             targetTerm = targetTerm,
-                            kind = args.optString("kind").trim().takeIf(String::isNotBlank),
+                            category = category,
                             note = args.optString("note").trim().takeIf(String::isNotBlank)
                         )
                     }
@@ -386,12 +452,12 @@ interface AgentToolHost {
                 TOOL_SUMMARIZE_CHAPTER -> {
                     val bookId = requiredLong("book_id")
                     val chapterIndex = requiredLong("chapter_index")?.takeIf { it > 0 }?.toInt()
-                    if (bookId == null || bookId <= 0) {
-                        "缺少或非法的 book_id 参数"
-                    } else if (chapterIndex == null) {
-                        "缺少或非法的 chapter_index 参数：应为正整数章号"
-                    } else {
-                        summarizeChapter(bookId, chapterIndex)
+                    val (projectValid, projectId) = optionalPositiveLong("project_id")
+                    when {
+                        bookId == null || bookId <= 0 -> "缺少或非法的 book_id 参数"
+                        chapterIndex == null -> "缺少或非法的 chapter_index 参数：应为正整数章号"
+                        !projectValid -> "非法的 project_id 参数：应为该书下的翻译工程 id"
+                        else -> summarizeChapter(bookId, chapterIndex, projectId)
                     }
                 }
 
@@ -440,6 +506,14 @@ interface AgentToolHost {
         const val TOOL_SUMMARIZE_CHAPTER = "summarize_chapter"
         const val TOOL_GET_STORY_MEMORY = "get_story_memory"
 
+        /**
+         * 术语类别取值，与 TermCategory 枚举同名。
+         *
+         * schema 的 enum、参数校验与集成层落库共用这一份定义，避免再次出现
+         * "文档写的取值 vs 校验认的取值"两套词表。
+         */
+        val GLOSSARY_CATEGORIES: List<String> = TermCategory.entries.map { it.name }
+
         private val AGENT_TOOL_SPECS: List<AgentToolSpec> = listOf(
             AgentToolSpec(
                 name = TOOL_LIST_BOOKS,
@@ -463,8 +537,11 @@ interface AgentToolHost {
             ),
             AgentToolSpec(
                 name = TOOL_SCAN_GLOSSARY,
-                description = "对整本书执行专有术语扫描，产出待审核候选。会产生付费 API 请求，调用前必须向用户确认。",
-                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"}},"required":["book_id"],"additionalProperties":false}"""
+                description = "对一本书的指定章节范围执行专有术语扫描，产出待审核候选。会产生付费 API 请求：" +
+                    "先用 ask_user 与用户确认扫描范围（例如“先扫第 1~30 章”），不要默认整本扫描。" +
+                    "省略 start_chapter / end_chapter 会扫全书，只适合用户明确要求整本时使用。" +
+                    "候选按翻译工程落库：该书有多个工程时必须用 project_id 指定，否则会回执工程列表要求你选择。",
+                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"},"start_chapter":{"type":"integer","description":"起始章号（含），从 1 开始；省略表示第一章"},"end_chapter":{"type":"integer","description":"结束章号（含）；省略表示最后一章"},"project_id":{"type":"integer","description":"候选落库的翻译工程 id；该书只有一个工程时可省略"}},"required":["book_id"],"additionalProperties":false}"""
             ),
             AgentToolSpec(
                 name = TOOL_RESPLIT_CHAPTERS,
@@ -508,8 +585,8 @@ interface AgentToolHost {
             ),
             AgentToolSpec(
                 name = TOOL_SUMMARIZE_CHAPTER,
-                description = "对某一章执行一次独立的摘要与故事记忆更新请求并落库。会产生付费 API 请求，调用前必须向用户确认。元数据与正文翻译已解耦，摘要是章节记忆的唯一产出路径。",
-                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"},"chapter_index":{"type":"integer","description":"章号，从 1 开始"}},"required":["book_id","chapter_index"],"additionalProperties":false}"""
+                description = "对某一章执行一次独立的摘要与故事记忆更新请求并落库。会产生付费 API 请求，调用前必须向用户确认。元数据与正文翻译已解耦，摘要是章节记忆的唯一产出路径。该书有多个翻译工程时用 project_id 指定记忆归属，否则会回执工程列表要求你选择。",
+                parametersSchemaJson = """{"type":"object","properties":{"book_id":{"type":"integer","description":"目标书籍 id"},"chapter_index":{"type":"integer","description":"章号，从 1 开始"},"project_id":{"type":"integer","description":"记忆落库的翻译工程 id；该书只有一个工程时可省略"}},"required":["book_id","chapter_index"],"additionalProperties":false}"""
             ),
             AgentToolSpec(
                 name = TOOL_GET_STORY_MEMORY,
@@ -523,8 +600,8 @@ interface AgentToolHost {
             ),
             AgentToolSpec(
                 name = TOOL_ADD_GLOSSARY_ENTRY,
-                description = "向翻译工程添加一条术语（源文→译文）。会影响后续章节翻译，调用前必须向用户确认。",
-                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"source_term":{"type":"string","description":"源文术语"},"target_term":{"type":"string","description":"译文"},"kind":{"type":"string","description":"类别，如 人名/地名/技能/组织"},"note":{"type":"string","description":"备注"}},"required":["project_id","source_term","target_term"],"additionalProperties":false}"""
+                description = "向翻译工程添加一条术语（源文→译文）。category 取 CHARACTER/LOCATION/LORE/SKILL/ITEM/HONORIFIC/CUSTOM，缺省 CUSTOM。会影响后续章节翻译，调用前必须向用户确认。",
+                parametersSchemaJson = """{"type":"object","properties":{"project_id":{"type":"integer","description":"翻译工程 id"},"source_term":{"type":"string","description":"源文术语"},"target_term":{"type":"string","description":"译文"},"category":{"type":"string","enum":["CHARACTER","LOCATION","LORE","SKILL","ITEM","HONORIFIC","CUSTOM"],"description":"术语类别，缺省 CUSTOM"},"note":{"type":"string","description":"备注"}},"required":["project_id","source_term","target_term"],"additionalProperties":false}"""
             ),
             AgentToolSpec(
                 name = TOOL_REMOVE_GLOSSARY_ENTRY,

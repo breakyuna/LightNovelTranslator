@@ -133,8 +133,13 @@ class AgentSessionTest {
             return "已暂停"
         }
 
-        override suspend fun scanGlossary(bookId: Long): String {
-            invocations += "scan_glossary:$bookId"
+        override suspend fun scanGlossary(
+            bookId: Long,
+            startChapter: Int?,
+            endChapter: Int?,
+            projectId: Long?
+        ): String {
+            invocations += "scan_glossary:$bookId:$startChapter:$endChapter:$projectId"
             return "扫描完成"
         }
 
@@ -163,7 +168,7 @@ class AgentSessionTest {
             return "配置已更新"
         }
 
-        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int): String = "摘要"
+        override suspend fun summarizeChapter(bookId: Long, chapterIndex: Int, projectId: Long?): String = "摘要"
         override suspend fun getStoryMemory(projectId: Long): String = "记忆"
     }
 
@@ -260,6 +265,103 @@ class AgentSessionTest {
         assertEquals(12L, session.state.value.usage.completionTokens)
         assertEquals(1, session.state.value.usage.requestCount)
         assertEquals(2, store.loadMessages(1L).size)
+    }
+
+    @Test
+    fun usageIsPersistedOnMessagesAndRestoredOnReopen() = runTest {
+        val store = InMemoryAgentSessionStore()
+        val session = newSession(
+            ScriptedGateway().enqueue(result("最终答复", promptTokens = 30, completionTokens = 12)),
+            RecordingToolHost(),
+            config(),
+            store
+        )
+
+        session.send("书架")
+
+        val sessionId = session.state.value.sessionId!!
+        val stored = store.loadMessages(sessionId)
+        // 用量必须挂在消息行上，否则重开会话时无从重建（此前这两列恒为 0）。
+        assertEquals(30L, stored.sumOf { it.promptTokens.toLong() })
+        assertEquals(12L, stored.sumOf { it.completionTokens.toLong() })
+
+        val reopened = newSession(
+            ScriptedGateway(),
+            RecordingToolHost(),
+            config(),
+            store,
+            sessionId = sessionId
+        )
+        reopened.loadPersistedHistory()
+
+        assertEquals(30L, reopened.state.value.usage.promptTokens)
+        assertEquals(12L, reopened.state.value.usage.completionTokens)
+        assertEquals(1, reopened.state.value.usage.requestCount)
+    }
+
+    @Test
+    fun replyLanguageFromConfigReachesTheModel() = runTest {
+        val gateway = ScriptedGateway().enqueue(result("ok"))
+        val session = newSession(
+            gateway,
+            RecordingToolHost(),
+            config().copy(replyLanguage = "English"),
+            InMemoryAgentSessionStore()
+        )
+
+        session.send("hi")
+
+        // 英文界面不该再被硬编码的"回复语言：中文"覆盖。
+        assertTrue(gateway.requests.single().systemPrompt.contains("回复语言：English"))
+    }
+
+    @Test
+    fun requestUsageCallbackReportsSuccessAndFailure() = runTest {
+        val failure = LlmResult(
+            text = "",
+            promptTokens = 7,
+            completionTokens = 0,
+            isSuccess = false,
+            errorCategory = LlmErrorCategory.SERVER_ERROR,
+            errorMessage = "boom"
+        )
+        val gateway = ScriptedGateway().enqueue(
+            result("完成", promptTokens = 5, completionTokens = 2),
+            failure
+        )
+        val seen = mutableListOf<LlmResult>()
+        val session = newSession(
+            gateway,
+            RecordingToolHost(),
+            config().copy(onRequestUsage = { seen += it }),
+            InMemoryAgentSessionStore()
+        )
+
+        session.send("第一次")
+        session.send("第二次")
+
+        // 失败调用同样上报：审计里少一条就等于漏计费。
+        assertEquals(2, seen.size)
+        assertTrue(seen[0].isSuccess)
+        assertEquals(5L, seen[0].promptTokens)
+        assertFalse(seen[1].isSuccess)
+    }
+
+    @Test
+    fun storeFailureDoesNotLeaveSessionStuckRunning() = runTest {
+        val failingStore = object : AgentSessionStore by InMemoryAgentSessionStore() {
+            override suspend fun createSession(title: String, providerId: Long?, modelName: String?): Long =
+                throw IllegalStateException("db down")
+        }
+        val gateway = ScriptedGateway().enqueue(result("不应被请求"))
+        val session = newSession(gateway, RecordingToolHost(), config(), failingStore)
+
+        runCatching { session.send("你好") }
+
+        // 建会话失败要冒泡，但 running 必须复位，否则整个 Agent 页锁死到进程重启。
+        assertFalse(session.isRunning)
+        assertFalse(session.state.value.isRunning)
+        assertTrue(gateway.requests.isEmpty())
     }
 
     @Test

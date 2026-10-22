@@ -61,6 +61,15 @@ class AgentSession(
     private var agent: FunctionalAIAgent<String, AgentTurnResult>? = null
 
     /**
+     * 最近一次请求的用量，等待挂到下一条落库消息上。
+     *
+     * `agent_messages` 是"消息行自带 token 列"的结构，所以请求结束后把用量记到该请求
+     * 产出的第一条消息上；重开历史会话时据此重建会话用量（此前这两列恒为 0，
+     * 会话用量只活在内存里，切会话/重启即归零）。
+     */
+    private var pendingUsage: Pair<Int, Int> = 0 to 0
+
+    /**
      * 流式预览缓冲。只在一次模型请求的生命周期内追加，请求结束即清空，因此永不落库。
      * 增量从 IO 调度器写入、重置发生在回合协程里，统一加锁保护。
      */
@@ -118,6 +127,7 @@ class AgentSession(
         }
 
         override suspend fun onUsage(promptTokens: Int, completionTokens: Int) {
+            pendingUsage = (pendingUsage.first + promptTokens) to (pendingUsage.second + completionTokens)
             _state.update { current ->
                 current.copy(
                     usage = current.usage.copy(
@@ -142,7 +152,19 @@ class AgentSession(
             history.clear()
             history += loaded
         }
-        _state.update { it.copy(messages = loaded) }
+        _state.update {
+            it.copy(
+                messages = loaded,
+                // 用量从消息行重建：切会话/重启/换设备后仍显示真实累计，而不是归零。
+                usage = AgentUsage(
+                    promptTokens = loaded.sumOf { message -> message.promptTokens.toLong() },
+                    completionTokens = loaded.sumOf { message -> message.completionTokens.toLong() },
+                    requestCount = loaded.count { message ->
+                        message.promptTokens > 0 || message.completionTokens > 0
+                    }
+                )
+            )
+        }
     }
 
     /** 请求停止当前回合；非挂起，保证 UI 点击后立即生效。 */
@@ -161,46 +183,50 @@ class AgentSession(
             return
         }
         running = true
-        // 上一回合可能因异常没走到 onStreamSettled，这里兜底清空预览。
-        resetStreamPreview()
-        // 快照必须早于追加当前用户消息：策略会自行把 input 作为最新 user 消息加入。
-        seedSnapshot = truncateToTurns(snapshotHistory(), config.maxHistoryTurns)
-        val sessionId = ensureSessionId(trimmed)
-        appendMessage(
-            AgentMessage(role = AgentRole.USER, content = trimmed, createdAt = now())
-        )
-        _state.update { it.copy(isRunning = true, error = null) }
         try {
-            val result = ensureAgent().run(trimmed)
-            if (result.finalText.isNotBlank()) {
-                appendMessage(
-                    AgentMessage(
-                        role = AgentRole.ASSISTANT,
-                        content = result.finalText,
-                        createdAt = now()
+            // 上一回合可能因异常没走到 onStreamSettled，这里兜底清空预览。
+            resetStreamPreview()
+            // 快照必须早于追加当前用户消息：策略会自行把 input 作为最新 user 消息加入。
+            seedSnapshot = truncateToTurns(snapshotHistory(), config.maxHistoryTurns)
+            // 建会话与写用户消息都要落库：数据库异常同样必须走下面的 finally，
+            // 否则 running 会永久置位，整个 Agent 页锁死到进程重启。
+            ensureSessionId(trimmed)
+            appendMessage(
+                AgentMessage(role = AgentRole.USER, content = trimmed, createdAt = now())
+            )
+            _state.update { it.copy(isRunning = true, error = null) }
+            try {
+                val result = ensureAgent().run(trimmed)
+                if (result.finalText.isNotBlank()) {
+                    appendMessage(
+                        AgentMessage(
+                            role = AgentRole.ASSISTANT,
+                            content = result.finalText,
+                            createdAt = now()
+                        )
                     )
+                } else {
+                    appendSystemMessage(texts.emptyReply, isError = true)
+                }
+            } catch (cancelled: CancellationException) {
+                // 区分“用户主动停止”与“外层作用域被取消”：前者记录状态，后者必须继续上抛。
+                if (currentCoroutineContext().isActive) {
+                    appendSystemMessage(texts.cancelled, isError = false)
+                } else {
+                    throw cancelled
+                }
+            } catch (failure: AgentLlmFailureException) {
+                appendSystemMessage(
+                    texts.requestFailed.replace("{reason}", failure.message ?: "未知错误"),
+                    isError = true
                 )
-            } else {
-                appendSystemMessage(texts.emptyReply, isError = true)
+            } catch (error: Throwable) {
+                SystemLogger.error(TAG, "Agent 回合失败", details = error.stackTraceToString())
+                appendSystemMessage(
+                    texts.turnFailed.replace("{reason}", error.localizedMessage ?: error.javaClass.simpleName),
+                    isError = true
+                )
             }
-        } catch (cancelled: CancellationException) {
-            // 区分“用户主动停止”与“外层作用域被取消”：前者记录状态，后者必须继续上抛。
-            if (currentCoroutineContext().isActive) {
-                appendSystemMessage(texts.cancelled, isError = false)
-            } else {
-                throw cancelled
-            }
-        } catch (failure: AgentLlmFailureException) {
-            appendSystemMessage(
-                texts.requestFailed.replace("{reason}", failure.message ?: "未知错误"),
-                isError = true
-            )
-        } catch (error: Throwable) {
-            SystemLogger.error(TAG, "Agent 回合失败", details = error.stackTraceToString())
-            appendSystemMessage(
-                texts.turnFailed.replace("{reason}", error.localizedMessage ?: error.javaClass.simpleName),
-                isError = true
-            )
         } finally {
             running = false
             _state.update { it.copy(isRunning = false) }
@@ -209,16 +235,6 @@ class AgentSession(
             // 重置信号，避免上一回合的取消影响下一回合（执行器经 lambda 读取最新信号）。
             signal = TranslationControlSignal()
         }
-    }
-
-    /** 丢弃当前会话，下一次发送时创建新会话。 */
-    fun startNewChat() {
-        if (running) return
-        activeSessionId = null
-        synchronized(history) { history.clear() }
-        seedSnapshot = emptyList()
-        agent = null
-        _state.value = AgentSessionState()
     }
 
     private suspend fun ensureSessionId(firstUserMessage: String): Long {
@@ -235,10 +251,25 @@ class AgentSession(
 
     private suspend fun appendMessage(message: AgentMessage) {
         val sessionId = activeSessionId ?: return
-        val stored = message.copy(id = store.appendMessage(sessionId, message))
+        // 把最近一次请求的用量记到它产出的第一条消息上（回合内单线程写入，无需加锁）。
+        val usage = pendingUsage
+        pendingUsage = 0 to 0
+        val withUsage = if (usage.first > 0 || usage.second > 0) {
+            message.copy(
+                promptTokens = message.promptTokens + usage.first,
+                completionTokens = message.completionTokens + usage.second
+            )
+        } else {
+            message
+        }
+        val stored = withUsage.copy(id = store.appendMessage(sessionId, withUsage))
         synchronized(history) { history += stored }
         _state.update { it.copy(messages = it.messages + stored) }
-        store.touchSession(sessionId, previewOf(message), now())
+        // 会话行的 preview/updatedAt 只随"用户可见的对话进展"更新：工具调用/回执是回合内部
+        // 细节，逐条刷新等于给会话列表的 Flow 制造无意义的失效（一次工具回合多 2 次整行写）。
+        if (withUsage.role != AgentRole.TOOL_CALL && withUsage.role != AgentRole.TOOL_RESULT) {
+            store.touchSession(sessionId, previewOf(withUsage), now())
+        }
     }
 
     private suspend fun appendSystemMessage(content: String, isError: Boolean) {
@@ -307,7 +338,7 @@ class AgentSession(
         appendLine("- 提供方：" + (config.provider?.name ?: "未配置"))
         appendLine("- 模型：" + config.effectiveModelName)
         appendLine("- 单回合工具调用上限：" + config.maxToolRounds + " 轮")
-        appendLine("- 回复语言：中文")
+        appendLine("- 回复语言：" + config.replyLanguage)
     }
 
     private companion object {

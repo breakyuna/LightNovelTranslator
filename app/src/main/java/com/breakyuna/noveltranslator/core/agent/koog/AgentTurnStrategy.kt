@@ -71,7 +71,9 @@ fun lntAgentStrategy(
                         AgentRole.ASSISTANT -> assistant(message.content)
                         AgentRole.TOOL_CALL -> assistant(message.content)
                         AgentRole.TOOL_RESULT -> user(message.content)
-                        AgentRole.SYSTEM -> user(message.content)
+                        // 应用自己生成的系统回执（已取消 / 请求失败）不是用户发言：
+                        // 加标记回放，避免模型把"已取消本次请求"当成用户指令去执行。
+                        AgentRole.SYSTEM -> user("[系统记录] " + message.content)
                     }
                 }
             }
