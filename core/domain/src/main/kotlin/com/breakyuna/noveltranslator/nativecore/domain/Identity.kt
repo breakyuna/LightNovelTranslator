@@ -75,3 +75,21 @@ value class ChangeSetId(val value: String) {
 value class ApprovalRequestId(val value: String) {
     init { requireIdentity(value) }
 }
+
+/**
+ * Private working copy identity. Two copies of the same exchangeable project have different
+ * instance IDs and never share approvals, runs or caches (ARCHITECTURE §3.4).
+ */
+@JvmInline
+value class ProjectInstanceId(val value: String) {
+    init { requireIdentity(value) }
+}
+
+/**
+ * Bumped when the active copy is replaced or restored. Old commands, callbacks and grants
+ * must be rejected by generation; the value is never reused or restored from a backup.
+ */
+@JvmInline
+value class RecoveryGeneration(val value: Long) {
+    init { require(value > 0) { "Recovery generation starts at 1" } }
+}
