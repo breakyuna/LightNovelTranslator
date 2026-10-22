@@ -10,8 +10,10 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -44,9 +46,9 @@ class NativeAgentStoreTest {
         return runtime.beginRun(RunIdentity(ref.projectId, chat, run, command), RuntimeOwner.AGENT)
     }
     /** Room 2.7's KMP RoomDatabase exposes close() but no longer implements Closeable. */
-    private inline fun <T> withAppDatabase(block: (NativeAppDatabase) -> T): T {
+    private suspend fun <T> withAppDatabase(block: (NativeAppDatabase) -> T): T = withContext(Dispatchers.IO) {
         val db = NativeAppDatabase.open(context)
-        try { return block(db) } finally { db.close() }
+        try { return@withContext block(db) } finally { db.close() }
     }
     private suspend fun prepare(ref: LocalProjectRef): TextApproval {
         val lease = begin(ref)
