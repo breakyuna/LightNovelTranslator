@@ -245,4 +245,6 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 修复后重跑 [run 39768093299](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39768093299)（`0b62758`）：lint/release 通过，`test` 有 2 个失败，都是既有测试仍按旧宽松语义断言——`parallel_chapters: 0` 曾静默忽略、`project_id: 0` 曾回落为无过滤查询，新实现改为明确报错。
 
 同轮核对还发现 `exactLongOrNull` 用 `BigDecimal(value.toString())` 会按最短十进制表示舍入大整数 Double（例如 `1152921504606846976.0` 变成 `1152921504606847000`），把 id 指向另一个对象；已改为 `BigDecimal(value)` 取精确二进制值。
-测试同步为新契约并补覆盖：`1.5`、`1e20`、`2^63`、`Long.MAX_VALUE`、字符串形式与 `2^60` 精确值。再次重跑通过前不登记 R01。
+测试同步为新契约并补覆盖：`1.5`、`1e20`、`2^63`、`Long.MAX_VALUE`、字符串形式与 `2^60` 精确值。
+
+修复后重跑 [run 39769169729](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39769169729)（`e933f13`）：test / lint / release 全部 success；`app:testDebugUnitTest` 实际执行，`core:domain:test` 与 `core:engine:test` 命中缓存（此前运行已通过）。四项审查修复至此有 CI 证据，但仍只覆盖“构建 + 单测”，不代表功能验收；P1 会话切换竞争仍无自动化测试，见本节缺口说明。
