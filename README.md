@@ -1,5 +1,7 @@
 # LightNovelTranslator
 
+> **原生 LG 全面重构已启动（2026-10-22）**：目标为工程与 Agent 工作流中心的原生 Android 产品，完整对齐 LG Termux，仅保留并改造 Koog 接入框架。已固定首份源码快照，正在补齐行为核对；七模块声明、运行协调及类型化模型/只读工具边界原型已落地，尚未构建验证，新产品功能尚未接入。目标见 [重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md)，实际进度见 [交接记录](docs/plans/2026-10-22-native-lg-rebuild/HANDOFF.md)。下文仍描述旧阅读平台，供理解现状与数据迁移使用。
+
 LightNovelTranslator 是一款面向长篇小说的 Android 阅读与 AI 翻译应用。它以"书"为中心：导入本地 TXT、EPUB 或粘贴文本后即可阅读；需要翻译时，应用会从原文 Edition 生成一个可持续更新、可校对、可追溯的新 Edition，而不是把书拆成孤立的翻译任务。
 
 项目目前处于早期 Beta 阶段，数据结构和交互仍可能调整。
@@ -112,12 +114,15 @@ QA 会区分网络、超时、限流、认证、上下文溢出、响应截断�
 AI 助手是一个对话式入口，用于查询与操作本应用的数据，**不实现翻译能力本身**：
 
 - 编排不替代翻译引擎：所有翻译、术语扫描、章节重分都通过工具委托给已有的 `AppViewModel` / 引擎方法执行，助手不并行实现业务逻辑，也不会绕过调度、暂停取消边界与审计链路。
-- 工具集（19 个）：查询类 `list_books`、`get_book_status`、`get_recent_log`、`list_glossary`、`get_quality_rules`、`get_translation_cost`；执行类 `start_translation`、`pause_translation`、`resume_translation`、`cancel_translation`、`scan_glossary`、`resplit_chapters`、`create_translation_project`、`add_glossary_entry`、`remove_glossary_entry`、`set_quality_rules`、`export_edition`、`update_translation_config`；交互类 `ask_user`。覆盖"导入 → 建工程 → 配置 → 翻译 → 术语 → 质量规则 → 导出"的完整流程，用户原则上只需与助手对话即可驱动整个翻译工作流。
+- 工具集（21 个）：查询类 `list_books`、`get_book_status`、`get_recent_log`、`list_glossary`、`get_quality_rules`、`get_translation_cost`、`get_story_memory`；执行类 `start_translation`、`pause_translation`、`resume_translation`、`cancel_translation`、`scan_glossary`、`resplit_chapters`、`create_translation_project`、`add_glossary_entry`、`remove_glossary_entry`、`set_quality_rules`、`export_edition`、`update_translation_config`、`summarize_chapter`；交互类 `ask_user`。覆盖"导入 → 建工程 → 配置 → 翻译 → 术语 → 质量规则 → 导出"的完整流程，用户原则上只需与助手对话即可驱动整个翻译工作流。
 - 工具调用双通道：**原生 function calling**（默认开启，OpenAI 兼容形状的 provider 请求携带 tools 数组，由 API 强制调用格式；provider 以 400 拒绝时自动去掉 tools 重试，回合不中断）+ **文本协议兜底**（模型在回复中输出调用块，本地解析执行）。两条路共享同一套执行、回执与历史回路。
 - 弱模型适配：解析端对全角字符做归一化，容忍标签变体、散文包裹的 JSON、尾逗号/单引号/无引号键/注释；"想调用但没解析出来"时会先收到一次格式纠正回执而不是被当成最终答复；同一回合内相同调用自动熔断（不重复付费）；答复中的思考块与残留调用块会清洗后再展示。
-- 人工确认：会产生付费请求或修改数据的操作（开始翻译、术语扫描、重分章节、修改配置），系统指令要求助手先说明影响并等待用户明确确认；参数不足或需要选择时通过 `ask_user` 提问，问题以底部面板呈现，用户作答或关闭后助手才继续（等待上限 5 分钟）。
+- 人工确认：会产生付费请求或修改数据的操作（开始翻译、术语扫描、重分章节、修改配置），系统指令要求助手先说明影响并等待用户明确确认；参数不足或需要选择时通过 `ask_user` 提问，问题以底部面板呈现，用户作答或关闭后助手才继续（等待上限 5 分钟）。问题状态由 ViewModel 的 `StateFlow` 持有：切页、旋屏后回到助手仍能看到同一个问题；超时或问答失效时面板自动收起，点"停止"会同时作废待答问题，回合立即结束而不必等满 5 分钟。
 - 模型与参数可控：会话启动时解析默认 Provider 及其模型；Agent 页面可切换 Provider/模型、思考强度（off/low/medium/high）与原生工具开关，选择对新对话生效。未配置 Provider 时助手不可用，页面会提示先配置。编排回合固定低温（0.2），格式服从性优先于创意。
-- 会话与消息持久化在 `agent_sessions` / `agent_messages` 两张表（数据库 v5 引入），可切换历史会话、开新对话；单回合工具调用上限 6 轮，历史按 12 个回合截断后注入。
+- 术语扫描支持章节范围：`scan_glossary` 接受可选 `start_chapter` / `end_chapter`（1 起、含两端，可只给一端），系统指令要求助手先用 `ask_user` 与用户确认范围再扫，越界或倒序的范围会直接回绝并给出该书真实章号区间，不会静默改成别的范围去产生付费请求。
+- 多工程消歧：`scan_glossary` 与 `summarize_chapter` 接受可选 `project_id`。该书只有一个翻译工程时自动选中它；有多个工程且未指定时，工具回执会列出全部工程 id 与目标语言并要求助手明确选择，**不会**静默写进第一个工程造成术语/记忆跨版本污染。同样的严格性适用于 `start_translation`：只给 `range_start` 或 `range_end` 的一端时，另一端按"从第一章 / 翻到最后一章"补齐；章号非法或起止倒序会直接回绝，不再静默退回整本翻译。
+- 会话管理：会话列表可切换历史会话、开新对话、删除会话（连同全部消息，删除前二次确认）。回合进行中会禁用切换 / 新建 / 删除入口并给出提示——正在跑的回合被换掉会让工具结果失去界面，删除当前会话更会让后续消息写回已删除的行。
+- 会话与消息持久化在 `agent_sessions` / `agent_messages` 两张表（数据库 v5 引入），可切换历史会话、开新对话；单回合工具调用上限 6 轮，历史按 12 个回合截断后注入。Token 用量随请求记在它产出的消息行上，重开会话时据此恢复会话累计用量；每次请求（含失败）另写一条 `LLM_AUXILIARY` 日志，可在诊断信息栏与导出日志里核对模型、Token、费用与错误分类。
 - 助手只引用工具返回的事实，不编造书籍、章节、进度与 token 用量；不索取或复述 API Key 等凭证。
 
 ## 端侧辅助

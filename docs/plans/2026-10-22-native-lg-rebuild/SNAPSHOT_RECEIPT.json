@@ -1,0 +1,18 @@
+{
+  "lnt": {
+    "archive": "lnt.tar.gz",
+    "sha256": "b0ea3007d6c13de761c853da12eb608fb0b2bd6728dfb0145c6ee499eb63b0b9",
+    "head": "4bd2ae0e7a521309b558d27fa3b5acb7e125b998",
+    "branch": "refactor/translation-agent-2026-10",
+    "files": 252,
+    "deleted": []
+  },
+  "lg": {
+    "archive": "lg.tar.gz",
+    "sha256": "96e87fbc75adbc30f9399afce56e57d1eeb774398e69765de94ed490b4c46003",
+    "head": "23796556fde9ffbae54ff0aa9c8d7879d8288281",
+    "branch": "termux-port",
+    "files": 1612,
+    "deleted": []
+  }
+}
