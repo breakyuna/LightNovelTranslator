@@ -230,3 +230,19 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 已知缺口：P1 的会话切换竞争没有自动化测试——`AgentSession` 是 Koog 具体类，控制器没有可替换的会话接口；本轮只做静态审查与代码核对，R02 的类型化运行时会替换这套控制器，届时补并发测试。
 
 交付边界：本机静态审查，未构建、未执行测试、未运行 Lint；修复后需重新推送并重跑 CI，全绿前不登记 R01 完成。
+
+## 13. 参数校验后续审查修复与 CI 失败核对（2026-10-22）
+
+用户要求修复后续两项审查意见，并核对 GitHub 最新 Actions 的 test 失败原因。
+
+- 最新 [Actions #116 / run 39768093299](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39768093299) 对应 `0b62758`；test 失败，lint/release 成功。读取 test job `119788470765` 日志确认：`:app:testDebugUnitTest` 共 645 项、2 项失败，恰为 `updateTranslationConfigNormalizesFields` 与 `getRecentLogOptionalProjectAndDefaultLimit` 的旧回退断言；不是编译失败。
+- 更新上述测试：`parallel_chapters:0` 与 `project_id:0` 必须收到非法参数说明且不调用宿主；保留省略/显式 null 的默认查询与合法配置字段归一覆盖，不恢复非法值回退。
+- `AgentToolHost.exactLongOrNull` 改为 `BigDecimal(Double).longValueExact()`，按 Double 的精确二进制值检查整数性和范围，避免最短十进制字符串把 `2^60` 转成另一个 ID。
+- 新增 2 个测试用例，覆盖必填/可选大整数 ID 的普通小数、科学计数法、Long 上界附近值及整数字符串，并断言小数/超范围 ID 不触达宿主。大整数问题不在 #116 的失败列表中，这些新用例尚待 PC/CI 执行。
+
+实际验证：调用链与测试断言静态核对、`git diff --check`、冲突标记扫描；另只读获取 GitHub 的 run/jobs/test 日志。静态审查，未实际构建，未执行本机测试或 Lint；未提交、推送、重跑或触发 Actions。#116 反映修复前版本，不能作为本次修复已通过的证据。
+
+修复后重跑 [run 39768093299](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39768093299)（`0b62758`）：lint/release 通过，`test` 有 2 个失败，都是既有测试仍按旧宽松语义断言——`parallel_chapters: 0` 曾静默忽略、`project_id: 0` 曾回落为无过滤查询，新实现改为明确报错。
+
+同轮核对还发现 `exactLongOrNull` 用 `BigDecimal(value.toString())` 会按最短十进制表示舍入大整数 Double（例如 `1152921504606846976.0` 变成 `1152921504606847000`），把 id 指向另一个对象；已改为 `BigDecimal(value)` 取精确二进制值。
+测试同步为新契约并补覆盖：`1.5`、`1e20`、`2^63`、`Long.MAX_VALUE`、字符串形式与 `2^60` 精确值。再次重跑通过前不登记 R01。

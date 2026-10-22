@@ -678,7 +678,9 @@ private fun integralLongOrNull(value: Any?, minimum: Long, maximum: Long): Long?
 private fun exactLongOrNull(value: Double): Long? {
     if (!value.isFinite()) return null
     return try {
-        java.math.BigDecimal(value.toString()).longValueExact()
+        // 直接取 Double 的精确二进制值；toString()/valueOf() 的最短十进制表示
+        // 可能改变大整数（例如 2^60），不能用来确定实际目标 id。
+        java.math.BigDecimal(value).longValueExact()
     } catch (_: ArithmeticException) {
         null
     } catch (_: NumberFormatException) {

@@ -125,6 +125,41 @@ class AgentToolHostTest {
     }
 
     @Test
+    fun largeIntegralIdsReachHostWithoutRounding() {
+        val cases = listOf(
+            "1152921504606846976.0" to 1152921504606846976L,
+            "1.152921504606846976e18" to 1152921504606846976L,
+            // Long.MAX_VALUE 以下最大的 Double 整数：2^63 - 1024。
+            "9223372036854774784.0" to 9223372036854774784L,
+            "9223372036854775807" to Long.MAX_VALUE,
+            "\"9223372036854775807\"" to Long.MAX_VALUE
+        )
+        cases.forEach { (token, expectedId) ->
+            val host = RecordingToolHost()
+            execute(host, AgentToolHost.TOOL_GET_BOOK_STATUS, """{"book_id":$token}""")
+            execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":$token}""")
+            assertEquals(
+                "必填与可选 id 都必须保持原值: $token",
+                listOf("get_book_status:$expectedId", "get_recent_log:$expectedId:50"),
+                host.invocations
+            )
+        }
+    }
+
+    @Test
+    fun getBookStatusRejectsFractionalAndOutOfRangeIds() {
+        val host = RecordingToolHost()
+        listOf("1.5", "1e20", "9223372036854775808.0", "\"9223372036854775808\"").forEach { token ->
+            assertEquals(
+                "非法 id 不能截断或饱和为其他目标: $token",
+                "缺少或非法的 book_id 参数",
+                execute(host, AgentToolHost.TOOL_GET_BOOK_STATUS, """{"book_id":$token}""").output
+            )
+        }
+        assertTrue(host.invocations.isEmpty())
+    }
+
+    @Test
     fun getBookStatusRejectsMissingOrNonPositiveId() {
         val host = RecordingToolHost()
         listOf("{}", """{"book_id":0}""", """{"book_id":-3}""", """{"book_id":"abc"}""", """{"book_id":null}""").forEach { args ->
@@ -291,11 +326,17 @@ class AgentToolHostTest {
     @Test
     fun getRecentLogOptionalProjectAndDefaultLimit() {
         val host = RecordingToolHost()
-        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, "{}")
-        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":9,"limit":200}""")
-        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":0,"limit":5}""")
         assertEquals(
-            listOf("get_recent_log:null:50", "get_recent_log:9:200", "get_recent_log:null:5"),
+            "非法的 project_id 参数：应为正整数 id",
+            execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":0,"limit":5}""").output
+        )
+        assertTrue("非法 project_id 不得触发无过滤查询", host.invocations.isEmpty())
+
+        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, "{}")
+        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":null,"limit":5}""")
+        execute(host, AgentToolHost.TOOL_GET_RECENT_LOG, """{"project_id":9,"limit":200}""")
+        assertEquals(
+            listOf("get_recent_log:null:50", "get_recent_log:null:5", "get_recent_log:9:200"),
             host.invocations
         )
     }
@@ -321,10 +362,20 @@ class AgentToolHostTest {
     @Test
     fun updateTranslationConfigNormalizesFields() {
         val host = RecordingToolHost()
+        assertEquals(
+            "非法的 parallel_chapters 参数：应为正整数并发章数",
+            execute(
+                host,
+                AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG,
+                """{"project_id":3,"parallel_chapters":0,"continuity_mode":"  ","prompt_cache_enabled":"yes"}"""
+            ).output
+        )
+        assertTrue("非法并发章数不得触发配置写入", host.invocations.isEmpty())
+
         execute(
             host,
             AgentToolHost.TOOL_UPDATE_TRANSLATION_CONFIG,
-            """{"project_id":3,"parallel_chapters":0,"continuity_mode":"  ","prompt_cache_enabled":"yes"}"""
+            """{"project_id":3,"continuity_mode":"  ","prompt_cache_enabled":"yes"}"""
         )
         execute(
             host,
