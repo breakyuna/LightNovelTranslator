@@ -1,5 +1,6 @@
 plugins {
   alias(libs.plugins.android.library)
+  alias(libs.plugins.google.devtools.ksp)
 }
 
 android {
@@ -17,6 +18,7 @@ android {
     targetCompatibility = JavaVersion.VERSION_17
   }
   testOptions {
+    unitTests.isIncludeAndroidResources = true
     unitTests.all { test ->
       test.maxParallelForks = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
     }
@@ -33,7 +35,19 @@ kotlin {
   }
 }
 
+ksp {
+  arg("room.schemaLocation", "$projectDir/schemas")
+  arg("room.incremental", "true")
+}
+
 dependencies {
   api(project(":core:domain"))
+  implementation(libs.androidx.room.runtime)
+  implementation(libs.kotlinx.coroutines.core)
+  implementation(libs.kotlinx.serialization.json)
+  "ksp"(libs.androidx.room.compiler)
   testImplementation(libs.junit)
+  testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.core)
+  testImplementation(project(":core:engine"))
 }

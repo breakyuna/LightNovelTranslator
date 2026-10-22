@@ -75,6 +75,7 @@ jobs:
             app/build/reports/tests/
             core/**/build/test-results/
             core/**/build/reports/tests/
+            core/storage/schemas/
             build/reports/profile/
           if-no-files-found: ignore
           retention-days: 7

@@ -1,6 +1,6 @@
 # 审批与工程变更契约
 
-本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义正式接线前必须实现的恢复协议，不能视为现有端口能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。审批 UI、生产存储、工程写入口与 `workspace_apply` 尚未完成。
+本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义正式接线前必须实现的恢复协议，不能视为现有端口能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。审批 UI、审批生产存储、审批工程写入口与 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约。
 
 ## 1. 实际代码与消费者
 

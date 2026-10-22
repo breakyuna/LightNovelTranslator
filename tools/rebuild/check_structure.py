@@ -131,7 +131,7 @@ for name in sorted(MODULES):
         require(('api', ':core:domain') in production,
                 f'{name}: domain types are part of the public API, so :core:domain must use api()')
     test_dependencies = {target for configuration, target in edges if configuration == 'testImplementation'}
-    require(test_dependencies <= ({':core:engine'} if name == 'agent' else set()),
+    require(test_dependencies <= ({':core:engine'} if name in {'agent', 'storage'} else set()),
             f'{name}: unexpected test-only project dependency {test_dependencies}')
     require(not re.search(r'\brepositories\s*\{', text), f'{name}: repositories must stay in settings')
     require('JVM_17' in text and 'VERSION_17' in text, f'{name}: missing Java/Kotlin 17 target')

@@ -77,7 +77,7 @@ app/src/main/java/com/breakyuna/noveltranslator/
     └── viewmodel/      # AppViewModel（当前唯一 ViewModel）
 ```
 
-首轮实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块声明，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 当前为 Kotlin/JVM；其余为 Android Library。engine 已有进程内运行协调和协程生命周期原型；agent 已有类型化请求/只读工具边界，但统一网关、持久化生产适配与 Koog 尚未接入；storage/formats/workspace 业务尚未实现，新 UI 尚未接线。模块装配未构建验证，不将其登记为完整产品能力。实际进度见重构 HANDOFF。
+首轮实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块声明，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 当前为 Kotlin/JVM；其余为 Android Library。engine 已有进程内运行协调和协程生命周期原型；agent 已有类型化请求/只读工具边界，但统一网关、持久化生产适配与 Koog 尚未接入；storage 已新增独立 Room 工程索引、原生 `.lnt` TXT 数据库与手工事务写入适配器，仍未构建验证或接入 UI；formats/workspace 业务尚未实现。旧模块骨架的 CI 证据不覆盖新增存储，也不代表完整产品能力。实际进度见重构 HANDOFF。
 
 理解旧行为时追踪 UI → AppViewModel → Repository / DAO → Engine / BookFileManager。新链路按 UI → 应用服务 → 业务核心/存储端口组织，Agent 与手动操作共用写入口，不再向旧 `AppViewModel` 继续集中新业务。用 `rg` 定位实际调用链。
 
@@ -85,7 +85,7 @@ app/src/main/java/com/breakyuna/noveltranslator/
 
 - **国际化迁移**：旧 UI 使用 `AppStrings` / `ChineseStrings` / `EnglishStrings`，维护旧链路时保持两种语言完整。新 Compose UI 按 `UI_SPEC.md` 迁至 Android 字符串资源，最终覆盖 LG 的中、英、日、韩、德五种语言；不要同时维护两套新文案权威来源。
 - **导航全面重做**：新工程首页、Agent、工作台、校对和全部管理页面按 `UI_SPEC.md` 实现。手机和平板共用路由定义并保留等价功能，不再冻结书架/历史/任务/设置的旧顺序。
-- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，迁移与 `app/schemas/` 用于旧数据读取/迁移验证，不能直接清库或当成新 `.lg` 存储。新应用记录使用独立 Room schema，工程使用专用 SQLite 适配器；改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
+- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，迁移与 `app/schemas/` 用于旧数据读取/迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；`.lg` 仅用于 LG 兼容导入/导出，不得靠改后缀冒充转换。新应用记录使用独立 Room schema；改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
 - 旧书籍文件迁移前仍由 `BookFileManager` 定位，禁止绕过它清理源数据；新原稿、工作区和产物按重构计划分配唯一文件拥有者。不得把大段正文或二进制塞进 UI 状态；请求日志列表只查轻量投影，完整正文按 ID 延迟加载。
 - `remember` / `rememberSaveable` 的 key 必须包含实际依赖的 Project / Chat / Asset / Run 身份，维护旧页面时也包含 Book / Edition 身份，防止切换对象复用旧状态。
 - 大列表必须用 `LazyColumn` / `LazyRow` / `LazyVerticalGrid` 并提供稳定唯一 key；不得在 Composable 或主线程做图片解码、整本文件读取、EPUB 解析、数据库循环和网络请求；高频 Flow（进度、任务状态、日志）只在可见时订阅，避免整页无条件重组。页面切换动画保持短促（现有 NavHost 用 90/70ms fade）。

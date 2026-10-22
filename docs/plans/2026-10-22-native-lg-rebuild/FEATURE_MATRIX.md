@@ -44,7 +44,7 @@
 | PR07 | 工程/应用设置镜像、对齐预览和确认 | ProjectSettings；R09/R34 | 打开旧工程时预览差异；运行中不偷偷改变已定格配置 |
 | PR08 | 从已存原稿全部重置及局部译文重置 | ProjectLifecycle；R09/R13 | 先全部解析再提交；失败不留下半份重建结果 |
 | PR09 | 工程副本、手动备份、恢复和一致性交付 | ProjectSnapshot；R04/R35 | 跨库/附件一致切点、manifest/摘要、缺材料失败；恢复新代际与事实核对 |
-| PR10 | 历史 `.lg` 读取与 Android↔LG 双向保存 | CompatibilityStore；R04/R07/R37 | 版本/字段级映射、未知表、Zstd、Pi 分支/工具/附件及双向业务回灌 |
+| PR10 | 历史 `.lg` 导入为 `.lnt` 与 `.lnt`→`.lg` 兼容导出 | CompatibilityStore；R04/R07/R37 | 版本/字段级转换、未知表保留、Zstd、Pi 分支/工具/附件及 LG↔LNT 双向业务回灌；不以改后缀代替转换 |
 
 来源：S01、S02、S18。LNT 旧 Book/Edition 表只能作为 R36 迁移源，不作为上述能力的完成证据。
 

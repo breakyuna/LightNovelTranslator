@@ -91,9 +91,11 @@ sealed interface WriteOutcome {
 enum class IndeterminateReason { STORE_UNAVAILABLE, RECEIPT_UNREADABLE, IDENTITY_MISMATCH, EXECUTOR_STILL_RUNNING }
 
 /**
- * The only write entry point for items, pages, rules, prompts and statistics. Manual edits,
- * Agent `workspace_apply` and batch translation all submit through here with an approved
- * binding. There is no production adapter yet; implementations must make the project
+ * Approval-bound submission contract for items, pages, rules, prompts and statistics.
+ * Agent `workspace_apply` requires this binding; it cannot use TextProjectPort's explicit
+ * manual intent. The first manual TXT adapter uses storage's ProjectWriteStore transaction
+ * owner. Future approved/batch adapters must extend that same owner, not add a second writer.
+ * This approval-bound port has no production adapter yet; implementations must make the project
  * transaction and its receipt atomic and must return the stored receipt for a repeated
  * command instead of applying the batch twice.
  */
