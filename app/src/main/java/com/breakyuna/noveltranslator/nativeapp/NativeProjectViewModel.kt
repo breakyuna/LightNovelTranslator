@@ -10,10 +10,12 @@ import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.TranslatorApplication
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import java.io.ByteArrayOutputStream
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,10 +28,10 @@ enum class NativePage { AGENT, WORKBENCH, PROOFREADING }
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 class ItemPreview(val id: ItemId, val row: Int, val source: String, val translation: String,
-                  val status: TextItemStatus) {
+                  val status: TextItemStatus, val hasTranslatableSource: Boolean = source.isNotBlank()) {
     companion object {
         fun of(item: TextProjectItem) = ItemPreview(item.id, item.row, item.source.take(240),
-            item.translation.take(240), item.status)
+            item.translation.take(240), item.status, item.source.isNotBlank())
     }
 }
 
@@ -59,6 +61,15 @@ data class NativeProjectUiState(
     val recoveryProblems: Int = 0,
     val legacyData: Boolean = false,
     val encoding: TxtEncoding = TxtEncoding.UTF8,
+    val translationProgress: TranslationProgress? = null,
+    val agentMessages: List<AgentChatLine> = emptyList(),
+    val approval: TextApproval? = null,
+    val agentResults: List<AgentApprovalResult> = emptyList(),
+    val agentChatId: ChatId? = null,
+    val agentChats: List<ChatId> = emptyList(),
+    val modelSettings: NativeModelSettings? = null,
+    val agentInput: String = "",
+    val agentLoadIncomplete: Boolean = false,
 )
 
 /** Small workspace controller. Every database/file action goes through the native port. */
@@ -70,6 +81,8 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8)))
     val state = mutable.asStateFlow()
     private var job: Job? = null
+    private var agentLease: RunLease? = null
+    private var agentChat = ChatId("native-agent-main")
     private val cursors = mutableListOf(0L)
     private var actionId = 0L
 
@@ -86,7 +99,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         mutable.value = mutable.value.copy(encoding = value)
     } }
     fun dismissMessage() { mutable.value = mutable.value.copy(error = null, notice = null) }
-    fun cancelAction() { job?.cancel() }
+    fun cancelAction() { graph.translations.stop(); agentLease?.let { graph.runtime.requestStop(it) }; job?.cancel() }
     fun cleanupOutputs() = action {
         projects.cleanupTemporaryOutputs()
         mutable.value = mutable.value.copy(notice = R.string.native_cleaned)
@@ -95,7 +108,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         val recovery = projects.recoverProjects()
         val registered = projects.registeredProjects()
         mutable.value = mutable.value.copy(projects = registered, recoveryProblems = recovery.problems.size)
-        mutable.value.project?.let { loadPage(it.ref, cursors.last()) }
+        mutable.value.project?.let { loadPage(it.ref, cursors.last()); loadAgent(it.ref) }
     }
 
     fun open(ref: LocalProjectRef) = action { openInternal(ref) }
@@ -103,6 +116,160 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         val result = projects.copyProject(commandId(), ref)
         mutable.value = mutable.value.copy(projects = projects.registeredProjects())
         openInternal(result.ref)
+    }
+
+    fun saveAgentModel(endpoint: String, model: String, key: String, onSaved: () -> Unit) = action {
+        val settings = graph.modelSettings.save(endpoint, model, key)
+        mutable.value = mutable.value.copy(modelSettings = settings, notice = R.string.native_model_saved)
+        onSaved()
+    }
+    fun agentInput(text: String) {
+        if (mutable.value.busy || text.length > 8000) return
+        mutable.value.project?.let {
+            saved["agent_input_ref"] = encodeRef(it.ref); saved["agent_input_chat"] = agentChat.value
+            saved["agent_input_text"] = text
+            mutable.value = mutable.value.copy(agentInput = text)
+        }
+    }
+    fun selectAgentChat(chat: ChatId) = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        graph.agentStore.selectChat(ref, chat)
+        loadAgent(ref)
+    }
+    fun newAgentChat() = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        graph.agentStore.newChat(ref)
+        loadAgent(ref)
+    }
+    fun sendAgentMessage() = action {
+        if (mutable.value.agentLoadIncomplete) return@action
+        val ref = mutable.value.project?.ref ?: return@action
+        val configuration = mutable.value.modelSettings?.reference ?: return@action
+        val text = mutable.value.agentInput
+        if (text.isBlank() || mutable.value.approval != null) return@action
+        try {
+            agentRun(ref) { lease ->
+                graph.conversations.send(lease, ref, configuration, text) {
+                    withContext(Dispatchers.Main.immediate) {
+                        saved.remove<String>("agent_input_text")
+                        mutable.value = mutable.value.copy(agentInput = "")
+                    }
+                }
+            }
+        } finally { withContext(NonCancellable) { loadAgent(ref) } }
+    }
+
+    fun queryAgentProject() = action {
+        if (mutable.value.agentLoadIncomplete) return@action
+        val ref = mutable.value.project?.ref ?: return@action
+        try {
+            agentRun(ref) { lease ->
+                graph.agentStore.append(ref, agentChat, "USER", getApplication<Application>().getString(R.string.native_agent_query))
+                val text = graph.agentQueries.query(lease, ref)
+                val result = JsonObjectValue.parse(text, JsonInputLimits(16_384, 8)).json
+                val count = ToolArguments.long(ToolScalar.NumberToken(result.getValue("items").jsonPrimitive.content), "items", 0, 100_000)
+                val display = getApplication<Application>().getString(R.string.native_agent_summary,
+                    result.getValue("name").jsonPrimitive.content, result.getValue("asset").jsonPrimitive.content, count)
+                graph.agentStore.append(ref, agentChat, "ASSISTANT", display)
+            }
+        } finally { withContext(NonCancellable) { loadAgent(ref) } }
+    }
+
+    fun prepareAgentEdit(itemIdText: String, translation: String) = action {
+        if (mutable.value.agentLoadIncomplete) return@action
+        val ref = mutable.value.project?.ref ?: return@action
+        val item = ItemId(ToolArguments.long(ToolScalar.NumberToken(itemIdText), "itemId", 1, Long.MAX_VALUE))
+        try {
+            agentRun(ref) { lease -> graph.agentQueries.prepare(lease, ref, graph.agentStore, item, translation) }
+        } finally { withContext(NonCancellable) { loadAgent(ref) } }
+    }
+
+    fun rejectAgentEdit() = action {
+        if (mutable.value.agentLoadIncomplete) return@action
+        val approval = mutable.value.approval ?: return@action
+        graph.agentStore.reject(approval.ref, approval.id, approval.digest)
+        loadAgent(approval.ref)
+    }
+
+    fun allowAgentEdit() = action {
+        if (mutable.value.agentLoadIncomplete) return@action
+        val approval = mutable.value.approval ?: return@action
+        if (approval.state != TextApprovalState.PENDING) return@action
+        try {
+            val result = agentRun(approval.ref, approval.runId, approval.commandId) { lease ->
+                graph.agentStore.apply(lease, approval.ref, approval.id, approval.digest)
+            }
+            mutable.value = mutable.value.copy(notice = when (result) {
+                TextApprovalState.COMMITTED -> R.string.native_saved
+                TextApprovalState.CONFLICT -> R.string.native_conflict
+                TextApprovalState.CANCELLED -> R.string.native_agent_result_cancelled
+                TextApprovalState.REJECTED -> R.string.native_agent_result_rejected
+                else -> R.string.native_agent_unresolved
+            })
+        } finally {
+            withContext(NonCancellable) { loadPage(approval.ref, cursors.last()); loadAgent(approval.ref) }
+        }
+    }
+
+    private suspend fun loadAgent(ref: LocalProjectRef) {
+        var incomplete = false
+        suspend fun <T> loadOr(fallback: T, block: suspend () -> T): T = try { block() }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { incomplete = true; fallback }
+        val selectedChat = loadOr<ChatId?>(null) { graph.agentStore.currentChat(ref) }
+        if (selectedChat != null) agentChat = selectedChat
+        if (selectedChat != null) loadOr(Unit) { graph.agentStore.reconcile(ref, selectedChat) }
+        val messages = if (selectedChat == null) emptyList() else
+            loadOr(emptyList<AgentChatLine>()) { graph.agentStore.messages(ref, selectedChat) }
+        val approval = if (selectedChat == null) null else
+            loadOr<TextApproval?>(null) { graph.agentStore.pending(ref, selectedChat) }
+        val results = if (selectedChat == null) emptyList() else
+            loadOr(emptyList<AgentApprovalResult>()) { graph.agentStore.results(ref, selectedChat) }
+        val settings = loadOr<NativeModelSettings?>(mutable.value.modelSettings) { graph.modelSettings.current() }
+        val chats = loadOr(selectedChat?.let { listOf(it) } ?: emptyList()) { graph.agentStore.chats(ref) }
+        val draft = if (saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
+            saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") ?: "" else ""
+        mutable.value = mutable.value.copy(agentMessages = messages, approval = approval, agentResults = results,
+            agentChatId = selectedChat, agentChats = chats, modelSettings = settings, agentInput = draft,
+            agentLoadIncomplete = incomplete)
+    }
+
+    private suspend fun <T> agentRun(ref: LocalProjectRef, runId: RunId = RunId(UUID.randomUUID().toString()),
+                                     command: CommandId = commandId(), block: suspend (RunLease) -> T): T {
+        graph.runtime.selectChat(ChatIdentity(ref.projectId, agentChat))
+        val lease = graph.runtime.beginRun(RunIdentity(ref.projectId, agentChat, runId, command), RuntimeOwner.AGENT)
+        agentLease = lease
+        try { return block(lease) }
+        catch (cancelled: CancellationException) {
+            withContext(NonCancellable) { graph.agentStore.cancelPending(ref, runId) }
+            throw cancelled
+        } finally {
+            graph.runtime.finishRun(lease)
+            agentLease = null
+            graph.runtime.selectChat(null)
+        }
+    }
+
+    /** Explicitly confirmed local simulation, limited to the currently loaded proofreading page. */
+    fun simulatePage() = action {
+        val project = mutable.value.project ?: return@action
+        if (mutable.value.editor != null) return@action
+        val ref = project.ref
+        val after = cursors.last()
+        mutable.value = mutable.value.copy(translationProgress = null)
+        graph.runtime.selectChat(ChatIdentity(ref.projectId, ChatId("translation-workspace")))
+        try {
+            graph.translations.translatePage(ref,
+                RunIdentity(ref.projectId, null, RunId(UUID.randomUUID().toString()), commandId()),
+                graph.simulationConfiguration, project.revision, after, PAGE_SIZE) { progress ->
+                mutable.value = mutable.value.copy(translationProgress = progress)
+            }
+            mutable.value = mutable.value.copy(notice = R.string.native_simulation_done)
+        } finally {
+            // Re-read committed facts even when cancellation reached us after the commit boundary.
+            graph.runtime.selectChat(null)
+            withContext(NonCancellable) { loadPage(ref, after) }
+        }
     }
 
     fun prepareImport(native: Boolean): Boolean {
@@ -164,7 +331,8 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         saved.remove<ArrayList<String>>("native_ref")
         saved.remove<String>("native_page")
         cursors.clear(); cursors.add(0)
-        mutable.value = mutable.value.copy(project = null, items = emptyList(), hasNext = false, hasPrevious = false)
+        mutable.value = mutable.value.copy(project = null, items = emptyList(), hasNext = false, hasPrevious = false,
+            agentMessages = emptyList(), approval = null, agentResults = emptyList())
         refresh()
     }
 
@@ -174,6 +342,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         if (!state.hasNext || state.items.isEmpty()) return@action
         val next = state.items.last().id.value
         loadPage(project.ref, next)
+        mutable.value = mutable.value.copy(translationProgress = null)
         cursors.add(next)
         mutable.value = mutable.value.copy(hasPrevious = true)
     }
@@ -183,6 +352,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         if (cursors.size < 2) return@action
         val previous = cursors[cursors.lastIndex - 1]
         loadPage(project.ref, previous)
+        mutable.value = mutable.value.copy(translationProgress = null)
         cursors.removeAt(cursors.lastIndex)
         mutable.value = mutable.value.copy(hasPrevious = cursors.size > 1)
     }
@@ -220,7 +390,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         if (result.status == ManualEditStatus.COMMITTED) {
             clearDraft()
             val rows = mutable.value.items.map { item ->
-                if (item.id == draft.item.id) ItemPreview(item.id, item.row, item.source, draft.text.take(240), draft.status) else item
+                if (item.id == draft.item.id) ItemPreview(item.id, item.row, item.source, draft.text.take(240), draft.status, item.hasTranslatableSource) else item
             }
             mutable.value = mutable.value.copy(editor = null, items = rows,
                 project = mutable.value.project?.copy(revision = result.revision), notice = R.string.native_saved)
@@ -270,8 +440,10 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         val selectedPage = if (same) runCatching { NativePage.valueOf(saved["native_page"] ?: "AGENT") }.getOrDefault(NativePage.AGENT) else NativePage.AGENT
         if (!same) clearDraft()
         saved["native_ref"] = encodeRef(ref)
-        mutable.value = mutable.value.copy(project = summary, page = selectedPage, editor = null,
-            items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
+        mutable.value = mutable.value.copy(project = summary, page = selectedPage, editor = null, translationProgress = null,
+            items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
+            agentMessages = emptyList(), approval = null, agentResults = emptyList())
+        loadAgent(ref)
     }
 
     private suspend fun loadPage(ref: LocalProjectRef, after: Long) {
@@ -330,6 +502,19 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
                     TextProjectException.Reason.STALE_PAGE, TextProjectException.Reason.COMMAND_CONFLICT -> R.string.native_conflict
                     else -> R.string.native_io_error
                 }
+                is InvalidAgentHistory -> R.string.native_agent_history_error
+                is InvalidModelSettings -> R.string.native_model_settings_error
+                is AgentApprovalUnavailable -> R.string.native_agent_load_error
+                is InvalidToolArgument -> R.string.native_agent_invalid_item
+                is AgentModelFailure -> when (error.kind) {
+                    ModelFailureKind.AUTHENTICATION -> R.string.native_model_auth_error
+                    ModelFailureKind.NETWORK, ModelFailureKind.TIMEOUT -> R.string.native_model_network_error
+                    ModelFailureKind.RATE_LIMIT, ModelFailureKind.SERVER -> R.string.native_model_rate_error
+                    ModelFailureKind.CONTEXT_OVERFLOW -> R.string.native_model_context_error
+                    else -> R.string.native_agent_response_error
+                }
+                is com.breakyuna.noveltranslator.nativecore.agent.AgentAttemptUncertain,
+                is com.breakyuna.noveltranslator.nativecore.agent.AgentResponseNotStored -> R.string.native_agent_uncertain
                 is RuntimeUnavailable -> R.string.native_busy_error
                 is SecurityException -> R.string.native_permission_error
                 else -> R.string.native_io_error

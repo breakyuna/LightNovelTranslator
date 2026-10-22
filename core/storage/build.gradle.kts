@@ -50,4 +50,5 @@ dependencies {
   testImplementation(libs.robolectric)
   testImplementation(libs.androidx.core)
   testImplementation(project(":core:engine"))
+  testImplementation(project(":core:agent"))
 }

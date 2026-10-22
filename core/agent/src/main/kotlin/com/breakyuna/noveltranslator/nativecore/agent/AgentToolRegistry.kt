@@ -31,7 +31,8 @@ class RegisteredAgentTool(
 )
 
 /**
- * G1 scalar-tool prototype. Writes/paid actions remain denied until the real
+ * Scalar-tool boundary. Read queries and durable approval preparation are allowed.
+ * Project writes/paid actions remain denied until the full
  * PreparedChangeSet/approval/receipt path exists. A model's confirmation text is
  * never considered authorization. Repeating read queries is allowed.
  */
@@ -43,7 +44,7 @@ class AgentToolRegistry(private val runtime: RuntimePort, tools: List<Registered
     }
 
     override fun definitions(): List<AgentToolDefinition> = catalog.values
-        .filter { it.effect == ToolEffect.READ_ONLY }
+        .filter { it.effect == ToolEffect.READ_ONLY || it.effect == ToolEffect.APPROVAL_PREPARATION }
         .map { it.parameters.definition(it.name, it.description) }
 
     override suspend fun execute(run: RunLease, call: AgentToolCall): AgentToolOutcome {
@@ -55,7 +56,7 @@ class AgentToolRegistry(private val runtime: RuntimePort, tools: List<Registered
         val operation = runtime.beginOperation(run, OperationKind.TOOL)
         try {
             val tool = catalog[call.name] ?: return AgentToolOutcome.Failure("unknown_tool")
-            if (tool.effect != ToolEffect.READ_ONLY) return AgentToolOutcome.Failure("approval_path_unavailable")
+            if (tool.effect != ToolEffect.READ_ONLY && tool.effect != ToolEffect.APPROVAL_PREPARATION) return AgentToolOutcome.Failure("approval_path_unavailable")
             val arguments = try {
                 tool.parameters.validate(call.arguments)
             } catch (invalid: InvalidToolParameters) {

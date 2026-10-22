@@ -97,7 +97,7 @@ class ValidatedToolArguments internal constructor(values: Map<String, Any>) {
     override fun toString(): String = "ValidatedToolArguments(redacted)"
 }
 
-enum class ToolEffect { READ_ONLY, PROJECT_WRITE, WORKSPACE_WRITE, PAID_REQUEST, AUTHENTICATION }
+enum class ToolEffect { READ_ONLY, APPROVAL_PREPARATION, PROJECT_WRITE, WORKSPACE_WRITE, PAID_REQUEST, AUTHENTICATION }
 sealed interface AgentToolOutcome {
     data class Success(val result: JsonObjectValue) : AgentToolOutcome
     data class Failure(val code: String, val field: String? = null) : AgentToolOutcome

@@ -35,6 +35,13 @@ kotlin {
 
 dependencies {
   api(project(":core:domain"))
+  implementation(libs.koog.agents) {
+    // Same API-24 boundary as app: this slice uses Room, not Jackson snapshot serialization.
+    exclude(group = "com.fasterxml.jackson.core")
+    exclude(group = "com.fasterxml.jackson.module")
+    exclude(group = "com.fasterxml.jackson.databind")
+    exclude(group = "com.fasterxml.jackson.annotation")
+  }
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.serialization.json)
   testImplementation(project(":core:engine"))

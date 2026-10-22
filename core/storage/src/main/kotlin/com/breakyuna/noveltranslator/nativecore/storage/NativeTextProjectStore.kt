@@ -39,7 +39,7 @@ class NativeTextProjectStore(
     private val runtime: RuntimePort,
     private val limits: TextProjectLimits = TextProjectLimits(),
     private val importLimits: NativeImportLimits = NativeImportLimits(),
-) : TextProjectPort {
+) : TextProjectPort, TranslationCommitPort {
     private val io = Dispatchers.IO
     private val context = context.applicationContext
     private val app = NativeAppDatabase.open(this.context)
@@ -235,6 +235,55 @@ class NativeTextProjectStore(
                 ProjectWriteStore.edit(db, command) { coroutine.ensureActive() }
             }
         }
+    }
+
+    internal suspend fun approvedReceipt(command: ManualTextEdit): ManualEditReceipt? = operation {
+        project(command.ref) { db ->
+            NativeProjectDatabase.summary(db, command.ref)
+            ProjectWriteStore.checkedReceipt(db, command)
+        }
+    }
+
+    internal suspend fun approvedEdit(lease: RunLease, command: ManualTextEdit): ManualEditReceipt = operation {
+        if (lease.identity.projectId != command.ref.projectId || lease.identity.chatId == null ||
+            runtime.snapshot().activeRun?.owner != RuntimeOwner.AGENT) fail(TextProjectException.Reason.WRONG_IDENTITY)
+        if (command.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        TextProjectFingerprint.utf8(command.translation)
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(command.ref) { db ->
+                NativeProjectDatabase.summary(db, command.ref)
+                ProjectWriteStore.edit(db, command) { coroutine.ensureActive() }
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun commitTranslation(lease: RunLease, batch: TranslationBatch): Long = operation {
+        // Opaque lease validation is owned by RuntimePort, never by matching identity values alone.
+        if (lease.identity.projectId != batch.ref.projectId || lease.identity.chatId != null ||
+            runtime.snapshot().activeRun?.owner != RuntimeOwner.TRANSLATION) fail(TextProjectException.Reason.WRONG_IDENTITY)
+        for (edit in batch.edits) {
+            if (edit.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+            TextProjectFingerprint.utf8(edit.translation)
+        }
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(batch.ref) { db -> NativeProjectDatabase.transaction(db) {
+                val summary = NativeProjectDatabase.summary(db, batch.ref)
+                if (summary.revision != batch.expectedRevision) fail(TextProjectException.Reason.STALE_PAGE)
+                var revision = summary.revision
+                for (edit in batch.edits) {
+                    coroutine.ensureActive()
+                    val receipt = ProjectWriteStore.edit(db, edit) { coroutine.ensureActive() }
+                    if (receipt.status != ManualEditStatus.COMMITTED) fail(TextProjectException.Reason.STALE_PAGE)
+                    revision = receipt.revision
+                }
+                coroutine.ensureActive()
+                revision
+            } }
+        } finally { runtime.endProjectWrite(write) }
     }
 
     override suspend fun receipt(ref: LocalProjectRef, commandId: CommandId): ManualEditReceipt? = operation {

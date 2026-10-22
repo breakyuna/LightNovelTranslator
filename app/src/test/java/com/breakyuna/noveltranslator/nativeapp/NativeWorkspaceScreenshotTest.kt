@@ -11,6 +11,8 @@ import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.hasAnyDescendant
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performScrollToNode
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
@@ -48,8 +50,9 @@ class NativeWorkspaceScreenshotTest {
     @Test fun agentLandingOffersRealWorkspaceInsteadOfAnUnconnectedSendAction() {
         var selected: NativePage? = null
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            AgentLanding(NativeProjectUiState(project = summary)) { selected = it }
+            NativeAgentPage(NativeProjectUiState(project = summary), {}, { _, _ -> }, {}, {}, navigate = { selected = it })
         } } }
+        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(context.getString(R.string.native_open_proofreading)))
         compose.onNodeWithText(context.getString(R.string.native_open_proofreading)).performClick()
         assertEquals(NativePage.PROOFREADING, selected)
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-agent.png")
@@ -69,11 +72,37 @@ class NativeWorkspaceScreenshotTest {
         var selected: ItemId? = null
         val state = NativeProjectUiState(project = summary, items = listOf(ItemPreview.of(first)))
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            Proofreading(state, { selected = it }, {}, {})
+            Proofreading(state, { selected = it }, {}, {}, {})
         } } }
         compose.onNodeWithText(first.source).performClick()
         assertEquals(ItemId(41), selected)
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-proofreading.png")
+    }
+
+    @Test fun pendingAgentDifferenceRequiresExplicitAllowOnce() {
+        var allowed = false
+        val approval = TextApproval(ApprovalRequestId("approval"), ref, ChatId("chat"), RunId("run"), CommandId("command"),
+            "a".repeat(64), first.id, 0, first.fingerprint, first.row, first.status, first.translation, "proposed", TextApprovalState.PENDING)
+        val state = NativeProjectUiState(project = summary, items = listOf(ItemPreview.of(first)), approval = approval)
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeAgentPage(state, {}, { _, _ -> }, { allowed = true }, {}, {})
+        } } }
+        assertFalse(allowed)
+        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(context.getString(R.string.native_agent_allow_once)))
+        compose.onNodeWithText(context.getString(R.string.native_agent_allow_once)).performClick()
+        assertTrue(allowed)
+    }
+
+    @Test fun localSimulationRequiresExplicitConfirmation() {
+        var started = false
+        val state = NativeProjectUiState(project = summary, items = listOf(ItemPreview.of(first)))
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            Proofreading(state, {}, {}, {}, { started = true })
+        } } }
+        compose.onNodeWithText(context.getString(R.string.native_simulation)).performClick()
+        assertFalse(started)
+        compose.onNodeWithText(context.getString(R.string.native_simulation_start)).performClick()
+        assertTrue(started)
     }
 
     @Test fun editorPresentsDraftAndExplicitSave() {

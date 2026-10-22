@@ -5,7 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /**
- * Transaction owner for the first manual TXT slice. Called only under the runtime write lease.
+ * Transaction owner for manual TXT and trusted translation writes, always under a runtime write lease.
  * Does not implement ProjectWritePort or accept Agent approvals: that requires R19's durable
  * consumption binding. No caller can edit rows through the public repository except here.
  */
@@ -60,6 +60,14 @@ internal object ProjectWriteStore {
 
     fun receipt(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): ManualEditReceipt? =
         find(db, ref, commandId)?.second
+
+    fun checkedReceipt(db: SQLiteDatabase, command: ManualTextEdit): ManualEditReceipt? {
+        val previous = find(db, command.ref, command.commandId) ?: return null
+        if (previous.first != TextProjectFingerprint.command(command)) {
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        }
+        return previous.second
+    }
 
     private fun find(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Pair<String, ManualEditReceipt>? =
         db.rawQuery("""SELECT digest, item_id, outcome, revision, committed_at FROM write_receipts

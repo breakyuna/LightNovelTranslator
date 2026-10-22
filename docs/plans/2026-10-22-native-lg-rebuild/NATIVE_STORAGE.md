@@ -1,6 +1,6 @@
 # 原生 TXT 存储契约
 
-本文说明首个 `.lnt` TXT 切片的源码边界。实施进度、实际验证和未完成项只记入 [HANDOFF](HANDOFF.md)；TXT 存储基线已有指定提交的 CI 证据；新增导入/恢复与 nativeapp 接线尚待 CI，不表示完成 S1 验收。
+本文说明首个 `.lnt` TXT 切片的源码边界。实施进度、实际验证和未完成项只记入 [HANDOFF](HANDOFF.md)；TXT 存储基线已有指定提交的 CI 证据；新增导入/恢复与 nativeapp 接线的用户 CI/真机确认见 HANDOFF §22，不表示完成 S1 验收。
 
 ## 1. 格式与所有权
 
@@ -8,7 +8,7 @@
   不能改用 `PRAGMA journal_mode` 断言：Android 每次可写打开都会把连接日志模式设成平台默认（AOSP 为 `TRUNCATE`），而 `DELETE/TRUNCATE/PERSIST` 不写进文件头，只有 WAL 持久化。快照保证的是"不是 WAL、经 ATTACH 逻辑复制"，不是某个连接的 rollback 子模式。
 - 这是仅支持单 TXT 资产的原生 v1，不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
 - 私有工程位于 `filesDir/native_projects/<本机生成的 UUID>/project.lnt`。路径不使用工程名称或外部文件名；逻辑资产路径经 `RelativePath` 验证，实际文件访问拒绝符号链接改写。
-- 新应用索引使用独立 Room `lnt_native_app.db` v1，与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
+- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v2，v1→v2 增加 Agent 记录表，尚待构建/迁移验证，见 S2_AGENT_SLICE），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
 - 原稿使用 `raw-v1` 原始字节分块，单块最多 64 KiB，保存原始长度及 SHA-256；不是 Zstd，也不冒充 LG schema。`.lg` 转换仍由后续 CompatibilityStore 实现。
 
 ## 2. Schema 与端口
@@ -47,7 +47,7 @@
 
 手工编辑取得 RuntimePort 的工程写租约；活动 Agent/翻译运行阻止人工写入。工程事务先按命令读已有回执并核对完整摘要；无回执时检查预期工程修订、对象存在性和基准指纹。成功时一起更新条目、递增修订、保存修订事实与回执；冲突或对象不存在也保存不写入终态。相同命令重试返回同一结果，不因稍后工程变化而变成另一种结果。提交前检查点观察到取消或发生事务故障时，内容、修订和回执一起回滚；若取消到达时已经跨过该检查点并提交，不回滚已提交事实，调用方按命令查询回执，不把取消异常当作“没有写入”。
 
-这不是 Agent 授权。Agent `ProjectWritePort` 仍未接持久审批，不能将模型请求转换为 `ManualTextEdit` 绕过审批；生产工具注册表仍拒绝写工具。后续审批/批翻实现必须扩展同一 ProjectWriteStore 事务拥有者，不另造第二个写入者。
+这不是 Agent 授权。完整 Agent `ProjectWritePort` 仍未接全部对象的持久审批，单条 TXT 专用切片见 S2_AGENT_SLICE，不能将模型请求转换为 `ManualTextEdit` 绕过审批；通用 PROJECT_WRITE 工具仍拒绝执行；新增 APPROVAL_PREPARATION 仅准备不可变待审批，不直接写入工程。后续审批/批翻实现必须扩展同一 ProjectWriteStore 事务拥有者，不另造第二个写入者。
 
 快照通过 SQLite 同连接 `ATTACH` 新文件，在事务中复制当前 v1 的全部表，再脱离并核对标识/版本与 `quick_check`；不复制活动数据库主文件，不依赖 API 24 尚不支持的 `VACUUM INTO`。`sqlite_sequence` 单独原样复制：显式 ID 的 `INSERT ... SELECT` 只会把自增高水位压到现存最大值，恢复快照后一旦删除过条目就会复用 item ID。外部流写入前已经结束数据库事务和运行写租约。导出失败不改变私有工程，保留临时产物；临时产物目前在 cacheDir，可能被系统回收，不能当作持久备份。当前同一适配器的调用仍串行，长时间目标写入可能让其他调用等待。
 
@@ -57,7 +57,7 @@
 - 行边界对齐已审阅 LG `file-format-helpers.ts` 的 splitlines：合并 CRLF，保留中间空行，处理 Unicode 分行符；空输入产生零条目，尾部分行符不多造一条。原始 BOM/换行仍保存在原稿分块。
 - 人工状态为 NONE / PROCESSED / EXCLUDED；PROCESSED 的空译文也是有效结果，其他状态导出回源。当前译文导出为 UTF-8、LF，双语导出按有效状态选译文，相同原译默认去重，空译文回源；完整 Markdown 格式能力仍未实现。
 - 默认原稿上限 8 MiB、最多 10 万条、单条源/译文最多 65,536 UTF-16 单元、每页最多 100 条。这些是初始防护值，不是 G5 实测设备预算。TXT 原稿解析入口仍是有界 ByteArray；系统选择器先在 IO 线程有界读取，再交给解析器，并非流式解析。
-- 外部 `.lnt` 导入、复制、发布后登记恢复和最小 nativeapp 界面已扩展到源码，具体边界见 §6；完整备份、`.lg` 双向转换、全对象 schema、Room Chat/审批/运行记录、网关、批翻与 Service 仍未实现。
+- 外部 `.lnt` 导入、复制、发布后登记恢复和最小 nativeapp 界面已扩展到源码，具体边界见 §6；完整备份、`.lg` 双向转换、全对象 schema、完整持久运行恢复与 Service 仍未实现；后续 Room Chat/单条审批、网关和模拟翻译源码见 §7—8 与 HANDOFF §23—25。
 
 ## 5. 外部验证交接
 
@@ -80,4 +80,14 @@
 
 nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支持 `.lnt`、译文、双语和原稿，流的写入/flush/close 全部成功才提示完成。目标 URI 与发起时的工程身份绑定。失败保留本地事实及适配器临时产物；cacheDir 可能被系统回收，不能代替备份。清理仅针对 native_project_snapshots 中自有 snapshot-* 的 lnt/txt/source 普通文件，进行中复制快照受保护，不删除项目、原稿或其他缓存。
 
-尚未实现来源 URI 关联/内容变化冲突策略、覆盖恢复与代际推进、完整备份、旧库迁移、`.lg` 双向兼容、复杂格式、持久审批、Agent/模型翻译及后台 Service。当前 schema 和 Room 版本未变；新导入/界面代码仅静态审查，未实际构建。
+尚未实现来源 URI 关联/内容变化冲突策略、覆盖恢复与代际推进、完整备份、旧库迁移、`.lg` 双向兼容、复杂格式、完整持久审批及后台 Service；后续单条审批、Agent 对话和模型翻译源码边界见 §7—8 与 HANDOFF §23—25。本节导入切片未改变 .lnt v1；后续 Agent 切片已将独立应用 Room 升至 v2，见 §8；新导入/界面的 CI 与用户实机检查记录见 HANDOFF §22；本机仍只做静态审查。
+
+
+## 7. 本地模拟翻译写回扩展
+
+新增 TranslationCommitPort，限定真实 TRANSLATION 运行租约，批次外层事务复用 ProjectWriteStore 的条目指纹、修订和回执；批内冲突/取消整体回滚，前批事实保留，本模拟切片未改变 .lnt v1 与当时的 Room 版本。后续单条 Agent 审批见 §8；模拟入口不能作为 Agent 写权限。请求和运行边界见 [TXT_TRANSLATION](TXT_TRANSLATION.md)，实际进度见 HANDOFF §23；本轮新增代码尚待 CI/设备验证。
+
+
+## 8. Agent 单条审批与应用 schema v2
+
+当前源码新增 NativeAgentStore 与应用 Room v2：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不影响 .lnt v1 和旧阅读库；生成的 Room 2.json 尚缺，后续 PC/CI 生成审阅，不能继承 v1 的验证结论。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。

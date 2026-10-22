@@ -1,6 +1,6 @@
 # 原生 LG 目标架构
 
-当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它只覆盖 TXT 工程、人工校对与系统文件导入导出；本轮源码尚待 CI。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §20。
+当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它覆盖 TXT 工程、人工校对与系统文件导入导出；新增当前页本地模拟经 NativeModelGateway → TextTranslationService → TranslationCommitPort → ProjectWriteStore 接线（待 CI/设备验证，见 TXT_TRANSLATION.md），没有真实供应商或完整 Agent 生产接入；用户 CI 与 TXT 手工实机确认的证据边界见 HANDOFF §22。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §22。
 
 这是拟实施设计，现状与授权见 [总入口](README.md)。功能验收以 [功能矩阵](FEATURE_MATRIX.md) 为准，实施依赖见 [任务计划](IMPLEMENTATION_PLAN.md)。
 
@@ -349,3 +349,9 @@ R36 分为早期字段映射样本与后期正式迁移。R00 后用合成旧库
 - [Android Service](https://developer.android.com/reference/android/app/Service)：隔离执行与生命周期原型依据。
 
 上述资料于 2026-10-22 查询。没有由此推断新增依赖已经编译、真机可用或格式输出已经一致。
+
+
+当前 S2 单条切片：nativeapp → nativecore.agent.NativeKoogWorkspace → AgentRequestBoundary/AgentToolRegistry → NativeAgentStore（独立应用 Room v2）→ ProjectWriteStore。查询/准备操作使用本地固定后端，真正项目写入只由界面显式允许一次后走存储内部授权路径；不开放通用 PROJECT_WRITE。正文/消费绑定和跨库回执核对见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，完整 Agent 工具循环和 Run/恢复设计仍待后续实现，本轮未构建。
+
+
+§25 对话源码接线扩展为 NativeKoogConversation → AgentRequestBoundary → 共享 NativeModelGateway → core/engine CompatibleAgentModel；NativeModelSettingsStore 拥有独立 Keystore 密文和配置修订，NativeAgentStore 拥有结构化历史、选中会话与请求回执。原生 Room v2 目标尚未生成或验证，真实供应商尚未联调；完整执行、恢复和计量目标未因此关闭，见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。

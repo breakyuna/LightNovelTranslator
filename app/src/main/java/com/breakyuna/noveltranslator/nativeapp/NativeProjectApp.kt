@@ -90,13 +90,13 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     onImport = { if (model.prepareImport(true)) inputProject.launch(arrayOf("*/*")) }, onOpen = model::open,
                                     onCopy = model::copy, onEncoding = model::changeEncoding)
                             } else when (state.page) {
-                                NativePage.AGENT -> AgentLanding(state, model::selectPage)
+                                NativePage.AGENT -> NativeAgentPage(state, model::queryAgentProject, model::prepareAgentEdit, model::allowAgentEdit, model::rejectAgentEdit, model::selectPage, model::agentInput, model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat)
                                 NativePage.WORKBENCH -> Workbench(state, model::cleanupOutputs) { kind ->
                                     model.prepareExport(kind)?.let { name ->
                                         if (kind == NativeExport.PROJECT) saveProject.launch(name) else saveText.launch(name)
                                     }
                                 }
-                                NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage)
+                                NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage, model::simulatePage)
                             }
                         }
                     }
@@ -156,17 +156,6 @@ internal fun ProjectsHome(state: NativeProjectUiState, onCreate: () -> Unit, onI
 }
 
 @Composable
-internal fun AgentLanding(state: NativeProjectUiState, navigate: (NativePage) -> Unit) {
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text(stringResource(R.string.native_agent), style = MaterialTheme.typography.headlineSmall) }
-        item { Text(stringResource(R.string.native_agent_pending)) }
-        item { Text(stringResource(R.string.native_item_count, state.project!!.itemCount), style = MaterialTheme.typography.titleMedium) }
-        item { Button(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy) { Text(stringResource(R.string.native_open_proofreading)) } }
-        item { OutlinedButton(onClick = { navigate(NativePage.WORKBENCH) }, enabled = !state.busy) { Text(stringResource(R.string.native_open_workbench)) } }
-    }
-}
-
-@Composable
 internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export: (NativeExport) -> Unit) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text(stringResource(R.string.native_workbench), style = MaterialTheme.typography.headlineSmall) }
@@ -183,8 +172,24 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
 }
 
 @Composable
-internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, previous: () -> Unit, next: () -> Unit) {
+internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, previous: () -> Unit, next: () -> Unit,
+                          simulate: () -> Unit) {
+    var confirm by rememberSaveable(state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value,
+        state.items.firstOrNull()?.id?.value) { mutableStateOf(false) }
+    if (confirm) AlertDialog(onDismissRequest = { confirm = false },
+        title = { Text(stringResource(R.string.native_simulation)) },
+        text = { Text(stringResource(R.string.native_simulation_confirm)) },
+        confirmButton = { TextButton(onClick = { confirm = false; simulate() }, enabled = !state.busy) {
+            Text(stringResource(R.string.native_simulation_start))
+        } },
+        dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.native_cancel)) } },
+    )
     Column(Modifier.fillMaxSize()) {
+        TextButton(onClick = { confirm = true }, enabled = !state.busy && state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }) {
+            Text(stringResource(R.string.native_simulation))
+        }
+        state.translationProgress?.let { Text(stringResource(R.string.native_simulation_progress, it.committedItems, it.requests),
+            Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = previous, enabled = !state.busy && state.hasPrevious) { Text(stringResource(R.string.native_previous)) }
             TextButton(onClick = next, enabled = !state.busy && state.hasNext) { Text(stringResource(R.string.native_next)) }
