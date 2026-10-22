@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
+import java.util.Collections
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -18,8 +19,10 @@ class InvalidJsonPayload(val reason: Reason) : IllegalArgumentException("Invalid
 }
 
 /**
- * An independently parsed JSON object. No caller-owned mutable map is retained.
- * toString deliberately omits content; explicit JSON export can contain material.
+ * An independently parsed JSON object. The retained tree is a deep copy whose maps and
+ * lists are unmodifiable, so a caller that casts [json] to a mutable view cannot change
+ * content that was already fingerprinted. toString deliberately omits content; explicit
+ * JSON export can contain material.
  */
 class JsonObjectValue private constructor(val json: JsonObject) {
     fun encode(): String = json.toString()
@@ -42,7 +45,20 @@ class JsonObjectValue private constructor(val json: JsonObject) {
             }
             if (element !is JsonObject) throw InvalidJsonPayload(InvalidJsonPayload.Reason.OBJECT_REQUIRED)
             validatePrimitives(element)
-            return JsonObjectValue(element)
+            return JsonObjectValue(freeze(element) as JsonObject)
+        }
+
+        /**
+         * Rebuild the parser tree with unmodifiable collections. kotlinx.serialization keeps
+         * the map/list it was given, so handing out the parser's own tree would let a caller
+         * mutate content after the request fingerprint was computed.
+         */
+        private fun freeze(element: JsonElement): JsonElement = when (element) {
+            is JsonObject -> JsonObject(
+                Collections.unmodifiableMap(LinkedHashMap(element.mapValues { (_, value) -> freeze(value) })),
+            )
+            is JsonArray -> JsonArray(Collections.unmodifiableList(ArrayList(element.map { freeze(it) })))
+            else -> element
         }
 
         private fun validatePrimitives(value: JsonElement) {

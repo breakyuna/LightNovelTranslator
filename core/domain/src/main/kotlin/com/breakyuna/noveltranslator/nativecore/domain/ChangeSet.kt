@@ -142,9 +142,11 @@ class PreparedChangeSet(
         this.changes.forEach { change ->
             requireValidUnicode(change.target.id)
             change.target.parentId?.let(::requireValidUnicode)
-            if (!seen.add(change.target.kind.name + '\u0000' + change.target.id)) {
-                throw InvalidChangeSet(InvalidChangeSet.Reason.DUPLICATE_TARGET)
-            }
+            // Identity is (kind, id, parentId): the third page of two different PDF assets
+            // is two distinct objects, while parentId is never blank when it is present.
+            val key = change.target.kind.name + '\u0000' + change.target.id + '\u0000' +
+                (change.target.parentId ?: "")
+            if (!seen.add(key)) throw InvalidChangeSet(InvalidChangeSet.Reason.DUPLICATE_TARGET)
         }
     }
 

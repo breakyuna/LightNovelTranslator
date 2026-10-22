@@ -217,6 +217,14 @@ for name in MODULES:
 app = (ROOT / 'app/build.gradle.kts').read_text()
 require({':core:' + name for name in MODULES} <= set(re.findall(r'project\("([^"]+)"\)', app)),
         'app must assemble every native module')
+# Agent tool arguments come from the model: Number.toInt/toLong truncates (1.5 -> 1) and
+# optInt/optLong clamp silently. Only the reviewed integralLongOrNull helper may convert.
+for source in sorted((ROOT / 'app/src/main/java/com/breakyuna/noveltranslator/core/agent').glob('*.kt')):
+    body = source.read_text()
+    require(not re.search(r'as\?\s*Number\b', body),
+            f'{source.relative_to(ROOT)}: verify integrality and range before Number conversion')
+    require(not re.search(r'\bopt(?:Int|Long)\s*\(', body),
+            f'{source.relative_to(ROOT)}: optInt/optLong truncate silently; use integralLongOrNull')
 for name in JVM_MODULES:
     require(f':core:{name}:test' in (ROOT / '.github/workflows/android.yml').read_text(),
             name + ': JVM tests missing from CI command')
@@ -238,5 +246,5 @@ require(set(coverage.get('uncovered', [])) <= matrix_ids,
 if errors:
     raise SystemExit('\n'.join(errors))
 print('Static structure: six native modules, api() domain edges, dependency/import boundaries, '
-      'packages, manifests, landmines, Kotlin delimiter balance, docs links, catalog and CI task '
-      'references checked; no build executed.')
+      'packages, manifests, landmines, Kotlin delimiter balance, agent tool-argument guards, '
+      'docs links, catalog and CI task references checked; no build executed.')

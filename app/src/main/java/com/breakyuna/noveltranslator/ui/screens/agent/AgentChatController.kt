@@ -10,6 +10,7 @@ import com.breakyuna.noveltranslator.core.llm.LlmGateway
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /**
  * Agent 对话页的控制器：把 UI 事件翻译成 [AgentSession] 调用，并向外暴露会话状态。
@@ -82,36 +84,52 @@ class AgentChatController(
      *
      * 首次发送与切换会话都是协程，两条路径同时创建会话会各自 replaceSession 并起两个
      * stateJob：后建的那个覆盖 `session`，先建的继续把手里的消息写进旧会话，界面看到的
-     * 状态与真正在跑的会话错位。发送本身不占锁（否则整个回合会挡住取消与新对话）。
+     * 状态与真正在跑的会话错位。发送只在"取会话 + 预留回合"这一小段持锁，整个回合在锁外跑，
+     * 否则模型请求会挡住停止与新对话。
      */
     private val sessionLock = Mutex()
 
     /**
-     * 一次只跑一个回合。
+     * 已预留回合所属的会话，必须与 [session] 的取得/创建在同一把 [sessionLock] 内设置。
      *
-     * [AgentSession.send] 自身用 `running` 标志挡重复发送，但那是"读标志 + 置标志"两步，
-     * 在 [Dispatchers.Default] 上并发进入会同时通过检查，把同一段话发两遍（双倍付费）。
-     * 这里用 tryLock 直接丢弃并发的第二次发送，而不是排队到回合结束后再发。
+     * 只看 `session.isRunning` 不够：`AgentSession.send` 要等进入方法后才置位，取到会话到
+     * 真正置位之间有一个窗口，新建/切换会话能在窗口内通过检查，于是旧回合继续跑且停止按钮
+     * 指向新会话。这里在释放 [sessionLock] 之前就登记回合，并让 [cancel] 绑定这个会话。
+     *
+     * 该字段同时充当"一次只跑一个回合"的门闩：并发的第二次发送直接丢弃，而不是排队
+     * （排队会在回合结束后再发一次，等于双倍付费）。
      */
-    private val turnLock = Mutex()
+    @Volatile
+    private var activeTurn: AgentSession? = null
 
-    val isRunning: Boolean get() = session?.isRunning == true
+    val isRunning: Boolean get() = activeTurn != null || session?.isRunning == true
 
     fun send(text: String) {
         if (text.isBlank()) return
         scope.launch {
-            val active = obtainActiveSession() ?: return@launch
-            if (!turnLock.tryLock()) return@launch
+            // 会话取得/创建与回合预留必须原子完成；释放锁后任何切换路径都会看到 activeTurn。
+            val active = sessionLock.withLock {
+                if (activeTurn != null) return@launch
+                val current = session ?: createSessionLocked() ?: return@launch
+                activeTurn = current
+                current
+            }
             try {
                 active.send(text)
             } finally {
-                turnLock.unlock()
+                // dispose() 会取消 scope，清理必须在 NonCancellable 中完成，否则预留会永久残留。
+                withContext(NonCancellable) {
+                    sessionLock.withLock {
+                        if (activeTurn === active) activeTurn = null
+                    }
+                }
             }
         }
     }
 
+    /** 停止实际在跑的回合；没有预留回合时不误伤下一次发送的信号。 */
     fun cancel() {
-        session?.cancel()
+        activeTurn?.cancel()
     }
 
     /**
@@ -124,7 +142,7 @@ class AgentChatController(
         if (isRunning) return false
         scope.launch {
             sessionLock.withLock {
-                // 拿到锁之前回合可能已经开跑（用户刚点发送）：这时换会话会让正在跑的回合
+                // 拿到锁之前回合可能已经预留（用户刚点发送）：这时换会话会让正在跑的回合
                 // 失去界面却继续花钱。re-check 一次，宁可不切也不丢状态。
                 if (isRunning) return@withLock
                 replaceSession(null)
@@ -163,11 +181,6 @@ class AgentChatController(
         stateJob?.cancel()
         stateJob = null
         session = next
-    }
-
-    /** 取当前会话；没有就按当前配置新建。调用方随后在锁外跑整个回合。 */
-    private suspend fun obtainActiveSession(): AgentSession? = sessionLock.withLock {
-        session ?: createSessionLocked()
     }
 
     /**

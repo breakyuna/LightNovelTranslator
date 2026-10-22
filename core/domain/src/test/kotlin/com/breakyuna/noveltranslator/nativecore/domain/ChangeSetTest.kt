@@ -35,6 +35,19 @@ class ChangeSetTest {
         expectInvalid(InvalidChangeSet.Reason.DUPLICATE_TARGET) {
             changeSet(update("item-1"), create("item-1"))
         }
+        expectInvalid(InvalidChangeSet.Reason.DUPLICATE_TARGET) {
+            changeSet(page("3", "asset-a"), page("3", "asset-a"))
+        }
+    }
+
+    @Test
+    fun sameLocalIdUnderDifferentParentsIsNotADuplicate() {
+        val set = changeSet(page("3", "asset-a"), page("3", "asset-b"))
+        assertEquals(2, set.summary.pages)
+        assertNotEquals(
+            changeSet(page("3", "asset-a")).digest,
+            changeSet(page("3", "asset-b")).digest,
+        )
     }
 
     @Test
@@ -84,6 +97,11 @@ class ChangeSetTest {
     private fun update(id: String, content: String = "a") = PreparedChange(
         ChangeTarget(ChangeTargetKind.ITEM, id), ChangeOperation.UPDATE,
         ObjectFingerprint(hex("a")), ObjectFingerprint(hex(content)),
+    )
+
+    private fun page(id: String, parentId: String) = PreparedChange(
+        ChangeTarget(ChangeTargetKind.PDF_PAGE, id, parentId), ChangeOperation.UPDATE,
+        ObjectFingerprint(hex("a")), ObjectFingerprint(hex("b")),
     )
 
     private fun hex(character: String) = character.repeat(64)

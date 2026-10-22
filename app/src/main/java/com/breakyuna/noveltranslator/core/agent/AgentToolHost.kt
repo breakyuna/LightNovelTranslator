@@ -191,9 +191,7 @@ interface AgentToolHost {
         }
         val requiredLong: (String) -> Long? = { key ->
             if (!args.has(key)) null
-            else args.opt(key)?.let { value ->
-                (value as? Number)?.toLong() ?: value.toString().trim().toLongOrNull()
-            }
+            else integralLongOrNull(args.opt(key), Long.MIN_VALUE, Long.MAX_VALUE)
         }
         // Pair.first = 参数是否合法（缺省 / null 视为合法），Pair.second = 解析出的正整数值。
         // 与 requiredLong 不同，这里区分「没给」和「给了但非法」，避免把非法章节号静默当成整本扫描。
@@ -201,9 +199,8 @@ interface AgentToolHost {
             if (!args.has(key) || args.isNull(key)) {
                 true to null
             } else {
-                val raw = args.opt(key)
-                val parsed = (raw as? Number)?.toInt() ?: raw?.toString()?.trim()?.toIntOrNull()
-                (parsed != null && parsed > 0) to parsed
+                val parsed = integralLongOrNull(args.opt(key), 1, Int.MAX_VALUE.toLong())
+                (parsed != null) to parsed?.toInt()
             }
         }
         /** 可选的正整数 id：区分「没给」（合法、null）与「给了但非法」，避免静默回落到别的工程。 */
@@ -211,9 +208,8 @@ interface AgentToolHost {
             if (!args.has(key) || args.isNull(key)) {
                 true to null
             } else {
-                val raw = args.opt(key)
-                val parsed = (raw as? Number)?.toLong() ?: raw?.toString()?.trim()?.toLongOrNull()
-                (parsed != null && parsed > 0) to parsed
+                val parsed = integralLongOrNull(args.opt(key), 1, Long.MAX_VALUE)
+                (parsed != null) to parsed
             }
         }
         val output = try {
@@ -282,8 +278,13 @@ interface AgentToolHost {
                 }
 
                 TOOL_GET_RECENT_LOG -> {
-                    val projectId = requiredLong("project_id")?.takeIf { it > 0 }
-                    getRecentLog(projectId, args.optInt("limit", 50))
+                    val (projectValid, projectId) = optionalPositiveLong("project_id")
+                    val (limitValid, limit) = optionalPositiveInt("limit")
+                    when {
+                        !projectValid -> "非法的 project_id 参数：应为正整数 id"
+                        !limitValid -> "非法的 limit 参数：应为正整数"
+                        else -> getRecentLog(projectId, limit ?: 50)
+                    }
                 }
 
                 TOOL_ASK_USER -> {
@@ -300,12 +301,13 @@ interface AgentToolHost {
 
                 TOOL_UPDATE_TRANSLATION_CONFIG -> {
                     val projectId = requiredLong("project_id")
-                    if (projectId == null || projectId <= 0) {
-                        "缺少或非法的 project_id 参数"
-                    } else {
-                        updateTranslationConfig(
+                    val (parallelValid, parallelChapters) = optionalPositiveInt("parallel_chapters")
+                    when {
+                        projectId == null || projectId <= 0 -> "缺少或非法的 project_id 参数"
+                        !parallelValid -> "非法的 parallel_chapters 参数：应为正整数并发章数"
+                        else -> updateTranslationConfig(
                             projectId = projectId,
-                            parallelChapters = requiredLong("parallel_chapters")?.takeIf { it > 0 }?.toInt(),
+                            parallelChapters = parallelChapters,
                             continuityMode = args.optString("continuity_mode").trim().takeIf(String::isNotBlank),
                             promptCacheEnabled = args.opt("prompt_cache_enabled")?.let { value ->
                                 value as? Boolean ?: value.toString().toBooleanStrictOrNull()
@@ -451,11 +453,12 @@ interface AgentToolHost {
 
                 TOOL_SUMMARIZE_CHAPTER -> {
                     val bookId = requiredLong("book_id")
-                    val chapterIndex = requiredLong("chapter_index")?.takeIf { it > 0 }?.toInt()
+                    val (chapterValid, chapterIndex) = optionalPositiveInt("chapter_index")
                     val (projectValid, projectId) = optionalPositiveLong("project_id")
                     when {
                         bookId == null || bookId <= 0 -> "缺少或非法的 book_id 参数"
-                        chapterIndex == null -> "缺少或非法的 chapter_index 参数：应为正整数章号"
+                        !chapterValid || chapterIndex == null ->
+                            "缺少或非法的 chapter_index 参数：应为正整数章号"
                         !projectValid -> "非法的 project_id 参数：应为该书下的翻译工程 id"
                         else -> summarizeChapter(bookId, chapterIndex, projectId)
                     }
@@ -641,4 +644,44 @@ data class AgentUserQuestion(
 private fun entriesJsonOf(args: JSONObject): String {
     args.optJSONArray("entries")?.let { array -> return array.toString() }
     return args.optString("entries").trim()
+}
+
+/**
+ * 把工具参数中的 JSON 数字无损转换为 Long，越界或非整数返回 null。
+ *
+ * org.json 把整数解析成 Int/Long、小数解析成 Double。直接 `Number.toLong()` 会静默截断
+ * （1.5 → 1），超范围 Double 还会饱和到 Long.MAX_VALUE；这些值随后会进入付费扫描或工程
+ * 查询，等于把非法参数当成另一个真实目标。这里先验证整数性与范围再转换；字符串只接受
+ * 纯十进制整数（不做 Double/科学计数法中转），布尔与其他类型一律拒绝。
+ */
+private fun integralLongOrNull(value: Any?, minimum: Long, maximum: Long): Long? {
+    val parsed = when (value) {
+        is Int -> value.toLong()
+        is Long -> value
+        is Short -> value.toLong()
+        is Byte -> value.toLong()
+        is Double -> exactLongOrNull(value)
+        is Float -> exactLongOrNull(value.toDouble())
+        is java.math.BigDecimal -> try {
+            value.longValueExact()
+        } catch (_: ArithmeticException) {
+            null
+        }
+        is java.math.BigInteger -> if (value.bitLength() < 64) value.toLong() else null
+        is String -> value.trim().toLongOrNull()
+        else -> null
+    } ?: return null
+    return parsed.takeIf { it in minimum..maximum }
+}
+
+/** Double 的整数值必须精确落在 Long 内；1.5、1e20、NaN 都不算合法整数。 */
+private fun exactLongOrNull(value: Double): Long? {
+    if (!value.isFinite()) return null
+    return try {
+        java.math.BigDecimal(value.toString()).longValueExact()
+    } catch (_: ArithmeticException) {
+        null
+    } catch (_: NumberFormatException) {
+        null
+    }
 }
