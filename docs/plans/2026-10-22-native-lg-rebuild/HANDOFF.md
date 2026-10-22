@@ -29,7 +29,7 @@
 |---|---|---|
 | 规划包与规则同步 | 完成，静态核对通过，结果见第 6 节 | 不代表产品重构完成 |
 | R00 固定可重现源码与行为索引 | 进行中 | 已保存源码归档与摘要、提取发现索引；194 条发现已补消费者静态证据，仍需按功能 ID 核对参数、可见操作与脚本 API，见第 7、10 节 |
-| R01 / M1 模块装配 | 部分外部证据，未验收 | 七模块声明、catalog、CI 引用、`api` 边与静态检查已写入；CI 39764281126 的 `release`/`lint` 通过（首次真实构建），`test` 因一处测试导入失败，修复后待重跑，见第 11 节 |
+| R01 / M1 模块装配 | 外部构建全绿，范围未验收 | 七模块声明、catalog、CI 引用、`api` 边与静态检查已写入；CI 39765686187（`e0f3ee9`）的 test/lint/release 全绿，见第 11 节；业务功能与设备门槛仍未验收 |
 | R02/R06 原型准备 | 进行中，门槛未通过 | 已写进程内协调器、协程执行适配与类型化请求/只读工具端口原型；尚未迁 Koog、接 Service 或取得 Android 证据 |
 | R19 审批契约 | 原型就绪，未验收 | `PreparedChangeSet` 与审批协调器/端口已写入并有 19 个未执行测试；无生产存储、写入口、工具接线与 UI |
 | R03—R05 / M1 | 未开始 | 工作区引擎、.lg 与复杂格式原型仍未落地 |
@@ -188,9 +188,9 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 
 ### 未完成与边界
 
-- 19 个测试只是源码，未执行；审批只有端口契约和测试内存实现，没有 AppStore 适配器、工程写入口、`workspace_apply`/工具接线、U02 界面或恢复流程。`AgentToolRegistry` 继续拒绝所有 `PROJECT_WRITE`。
+- 19 个测试当时只是源码、未在本机执行（已由第 11 节 CI 证明通过）；审批只有端口契约和测试内存实现，没有 AppStore 适配器、工程写入口、`workspace_apply`/工具接线、U02 界面或恢复流程。`AgentToolRegistry` 继续拒绝所有 `PROJECT_WRITE`。
 - R00 仍未完成：消费者证据不等于参数、Schema、可见操作与脚本 API 已逐项核对；`BEHAVIOR_INDEX.json` 的 `consumer_review` 仍为 pending。
-- R01 仍需 PC/授权 CI 的最小编译、Lint、APK 与依赖解析证据。
+- R01 的外部编译/Lint/签名 APK 证据已由第 11 节取得；任务范围内的依赖锁定、安装与模块边界验收仍未完成。
 - 本机未执行 Gradle、测试、Lint、设备或真实模型调用；未提交、推送、触发 CI 或发布；LG 仓库只读。
 
 ## 11. CI 首次真实构建（2026-10-22）
@@ -210,4 +210,6 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 修复：`ApprovalGrantRejected` 与 `ApprovalUnavailable` 都定义在 engine 包内，删除错误导入即可（测试文件与它们同包）。
 同时把该错误类型加入静态检查：`check_structure.py` 现在为每个模块建立声明索引，任何 `nativecore.<module>.<Name>` 导入若在该模块不存在即失败，本机即可拦截，不必等 CI。
 
-修复后需要重新推送并重跑，`test` 全绿前 R01 仍不标记验收，86 个测试也仍未证明通过。
+修复后重新推送（`e0f3ee9`）并重跑 [run 39765686187](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39765686187)：**test / lint / release 三个 job 全部 success**。
+该次 `test` 执行了 `:core:engine:test` 与 `:app:testDebugUnitTest`（含 `:core:agent` 单测），`:core:domain:test` 命中构建缓存（其用例已在上一次运行的 `:core:domain:test` 中通过）。新增 19 个审批/变更用例因此都至少成功执行过一次。
+这证明模块骨架、主源码与测试源码可编译、单测通过、签名 Release 可产出；不证明任何功能行为、Koog 恢复、脚本/格式门槛或设备交互，R01 的完整验收仍取决于 R02—R06 与后续任务。
