@@ -518,3 +518,24 @@ Agent 实际查看 `/sdcard/DCIM/Screenshots` 最新五张截图（2026-10-23 00
 - 校对翻页清除上一页进度，同页完成刷新仍保留；模拟按钮依据完整原文的非空白标记启用，避免截断预览造成误判。删除五语无引用 native_simulation_failed，新增错误说明同步五语。
 - NATIVE_STORAGE 的历史阶段描述明确与后续应用 Room v2 区分；仅在本机 .git/info/exclude 排除无关 narou_rust/，未改动嵌套仓库。reasoning_content 保留既有实现，不把供应商适配风险当成可统一删除的字段。
 - 新增未运行的配置校验与审批回执/正文篡改核对回归用例；只做源代码/调用点、资源键、XML、差异空白及冲突标记静态核对。本机静态审查，未实际构建，未运行测试/Lint、CI、视觉或设备验证；未调用真实服务商、提交、推送或触发 Actions。
+
+
+## 26. 第十五轮：§23—25 源码的 CI 验证与三轮修复（2026-10-23）
+
+用户授权提交、推送当前重构分支并触发 `workflow_dispatch`，随后要求继续监控每个 run，失败即定位修复后重跑。
+
+### 提交与运行记录
+
+- `c2b09dc` 提交 §23—25 的源码与文档（50 文件，+2777/−66）。
+- [run 39821843207 / #123](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39821843207) 失败：test/lint/release 均停在 `core:agent` 编译，`Message.Assistant` 无 `content` 属性。`09a9b75` 改用 Koog 1.3.0 的 `textContent()`。
+- [run 39822583301 / #124](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39822583301) lint/release 通过，test 失败：storage 测试用 `kotlin.io.use` 关闭 Room（2.7 KMP `RoomDatabase` 不再实现 `Closeable`），且 `AgentToolRegistryTest` 仍把新增的 `APPROVAL_PREPARATION` 当作拒绝项。`f4704be` 拆出写/付费/认证拒绝断言并补审批准备用例。
+- [run 39824157859 / #125](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39824157859) test 仅剩 4 例失败：测试助手在 Robolectric 主线程直接调 DAO，触发 Room `assertNotMainThread`。`a7ce577` 改为在 `Dispatchers.IO` 打开、执行、关闭数据库。
+- [run 39825427020 / #126](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39825427020) **test/lint/release 全部成功**（提交 `a7ce577`）。
+
+### #126 产物与边界
+
+- 单测产物 86 个 suite、825 例，0 失败/错误/跳过；包含 `NativeAgentStoreTest` 17、`TextTranslationIntegrationTest` 6、`NativeWorkspaceScreenshotTest` 7，均实际执行（此前几轮因编译/前置失败未运行）。
+- lint 成功：app 0 error、67 warning；release 生成签名 APK（20,769,281 字节），artifacts 已上传。
+- `core/storage/schemas/` 仍只有 1.json：该轮 `:core:storage:kspDebugKotlin` 为 FROM-CACHE，2.json 未出现在 CI 产物中。Room v2 迁移已由运行时测试验证，但导出 schema 仍需非缓存构建/PC 生成并审阅，不能声称 2.json 已验证。
+- Roborazzi 仍然没有产出 `native-*.png`（`testDebugUnitTest` 不落盘截图，`finalizeTestRoborazziDebug` SKIPPED），组件截图与视觉基线仍为空；本轮界面结论只来自编译与用例断言。
+- 未连接真实模型、未发起付费/网络请求、未验证 Keystore 凭据在真机的创建/解密、未做 Agent 对话真机与多设备视觉验收；S1/S2 仍未关闭。
