@@ -29,7 +29,7 @@
 |---|---|---|
 | 规划包与规则同步 | 完成，静态核对通过，结果见第 6 节 | 不代表产品重构完成 |
 | R00 固定可重现源码与行为索引 | 进行中 | 已保存源码归档与摘要、提取发现索引；194 条发现已补消费者静态证据，仍需按功能 ID 核对参数、可见操作与脚本 API，见第 7、10 节 |
-| R01 / M1 模块装配 | 准备实现，未验收 | 七模块声明、SDK catalog、CI 引用、`api` 依赖边与静态地雷检查已写入；外部最小编译仍未通过，不标记前置完成 |
+| R01 / M1 模块装配 | 部分外部证据，未验收 | 七模块声明、catalog、CI 引用、`api` 边与静态检查已写入；CI 39764281126 的 `release`/`lint` 通过（首次真实构建），`test` 因一处测试导入失败，修复后待重跑，见第 11 节 |
 | R02/R06 原型准备 | 进行中，门槛未通过 | 已写进程内协调器、协程执行适配与类型化请求/只读工具端口原型；尚未迁 Koog、接 Service 或取得 Android 证据 |
 | R19 审批契约 | 原型就绪，未验收 | `PreparedChangeSet` 与审批协调器/端口已写入并有 19 个未执行测试；无生产存储、写入口、工具接线与 UI |
 | R03—R05 / M1 | 未开始 | 工作区引擎、.lg 与复杂格式原型仍未落地 |
@@ -192,3 +192,22 @@ Koog 1.3.0 当前本机缓存未找到；历史 javap 记录不能替代本轮�
 - R00 仍未完成：消费者证据不等于参数、Schema、可见操作与脚本 API 已逐项核对；`BEHAVIOR_INDEX.json` 的 `consumer_review` 仍为 pending。
 - R01 仍需 PC/授权 CI 的最小编译、Lint、APK 与依赖解析证据。
 - 本机未执行 Gradle、测试、Lint、设备或真实模型调用；未提交、推送、触发 CI 或发布；LG 仓库只读。
+
+## 11. CI 首次真实构建（2026-10-22）
+
+用户要求提交并触发 Actions。推送到 `refactor/translation-agent-2026-10`（未动 `main`/`beta`），三个提交 `9506fd9`、`4c55d44`、`9da7432` 后以 `workflow_dispatch` 触发 [run 39764281126](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39764281126)。
+
+结果（HEAD `9da7432`）：
+
+| job | 结论 | 证据 |
+|---|---|---|
+| lint | success | `lintDebug` 通过 |
+| release | success | 签名 Release APK 构建、签名校验与上传通过 |
+| test | failure | `:core:engine:compileTestKotlin` 失败：`ApprovalCoordinatorTest.kt:4` 从 `nativecore.domain` 导入并不存在于该模块的 `ApprovalGrantRejected` |
+
+这是本轮新代码第一次真正编译：**主源码（domain/engine/agent 与 app）能编译并打出签名 APK，Lint 无阻断**；失败只在一个测试文件的导入。
+
+修复：`ApprovalGrantRejected` 与 `ApprovalUnavailable` 都定义在 engine 包内，删除错误导入即可（测试文件与它们同包）。
+同时把该错误类型加入静态检查：`check_structure.py` 现在为每个模块建立声明索引，任何 `nativecore.<module>.<Name>` 导入若在该模块不存在即失败，本机即可拦截，不必等 CI。
+
+修复后需要重新推送并重跑，`test` 全绿前 R01 仍不标记验收，86 个测试也仍未证明通过。

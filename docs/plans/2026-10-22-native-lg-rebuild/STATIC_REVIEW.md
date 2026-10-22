@@ -10,6 +10,7 @@
 - engine 当前依赖 domain 与既有版本的 coroutines，保存进程内运行占用和生命周期原型。
 - agent/storage/formats/workspace 使用 Android Library 与 AGP 9 内置 Kotlin。agent 已补模型请求/只读工具边界原型，见 [AGENT_CONTRACT](AGENT_CONTRACT.md)；engine 增加审批与变更批次协调原型，见 [APPROVAL_CONTRACT](APPROVAL_CONTRACT.md)；storage/formats/workspace 仍只有构建声明和 Manifest。
 - 除 domain 自身外，各模块对 `:core:domain` 统一使用 `api`：公开签名直接出现 `RunIdentity`、`AgentMessage`、`RunLease`、`PreparedChangeSet` 等类型，若用 `implementation` 会把这些类型从消费者编译类路径隐藏。`tools/rebuild/check_structure.py` 已把该边写入静态检查。
+- 静态检查同时为每个模块建立顶层声明索引：`nativecore.<module>.<Name>` 形式的导入若在该模块不存在即失败。CI run 39764281126 的 `test` 正是被这类错误导入（`domain.ApprovalGrantRejected`）拦下，现在本机静态检查即可发现。
 - app 声明上述模块依赖，SDK 版本统一来自 catalog；应用 ID、签名、升级版本、旧库与启动导航不变。
 - 新 Kotlin 包为 `com.breakyuna.noveltranslator.nativecore`，用于隔离旧 `app/.../core` 迁移来源，避免误将旧类引入新模块。
 - 旧 Koog 仍在旧 app 链路，尚未迁移，也未把旧 Jackson 排除复制到新模块。R02 在外部最小编译后再验证检查点依赖。

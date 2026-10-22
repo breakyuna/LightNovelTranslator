@@ -1,7 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.ApprovalDecision
-import com.breakyuna.noveltranslator.nativecore.domain.ApprovalGrantRejected
 import com.breakyuna.noveltranslator.nativecore.domain.ApprovalMode
 import com.breakyuna.noveltranslator.nativecore.domain.ApprovalRequestId
 import com.breakyuna.noveltranslator.nativecore.domain.ApprovalStatus

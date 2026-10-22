@@ -182,6 +182,38 @@ for name in sorted(MODULES):
         for pattern, reason in LANDMINE_PATTERNS.items():
             require(not re.search(pattern, body), f'{source.relative_to(ROOT)}: {reason}')
         require(not re.search(r'\bTODO\s*\(', body), f'{source}: executable TODO')
+# Cross-module imports must name a declaration that really exists in that module.
+# An import of a same-named class from the wrong core module compiles only by luck;
+# this index turns that mistake into a local failure instead of a CI one.
+DECLARATION = re.compile(
+    r'^\s*(?:(?:public|internal|private|protected|abstract|open|sealed|data|value|annotation|'
+    r'enum|fun|inline|suspend|operator|infix|external|expect|actual|const|lateinit|tailrec|'
+    r'vararg|crossinline|noinline|reified)\s+)*(?:class|interface|object|typealias)\s+([A-Za-z_]\w*)',
+    re.M,
+)
+FUNCTION = re.compile(
+    r'\bfun\s+(?:<[^>\n]*>\s*)?(?:[A-Za-z_][\w.<>?]*\.)?([A-Za-z_]\w*)\s*[(<]',
+)
+declared = {name: set() for name in MODULES}
+sources_by_module = {}
+for name in MODULES:
+    sources = sorted((ROOT / 'core' / name).glob('src/main/**/*.kt')) + \
+        sorted((ROOT / 'core' / name).glob('src/test/**/*.kt'))
+    sources_by_module[name] = sources
+    for source in sources:
+        body = source.read_text()
+        declared[name] |= set(DECLARATION.findall(body))
+        declared[name] |= set(FUNCTION.findall(body))
+for name in MODULES:
+    for source in sources_by_module[name]:
+        for full, target, tail in re.findall(
+            r'^import\s+(com\.breakyuna\.noveltranslator\.nativecore\.(\w+)\.([\w.]+))', source.read_text(), re.M
+        ):
+            if target not in MODULES or tail == '*':
+                continue
+            simple = tail.split('.')[0]
+            require(simple in declared[target],
+                    f'{source.relative_to(ROOT)}: import {full} is not declared in :core:{target}')
 app = (ROOT / 'app/build.gradle.kts').read_text()
 require({':core:' + name for name in MODULES} <= set(re.findall(r'project\("([^"]+)"\)', app)),
         'app must assemble every native module')
