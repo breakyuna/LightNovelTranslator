@@ -51,8 +51,11 @@ jobs:
 
       # maxParallelForks 由 app/build.gradle.kts 按 runner 核数设置（4 核 → 4 fork）。
       # in-process 编译策略只是本机 Termux 兜底，CI 用 daemon（独立 JVM + 热 JIT）。
+      - name: Check native rebuild module boundaries
+        run: python3 tools/rebuild/check_structure.py
+
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --profile -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew testDebugUnitTest :core:domain:test :core:engine:test --profile -Pkotlin.compiler.execution.strategy=daemon
 
       # 测试失败也保留已下载的依赖，后续修复无需重新下载。
       - name: Save Robolectric android-all jars
@@ -70,6 +73,8 @@ jobs:
           path: |
             app/build/test-results/
             app/build/reports/tests/
+            core/**/build/test-results/
+            core/**/build/reports/tests/
             build/reports/profile/
           if-no-files-found: ignore
           retention-days: 7
@@ -105,6 +110,7 @@ jobs:
           name: lint-reports-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             app/build/reports/lint-results-*.xml
+            core/**/build/reports/lint-results-*.xml
             build/reports/profile/
           if-no-files-found: ignore
           retention-days: 7

@@ -19,12 +19,16 @@ val hasReleaseSigning = listOf(
 
 android {
   namespace = "com.breakyuna.noveltranslator"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  compileSdk {
+    version = release(libs.versions.androidCompileSdk.get().toInt()) {
+      minorApiLevel = libs.versions.androidCompileSdkMinor.get().toInt()
+    }
+  }
 
   defaultConfig {
     applicationId = "com.breakyuna.noveltranslator"
-    minSdk = 24
-    targetSdk = 36
+    minSdk = libs.versions.androidMinSdk.get().toInt()
+    targetSdk = libs.versions.androidTargetSdk.get().toInt()
     versionCode = ciVersionCode ?: 7
     versionName = "0.7.0-beta"
 
@@ -112,6 +116,12 @@ kotlin {
 }
 
 dependencies {
+  implementation(project(":core:domain"))
+  implementation(project(":core:engine"))
+  implementation(project(":core:agent"))
+  implementation(project(":core:storage"))
+  implementation(project(":core:formats"))
+  implementation(project(":core:workspace"))
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.material.icons.core)

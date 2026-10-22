@@ -19,3 +19,6 @@ debug.keystore
 *.jks
 *.keystore
 keystore.properties
+
+# Native multi-module outputs
+**/build/
