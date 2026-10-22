@@ -43,6 +43,11 @@ class NativeAgentStoreTest {
         runtime.selectChat(ChatIdentity(ref.projectId, chat))
         return runtime.beginRun(RunIdentity(ref.projectId, chat, run, command), RuntimeOwner.AGENT)
     }
+    /** Room 2.7's KMP RoomDatabase exposes close() but no longer implements Closeable. */
+    private inline fun <T> withAppDatabase(block: (NativeAppDatabase) -> T): T {
+        val db = NativeAppDatabase.open(context)
+        try { return block(db) } finally { db.close() }
+    }
     private suspend fun prepare(ref: LocalProjectRef): TextApproval {
         val lease = begin(ref)
         try { return agent.prepare(lease, ref, ItemId(1), "approved text") }
@@ -80,7 +85,7 @@ class NativeAgentStoreTest {
     }
     @Test fun consumedWithoutProjectReceiptIsTerminatedOnRestartAndNeverAutoExecuted() = runBlocking {
         val project = project(); val approval = prepare(project.ref)
-        NativeAppDatabase.open(context).use { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
+        withAppDatabase { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
         agent.close(); agent = NativeAgentStore(context, projects, runtime)
         agent.reconcile(project.ref, chat)
         assertNull(agent.pending(project.ref, chat))
@@ -89,7 +94,7 @@ class NativeAgentStoreTest {
     }
     @Test fun projectCommitBeforeRoomFinalizationIsRecoveredFromExactCommandReceipt() = runBlocking {
         val project = project(); val approval = prepare(project.ref)
-        NativeAppDatabase.open(context).use { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
+        withAppDatabase { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
         val lease = begin(project.ref, approval.runId, approval.commandId)
         try { projects.approvedEdit(lease, ManualTextEdit(approval.commandId, project.ref, approval.itemId,
             approval.revision, approval.base, approval.after)) }
@@ -101,14 +106,14 @@ class NativeAgentStoreTest {
     }
     @Test fun tamperedPayloadFailsDigestValidationAndDoesNotWrite() = runBlocking {
         val project = project(); val approval = prepare(project.ref)
-        NativeAppDatabase.open(context).use { db -> db.openHelper.writableDatabase.execSQL(
+        withAppDatabase { db -> db.openHelper.writableDatabase.execSQL(
             "UPDATE native_agent_approvals SET afterText = 'tampered' WHERE id = ?", arrayOf(approval.id.value)) }
         try { allow(approval); fail("Accepted changed payload") } catch (_: IllegalArgumentException) { }
         assertEquals(0L, projects.open(project.ref).revision)
     }
     @Test fun receiptMismatchDuringReconcileKeepsConsumedAndDoesNotReplay() = runBlocking {
         val project = project(); val approval = prepare(project.ref)
-        NativeAppDatabase.open(context).use { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
+        withAppDatabase { db -> db.agent().settle(approval.id.value, "PENDING", "CONSUMED") }
         projects.edit(ManualTextEdit(approval.commandId, project.ref, approval.itemId,
             approval.revision, approval.base, "different intent"))
         try { agent.reconcile(project.ref, chat); fail("Accepted mismatched receipt") }
@@ -122,14 +127,14 @@ class NativeAgentStoreTest {
 
     @Test fun tamperedApprovalDuringReconcileRemainsUnresolvedAndCannotBeApproved() = runBlocking {
         val project = project(); val approval = prepare(project.ref)
-        NativeAppDatabase.open(context).use { db ->
+        withAppDatabase { db ->
             db.agent().settle(approval.id.value, "PENDING", "CONSUMED")
             db.openHelper.writableDatabase.execSQL(
                 "UPDATE native_agent_approvals SET afterText = 'tampered' WHERE id = ?", arrayOf(approval.id.value))
         }
         try { agent.reconcile(project.ref, chat); fail("Accepted changed payload") }
         catch (_: AgentApprovalUnavailable) { }
-        NativeAppDatabase.open(context).use { db ->
+        withAppDatabase { db ->
             assertEquals("CONSUMED", db.agent().approval(approval.id.value)!!.state)
         }
         try { allow(approval); fail("Approved changed payload") } catch (_: IllegalArgumentException) { }

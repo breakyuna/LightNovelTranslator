@@ -44,7 +44,9 @@ class AgentToolRegistryTest {
         val runtime = runtime()
         val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
         var calls = 0
-        val effects = ToolEffect.entries.filter { it != ToolEffect.READ_ONLY }
+        val effects = ToolEffect.entries.filter {
+            it != ToolEffect.READ_ONLY && it != ToolEffect.APPROVAL_PREPARATION
+        }
         val registry = AgentToolRegistry(runtime, effects.map { effect ->
             RegisteredAgentTool(effect.name, "synthetic", ToolParameterSchema(emptyMap()), effect,
                 AgentToolHandler { _, _ -> calls += 1; json() })
@@ -55,6 +57,31 @@ class AgentToolRegistryTest {
                 AgentToolCall(ToolCallId(effect.name), effect.name, json())) as AgentToolOutcome.Failure).code)
         }
         assertEquals(0, calls)
+        runtime.finishRun(run)
+    }
+
+    @Test
+    fun approvalPreparationIsExposedWithoutGrantingWritePaidOrAuthenticationEffects() = runTest {
+        val runtime = runtime()
+        val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        var preparationCalls = 0
+        var deniedCalls = 0
+        val denied = ToolEffect.entries.filter {
+            it != ToolEffect.READ_ONLY && it != ToolEffect.APPROVAL_PREPARATION
+        }
+        val registry = AgentToolRegistry(runtime,
+            listOf(RegisteredAgentTool("prepare_edit", "synthetic preparation", ToolParameterSchema(emptyMap()),
+                ToolEffect.APPROVAL_PREPARATION, AgentToolHandler { _, _ -> preparationCalls += 1; json() })) +
+                denied.map { effect -> RegisteredAgentTool(effect.name, "synthetic", ToolParameterSchema(emptyMap()),
+                    effect, AgentToolHandler { _, _ -> deniedCalls += 1; json() }) })
+        assertEquals(listOf("prepare_edit"), registry.definitions().map { it.name })
+        assertTrue(registry.execute(run, AgentToolCall(ToolCallId("prepare"), "prepare_edit", json())) is AgentToolOutcome.Success)
+        for (effect in denied) {
+            assertEquals("approval_path_unavailable", (registry.execute(run,
+                AgentToolCall(ToolCallId(effect.name), effect.name, json())) as AgentToolOutcome.Failure).code)
+        }
+        assertEquals(1, preparationCalls)
+        assertEquals(0, deniedCalls)
         runtime.finishRun(run)
     }
 
