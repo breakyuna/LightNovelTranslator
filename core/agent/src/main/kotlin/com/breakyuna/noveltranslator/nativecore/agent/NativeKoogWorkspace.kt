@@ -79,7 +79,8 @@ class NativeKoogWorkspace(private val runtime: RuntimePort, private val projects
         }
         val model = LLModel(provider = object : LLMProvider("lnt-local", "Local workflow") {},
             id = configuration.id, capabilities = listOf(LLMCapability.Temperature))
-        val strategy = functionalStrategy<String, String>("native-project-workflow") { input -> requestLLM(input).content }
+        // Koog 1.3.0 Assistant exposes typed response parts, not a `content` property.
+        val strategy = functionalStrategy<String, String>("native-project-workflow") { input -> requestLLM(input).textContent() }
         val agent = AIAgent(promptExecutor = executor, llmModel = model, strategy = strategy,
             toolRegistry = ToolRegistry.EMPTY, systemPrompt = "Local workflow only; no network, paid model or automatic project writes.", maxIterations = 2,
             id = "native-" + lease.identity.runId.value)
