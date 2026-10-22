@@ -1,0 +1,630 @@
+{
+  "schema_version": 1,
+  "purpose": "Reviewed static source binding per feature ID; marker presence is not runtime proof. Features without a binding may still be covered by the behaviour index; see FEATURE_COVERAGE.json for the combined view.",
+  "feature_count": 98,
+  "bound_count": 20,
+  "native_only_count": 3,
+  "without_binding": [
+    "AG01",
+    "AG03",
+    "AG04",
+    "AG06",
+    "AG07",
+    "AG09",
+    "AG10",
+    "AG11",
+    "AG12",
+    "AG13",
+    "AG14",
+    "FM01",
+    "FM02",
+    "FM03",
+    "FM04",
+    "FM05",
+    "FM06",
+    "FM07",
+    "FM08",
+    "FM09",
+    "FM10",
+    "FM11",
+    "FM12",
+    "MO01",
+    "MO04",
+    "MO05",
+    "MO06",
+    "MO09",
+    "MO11",
+    "OP01",
+    "OP03",
+    "OP04",
+    "OP05",
+    "OP09",
+    "PR01",
+    "PR02",
+    "PR04",
+    "PR07",
+    "PR08",
+    "PR09",
+    "QL01",
+    "QL02",
+    "QL03",
+    "QL04",
+    "QL05",
+    "QL06",
+    "QL07",
+    "QL09",
+    "QL10",
+    "TR01",
+    "TR02",
+    "TR03",
+    "TR04",
+    "TR05",
+    "TR06",
+    "TR07",
+    "TR10",
+    "TR11",
+    "TR12",
+    "UX01",
+    "UX02",
+    "UX03",
+    "UX04",
+    "UX05",
+    "UX06",
+    "UX07",
+    "UX08",
+    "WS01",
+    "WS02",
+    "WS03",
+    "WS05",
+    "WS06",
+    "WS07",
+    "WS08",
+    "WS09"
+  ],
+  "entries": {
+    "AG01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG02": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/tool-definition.ts",
+          "marker": "define_agent_tool",
+          "line": 14,
+          "note": "工具参数根 Schema 校验与定义入口"
+        }
+      ]
+    },
+    "AG03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG05": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-input-queue.ts",
+          "marker": "steer",
+          "line": 105,
+          "note": "执行中引导的队列项占用与提交顺序"
+        }
+      ]
+    },
+    "AG06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG08": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-chat-view.ts",
+          "marker": "steer",
+          "line": 287,
+          "note": "公开时间线把 steer 与普通输入分开展示"
+        }
+      ]
+    },
+    "AG09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG10": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG11": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG12": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG13": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG14": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "AG15": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-model.ts",
+          "marker": "usage",
+          "line": 23,
+          "note": "按用途解析模型与用量读取"
+        }
+      ]
+    },
+    "AG16": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/batch-item-translation.ts",
+          "marker": "define_agent_tool",
+          "line": 11,
+          "note": "Agent 内批量翻译工具"
+        }
+      ]
+    },
+    "FM01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM08": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM10": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM11": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "FM12": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO02": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/llm/llm-pi.ts",
+          "marker": "api_format",
+          "line": 23,
+          "note": "协议适配以 api_format 区分，不靠 provider 名称"
+        }
+      ]
+    },
+    "MO03": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "api_key",
+          "line": 65,
+          "note": "认证类型与密钥字段定义"
+        }
+      ]
+    },
+    "MO04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO07": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "thinking_level",
+          "line": 269,
+          "note": "思考等级规范化"
+        }
+      ]
+    },
+    "MO08": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "extra_headers",
+          "line": 93,
+          "note": "额外请求 headers/body 字段"
+        }
+      ]
+    },
+    "MO09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "MO10": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/llm/llm-client.ts",
+          "marker": "reasoning_tokens",
+          "line": 170,
+          "note": "输入/思考/输出 token 分别读取"
+        }
+      ]
+    },
+    "MO11": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "OP01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "OP02": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/core/batch-translation-runner.ts",
+          "marker": "stopped",
+          "line": 120,
+          "note": "长任务终态与停止；Android 前台 Service/通知仍是原生实现"
+        }
+      ]
+    },
+    "OP03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "OP04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "OP05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "OP06": {
+      "category": "native_only",
+      "reason": "旧 LNT Room 数据迁移器与档案，LG 仓库没有 LNT 数据源"
+    },
+    "OP07": {
+      "category": "native_only",
+      "reason": "Android 签名升级、安装与备份回退边界，由平台实现"
+    },
+    "OP08": {
+      "category": "native_only",
+      "reason": "旧 LNT 实现/资源/依赖清理审计，属于本仓库退役工作"
+    },
+    "OP09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR03": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/project/project-write-store.ts",
+          "marker": "assetWrites",
+          "line": 282,
+          "note": "资产结构写入与原始记录集中提交"
+        }
+      ]
+    },
+    "PR04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR05": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/domain/item.ts",
+          "marker": "ITEM_STATUSES",
+          "line": 6,
+          "note": "Item 状态集合与持久字段 Schema"
+        }
+      ]
+    },
+    "PR06": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/project/agent-workspace-fingerprint.ts",
+          "marker": "agent_workspace_fingerprint",
+          "line": 7,
+          "note": "对象指纹计算入口"
+        }
+      ]
+    },
+    "PR07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR08": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "PR10": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/migration/project-migrations.ts",
+          "marker": "empty_asset_file_type_migration",
+          "line": 1,
+          "note": "工程 schema 迁移入口"
+        },
+        {
+          "path": "src/backend/database/zstd-tool.ts",
+          "marker": "zstd",
+          "line": 1,
+          "note": "Zstd 压缩读写"
+        }
+      ]
+    },
+    "QL01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL08": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/shared/proofreading/proofreading-evaluator.ts",
+          "marker": "warnings",
+          "line": 140,
+          "note": "六类校对警告求值"
+        }
+      ]
+    },
+    "QL09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "QL10": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR08": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/core/translation-request-scheduler.ts",
+          "marker": "class TranslationRequestScheduler",
+          "line": 48,
+          "note": "请求额度/并发调度"
+        }
+      ]
+    },
+    "TR09": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/planning/translation-retry.ts",
+          "marker": "plan_translation_retry",
+          "line": 11,
+          "note": "内容重试规划"
+        }
+      ]
+    },
+    "TR10": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR11": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "TR12": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX04": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "UX08": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS01": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS02": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS03": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS04": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/workspace-apply.ts",
+          "marker": "define_agent_tool",
+          "line": 6,
+          "note": "变更提交工具入口"
+        }
+      ]
+    },
+    "WS05": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS06": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS07": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS08": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS09": {
+      "category": "unbound",
+      "bindings": []
+    },
+    "WS10": {
+      "category": "bound",
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/web-search.ts",
+          "marker": "define_agent_tool",
+          "line": 1,
+          "note": "联网搜索工具入口"
+        },
+        {
+          "path": "src/backend/agent/tools/web-fetch.ts",
+          "marker": "define_agent_tool",
+          "line": 3,
+          "note": "网页获取工具入口"
+        }
+      ]
+    }
+  }
+}

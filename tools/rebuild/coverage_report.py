@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
-"""Map the 98 feature IDs to discovered LG entries and list uncovered IDs.
+"""Combine discovery entries, reviewed source bindings and native-only notes per feature ID.
 
-Coverage here means "at least one discovery entry was mapped to this ID", not that the
-feature is implemented or audited. Inputs are the static matrix and the audit output.
+A feature is "covered" when at least one of these holds:
+  * the LG behaviour index discovered an entry for it;
+  * a reviewed (path, marker) binding in SOURCE_BINDINGS.json exists;
+  * it is recorded as native-only with a reason (no LG source to cite).
+
+Coverage here means "there is traceable evidence to review", never that the feature is
+implemented or verified. Uncovered IDs are the R00 manual binding list.
 """
 import argparse
 from collections import Counter
@@ -17,17 +22,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--matrix', type=Path, required=True)
     parser.add_argument('--audit', type=Path, required=True)
+    parser.add_argument('--bindings', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
 
     ids = sorted(dict.fromkeys(MATRIX_ROW.findall(args.matrix.read_text())))
-    entries = json.loads(args.audit.read_text())['entries']
-    coverage = {feature: [] for feature in ids}
+    audit_entries = json.loads(args.audit.read_text())['entries']
+    binding_entries = json.loads(args.bindings.read_text())['entries']
+
+    discovery = {feature: [] for feature in ids}
     unknown = Counter()
-    for entry in entries:
+    for entry in audit_entries:
         for feature in entry.get('candidate_features', []):
-            if feature in coverage:
-                coverage[feature].append({
+            if feature in discovery:
+                discovery[feature].append({
                     'kind': entry['kind'],
                     'key': entry['key'],
                     'status': entry['review']['status'],
@@ -35,22 +43,37 @@ def main():
             else:
                 unknown[feature] += 1
 
-    uncovered = [feature for feature in ids if not coverage[feature]]
+    entries = {}
+    for feature in ids:
+        binding = binding_entries.get(feature)
+        if binding is None:
+            raise SystemExit(f'SOURCE_BINDINGS.json has no entry for {feature}')
+        if binding['category'] == 'bound':
+            sources = {'discovery': discovery[feature], 'bindings': binding['bindings']}
+            category = 'bound'
+        elif binding['category'] == 'native_only':
+            sources = {'discovery': discovery[feature], 'native_only': binding['reason']}
+            category = 'native_only'
+        else:
+            sources = {'discovery': discovery[feature]}
+            category = 'discovery' if discovery[feature] else 'uncovered'
+        entries[feature] = {'category': category, **sources}
+
+    uncovered = [feature for feature, entry in entries.items() if entry['category'] == 'uncovered']
+    counts = Counter(entry['category'] for entry in entries.values())
     result = {
-        'schema_version': 1,
-        'purpose': 'Discovery coverage only: one mapped entry does not implement or verify a feature.',
+        'schema_version': 2,
+        'purpose': 'Traceable evidence per feature ID; coverage is not implementation or parity.',
         'feature_count': len(ids),
         'covered_count': len(ids) - len(uncovered),
+        'categories': dict(sorted(counts.items())),
         'uncovered': uncovered,
         'unknown_feature_ids': sorted(unknown),
-        'by_kind': {
-            feature: dict(sorted(Counter(item['kind'] for item in items).items()))
-            for feature, items in coverage.items() if items
-        },
-        'entries': {feature: items for feature, items in coverage.items()},
+        'entries': entries,
     }
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n')
     print(f'features: {len(ids)}, covered: {len(ids) - len(uncovered)}, uncovered: {len(uncovered)}')
+    print('categories: ' + json.dumps(result['categories'], ensure_ascii=False, sort_keys=True))
     if uncovered:
         print('uncovered: ' + ', '.join(uncovered))
     if unknown:

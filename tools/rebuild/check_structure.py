@@ -243,6 +243,15 @@ require(set(coverage.get('entries', {})) == matrix_ids,
         'FEATURE_COVERAGE.json is stale; rerun tools/rebuild/coverage_report.py')
 require(set(coverage.get('uncovered', [])) <= matrix_ids,
         'FEATURE_COVERAGE.json lists unknown uncovered IDs')
+require(all(entry.get('category') in {'bound', 'discovery', 'native_only', 'uncovered'}
+            for entry in coverage.get('entries', {}).values()),
+        'FEATURE_COVERAGE.json has an unknown coverage category')
+bindings = json.loads((DOCS / 'SOURCE_BINDINGS.json').read_text())
+require(set(bindings.get('entries', {})) == matrix_ids,
+        'SOURCE_BINDINGS.json is stale; rerun tools/rebuild/source_bindings.py')
+require(all(entry.get('category') in {'bound', 'native_only', 'unbound'}
+            for entry in bindings.get('entries', {}).values()),
+        'SOURCE_BINDINGS.json has an unknown binding category')
 if errors:
     raise SystemExit('\n'.join(errors))
 print('Static structure: six native modules, api() domain edges, dependency/import boundaries, '

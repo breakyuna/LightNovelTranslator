@@ -1,2128 +1,2332 @@
 {
-  "schema_version": 1,
-  "purpose": "Discovery coverage only: one mapped entry does not implement or verify a feature.",
+  "schema_version": 2,
+  "purpose": "Traceable evidence per feature ID; coverage is not implementation or parity.",
   "feature_count": 98,
-  "covered_count": 75,
-  "uncovered": [
-    "AG02",
-    "AG05",
-    "AG08",
-    "AG15",
-    "AG16",
-    "MO02",
-    "MO03",
-    "MO07",
-    "MO08",
-    "MO10",
-    "OP02",
-    "OP06",
-    "OP07",
-    "OP08",
-    "PR03",
-    "PR05",
-    "PR06",
-    "PR10",
-    "QL08",
-    "TR08",
-    "TR09",
-    "WS04",
-    "WS10"
-  ],
+  "covered_count": 98,
+  "categories": {
+    "bound": 20,
+    "discovery": 75,
+    "native_only": 3
+  },
+  "uncovered": [],
   "unknown_feature_ids": [],
-  "by_kind": {
+  "entries": {
     "AG01": {
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/message",
+          "status": "resolved"
+        }
+      ]
+    },
+    "AG02": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/tool-definition.ts",
+          "marker": "define_agent_tool",
+          "line": 14,
+          "note": "工具参数根 Schema 校验与定义入口"
+        }
+      ]
     },
     "AG03": {
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/message",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/input-status",
+          "status": "resolved"
+        }
+      ]
     },
     "AG04": {
-      "route": 4
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/queue/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/queue/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/queue/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/queue/send",
+          "status": "resolved"
+        }
+      ]
+    },
+    "AG05": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-input-queue.ts",
+          "marker": "steer",
+          "line": 105,
+          "note": "执行中引导的队列项占用与提交顺序"
+        }
+      ]
     },
     "AG06": {
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/continue",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/stop",
+          "status": "resolved"
+        }
+      ]
     },
     "AG07": {
-      "route": 3
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/round/fork",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/round/revise",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/reset",
+          "status": "resolved"
+        }
+      ]
+    },
+    "AG08": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-chat-view.ts",
+          "marker": "steer",
+          "line": 287,
+          "note": "公开时间线把 steer 与普通输入分开展示"
+        }
+      ]
     },
     "AG09": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/context/compact",
+          "status": "resolved"
+        }
+      ]
     },
     "AG10": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/continue",
+          "status": "resolved"
+        }
+      ]
     },
     "AG11": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/question/resolve",
+          "status": "resolved"
+        }
+      ]
     },
     "AG12": {
-      "route": 1,
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/write-approval/resolve",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "agent_approval_mode",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "AG13": {
-      "route": 6
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/uploads",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/uploads/:id",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/file",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/document",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/image",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/activate-path",
+          "status": "resolved"
+        }
+      ]
     },
     "AG14": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/snapshot",
+          "status": "resolved"
+        }
+      ]
+    },
+    "AG15": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/agent-model.ts",
+          "marker": "usage",
+          "line": 23,
+          "note": "按用途解析模型与用量读取"
+        }
+      ]
+    },
+    "AG16": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/batch-item-translation.ts",
+          "marker": "define_agent_tool",
+          "line": 11,
+          "note": "Agent 内批量翻译工具"
+        }
+      ]
     },
     "FM01": {
-      "format": 1,
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "deduplication_in_bilingual",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "format",
+          "key": "txt",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM02": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "md",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM03": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "epub",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM04": {
-      "format": 3
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "lrc",
+          "status": "adapter_dir_found"
+        },
+        {
+          "kind": "format",
+          "key": "srt",
+          "status": "adapter_dir_found"
+        },
+        {
+          "kind": "format",
+          "key": "vtt",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM05": {
-      "format": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "ass",
+          "status": "adapter_dir_found"
+        },
+        {
+          "kind": "format",
+          "key": "ssa",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM06": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "json",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM07": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "xlsx",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM08": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "trans",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM09": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "rpy",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM10": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "rpgmaker_mv_mz",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM11": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "rpgmaker_rgss",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "FM12": {
-      "format": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "format",
+          "key": "pdf",
+          "status": "adapter_dir_found"
+        }
+      ]
     },
     "MO01": {
-      "page": 1,
-      "route": 11
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/models/selection",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/select",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/add",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reset-preset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/list-available",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/test",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "model",
+          "status": "resolved"
+        }
+      ]
+    },
+    "MO02": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/llm/llm-pi.ts",
+          "marker": "api_format",
+          "line": 23,
+          "note": "协议适配以 api_format 区分，不靠 provider 名称"
+        }
+      ]
+    },
+    "MO03": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "api_key",
+          "line": 65,
+          "note": "认证类型与密钥字段定义"
+        }
+      ]
     },
     "MO04": {
-      "route": 4
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/models/auth/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/auth/login",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/auth/cancel",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/auth/logout",
+          "status": "resolved"
+        }
+      ]
     },
     "MO05": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/models/catalog/snapshot",
+          "status": "resolved"
+        }
+      ]
     },
     "MO06": {
-      "route": 11
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/models/selection",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/select",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/add",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reset-preset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/list-available",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/test",
+          "status": "resolved"
+        }
+      ]
+    },
+    "MO07": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "thinking_level",
+          "line": 269,
+          "note": "思考等级规范化"
+        }
+      ]
+    },
+    "MO08": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/domain/model.ts",
+          "marker": "extra_headers",
+          "line": 93,
+          "note": "额外请求 headers/body 字段"
+        }
+      ]
     },
     "MO09": {
-      "route": 11
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/models/selection",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/select",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/add",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reset-preset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/list-available",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/models/test",
+          "status": "resolved"
+        }
+      ]
+    },
+    "MO10": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/llm/llm-client.ts",
+          "marker": "reasoning_tokens",
+          "line": 170,
+          "note": "输入/思考/输出 token 分别读取"
+        }
+      ]
     },
     "MO11": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "request_timeout",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "OP01": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/runtime/snapshot",
+          "status": "resolved"
+        }
+      ]
+    },
+    "OP02": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/core/batch-translation-runner.ts",
+          "marker": "stopped",
+          "line": 120,
+          "note": "长任务终态与停止；Android 前台 Service/通知仍是原生实现"
+        }
+      ]
     },
     "OP03": {
-      "route": 8
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/web/files/roots",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/list",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/upload",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/material/:id",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/material/release",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/download",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/session",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/bootstrap",
+          "status": "resolved"
+        }
+      ]
     },
     "OP04": {
-      "route": 4
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/logs/files",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/logs/page",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/logs/detail",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/diagnostics/renderer-error",
+          "status": "resolved"
+        }
+      ]
     },
     "OP05": {
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/diagnostics/renderer-error",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/events/stream",
+          "status": "resolved"
+        }
+      ]
+    },
+    "OP06": {
+      "category": "native_only",
+      "discovery": [],
+      "native_only": "旧 LNT Room 数据迁移器与档案，LG 仓库没有 LNT 数据源"
+    },
+    "OP07": {
+      "category": "native_only",
+      "discovery": [],
+      "native_only": "Android 签名升级、安装与备份回退边界，由平台实现"
+    },
+    "OP08": {
+      "category": "native_only",
+      "discovery": [],
+      "native_only": "旧 LNT 实现/资源/依赖清理审计，属于本仓库退役工作"
     },
     "OP09": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/health",
+          "status": "resolved"
+        }
+      ]
     },
     "PR01": {
-      "route": 9,
-      "setting": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/session/project/manifest",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/close",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/source-files/summary",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/create",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open-preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "project_save_mode",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "project_fixed_path",
+          "status": "frontend_only"
+        }
+      ]
     },
     "PR02": {
-      "route": 10,
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/session/project/manifest",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/close",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/create",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open-preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/settings/recent-projects/add",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/settings/recent-projects/remove",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "recent_projects",
+          "status": "referenced_in_both"
+        }
+      ]
+    },
+    "PR03": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/project/project-write-store.ts",
+          "marker": "assetWrites",
+          "line": 282,
+          "note": "资产结构写入与原始记录集中提交"
+        }
+      ]
     },
     "PR04": {
-      "route": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/import",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/file/reset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/file/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/preview",
+          "status": "resolved"
+        }
+      ]
+    },
+    "PR05": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/domain/item.ts",
+          "marker": "ITEM_STATUSES",
+          "line": 6,
+          "note": "Item 状态集合与持久字段 Schema"
+        }
+      ]
+    },
+    "PR06": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/project/agent-workspace-fingerprint.ts",
+          "marker": "agent_workspace_fingerprint",
+          "line": 7,
+          "note": "对象指纹计算入口"
+        }
+      ]
     },
     "PR07": {
-      "route": 11,
-      "setting": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/session/project/manifest",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/close",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/create",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open-preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/settings-alignment/apply",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/settings/app",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/settings/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "source_language",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "target_language",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "PR08": {
-      "route": 6
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/import",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/file/reset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/file/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/files/preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/workbench/translation/reset",
+          "status": "resolved"
+        }
+      ]
     },
     "PR09": {
-      "route": 8
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/session/project/manifest",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/close",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/preview",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/create",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/copy",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/session/project/open-preview",
+          "status": "resolved"
+        }
+      ]
+    },
+    "PR10": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/migration/project-migrations.ts",
+          "marker": "empty_asset_file_type_migration",
+          "line": 1,
+          "note": "工程 schema 迁移入口"
+        },
+        {
+          "path": "src/backend/database/zstd-tool.ts",
+          "marker": "zstd",
+          "line": 1,
+          "note": "Zstd 压缩读写"
+        }
+      ]
     },
     "QL01": {
-      "page": 1,
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/query",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "glossary",
+          "status": "resolved"
+        }
+      ]
     },
     "QL02": {
-      "page": 1,
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/query",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "text-preserve",
+          "status": "resolved"
+        }
+      ]
     },
     "QL03": {
-      "page": 2,
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/query",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "pre-translation-replacement",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "post-translation-replacement",
+          "status": "resolved"
+        }
+      ]
     },
     "QL04": {
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/import",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/export",
+          "status": "resolved"
+        }
+      ]
     },
     "QL05": {
-      "route": 10,
-      "setting": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/presets",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/presets/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/presets/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/presets/rename",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/rules/presets/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/rename",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "glossary_default_preset",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "text_preserve_default_preset",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "pre_translation_replacement_default_preset",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "post_translation_replacement_default_preset",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "translation_custom_prompt_default_preset",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "QL06": {
-      "page": 1,
-      "route": 10,
-      "setting": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/view",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/template",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/import",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/export",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/rename",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/quality/prompts/presets/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "prompt_enhancement_enable",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "translation_custom_prompt_default_preset",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "page",
+          "key": "custom-prompt",
+          "status": "resolved"
+        }
+      ]
     },
     "QL07": {
-      "route": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/proofreading/page",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/query",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/items/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/translations/clear",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/items/replace-all",
+          "status": "resolved"
+        }
+      ]
+    },
+    "QL08": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/shared/proofreading/proofreading-evaluator.ts",
+          "marker": "warnings",
+          "line": 140,
+          "note": "六类校对警告求值"
+        }
+      ]
     },
     "QL09": {
-      "route": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/proofreading/page",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/query",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/items/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/translations/clear",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/proofreading/items/replace-all",
+          "status": "resolved"
+        }
+      ]
     },
     "QL10": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/quality/statistics/view",
+          "status": "resolved"
+        }
+      ]
     },
     "TR01": {
-      "route": 4
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/workbench/translation/reset",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/start",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/stop",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/snapshot",
+          "status": "resolved"
+        }
+      ]
     },
     "TR02": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "source_language",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "TR03": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "skip_duplicate_source_text_enable",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "TR04": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "preceding_lines_threshold",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "TR05": {
-      "setting": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "clean_ruby",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "mtool_optimizer_enable",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "TR06": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "write_translated_name_fields_to_file",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "TR07": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "target_language",
+          "status": "referenced_in_both"
+        }
+      ]
+    },
+    "TR08": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/core/translation-request-scheduler.ts",
+          "marker": "class TranslationRequestScheduler",
+          "line": 48,
+          "note": "请求额度/并发调度"
+        }
+      ]
+    },
+    "TR09": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/batch-translation/planning/translation-retry.ts",
+          "marker": "plan_translation_retry",
+          "line": 11,
+          "note": "内容重试规划"
+        }
+      ]
     },
     "TR10": {
-      "route": 3
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/start",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/stop",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/snapshot",
+          "status": "resolved"
+        }
+      ]
     },
     "TR11": {
-      "route": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/project/translation-stats",
+          "status": "resolved"
+        }
+      ]
     },
     "TR12": {
-      "route": 3
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/start",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/stop",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/batch-translation/snapshot",
+          "status": "resolved"
+        }
+      ]
     },
     "UX01": {
-      "page": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "page",
+          "key": "project-home",
+          "status": "resolved"
+        }
+      ]
     },
     "UX02": {
-      "page": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "page",
+          "key": "agent",
+          "status": "resolved"
+        }
+      ]
     },
     "UX03": {
-      "page": 1,
-      "route": 4
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/workbench/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/generate",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/outputs",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/download",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "workbench",
+          "status": "resolved"
+        }
+      ]
     },
     "UX04": {
-      "page": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "page",
+          "key": "proofreading",
+          "status": "resolved"
+        }
+      ]
     },
     "UX05": {
-      "page": 6
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "page",
+          "key": "glossary",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "skills",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "text-preserve",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "pre-translation-replacement",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "post-translation-replacement",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "custom-prompt",
+          "status": "resolved"
+        }
+      ]
     },
     "UX06": {
-      "page": 4,
-      "route": 2
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/settings/app",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/settings/update",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "model",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "basic-settings",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "expert-settings",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "laboratory",
+          "status": "resolved"
+        }
+      ]
     },
     "UX07": {
-      "route": 13,
-      "setting": 3
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/web/files/roots",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/list",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/upload",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/material/:id",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/material/release",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/files/download",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/session",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/web/bootstrap",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/save-path/pending",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/save-path/respond",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/generate",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/outputs",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/translation/files/download",
+          "status": "resolved"
+        },
+        {
+          "kind": "setting",
+          "key": "project_save_mode",
+          "status": "referenced_in_both"
+        },
+        {
+          "kind": "setting",
+          "key": "project_fixed_path",
+          "status": "frontend_only"
+        },
+        {
+          "kind": "setting",
+          "key": "output_folder_open_on_finish",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "UX08": {
-      "setting": 1
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "setting",
+          "key": "app_language",
+          "status": "referenced_in_both"
+        }
+      ]
     },
     "WS01": {
-      "route": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/file",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/document",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/image",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/activate-path",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/reset",
+          "status": "resolved"
+        }
+      ]
     },
     "WS02": {
-      "workspace-api": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "workspace-api",
+          "key": "contract",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "userSkillDirectory",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "emitImage",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "doing",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "host",
+          "status": "used"
+        }
+      ]
     },
     "WS03": {
-      "skill": 11,
-      "workspace-package": 10
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "workspace-package",
+          "key": "chardet",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "exceljs",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "iconv-lite",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "jszip",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "mupdf",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "oxc-parser",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "remark-gfm",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "remark-parse",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "unified",
+          "status": "imported"
+        },
+        {
+          "kind": "workspace-package",
+          "key": "@ruby/prism",
+          "status": "imported"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/agent-charter",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/epub",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/glossary",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/pdf",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/roleplay",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/rpgmaker",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/skill-creator",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/text-preserve",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/translation",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/writing-guide",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/xlsx",
+          "status": "resource_present"
+        }
+      ]
+    },
+    "WS04": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/workspace-apply.ts",
+          "marker": "define_agent_tool",
+          "line": 6,
+          "note": "变更提交工具入口"
+        }
+      ]
     },
     "WS05": {
-      "route": 7
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/files",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/file",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/document",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/image",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/workspace/activate-path",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/save-path/pending",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/save-path/respond",
+          "status": "resolved"
+        }
+      ]
     },
     "WS06": {
-      "workspace-api": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "workspace-api",
+          "key": "contract",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "userSkillDirectory",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "emitImage",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "doing",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "host",
+          "status": "used"
+        }
+      ]
     },
     "WS07": {
-      "page": 1,
-      "route": 8,
-      "skill": 11
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/skills/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/enabled",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/tree",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/change",
+          "status": "resolved"
+        },
+        {
+          "kind": "page",
+          "key": "skills",
+          "status": "resolved"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/agent-charter",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/epub",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/glossary",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/pdf",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/roleplay",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/rpgmaker",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/skill-creator",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/text-preserve",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/translation",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/writing-guide",
+          "status": "resource_present"
+        },
+        {
+          "kind": "skill",
+          "key": "builtin/skills/xlsx",
+          "status": "resource_present"
+        }
+      ]
     },
     "WS08": {
-      "route": 8
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/skills/delete",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/snapshot",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/enabled",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/reorder",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/tree",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/skills/file/change",
+          "status": "resolved"
+        }
+      ]
     },
     "WS09": {
-      "route": 2,
-      "workspace-api": 5
+      "category": "discovery",
+      "discovery": [
+        {
+          "kind": "route",
+          "key": "/api/agent/personality/read",
+          "status": "resolved"
+        },
+        {
+          "kind": "route",
+          "key": "/api/agent/personality/save",
+          "status": "resolved"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "contract",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "userSkillDirectory",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "emitImage",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "doing",
+          "status": "used"
+        },
+        {
+          "kind": "workspace-api",
+          "key": "host",
+          "status": "used"
+        }
+      ]
+    },
+    "WS10": {
+      "category": "bound",
+      "discovery": [],
+      "bindings": [
+        {
+          "path": "src/backend/agent/tools/web-search.ts",
+          "marker": "define_agent_tool",
+          "line": 1,
+          "note": "联网搜索工具入口"
+        },
+        {
+          "path": "src/backend/agent/tools/web-fetch.ts",
+          "marker": "define_agent_tool",
+          "line": 3,
+          "note": "网页获取工具入口"
+        }
+      ]
     }
-  },
-  "entries": {
-    "AG01": [
-      {
-        "kind": "route",
-        "key": "/api/agent/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/message",
-        "status": "resolved"
-      }
-    ],
-    "AG02": [],
-    "AG03": [
-      {
-        "kind": "route",
-        "key": "/api/agent/message",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/input-status",
-        "status": "resolved"
-      }
-    ],
-    "AG04": [
-      {
-        "kind": "route",
-        "key": "/api/agent/queue/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/queue/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/queue/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/queue/send",
-        "status": "resolved"
-      }
-    ],
-    "AG05": [],
-    "AG06": [
-      {
-        "kind": "route",
-        "key": "/api/agent/continue",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/stop",
-        "status": "resolved"
-      }
-    ],
-    "AG07": [
-      {
-        "kind": "route",
-        "key": "/api/agent/round/fork",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/round/revise",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/reset",
-        "status": "resolved"
-      }
-    ],
-    "AG08": [],
-    "AG09": [
-      {
-        "kind": "route",
-        "key": "/api/agent/context/compact",
-        "status": "resolved"
-      }
-    ],
-    "AG10": [
-      {
-        "kind": "route",
-        "key": "/api/agent/continue",
-        "status": "resolved"
-      }
-    ],
-    "AG11": [
-      {
-        "kind": "route",
-        "key": "/api/agent/question/resolve",
-        "status": "resolved"
-      }
-    ],
-    "AG12": [
-      {
-        "kind": "route",
-        "key": "/api/agent/write-approval/resolve",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "agent_approval_mode",
-        "status": "referenced_in_both"
-      }
-    ],
-    "AG13": [
-      {
-        "kind": "route",
-        "key": "/api/agent/uploads",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/uploads/:id",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/file",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/document",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/image",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/activate-path",
-        "status": "resolved"
-      }
-    ],
-    "AG14": [
-      {
-        "kind": "route",
-        "key": "/api/agent/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "AG15": [],
-    "AG16": [],
-    "FM01": [
-      {
-        "kind": "setting",
-        "key": "deduplication_in_bilingual",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "format",
-        "key": "txt",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM02": [
-      {
-        "kind": "format",
-        "key": "md",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM03": [
-      {
-        "kind": "format",
-        "key": "epub",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM04": [
-      {
-        "kind": "format",
-        "key": "lrc",
-        "status": "adapter_dir_found"
-      },
-      {
-        "kind": "format",
-        "key": "srt",
-        "status": "adapter_dir_found"
-      },
-      {
-        "kind": "format",
-        "key": "vtt",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM05": [
-      {
-        "kind": "format",
-        "key": "ass",
-        "status": "adapter_dir_found"
-      },
-      {
-        "kind": "format",
-        "key": "ssa",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM06": [
-      {
-        "kind": "format",
-        "key": "json",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM07": [
-      {
-        "kind": "format",
-        "key": "xlsx",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM08": [
-      {
-        "kind": "format",
-        "key": "trans",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM09": [
-      {
-        "kind": "format",
-        "key": "rpy",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM10": [
-      {
-        "kind": "format",
-        "key": "rpgmaker_mv_mz",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM11": [
-      {
-        "kind": "format",
-        "key": "rpgmaker_rgss",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "FM12": [
-      {
-        "kind": "format",
-        "key": "pdf",
-        "status": "adapter_dir_found"
-      }
-    ],
-    "MO01": [
-      {
-        "kind": "route",
-        "key": "/api/models/selection",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/select",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/add",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reset-preset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/list-available",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/test",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "model",
-        "status": "resolved"
-      }
-    ],
-    "MO02": [],
-    "MO03": [],
-    "MO04": [
-      {
-        "kind": "route",
-        "key": "/api/models/auth/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/auth/login",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/auth/cancel",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/auth/logout",
-        "status": "resolved"
-      }
-    ],
-    "MO05": [
-      {
-        "kind": "route",
-        "key": "/api/models/catalog/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "MO06": [
-      {
-        "kind": "route",
-        "key": "/api/models/selection",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/select",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/add",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reset-preset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/list-available",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/test",
-        "status": "resolved"
-      }
-    ],
-    "MO07": [],
-    "MO08": [],
-    "MO09": [
-      {
-        "kind": "route",
-        "key": "/api/models/selection",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/select",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/add",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reset-preset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/list-available",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/models/test",
-        "status": "resolved"
-      }
-    ],
-    "MO10": [],
-    "MO11": [
-      {
-        "kind": "setting",
-        "key": "request_timeout",
-        "status": "referenced_in_both"
-      }
-    ],
-    "OP01": [
-      {
-        "kind": "route",
-        "key": "/api/runtime/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "OP02": [],
-    "OP03": [
-      {
-        "kind": "route",
-        "key": "/api/web/files/roots",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/list",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/upload",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/material/:id",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/material/release",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/download",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/session",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/bootstrap",
-        "status": "resolved"
-      }
-    ],
-    "OP04": [
-      {
-        "kind": "route",
-        "key": "/api/logs/files",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/logs/page",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/logs/detail",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/diagnostics/renderer-error",
-        "status": "resolved"
-      }
-    ],
-    "OP05": [
-      {
-        "kind": "route",
-        "key": "/api/diagnostics/renderer-error",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/events/stream",
-        "status": "resolved"
-      }
-    ],
-    "OP06": [],
-    "OP07": [],
-    "OP08": [],
-    "OP09": [
-      {
-        "kind": "route",
-        "key": "/api/health",
-        "status": "resolved"
-      }
-    ],
-    "PR01": [
-      {
-        "kind": "route",
-        "key": "/api/session/project/manifest",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/close",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/source-files/summary",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/create",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open-preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "project_save_mode",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "project_fixed_path",
-        "status": "frontend_only"
-      }
-    ],
-    "PR02": [
-      {
-        "kind": "route",
-        "key": "/api/session/project/manifest",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/close",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/create",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open-preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/settings/recent-projects/add",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/settings/recent-projects/remove",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "recent_projects",
-        "status": "referenced_in_both"
-      }
-    ],
-    "PR03": [],
-    "PR04": [
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/import",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/file/reset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/file/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/preview",
-        "status": "resolved"
-      }
-    ],
-    "PR05": [],
-    "PR06": [],
-    "PR07": [
-      {
-        "kind": "route",
-        "key": "/api/session/project/manifest",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/close",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/create",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open-preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/settings-alignment/apply",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/settings/app",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/settings/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "source_language",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "target_language",
-        "status": "referenced_in_both"
-      }
-    ],
-    "PR08": [
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/import",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/file/reset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/file/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/files/preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/workbench/translation/reset",
-        "status": "resolved"
-      }
-    ],
-    "PR09": [
-      {
-        "kind": "route",
-        "key": "/api/session/project/manifest",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/close",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/preview",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/create",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/copy",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/session/project/open-preview",
-        "status": "resolved"
-      }
-    ],
-    "PR10": [],
-    "QL01": [
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/query",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "glossary",
-        "status": "resolved"
-      }
-    ],
-    "QL02": [
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/query",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "text-preserve",
-        "status": "resolved"
-      }
-    ],
-    "QL03": [
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/query",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "pre-translation-replacement",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "post-translation-replacement",
-        "status": "resolved"
-      }
-    ],
-    "QL04": [
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/import",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/export",
-        "status": "resolved"
-      }
-    ],
-    "QL05": [
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/presets",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/presets/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/presets/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/presets/rename",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/rules/presets/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/rename",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "glossary_default_preset",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "text_preserve_default_preset",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "pre_translation_replacement_default_preset",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "post_translation_replacement_default_preset",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "translation_custom_prompt_default_preset",
-        "status": "referenced_in_both"
-      }
-    ],
-    "QL06": [
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/view",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/template",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/import",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/export",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/rename",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/quality/prompts/presets/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "prompt_enhancement_enable",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "translation_custom_prompt_default_preset",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "page",
-        "key": "custom-prompt",
-        "status": "resolved"
-      }
-    ],
-    "QL07": [
-      {
-        "kind": "route",
-        "key": "/api/proofreading/page",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/query",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/items/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/translations/clear",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/items/replace-all",
-        "status": "resolved"
-      }
-    ],
-    "QL08": [],
-    "QL09": [
-      {
-        "kind": "route",
-        "key": "/api/proofreading/page",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/query",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/items/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/translations/clear",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/proofreading/items/replace-all",
-        "status": "resolved"
-      }
-    ],
-    "QL10": [
-      {
-        "kind": "route",
-        "key": "/api/quality/statistics/view",
-        "status": "resolved"
-      }
-    ],
-    "TR01": [
-      {
-        "kind": "route",
-        "key": "/api/workbench/translation/reset",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/start",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/stop",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "TR02": [
-      {
-        "kind": "setting",
-        "key": "source_language",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR03": [
-      {
-        "kind": "setting",
-        "key": "skip_duplicate_source_text_enable",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR04": [
-      {
-        "kind": "setting",
-        "key": "preceding_lines_threshold",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR05": [
-      {
-        "kind": "setting",
-        "key": "clean_ruby",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "mtool_optimizer_enable",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR06": [
-      {
-        "kind": "setting",
-        "key": "write_translated_name_fields_to_file",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR07": [
-      {
-        "kind": "setting",
-        "key": "target_language",
-        "status": "referenced_in_both"
-      }
-    ],
-    "TR08": [],
-    "TR09": [],
-    "TR10": [
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/start",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/stop",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "TR11": [
-      {
-        "kind": "route",
-        "key": "/api/project/translation-stats",
-        "status": "resolved"
-      }
-    ],
-    "TR12": [
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/start",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/stop",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/batch-translation/snapshot",
-        "status": "resolved"
-      }
-    ],
-    "UX01": [
-      {
-        "kind": "page",
-        "key": "project-home",
-        "status": "resolved"
-      }
-    ],
-    "UX02": [
-      {
-        "kind": "page",
-        "key": "agent",
-        "status": "resolved"
-      }
-    ],
-    "UX03": [
-      {
-        "kind": "route",
-        "key": "/api/workbench/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/generate",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/outputs",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/download",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "workbench",
-        "status": "resolved"
-      }
-    ],
-    "UX04": [
-      {
-        "kind": "page",
-        "key": "proofreading",
-        "status": "resolved"
-      }
-    ],
-    "UX05": [
-      {
-        "kind": "page",
-        "key": "glossary",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "skills",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "text-preserve",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "pre-translation-replacement",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "post-translation-replacement",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "custom-prompt",
-        "status": "resolved"
-      }
-    ],
-    "UX06": [
-      {
-        "kind": "route",
-        "key": "/api/settings/app",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/settings/update",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "model",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "basic-settings",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "expert-settings",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "laboratory",
-        "status": "resolved"
-      }
-    ],
-    "UX07": [
-      {
-        "kind": "route",
-        "key": "/api/web/files/roots",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/list",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/upload",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/material/:id",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/material/release",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/files/download",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/session",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/web/bootstrap",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/save-path/pending",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/save-path/respond",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/generate",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/outputs",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/translation/files/download",
-        "status": "resolved"
-      },
-      {
-        "kind": "setting",
-        "key": "project_save_mode",
-        "status": "referenced_in_both"
-      },
-      {
-        "kind": "setting",
-        "key": "project_fixed_path",
-        "status": "frontend_only"
-      },
-      {
-        "kind": "setting",
-        "key": "output_folder_open_on_finish",
-        "status": "referenced_in_both"
-      }
-    ],
-    "UX08": [
-      {
-        "kind": "setting",
-        "key": "app_language",
-        "status": "referenced_in_both"
-      }
-    ],
-    "WS01": [
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/file",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/document",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/image",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/activate-path",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/reset",
-        "status": "resolved"
-      }
-    ],
-    "WS02": [
-      {
-        "kind": "workspace-api",
-        "key": "contract",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "userSkillDirectory",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "emitImage",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "doing",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "host",
-        "status": "used"
-      }
-    ],
-    "WS03": [
-      {
-        "kind": "workspace-package",
-        "key": "chardet",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "exceljs",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "iconv-lite",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "jszip",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "mupdf",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "oxc-parser",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "remark-gfm",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "remark-parse",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "unified",
-        "status": "imported"
-      },
-      {
-        "kind": "workspace-package",
-        "key": "@ruby/prism",
-        "status": "imported"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/agent-charter",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/epub",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/glossary",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/pdf",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/roleplay",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/rpgmaker",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/skill-creator",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/text-preserve",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/translation",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/writing-guide",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/xlsx",
-        "status": "resource_present"
-      }
-    ],
-    "WS04": [],
-    "WS05": [
-      {
-        "kind": "route",
-        "key": "/api/agent/files",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/file",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/document",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/image",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/workspace/activate-path",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/save-path/pending",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/save-path/respond",
-        "status": "resolved"
-      }
-    ],
-    "WS06": [
-      {
-        "kind": "workspace-api",
-        "key": "contract",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "userSkillDirectory",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "emitImage",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "doing",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "host",
-        "status": "used"
-      }
-    ],
-    "WS07": [
-      {
-        "kind": "route",
-        "key": "/api/skills/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/enabled",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/tree",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/change",
-        "status": "resolved"
-      },
-      {
-        "kind": "page",
-        "key": "skills",
-        "status": "resolved"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/agent-charter",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/epub",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/glossary",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/pdf",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/roleplay",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/rpgmaker",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/skill-creator",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/text-preserve",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/translation",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/writing-guide",
-        "status": "resource_present"
-      },
-      {
-        "kind": "skill",
-        "key": "builtin/skills/xlsx",
-        "status": "resource_present"
-      }
-    ],
-    "WS08": [
-      {
-        "kind": "route",
-        "key": "/api/skills/delete",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/snapshot",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/enabled",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/reorder",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/tree",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/skills/file/change",
-        "status": "resolved"
-      }
-    ],
-    "WS09": [
-      {
-        "kind": "route",
-        "key": "/api/agent/personality/read",
-        "status": "resolved"
-      },
-      {
-        "kind": "route",
-        "key": "/api/agent/personality/save",
-        "status": "resolved"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "contract",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "userSkillDirectory",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "emitImage",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "doing",
-        "status": "used"
-      },
-      {
-        "kind": "workspace-api",
-        "key": "host",
-        "status": "used"
-      }
-    ],
-    "WS10": []
   }
 }

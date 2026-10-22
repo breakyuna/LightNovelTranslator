@@ -82,20 +82,24 @@ python3 tools/rebuild/check_structure.py
 python3 tools/rebuild/audit_consumers.py --lg /path/to/LinguaGacha-Termux \
   --index docs/plans/2026-10-22-native-lg-rebuild/BEHAVIOR_INDEX.json \
   --output docs/plans/2026-10-22-native-lg-rebuild/CONSUMER_AUDIT.json
+python3 tools/rebuild/source_bindings.py --lg /path/to/LinguaGacha-Termux \
+  --matrix docs/plans/2026-10-22-native-lg-rebuild/FEATURE_MATRIX.md \
+  --output docs/plans/2026-10-22-native-lg-rebuild/SOURCE_BINDINGS.json
 python3 tools/rebuild/coverage_report.py \
   --matrix docs/plans/2026-10-22-native-lg-rebuild/FEATURE_MATRIX.md \
   --audit docs/plans/2026-10-22-native-lg-rebuild/CONSUMER_AUDIT.json \
+  --bindings docs/plans/2026-10-22-native-lg-rebuild/SOURCE_BINDINGS.json \
   --output docs/plans/2026-10-22-native-lg-rebuild/FEATURE_COVERAGE.json
 ./gradlew :core:domain:test :core:engine:test testDebugUnitTest lintDebug assembleDebug
 ```
 
 现有 CI test job 已加入两个 JVM 模块任务；Android Library 由根 testDebugUnitTest/lintDebug/assembleRelease 任务选择器覆盖。
 测试和 Lint artifact 路径增加 core 多模块输出；不修改并行 job、不触发 CI、不关闭原测试或 Lint。
-构建插件/元数据解析、D8、最低 API、安装和新原型设备验证均未取得证据；R01 不登记为已通过。
+后续 CI 已取得模块构建、单测、Lint 与签名 APK 证据，按提交区分的结果只见 HANDOFF §11—13；不能再把所有构建证据写成未取得。最小新装配入口安装、依赖锁定与设备能力仍需单独验收，R01 状态以 HANDOFF 为准。
 
 新增测试针对：参数类型/整数/溢出/大身份、路径穿越、同步运行预留、发送切工程竞争、伪造身份、Stop 和真实收尾、迟到释放、技能/认证互斥、关闭、取消父作用域和结构化子任务。
 本轮再增 19 个用例：变更批次身份/基准指纹/digest/摘要 7 个、审批记录不变量 2 个、审批协调器 10 个（单次消费、拒绝终态、重复裁决、超时、跨 Run 取消、AUTO 快照、单 Chat 唯一待决、重试幂等与内容冲突、非法超时）。
-这些文件尚未执行，不能把测试数量登记为通过数量。
+这些原型用例的实际执行/缓存证据见 HANDOFF §11—13；测试数量不证明新生产写入口或恢复协议已经实现。
 
 ## 5. R00 消费者静态审计
 
@@ -120,9 +124,11 @@ python3 tools/rebuild/coverage_report.py \
 边界：脚本只做文本与括号平衡分析，不解析 TypeScript、不执行 LG、不验证参数、Schema、动态注册或运行时行为；`name_only` 与 `specific_name` 仍需人工复核；行号只对本次基线有效。
 `BEHAVIOR_INDEX.json` 的 `consumer_review` 仍保留 `pending`，本轮没有把它批量改成“已审计”：R00 仍需按功能 ID 逐项核对参数、可见操作、脚本实际 API 与完整 Schema，本表只是可追踪的定位证据。
 
-`tools/rebuild/coverage_report.py` 把矩阵 98 个 ID 与发现条目求交集，结果见 [FEATURE_COVERAGE.json](FEATURE_COVERAGE.json)：75 个 ID 至少有一条发现条目，23 个没有任何条目——
-`AG02 AG05 AG08 AG15 AG16 MO02 MO03 MO07 MO08 MO10 OP02 OP06 OP07 OP08 PR03 PR05 PR06 PR10 QL08 TR08 TR09 WS04 WS10`。
-这不是“LG 没有该行为”，而是当前发现范围只覆盖路由、公开设置、页面、格式、workspace 外壳与技能；工具定义、模型协议、调度/重试、校对评估、运行时服务与迁移仍需人工绑定源码。R00 未完成前不得把这 23 项当作已验证或已排除。
+`tools/rebuild/source_bindings.py` 为发现范围之外的功能补一条已审阅的 `(LG 文件, 标记)` 绑定并验证标记存在；`tools/rebuild/coverage_report.py` 再把发现条目、源码绑定与原生项说明合并，结果见 [FEATURE_COVERAGE.json](FEATURE_COVERAGE.json) 与 [SOURCE_BINDINGS.json](SOURCE_BINDINGS.json)。
+
+当前 98 个 ID 全部有可追踪证据：**75 条发现条目 + 20 条源码绑定 + 3 条原生项**（`OP06`/`OP07`/`OP08` 属 Android/LNT 侧，无 LG 源码可引），无未覆盖项。
+补绑定的 20 项覆盖工具定义、模型协议字段、思考等级、密钥字段、调度/重试、校对评估、工程存储与 Zstd 迁移、长任务终态、workspace apply 与联网工具。
+“有证据”仍不等于“已验证”：绑定只证明标记仍在审阅过的文件里，参数、Schema、可见操作与脚本实际 API 的核对仍是 R00 的剩余工作。
 
 ## 6. 审批契约原型
 
@@ -132,4 +138,4 @@ python3 tools/rebuild/coverage_report.py \
 
 未完成：Room `AppStore` 适配器、`ProjectWriteStore` 消费 grant、`workspace_apply`/工具接线、U02 审批界面、进程恢复与差异渲染；
 `AgentToolRegistry` 仍拒绝全部 `PROJECT_WRITE` 工具。详见 [APPROVAL_CONTRACT](APPROVAL_CONTRACT.md)。
-以上均为静态审查，未构建、未执行测试。
+本机审查未实际构建或执行测试；既有原型的外部 CI 证据见 HANDOFF。APPROVAL_CONTRACT §5 新增的消费绑定、不可变正文与跨库恢复是待实现要求，现有原型测试不覆盖它。

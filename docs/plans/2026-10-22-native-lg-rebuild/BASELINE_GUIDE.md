@@ -36,7 +36,9 @@ R00 在完成这些人工核对前保持进行中；本文件不把自动提取�
 第二轮已补充逐条文本引用和测试线索，移除未知路由自动归 OP01 的兜底；技能路由按真实 `/api/skills/` 分类，翻译产物不再默认归 TXT。部分消费者人工核对见 [STATIC_REVIEW](STATIC_REVIEW.md)。索引中 pending 仍表示逐条完整审计未完成。
 
 第四轮新增 `tools/rebuild/audit_consumers.py`，按同一索引解析路由处理器、后端定义、前端调用与测试证据，结果写入 [CONSUMER_AUDIT.json](CONSUMER_AUDIT.json)。它是定位工具，不修改索引中的 pending 状态，也不执行 LG 或证明运行时行为。
-`tools/rebuild/coverage_report.py` 再把 98 个功能 ID 与这些条目求交集，输出 [FEATURE_COVERAGE.json](FEATURE_COVERAGE.json)：没有发现条目的 ID 是下一轮 R00 的人工绑定清单，不是功能缺失结论。
+`tools/rebuild/source_bindings.py` 为发现范围之外的 ID 补一条已审阅的 `(LG 文件, 标记)` 绑定，原生项记录“无 LG 源码”的理由；`tools/rebuild/coverage_report.py` 把发现条目、绑定与原生项合并输出 [FEATURE_COVERAGE.json](FEATURE_COVERAGE.json) 与 [SOURCE_BINDINGS.json](SOURCE_BINDINGS.json)。当前 98 个 ID 都有可追踪证据（75 发现 + 20 绑定 + 3 原生项），但“有证据”不等于已实现或已验证。
+
+R36 的早期字段样本见 [旧库字段映射样本](LEGACY_FIELD_SAMPLE.md)：只读旧 Room v6 实体/schema/文件管理器，把字段归入新事实、转换、档案或“R07 前需扩展”，不读取真实用户数据。
 
 ## Koog 解耦清单
 
