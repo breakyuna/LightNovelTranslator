@@ -109,7 +109,7 @@ class EpubFormatAdapterTest {
             adapter.read(FormatArchiveFixtures.zip(listOf(
                 "mimetype" to "application/epub+zip".toByteArray(),
                 "META-INF/container.xml" to container("OEBPS/content.opf").toByteArray(),
-                "META-INF/container.xml" to container("OEBPS/content.opf").toByteArray())), path)
+                "META-INF/CONTAINER.XML" to container("OEBPS/content.opf").toByteArray())), path)
         }
     }
 

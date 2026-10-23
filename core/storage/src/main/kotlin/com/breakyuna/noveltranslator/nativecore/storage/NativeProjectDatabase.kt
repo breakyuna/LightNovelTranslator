@@ -140,7 +140,7 @@ internal object NativeProjectDatabase {
      * rules tables and the multi-asset rebuild in one transaction. This is deliberately not
      * lazy: every v3 read path expects the v3 columns.
      */
-    fun migrate(db: SQLiteDatabase) {
+    fun ensureV3(db: SQLiteDatabase) {
         if (db.version >= 3) return
         if (db.version !in 1..2) fail(TextProjectException.Reason.UNSUPPORTED_VERSION)
         db.setForeignKeyConstraintsEnabled(false)
@@ -195,9 +195,14 @@ internal object NativeProjectDatabase {
         initialSettings(db)
     }
 
-    /** Kept for the policy write path; writable opens already migrated the project to v3. */
+    /** Lazy v1 -> v2 policy migration used by the first policy write. */
     fun migratePolicy(db: SQLiteDatabase) {
-        if (db.version < 2) fail(TextProjectException.Reason.UNSUPPORTED_VERSION)
+        if (db.version >= 2) return
+        if (db.version != 1) fail(TextProjectException.Reason.UNSUPPORTED_VERSION)
+        validateSchema(db)
+        policySchema.forEach(db::execSQL)
+        initialPolicy(db)
+        db.version = 2
     }
 
     fun create(file: File, projectId: ProjectId, name: String, path: RelativePath,
@@ -269,11 +274,7 @@ internal object NativeProjectDatabase {
             val application = scalar(db, "PRAGMA application_id")
             if (application != NativeProjectFormat.APPLICATION_ID.toLong()) fail(TextProjectException.Reason.INVALID_FORMAT)
             if (db.version !in 1..NativeProjectFormat.SCHEMA_VERSION) fail(TextProjectException.Reason.UNSUPPORTED_VERSION)
-            if (writable) {
-                // Migration opens foreign keys off so the parent rebuild cannot cascade or block.
-                migrate(db)
-                db.execSQL("PRAGMA synchronous = FULL")
-            }
+            if (writable) db.execSQL("PRAGMA synchronous = FULL")
             return db
         } catch (error: Throwable) {
             db.close()

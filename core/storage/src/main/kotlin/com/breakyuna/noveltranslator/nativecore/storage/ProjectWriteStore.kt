@@ -27,10 +27,12 @@ internal object ProjectWriteStore {
                 return@transaction previous.second
             }
             val revision = NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton = 1")
+            val columns = if (db.version >= 3) NativeProjectDatabase.ITEM_COLUMNS
+                else NativeProjectDatabase.ITEM_COLUMNS_V2
             val item = db.rawQuery(
-                "SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id = ?",
+                "SELECT $columns FROM items WHERE id = ?",
                 arrayOf(command.itemId.value.toString()),
-            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it) else null }
+            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it, db.version) else null }
             val status = when {
                 command.expectedRevision != revision -> ManualEditStatus.STALE_REVISION
                 item == null -> ManualEditStatus.UNKNOWN_ITEM
@@ -41,8 +43,9 @@ internal object ProjectWriteStore {
             val nextRevision = if (status == ManualEditStatus.COMMITTED) Math.addExact(revision, 1) else revision
             if (status == ManualEditStatus.COMMITTED) {
                 checkNotNull(item)
-                val fingerprint = TextProjectFingerprint.item(item.id, item.row, item.source,
-                    command.translation, command.status, item.metadata, item.assetId, item.slot)
+                val fingerprint = if (db.version >= 3) TextProjectFingerprint.item(item.id, item.row,
+                    item.source, command.translation, command.status, item.metadata, item.assetId, item.slot)
+                else TextProjectFingerprint.item(item.id, item.row, item.source, command.translation, command.status)
                 check(db.update("items", ContentValues().apply {
                     put("translation", command.translation); put("status", command.status.name)
                     put("fingerprint", fingerprint.sha256)
@@ -93,9 +96,11 @@ internal object ProjectWriteStore {
                     if (status == ManualEditStatus.COMMITTED) receipts.size else 0)
             }
             val revision = NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton = 1")
+            val columns = if (db.version >= 3) NativeProjectDatabase.ITEM_COLUMNS
+                else NativeProjectDatabase.ITEM_COLUMNS_V2
             val items = command.targets.map { target -> db.rawQuery(
-                "SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id = ?", arrayOf(target.id.value.toString()),
-            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it) else null } }
+                "SELECT $columns FROM items WHERE id = ?", arrayOf(target.id.value.toString()),
+            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it, db.version) else null } }
             val conflict = when {
                 revision != command.expectedRevision -> ManualEditStatus.STALE_REVISION
                 items.any { it == null } -> ManualEditStatus.UNKNOWN_ITEM

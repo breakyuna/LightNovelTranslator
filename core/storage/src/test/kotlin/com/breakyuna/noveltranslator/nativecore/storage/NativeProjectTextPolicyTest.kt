@@ -38,8 +38,32 @@ class NativeProjectTextPolicyTest {
     }
     private fun downgrade(ref: LocalProjectRef) {
         NativeProjectDatabase.open(file(ref), writable = true).use { db ->
-            for (table in listOf("text_policy", "policy_revisions", "policy_receipts")) db.execSQL("DROP TABLE $table")
-            db.version = 1
+            db.setForeignKeyConstraintsEnabled(false)
+            try {
+                db.beginTransaction()
+                try {
+                    for (table in listOf("project_settings", "asset_receipts", "asset_revisions",
+                        "text_policy", "policy_revisions", "policy_receipts")) db.execSQL("DROP TABLE $table")
+                    db.execSQL("""CREATE TABLE assets_v1 (
+                        id INTEGER PRIMARY KEY CHECK(id = 1), path TEXT NOT NULL UNIQUE,
+                        file_type TEXT NOT NULL CHECK(file_type = 'TXT'), codec TEXT NOT NULL CHECK(codec = 'raw-v1'),
+                        original_size INTEGER NOT NULL CHECK(original_size >= 0), sha256 TEXT NOT NULL)""")
+                    db.execSQL("INSERT INTO assets_v1 SELECT id,path,file_type,codec,original_size,sha256 FROM assets WHERE id=1")
+                    db.execSQL("DROP TABLE assets")
+                    db.execSQL("ALTER TABLE assets_v1 RENAME TO assets")
+                    db.execSQL("""CREATE TABLE items_v1 (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT, asset_id INTEGER NOT NULL REFERENCES assets(id),
+                        row_index INTEGER NOT NULL CHECK(row_index >= 0), source TEXT NOT NULL,
+                        translation TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('NONE','PROCESSED','EXCLUDED')),
+                        fingerprint TEXT NOT NULL, UNIQUE(asset_id, row_index))""")
+                    db.execSQL("INSERT INTO items_v1(id,asset_id,row_index,source,translation,status,fingerprint) " +
+                        "SELECT id,asset_id,row_index,source,translation,status,fingerprint FROM items")
+                    db.execSQL("DROP TABLE items")
+                    db.execSQL("ALTER TABLE items_v1 RENAME TO items")
+                    db.version = 1
+                    db.setTransactionSuccessful()
+                } finally { db.endTransaction() }
+            } finally { db.setForeignKeyConstraintsEnabled(true) }
         }
     }
     private fun policy(prompt: String = "project prompt") = ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "source", "target")), prompt, true)

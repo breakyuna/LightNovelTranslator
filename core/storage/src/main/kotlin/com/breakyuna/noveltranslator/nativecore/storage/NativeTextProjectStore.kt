@@ -146,9 +146,9 @@ class NativeTextProjectStore(
     override suspend fun item(ref: LocalProjectRef, itemId: ItemId): TextItemDetails? = operation {
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             val summary = NativeProjectDatabase.summary(db, ref)
-            db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id = ?",
+            db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE id = ?",
                 arrayOf(itemId.value.toString())).use {
-                if (!it.moveToFirst()) null else TextItemDetails(summary.revision, NativeProjectDatabase.item(it))
+                if (!it.moveToFirst()) null else TextItemDetails(summary.revision, NativeProjectDatabase.item(it, db.version))
             }
         } }
     }
@@ -269,9 +269,9 @@ class NativeTextProjectStore(
             selection = "id IN (${window.ids.joinToString(",") { "?" }})"
             selectionArgs = (window.ids.map { it.value.toString() } + limit.toString()).toTypedArray()
         }
-        val rows = db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE $selection ORDER BY id LIMIT ?",
+        val rows = db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE $selection ORDER BY id LIMIT ?",
             selectionArgs).use { cursor ->
-            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor)) }
+            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor, db.version)) }
         }
         if (window != null && rows.map { it.id } != window.ids) fail(TextProjectException.Reason.STALE_PAGE)
         return TextProjectPage(summary, rows, itemStatistics(db), matching)
@@ -302,9 +302,9 @@ class NativeTextProjectStore(
             val (where, arguments) = queryPredicate(query)
             val comparison = if (direction == TextItemDirection.NEXT) ">" else "<"
             val order = if (direction == TextItemDirection.NEXT) "ASC" else "DESC"
-            db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE $where AND id $comparison ? ORDER BY id $order LIMIT 1",
+            db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE $where AND id $comparison ? ORDER BY id $order LIMIT 1",
                 (arguments + anchor.value.toString()).toTypedArray()).use { cursor ->
-                if (cursor.moveToFirst()) TextItemDetails(summary.revision, NativeProjectDatabase.item(cursor)) else null
+                if (cursor.moveToFirst()) TextItemDetails(summary.revision, NativeProjectDatabase.item(cursor, db.version)) else null
             }
         } }
     }
@@ -337,10 +337,13 @@ class NativeTextProjectStore(
     }
 
     private fun pageItems(db: SQLiteDatabase, afterId: Long, limit: Int): List<TextProjectItem> =
-        db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id > ? ORDER BY id LIMIT ?",
+        db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE id > ? ORDER BY id LIMIT ?",
             arrayOf(afterId.toString(), limit.toString())).use { cursor ->
-            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor)) }
+            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor, db.version)) }
         }
+
+    private fun itemColumns(db: SQLiteDatabase): String =
+        if (db.version >= 3) NativeProjectDatabase.ITEM_COLUMNS else NativeProjectDatabase.ITEM_COLUMNS_V2
 
     override suspend fun edit(command: ManualTextEdit): ManualEditReceipt = operation {
         if (command.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
@@ -467,12 +470,12 @@ class NativeTextProjectStore(
             NativeProjectDatabase.summary(db, ref)
             FileOutputStream(output).use { file ->
                 val buffered = file.buffered()
-                db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items " +
+                db.rawQuery("SELECT ${itemColumns(db)} FROM items " +
                     "WHERE asset_id IN (SELECT id FROM assets WHERE file_type = 'TXT') ORDER BY row_index, id", null).use { cursor ->
                     var first = true
                     while (cursor.moveToNext()) {
                         coroutine.ensureActive()
-                        val item = NativeProjectDatabase.item(cursor)
+                        val item = NativeProjectDatabase.item(cursor, db.version)
                         if (!first) buffered.write('\n'.code)
                         first = false
                         val translation = if (item.status == TextItemStatus.PROCESSED) item.translation else item.source
@@ -528,17 +531,23 @@ class NativeTextProjectStore(
     }
 
     override suspend fun assets(ref: LocalProjectRef): List<ProjectAssetSummary> = operation {
-        project(ref) { db -> NativeProjectDatabase.transaction(db) {
-            NativeProjectDatabase.summary(db, ref)
-            NativeProjectDatabase.assetSummaries(db)
-        } }
+        project(ref) { db ->
+            NativeProjectDatabase.ensureV3(db)
+            NativeProjectDatabase.transaction(db) {
+                NativeProjectDatabase.summary(db, ref)
+                NativeProjectDatabase.assetSummaries(db)
+            }
+        }
     }
 
     override suspend fun projectSettings(ref: LocalProjectRef): ProjectSettings = operation {
-        project(ref) { db -> NativeProjectDatabase.transaction(db) {
-            NativeProjectDatabase.summary(db, ref)
-            NativeProjectDatabase.projectSettings(db)
-        } }
+        project(ref) { db ->
+            NativeProjectDatabase.ensureV3(db)
+            NativeProjectDatabase.transaction(db) {
+                NativeProjectDatabase.summary(db, ref)
+                NativeProjectDatabase.projectSettings(db)
+            }
+        }
     }
 
     override suspend fun editProjectSettings(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
@@ -546,8 +555,11 @@ class NativeTextProjectStore(
         require(expectedRevision >= 0)
         val coroutine = currentCoroutineContext()
         withWriteLease {
-            project(ref) { db -> ProjectAssetWriteStore.editSettings(db, commandId, ref, expectedRevision,
-                settings) { coroutine.ensureActive() } }
+            project(ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.editSettings(db, commandId, ref, expectedRevision,
+                    settings) { coroutine.ensureActive() }
+            }
         }
     }
 
@@ -556,7 +568,10 @@ class NativeTextProjectStore(
         if (plan.units.size > limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         val coroutine = currentCoroutineContext()
         withWriteLease {
-            project(plan.ref) { db -> ProjectAssetWriteStore.importAsset(db, plan) { coroutine.ensureActive() } }
+            project(plan.ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.importAsset(db, plan) { coroutine.ensureActive() }
+            }
         }
     }
 
@@ -565,9 +580,12 @@ class NativeTextProjectStore(
         require(expectedRevision >= 0 && assetId > 0)
         val coroutine = currentCoroutineContext()
         withWriteLease {
-            project(ref) { db -> ProjectAssetWriteStore.remove(db, commandId, ref, expectedRevision, assetId) {
-                coroutine.ensureActive()
-            } }
+            project(ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.remove(db, commandId, ref, expectedRevision, assetId) {
+                    coroutine.ensureActive()
+                }
+            }
         }
     }
 
@@ -576,9 +594,12 @@ class NativeTextProjectStore(
         require(expectedRevision >= 0 && assetIds.size in 1..100 && assetIds.all { it > 0 })
         val coroutine = currentCoroutineContext()
         withWriteLease {
-            project(ref) { db -> ProjectAssetWriteStore.reorder(db, commandId, ref, expectedRevision, assetIds) {
-                coroutine.ensureActive()
-            } }
+            project(ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.reorder(db, commandId, ref, expectedRevision, assetIds) {
+                    coroutine.ensureActive()
+                }
+            }
         }
     }
 
@@ -587,26 +608,35 @@ class NativeTextProjectStore(
         require(expectedRevision >= 0 && assetId > 0)
         val coroutine = currentCoroutineContext()
         withWriteLease {
-            project(ref) { db -> ProjectAssetWriteStore.reset(db, commandId, ref, expectedRevision, assetId) {
-                coroutine.ensureActive()
-            } }
+            project(ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.reset(db, commandId, ref, expectedRevision, assetId) {
+                    coroutine.ensureActive()
+                }
+            }
         }
     }
 
     override suspend fun readAsset(ref: LocalProjectRef, assetId: Long): ByteArray = operation {
         require(assetId > 0)
-        project(ref) { db -> NativeProjectDatabase.transaction(db) {
-            NativeProjectDatabase.summary(db, ref)
-            assetBytes(db, assetId)
-        } }
+        project(ref) { db ->
+            NativeProjectDatabase.ensureV3(db)
+            NativeProjectDatabase.transaction(db) {
+                NativeProjectDatabase.summary(db, ref)
+                assetBytes(db, assetId)
+            }
+        }
     }
 
     override suspend fun exportAsset(ref: LocalProjectRef, assetId: Long, destination: () -> OutputStream): Unit = operation {
         require(assetId > 0)
-        val bytes = project(ref) { db -> NativeProjectDatabase.transaction(db) {
-            NativeProjectDatabase.summary(db, ref)
-            assetBytes(db, assetId)
-        } }
+        val bytes = project(ref) { db ->
+            NativeProjectDatabase.ensureV3(db)
+            NativeProjectDatabase.transaction(db) {
+                NativeProjectDatabase.summary(db, ref)
+                assetBytes(db, assetId)
+            }
+        }
         val output = temporary("asset")
         try {
             FileOutputStream(output).use { it.write(bytes); it.fd.sync() }

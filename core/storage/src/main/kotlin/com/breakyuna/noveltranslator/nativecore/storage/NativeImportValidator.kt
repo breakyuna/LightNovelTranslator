@@ -64,7 +64,9 @@ internal object NativeImportValidator {
                 requireTextBudget(db, "items", "name_translation", 32 * 4096)
             }
             var validationChars = 0L
-            val chains = HashMap<Long, Pair<ObjectFingerprint, ObjectFingerprint>>()
+            val chains = HashMap<Long, ObjectFingerprint>()
+            val currentFingerprints = HashMap<Long, ObjectFingerprint>()
+            val revised = HashSet<Long>()
             fun charge(chars: Long) {
                 validationChars += chars
                 if (validationChars > budget.maxValidationChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
@@ -82,7 +84,8 @@ internal object NativeImportValidator {
                     if (item.source.length > limits.maxItemChars || item.translation.length > limits.maxItemChars) {
                         fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                     }
-                    chains[item.id.value] = item.fingerprint to item.fingerprint
+                    chains[item.id.value] = item.fingerprint
+                    currentFingerprints[item.id.value] = item.fingerprint
                 }
             }
             val maxItemId = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(id), 0) FROM items")
@@ -124,8 +127,8 @@ internal object NativeImportValidator {
                 while (it.moveToNext()) { checkActive(); if (it.getLong(0) != ++global) corrupt() }
                 if (global != project.second) corrupt()
             }
-            validateItemRevisions(db, version, limits, project, chains, ::charge, checkActive)
-            if (chains.values.any { it.first != it.second }) corrupt()
+            validateItemRevisions(db, version, limits, project, chains, revised, ::charge, checkActive)
+            if (currentFingerprints.any { (id, fingerprint) -> chains[id] != fingerprint }) corrupt()
             db.rawQuery("SELECT instance_id, generation, command_id, digest, item_id, outcome, revision, committed_at FROM write_receipts", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     checkActive()
@@ -149,7 +152,7 @@ internal object NativeImportValidator {
     }
 
     private fun validateItemRevisions(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
-        project: Pair<ProjectId, Long>, chains: HashMap<Long, Pair<ObjectFingerprint, ObjectFingerprint>>,
+        project: Pair<ProjectId, Long>, chains: HashMap<Long, ObjectFingerprint>, revised: MutableSet<Long>,
         charge: (Long) -> Unit, checkActive: () -> Unit) {
         val sql = if (version >= 3) {
             """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
@@ -176,8 +179,9 @@ internal object NativeImportValidator {
                 if (cursor.getString(4).length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                 charge(cursor.getString(11).length.toLong() + cursor.getString(4).length)
                 ObjectFingerprint(cursor.getString(2))
-                val chain = chains[cursor.getLong(1)] ?: corrupt()
-                if (chain.first.sha256 != cursor.getString(2)) corrupt()
+                val itemId = cursor.getLong(1)
+                val previous = chains[itemId] ?: corrupt()
+                if (itemId in revised && previous.sha256 != cursor.getString(2)) corrupt()
                 val status = try { TextItemStatus.valueOf(cursor.getString(5)) }
                 catch (_: IllegalArgumentException) { corrupt() }
                 val expected = if (version >= 3) {
@@ -192,7 +196,8 @@ internal object NativeImportValidator {
                         cursor.getString(11), cursor.getString(4), status)
                 }
                 if (expected.sha256 != cursor.getString(3)) corrupt()
-                chains[cursor.getLong(1)] = expected to chain.second
+                chains[itemId] = expected
+                revised.add(itemId)
                 boundedIdentity(cursor.getString(6)); boundedIdentity(cursor.getString(8))
                 if (cursor.isNull(19)) corrupt()
                 val intent = ManualTextEdit(CommandId(cursor.getString(8)),

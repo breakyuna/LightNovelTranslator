@@ -262,8 +262,9 @@ class NativeTextProjectStoreTest {
         store.saveProject(project.ref) { exported.outputStream() }
         SQLiteDatabase.openDatabase(exported.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
             db.execSQL(
-                "INSERT INTO items(asset_id, row_index, source, translation, status, fingerprint) " +
-                    "VALUES (1, 2, 'c', '', 'NONE', ?)",
+                "INSERT INTO items(asset_id, row_index, slot, source, translation, status, fingerprint, " +
+                    "tag, name_source, name_translation, extra_field, skip_internal_filter) " +
+                    "VALUES (1, 2, 2, 'c', '', 'NONE', ?, '', NULL, NULL, '{}', 0)",
                 arrayOf("0".repeat(64)),
             )
             db.rawQuery("SELECT MAX(id) FROM items", null).use {
