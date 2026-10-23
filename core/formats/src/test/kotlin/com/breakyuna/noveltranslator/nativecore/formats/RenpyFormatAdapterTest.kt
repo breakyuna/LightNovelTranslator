@@ -145,7 +145,6 @@ class RenpyFormatAdapterTest {
 
         val changed = copyUnit(unit, translation = "新  值", status = TextItemStatus.PROCESSED)
         val output = adapter.write(source, listOf(changed))
-        println("RENPY_DEBUG_OUTPUT>>>" + output.replace("\n", "\\n"))
         assertTrue(output.contains("新"))
         assertEquals("新  值", adapter.read(output, path).units.single().translation)
     }

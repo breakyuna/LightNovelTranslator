@@ -962,13 +962,19 @@ private fun renpyStatementsEqual(
     targetSignature: RenpySignature,
 ): Boolean {
     if (templateSignature.stringCount != targetSignature.stringCount) return false
-    if (templateSignature.strictKey == targetSignature.strictKey) return true
+    // A changed raw literal is written as a normal quoted literal (LG writer behavior); the
+    // raw prefix must not break old/new pairing after a round-trip.
+    val templateStrict = normalizeRenpyRawSkeleton(templateSignature.strictKey)
+    val targetStrict = normalizeRenpyRawSkeleton(targetSignature.strictKey)
+    if (templateStrict == targetStrict) return true
     if (!renpySpeakersCompatible(template, target)) return false
-    if (templateSignature.relaxedKey == targetSignature.relaxedKey) return true
-    if (templateSignature.strictKey == dropRenpyNormalizedSpeaker(targetSignature.relaxedKey)) {
+    val templateRelaxed = normalizeRenpyRawSkeleton(templateSignature.relaxedKey)
+    val targetRelaxed = normalizeRenpyRawSkeleton(targetSignature.relaxedKey)
+    if (templateRelaxed == targetRelaxed) return true
+    if (templateStrict == dropRenpyNormalizedSpeaker(targetRelaxed)) {
         return true
     }
-    return dropRenpyNormalizedSpeaker(templateSignature.relaxedKey) == targetSignature.strictKey
+    return dropRenpyNormalizedSpeaker(templateRelaxed) == targetStrict
 }
 
 private fun renpySpeakersCompatible(template: RenpyStatement, target: RenpyStatement): Boolean {
@@ -999,6 +1005,7 @@ private fun renpySpeakerToken(statement: RenpyStatement): String? {
     return statement.code.substring(start, index)
 }
 
+private fun normalizeRenpyRawSkeleton(key: String): String = key.replace("r\"{}\"", "\"{}\"")
 private fun dropRenpyNormalizedSpeaker(key: String): String =
     if (key.startsWith("<SPEAKER> ")) key.substring("<SPEAKER> ".length) else key
 
