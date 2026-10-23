@@ -74,7 +74,8 @@ class NativeWorkspaceScreenshotTest {
     @Test fun workbenchOffersNativeSnapshotAndBilingualExport() {
         var selected: NativeExport? = null
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            Workbench(NativeProjectUiState(project = summary), {}) { selected = it }
+            Workbench(NativeProjectUiState(project = summary), cleanup = {}, export = { selected = it },
+                addAsset = {}, exportAsset = {})
         } } }
         compose.onNodeWithText(context.getString(R.string.native_export_bilingual)).performClick()
         assertEquals(NativeExport.BILINGUAL, selected)
