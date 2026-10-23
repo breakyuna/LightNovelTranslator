@@ -1,5 +1,7 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,15 +11,22 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
+/**
+ * Compose never reports idle for text fields in a wrap-content dialog window (both [AlertDialog]
+ * and a default [Dialog]): the dialog's intrinsic width pass and the text field keep remeasuring.
+ * A fixed-size window with a centered, bounded card settles, matching the existing Editor dialog.
+ */
 @Composable
 internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, error: Int?, loading: Boolean,
     dismiss: () -> Unit, save: (String, String, String?, () -> Unit) -> Unit,
@@ -51,53 +60,54 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
             save(endpoint, model, if (stored != null) null else secret) { secret = ""; dismiss() }
         } catch (_: InvalidModelSettings) { invalid = true }
     }
-    // A bounded Surface instead of AlertDialog: the dialog text slot measures intrinsic widths,
-    // which never settles for a scrolling column of text fields (Compose never reports idle).
-    Dialog(onDismissRequest = { if (!busy || loading) close() }) {
-        Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-            Column(Modifier.widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(stringResource(R.string.native_model_configure), style = MaterialTheme.typography.headlineSmall)
-                Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(stringResource(R.string.native_model_config_notice))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { endpoint = "http://127.0.0.1:11434/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Ollama") }
-                        OutlinedButton(onClick = { endpoint = "http://127.0.0.1:1234/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("LM Studio") }
+    Dialog(onDismissRequest = { if (!busy || loading) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        DialogScrim(onDismiss = { if (!busy || loading) close() }) {
+            Surface(Modifier.padding(24.dp).widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().clickable(
+                interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+                shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(stringResource(R.string.native_model_configure), style = MaterialTheme.typography.headlineSmall)
+                    Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(R.string.native_model_config_notice))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { endpoint = "http://127.0.0.1:11434/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Ollama") }
+                            OutlinedButton(onClick = { endpoint = "http://127.0.0.1:1234/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("LM Studio") }
+                        }
+                        OutlinedTextField(value = endpoint, onValueChange = { invalid = false; if (it.length <= 2048) endpoint = it },
+                            label = { Text(stringResource(R.string.native_model_endpoint)) }, enabled = !busy, singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
+                        Text(stringResource(R.string.native_model_endpoint_hint), style = MaterialTheme.typography.bodySmall)
+                        if (normalized?.startsWith("http://") == true) Text(stringResource(R.string.native_model_http_notice), style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(value = secret, onValueChange = { invalid = false; if (it.length <= 8192) secret = it },
+                            label = { Text(stringResource(R.string.native_model_key)) }, enabled = !busy, singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                        if (settings?.hasCredential == true) Row {
+                            Checkbox(checked = stored != null, onCheckedChange = { keepKey = it }, enabled = !busy && canKeep && secret.isEmpty())
+                            Text(stringResource(R.string.native_model_keep_key), Modifier.weight(1f).padding(top = 12.dp))
+                        }
+                        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(enabled = !busy && normalized != null, onClick = {
+                                attempted = true; invalid = false
+                                fetch(endpoint, secret, stored) { models -> available = models; picker = models.isNotEmpty() }
+                            }) { Text(stringResource(R.string.native_models_fetch)) }
+                            if (loading) TextButton(onClick = cancel) { Text(stringResource(R.string.native_cancel)) }
+                        }
+                        available?.let { models ->
+                            if (models.isEmpty()) Text(stringResource(R.string.native_models_empty))
+                            else TextButton(onClick = { picker = true }, enabled = !busy) { Text(stringResource(R.string.native_models_count, models.size)) }
+                        }
+                        OutlinedTextField(value = model, onValueChange = { invalid = false; if (it.length <= 200) model = it },
+                            label = { Text(stringResource(R.string.native_model_name)) }, enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        val failure = if (invalid) R.string.native_model_settings_error else error?.takeIf { attempted }
+                        failure?.let { Text(stringResource(it), color = MaterialTheme.colorScheme.error) }
                     }
-                    OutlinedTextField(value = endpoint, onValueChange = { invalid = false; if (it.length <= 2048) endpoint = it },
-                        label = { Text(stringResource(R.string.native_model_endpoint)) }, enabled = !busy, singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
-                    Text(stringResource(R.string.native_model_endpoint_hint), style = MaterialTheme.typography.bodySmall)
-                    if (normalized?.startsWith("http://") == true) Text(stringResource(R.string.native_model_http_notice), style = MaterialTheme.typography.bodySmall)
-                    OutlinedTextField(value = secret, onValueChange = { invalid = false; if (it.length <= 8192) secret = it },
-                        label = { Text(stringResource(R.string.native_model_key)) }, enabled = !busy, singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
-                    if (settings?.hasCredential == true) Row {
-                        Checkbox(checked = stored != null, onCheckedChange = { keepKey = it }, enabled = !busy && canKeep && secret.isEmpty())
-                        Text(stringResource(R.string.native_model_keep_key), Modifier.weight(1f).padding(top = 12.dp))
-                    }
-                    if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(enabled = !busy && normalized != null, onClick = {
-                            attempted = true; invalid = false
-                            fetch(endpoint, secret, stored) { models -> available = models; picker = models.isNotEmpty() }
-                        }) { Text(stringResource(R.string.native_models_fetch)) }
-                        if (loading) TextButton(onClick = cancel) { Text(stringResource(R.string.native_cancel)) }
-                    }
-                    available?.let { models ->
-                        if (models.isEmpty()) Text(stringResource(R.string.native_models_empty))
-                        else TextButton(onClick = { picker = true }, enabled = !busy) { Text(stringResource(R.string.native_models_count, models.size)) }
-                    }
-                    OutlinedTextField(value = model, onValueChange = { invalid = false; if (it.length <= 200) model = it },
-                        label = { Text(stringResource(R.string.native_model_name)) }, enabled = !busy, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    val failure = if (invalid) R.string.native_model_settings_error else error?.takeIf { attempted }
-                    failure?.let { Text(stringResource(it), color = MaterialTheme.colorScheme.error) }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(enabled = !busy || loading, onClick = { close() }) { Text(stringResource(R.string.native_cancel)) }
-                    TextButton(enabled = !busy && normalized != null && model.isNotBlank(), onClick = { submit() }) {
-                        Text(stringResource(R.string.native_save))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(enabled = !busy || loading, onClick = { close() }) { Text(stringResource(R.string.native_cancel)) }
+                        TextButton(enabled = !busy && normalized != null && model.isNotBlank(), onClick = { submit() }) {
+                            Text(stringResource(R.string.native_save))
+                        }
                     }
                 }
             }
@@ -110,22 +120,33 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
 private fun NativeModelPicker(models: List<String>, current: String, select: (String) -> Unit, dismiss: () -> Unit) {
     var search by remember { mutableStateOf("") }
     val filtered = remember(models, search) { models.filter { it.contains(search, ignoreCase = true) } }
-    Dialog(onDismissRequest = dismiss) {
-        Surface(shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-            Column(Modifier.widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(stringResource(R.string.native_models_select), style = MaterialTheme.typography.headlineSmall)
-                OutlinedTextField(search, { search = it.take(200) }, label = { Text(stringResource(R.string.native_models_search)) }, singleLine = true)
-                if (filtered.isEmpty()) Text(stringResource(R.string.native_models_no_match), Modifier.padding(12.dp))
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
-                    items(filtered, key = { it }) { id -> TextButton(onClick = { select(id) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(id, color = if (id == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                    } }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
+    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        DialogScrim(onDismiss = dismiss) {
+            Surface(Modifier.padding(24.dp).widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().clickable(
+                interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+                shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
+                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(stringResource(R.string.native_models_select), style = MaterialTheme.typography.headlineSmall)
+                    OutlinedTextField(search, { search = it.take(200) }, label = { Text(stringResource(R.string.native_models_search)) }, singleLine = true)
+                    if (filtered.isEmpty()) Text(stringResource(R.string.native_models_no_match), Modifier.padding(12.dp))
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
+                        items(filtered, key = { it }) { id -> TextButton(onClick = { select(id) }, modifier = Modifier.fillMaxWidth()) {
+                            Text(id, color = if (id == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                        } }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
+                    }
                 }
             }
         }
     }
+}
+
+/** Full-bleed dialog window: dismiss on a scrim tap, which a fixed-size window no longer provides. */
+@Composable
+private fun DialogScrim(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize().clickable(
+        interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() },
+        contentAlignment = Alignment.Center) { content() }
 }
