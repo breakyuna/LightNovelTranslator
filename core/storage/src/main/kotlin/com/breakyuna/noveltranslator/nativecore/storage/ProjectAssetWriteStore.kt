@@ -17,8 +17,8 @@ internal object ProjectAssetWriteStore {
             val summary = NativeProjectDatabase.summary(db, plan.ref)
             val prior = receipt(db, plan.ref, plan.commandId)
             if (prior != null) {
-                if (prior.digest != plan.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.receipt
+                if (prior.first != plan.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
             }
             if (plan.expectedRevision != summary.revision) {
                 return@transaction reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
@@ -80,8 +80,8 @@ internal object ProjectAssetWriteStore {
             val digest = AssetCommandFingerprint.remove(ref, revision, assetId, commandId)
             val prior = receipt(db, ref, commandId)
             if (prior != null) {
-                if (prior.digest != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.receipt
+                if (prior.first != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
             }
             if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.REMOVE,
                 AssetMutationStatus.STALE_REVISION, summary.revision, assetId, digest)
@@ -119,8 +119,8 @@ internal object ProjectAssetWriteStore {
             val digest = AssetCommandFingerprint.reorder(ref, revision, assetIds, commandId)
             val prior = receipt(db, ref, commandId)
             if (prior != null) {
-                if (prior.digest != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.receipt
+                if (prior.first != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
             }
             if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.REORDER,
                 AssetMutationStatus.STALE_REVISION, summary.revision, null, digest)
@@ -128,7 +128,7 @@ internal object ProjectAssetWriteStore {
                 return@transaction reject(db, commandId, ref, AssetMutationKind.REORDER,
                     AssetMutationStatus.UNKNOWN_ASSET, summary.revision, null, digest)
             assetIds.forEachIndexed { index, id ->
-                db.execSQL("UPDATE assets SET ordinal=? WHERE id=?", arrayOf(index, id))
+                db.execSQL("UPDATE assets SET ordinal=? WHERE id=?", arrayOf<Any>(index, id))
             }
             val next = Math.addExact(summary.revision, 1)
             db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(next))
@@ -157,8 +157,8 @@ internal object ProjectAssetWriteStore {
             val digest = AssetCommandFingerprint.reset(ref, revision, assetId, commandId)
             val prior = receipt(db, ref, commandId)
             if (prior != null) {
-                if (prior.digest != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.receipt
+                if (prior.first != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
             }
             if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.RESET,
                 AssetMutationStatus.STALE_REVISION, summary.revision, assetId, digest)
@@ -211,8 +211,8 @@ internal object ProjectAssetWriteStore {
             }.toString()))
             val prior = receipt(db, ref, commandId)
             if (prior != null) {
-                if (prior.digest != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.receipt
+                if (prior.first != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
             }
             if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.SETTINGS,
                 AssetMutationStatus.STALE_REVISION, summary.revision, null, digest)
@@ -266,10 +266,11 @@ internal object ProjectAssetWriteStore {
         db.rawQuery("SELECT id FROM assets ORDER BY ordinal,id", null).use { cursor ->
             var ordinal = 0
             while (cursor.moveToNext()) {
-                db.execSQL("UPDATE assets SET ordinal=? WHERE id=?", arrayOf(ordinal++, cursor.getLong(0)))
+                db.execSQL("UPDATE assets SET ordinal=? WHERE id=?", arrayOf<Any>(ordinal++, cursor.getLong(0)))
             }
         }
     }
 
     private fun now(): Long = System.currentTimeMillis().coerceAtLeast(0)
+    private fun fail(reason: TextProjectException.Reason): Nothing = throw TextProjectException(reason)
 }

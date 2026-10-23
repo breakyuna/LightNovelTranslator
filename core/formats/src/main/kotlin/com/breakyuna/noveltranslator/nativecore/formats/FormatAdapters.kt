@@ -105,6 +105,13 @@ object NativeFormatAdapters {
     }
 
     /** Formats with a writer in this build; TXT remains owned by the existing text store. */
-    fun supported(): Set<ProjectAssetFormat> = all.map { it.format }.toSet() +
-        ProjectAssetFormat.TXT
+    fun supported(): Set<ProjectAssetFormat> = buildSet {
+        add(ProjectAssetFormat.TXT)
+        all.forEach { adapter ->
+            when (adapter) {
+                is TextFormatAdapter -> add(adapter.format)
+                is com.breakyuna.noveltranslator.nativecore.domain.BinaryFormatAdapter -> add(adapter.format)
+            }
+        }
+    }
 }

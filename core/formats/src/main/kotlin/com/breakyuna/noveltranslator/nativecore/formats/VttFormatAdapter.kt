@@ -88,7 +88,7 @@ class VttFormatAdapter : TextFormatAdapter {
             if (unit.status == TextItemStatus.PROCESSED) {
                 val target = normalizeVttLineBreaks(unit.translation)
                 if ("-->" in target) throw InvalidVttFormat(InvalidVttFormat.Reason.TEXT, unit.row)
-                targets[offset] = target
+                targets[slot.offset] = target
             }
         }
         val defaultEnding = document.lines.firstOrNull { it.ending.isNotEmpty() }?.ending ?: "\n"

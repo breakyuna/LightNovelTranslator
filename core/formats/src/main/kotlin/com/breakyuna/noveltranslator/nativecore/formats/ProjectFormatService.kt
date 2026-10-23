@@ -108,7 +108,7 @@ class ProjectFormatService(
         val lines = splitLines(decoded.text)
         if (lines.size > 100_000) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         val units = lines.mapIndexed { index, line ->
-            com.breakyuna.noveltranslator.nativecore.domain.FormatUnit(index, index, line)
+            com.breakyuna.noveltranslator.nativecore.domain.FormatUnit(index, line)
         }
         return com.breakyuna.noveltranslator.nativecore.domain.FormatDocument(ProjectAssetFormat.TXT, units)
     }
