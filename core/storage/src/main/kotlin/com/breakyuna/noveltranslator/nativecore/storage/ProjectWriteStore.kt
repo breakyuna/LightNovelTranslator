@@ -10,7 +10,13 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
  * consumption binding. No caller can edit rows through the public repository except here.
  */
 internal object ProjectWriteStore {
-    fun edit(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt =
+    fun edit(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt {
+        if (batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        return editBound(db, command, beforeCommit)
+    }
+
+    private fun editBound(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt =
         NativeProjectDatabase.transaction(db) {
             val digest = TextProjectFingerprint.command(command)
             val previous = find(db, command.ref, command.commandId)
@@ -58,16 +64,84 @@ internal object ProjectWriteStore {
             ManualEditReceipt(command.commandId, command.ref, command.itemId, status, nextRevision, now)
         }
 
+    fun editBatch(db: SQLiteDatabase, command: ManualTextBatch, beforeCommit: () -> Unit): ManualBatchReceipt =
+        NativeProjectDatabase.transaction(db) {
+            if (find(db, command.ref, command.commandId) != null)
+                throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+            val storedCount = batchReceiptCount(db, command.ref, command.commandId)
+            val previous = command.targets.mapIndexed { index, _ -> find(db, command.ref, command.itemCommand(index)) }
+            if (storedCount != 0) {
+                // An atomic batch has every receipt or none. A collision/partial set is never
+                // interpreted as permission to fill in or replace remaining commands.
+                if (storedCount != command.targets.size) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                val receipts = previous.mapIndexed { index, stored ->
+                    if (stored == null || stored.second.itemId != command.targets[index].id)
+                        throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                    stored.second
+                }
+                val status = receipts.first().status
+                if (receipts.any { it.status != status }) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                if (receipts.indices.any { index ->
+                    val expected = if (status == ManualEditStatus.COMMITTED) Math.addExact(command.expectedRevision, index.toLong() + 1)
+                        else receipts.first().revision
+                    receipts[index].revision != expected
+                }) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction ManualBatchReceipt(command.commandId, command.ref, status, receipts.last().revision,
+                    if (status == ManualEditStatus.COMMITTED) receipts.size else 0)
+            }
+            val revision = NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton = 1")
+            val items = command.targets.map { target -> db.rawQuery(
+                "SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id = ?", arrayOf(target.id.value.toString()),
+            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it) else null } }
+            val conflict = when {
+                revision != command.expectedRevision -> ManualEditStatus.STALE_REVISION
+                items.any { it == null } -> ManualEditStatus.UNKNOWN_ITEM
+                items.indices.any { index -> items[index]!!.fingerprint != command.targets[index].fingerprint ||
+                    items[index]!!.row != command.targets[index].row } -> ManualEditStatus.STALE_FINGERPRINT
+                else -> null
+            }
+            if (conflict != null) {
+                val now = System.currentTimeMillis().coerceAtLeast(0)
+                command.targets.forEachIndexed { index, target ->
+                    db.insertOrThrow("write_receipts", null, ContentValues().apply {
+                        put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                        put("command_id", command.itemCommand(index).value); put("digest", command.digest()); put("item_id", target.id.value)
+                        put("outcome", conflict.name); put("revision", revision); put("committed_at", now)
+                    })
+                }
+                beforeCommit()
+                return@transaction ManualBatchReceipt(command.commandId, command.ref, conflict, revision, 0)
+            }
+            command.targets.forEachIndexed { index, target ->
+                val item = requireNotNull(items[index])
+                val edit = ManualTextEdit(command.itemCommand(index), command.ref, target.id,
+                    Math.addExact(revision, index.toLong()), target.fingerprint,
+                    if (command.change.clearsTranslation) "" else item.translation, command.change.status)
+                check(editBound(db, edit, beforeCommit).status == ManualEditStatus.COMMITTED)
+            }
+            beforeCommit()
+            ManualBatchReceipt(command.commandId, command.ref, ManualEditStatus.COMMITTED,
+                Math.addExact(revision, command.targets.size.toLong()), command.targets.size)
+        }
+
     fun receipt(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): ManualEditReceipt? =
         find(db, ref, commandId)?.second
 
     fun checkedReceipt(db: SQLiteDatabase, command: ManualTextEdit): ManualEditReceipt? {
+        if (batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         val previous = find(db, command.ref, command.commandId) ?: return null
         if (previous.first != TextProjectFingerprint.command(command)) {
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         }
         return previous.second
     }
+
+    private fun batchReceiptCount(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Int =
+        db.rawQuery("SELECT COUNT(*) FROM write_receipts WHERE instance_id = ? AND generation = ? AND command_id GLOB ?",
+            arrayOf(ref.instanceId.value, ref.generation.value.toString(), ManualTextBatch.receiptPrefix(commandId) + "*")).use {
+            check(it.moveToFirst()); it.getInt(0)
+        }
 
     private fun find(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Pair<String, ManualEditReceipt>? =
         db.rawQuery("""SELECT digest, item_id, outcome, revision, committed_at FROM write_receipts

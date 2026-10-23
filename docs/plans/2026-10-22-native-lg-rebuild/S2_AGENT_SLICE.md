@@ -1,8 +1,8 @@
 # S2 原生 Agent 单条 TXT 审批切片
 
-后续源码边界：当前工作区新增持久执行记录与中断核对，应用 Room 升至 v3，尚未构建；本文原切片的 v2 CI 证据不覆盖该增量。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，当前进度见 HANDOFF §28；完整后台执行接续仍未完成。
+后续源码边界：持久执行记录/中断核对与应用 Room v3 已提交并有指定提交 CI 证据，见 [HANDOFF §33](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
 
-当前验证边界：单条审批/Koog 切片已有指定提交的 CI 证据；完整 S2 仍未验收，详见 [HANDOFF §26—27](HANDOFF.md)。§24 原始开发轮的未执行说明是历史记录。
+当前验证边界：单条审批/Koog 切片已有指定提交的 CI 证据；完整 S2 仍未验收，详见 [HANDOFF §33](HANDOFF.md)。§24 原始开发轮的未执行说明是历史记录。
 
 本文记录 §24 单条审批基线；§25 已进一步新增结构化对话、完整 assistant 回执、模型配置及远程传输源码，替代本文“仅纯文本/无远程入口”等当轮限制，详见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。新切片已有 CI，真实供应商尚未联调，完整 S2 验收保持开放。
 

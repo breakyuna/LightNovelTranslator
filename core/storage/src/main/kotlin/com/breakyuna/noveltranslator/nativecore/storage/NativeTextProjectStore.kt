@@ -211,18 +211,95 @@ class NativeTextProjectStore(
         deleted
     }
 
+    override suspend fun readPage(ref: LocalProjectRef, afterId: Long, limit: Int): TextProjectPage = operation {
+        require(afterId >= 0 && limit in 1..limits.maxPageSize)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            TextProjectPage(summary, pageItems(db, afterId, limit), itemStatistics(db), summary.itemCount)
+        } }
+    }
+
+    override suspend fun queryPage(ref: LocalProjectRef, query: TextItemQuery, afterId: Long, limit: Int): TextProjectPage = operation {
+        require(afterId >= 0 && limit in 1..limits.maxPageSize)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            queriedPage(db, ref, query, afterId, limit, null)
+        } }
+    }
+
+    override suspend fun readItemWindow(ref: LocalProjectRef, query: TextItemQuery, window: TextItemWindow): TextProjectPage = operation {
+        require(window.ids.size <= limits.maxPageSize)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            queriedPage(db, ref, query, 0, window.ids.size, window)
+        } }
+    }
+
+    private fun queriedPage(db: SQLiteDatabase, ref: LocalProjectRef, query: TextItemQuery,
+        afterId: Long, limit: Int, window: TextItemWindow?): TextProjectPage {
+        val summary = NativeProjectDatabase.summary(db, ref)
+        val clauses = mutableListOf("1 = 1")
+        val arguments = mutableListOf<String>()
+        query.status?.let { clauses.add("status = ?"); arguments.add(it.name) }
+        if (query.text.isNotEmpty()) {
+            clauses.add(when (query.field) {
+                TextSearchField.BOTH -> "(instr(source, ?) > 0 OR instr(translation, ?) > 0)"
+                TextSearchField.SOURCE -> "instr(source, ?) > 0"
+                TextSearchField.TRANSLATION -> "instr(translation, ?) > 0"
+            })
+            arguments.add(query.text)
+            if (query.field == TextSearchField.BOTH) arguments.add(query.text)
+        }
+        val where = clauses.joinToString(" AND ")
+        val matching = db.rawQuery("SELECT COUNT(*) FROM items WHERE $where", arguments.toTypedArray()).use {
+            if (!it.moveToFirst()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+            it.getInt(0)
+        }
+        val selection: String
+        val selectionArgs: Array<String>
+        if (window == null) {
+            selection = "$where AND id > ?"
+            selectionArgs = (arguments + afterId.toString() + limit.toString()).toTypedArray()
+        } else {
+            selection = "id IN (${window.ids.joinToString(",") { "?" }})"
+            selectionArgs = (window.ids.map { it.value.toString() } + limit.toString()).toTypedArray()
+        }
+        val rows = db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE $selection ORDER BY id LIMIT ?",
+            selectionArgs).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor)) }
+        }
+        if (window != null && rows.map { it.id } != window.ids) fail(TextProjectException.Reason.STALE_PAGE)
+        return TextProjectPage(summary, rows, itemStatistics(db), matching)
+    }
+
+    private fun itemStatistics(db: SQLiteDatabase): TextItemStatistics {
+        val counts = mutableMapOf<TextItemStatus, Int>()
+        var translatable = 0
+        db.rawQuery("SELECT status, COUNT(*), SUM(CASE WHEN status = 'NONE' THEN CASE WHEN length(trim(source, ?)) > 0 THEN 1 ELSE 0 END ELSE 0 END) FROM items GROUP BY status",
+            arrayOf(BLANK_SOURCE_CHARACTERS)).use { cursor ->
+            while (cursor.moveToNext()) {
+                val status = try { TextItemStatus.valueOf(cursor.getString(0)) }
+                catch (_: IllegalArgumentException) { fail(TextProjectException.Reason.CORRUPT_PROJECT) }
+                counts[status] = cursor.getInt(1)
+                if (status == TextItemStatus.NONE) translatable = cursor.getInt(2)
+            }
+        }
+        return TextItemStatistics(counts[TextItemStatus.NONE] ?: 0, counts[TextItemStatus.PROCESSED] ?: 0,
+            counts[TextItemStatus.EXCLUDED] ?: 0, translatable)
+    }
+
     override suspend fun items(ref: LocalProjectRef, revision: Long, afterId: Long, limit: Int): TextItemPage = operation {
         require(afterId >= 0 && revision >= 0 && limit in 1..limits.maxPageSize)
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             val summary = NativeProjectDatabase.summary(db, ref)
             if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
-            val result = db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id > ? ORDER BY id LIMIT ?",
-                arrayOf(afterId.toString(), limit.toString())).use { cursor ->
-                buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor)) }
-            }
-            TextItemPage(summary.revision, result)
+            TextItemPage(summary.revision, pageItems(db, afterId, limit))
         } }
     }
+
+    private fun pageItems(db: SQLiteDatabase, afterId: Long, limit: Int): List<TextProjectItem> =
+        db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id > ? ORDER BY id LIMIT ?",
+            arrayOf(afterId.toString(), limit.toString())).use { cursor ->
+            buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor)) }
+        }
 
     override suspend fun edit(command: ManualTextEdit): ManualEditReceipt = operation {
         if (command.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
@@ -233,6 +310,30 @@ class NativeTextProjectStore(
                 NativeProjectDatabase.summary(db, command.ref)
                 coroutine.ensureActive()
                 ProjectWriteStore.edit(db, command) { coroutine.ensureActive() }
+            }
+        }
+    }
+
+    override suspend fun prepareBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        window: TextItemWindow, change: TextBatchChange): ManualTextBatch? = operation {
+        require(revision >= 0 && window.ids.size <= limits.maxPageSize)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val page = queriedPage(db, ref, TextItemQuery(), 0, window.ids.size, window)
+            val targets = page.items.filter { it.status != change.status || (change.clearsTranslation && it.translation.isNotEmpty()) }
+                .map { TextBatchTarget(it.id, it.row, it.fingerprint) }
+            if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision, change, targets)
+        } }
+    }
+
+    override suspend fun editBatch(command: ManualTextBatch): ManualBatchReceipt = operation {
+        require(command.targets.size <= limits.maxPageSize)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(command.ref) { db ->
+                NativeProjectDatabase.summary(db, command.ref)
+                ProjectWriteStore.editBatch(db, command) { coroutine.ensureActive() }
             }
         }
     }
@@ -548,6 +649,9 @@ class NativeTextProjectStore(
     private fun fail(reason: TextProjectException.Reason): Nothing = throw TextProjectException(reason)
 
     private companion object {
+        // SQLite's default trim only handles ASCII space. Derive the character set once
+        // from Kotlin's predicate so tabs and Unicode whitespace match source.isNotBlank().
+        val BLANK_SOURCE_CHARACTERS = (Char.MIN_VALUE..Char.MAX_VALUE).filter { it.isWhitespace() }.joinToString("")
         const val PROJECT_FILE = "project.lnt"
         const val REGISTRATION = "registration.json"
     }

@@ -1,6 +1,6 @@
 # 原生 LG 目标架构
 
-当前实现的构建/测试证据见 [HANDOFF §26—27](HANDOFF.md)。新 Agent/模拟切片已通过指定提交 CI；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
+当前实现的构建/测试证据见 [HANDOFF §33](HANDOFF.md)。新 Agent/模拟切片已通过指定提交 CI；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
 
 当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它覆盖 TXT 工程、人工校对与系统文件导入导出；新增当前页本地模拟经 NativeModelGateway → TextTranslationService → TranslationCommitPort → ProjectWriteStore 接线（已有 CI，新增设备验收待补，见 TXT_TRANSLATION.md），没有真实供应商或完整 Agent 生产接入；用户 CI 与 TXT 手工实机确认的证据边界见 HANDOFF §22。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §22。
 
@@ -361,4 +361,10 @@ R36 分为早期字段映射样本与后期正式迁移。R00 后用合成旧库
 
 ### 持久执行记录切片接线
 
-`nativeapp → DurableRunExecutor → RunJournalPort → NativeRunStore` 为当前工作区新增接线，应用 Room 源码升至 v3，并保留 v1→v2、增加 v2→v3 显式迁移。它保存执行与请求/提交边界，重启只核对现有回执，不恢复执行权或自动重放。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，实际进度与未验证范围见 HANDOFF §28；前台 Service 与原 Run 的执行接续仍是本章目标。
+`nativeapp → DurableRunExecutor → RunJournalPort → NativeRunStore` 为当前工作区新增接线，应用 Room 源码升至 v3，并保留 v1→v2、增加 v2→v3 显式迁移。它保存执行与请求/提交边界，重启只核对现有回执，不恢复执行权或自动重放。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，最新 CI 与未验证范围见 HANDOFF §33（原开发轮见 §28）；§34 工作区增加本页模拟前台 Service，契约见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)，尚未构建；完整 Service/调度及原 Run 的执行接续仍是本章目标。
+
+## 共享调度与格式核心的装配边界
+
+`NativeModelGateway` 的 Agent / 翻译入口共用进程内调度器，具体固定限额、FIFO、取消、跨配置修订时钟及运行期用量投影见 [MODEL_SCHEDULING](MODEL_SCHEDULING.md)。整工程模拟沿用原有唯一 Runtime/写入链路，不调用旧翻译引擎。
+
+`:core:formats` 增加独立的字幕解码文本核心，见 [SUBTITLE_CODECS](SUBTITLE_CODECS.md)。其资产身份只绑定当前解析文本；工程的原始字节身份、格式类型、版本迁移和条目定位尚需接入。禁止 formats 直接打开工程数据库或把非 TXT 文件登记为 TXT 来绕过存储约束。实际状态与验证只见 HANDOFF §39。

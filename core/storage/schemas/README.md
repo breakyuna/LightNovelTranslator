@@ -10,7 +10,7 @@ generated output of CI run 39789360824 (commit `224da53`), reviewed against
 `NativeAppDatabase.kt` before committing. Do not hand-edit it: regenerate through a
 PC/CI build, review the diff, then add the matching migration.
 
-Source v3 adds the native_runs execution journal with MIGRATION_2_3; v1 upgrades through both migrations. This new migration and recovery slice have not been built or run.
+Source v3 adds the native_runs execution journal with MIGRATION_2_3; v1 upgrades through both migrations. The v3 migration and recovery tests passed in the commit recorded in HANDOFF section 33; this is runtime test evidence, not exported-schema or device-upgrade acceptance.
 
 The generated 2.json and 3.json are pending an authorized PC/CI KSP build and review; do not hand-write it or treat runtime migration tests as proof of an exported schema or device upgrade acceptance. Keep 1.json as the committed migration baseline.
 

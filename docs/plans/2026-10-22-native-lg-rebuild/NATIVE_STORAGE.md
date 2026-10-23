@@ -32,7 +32,7 @@
 
 1. `createTxt`：显式创建命令、名称、相对路径、原始字节与编码；先校验/解析，再发布私有副本和 Room 索引。
 2. `registeredProjects` / `open`：重启后发现并重开登记实例。列表有界、按实例 ID 排序，尚不是完整的最近访问排序功能。每条返回 `RegisteredProject`：可读时带 `summary`，缺失目录、损坏文件或外来格式时带分类后的 `failure`，单个失效实例不会让整份最近列表失败；`open` 仍对指定实例抛出同一分类错误。
-3. `items`：按 ID 游标读取，携带预期工程修订，过期窗口拒绝；每页最多 100 条。
+3. `items`：按 ID 游标读取，携带预期工程修订，过期窗口拒绝；每页最多 100 条。`readPage` 在一次事务内同时返回 summary 和有界 items，供运行中界面的最新分页预览使用，避免两次读取之间提交批次导致 STALE_PAGE；不替代模型/写入的预期修订检查。该新增端口的未验证边界见 HANDOFF §36。
 4. `edit` / `receipt`：手工编辑、命令去重及持久结果查询。
 5. `saveProject`：生成原生工程一致快照，写入调用方提供的流。
 6. `exportTxt` / `exportOriginal` / `exportBilingual`：分别导出有效译文、原始字节与原译对照。
@@ -94,4 +94,4 @@ nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支�
 
 ## 8. Agent 单条审批与应用 schema v2
 
-当前源码新增 NativeAgentStore 与应用 Room v2：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不影响 .lnt v1 和旧阅读库；生成的 Room 2.json 尚缺，后续 PC/CI 生成审阅；v2 运行迁移已有自身 CI 用例证据，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。
+§24 切片引入 NativeAgentStore 与应用 Room v2（后续应用库为 v3，最新迁移 CI 与 schema 导出边界见 HANDOFF §33）：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不影响 .lnt v1 和旧阅读库；生成的 Room 2.json 尚缺，后续 PC/CI 生成审阅；v2 运行迁移已有自身 CI 用例证据，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。

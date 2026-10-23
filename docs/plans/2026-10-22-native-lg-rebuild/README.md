@@ -1,6 +1,6 @@
 # LNT 原生 Android 全面重构计划
 
-规划日期：2026-10-22。当前实施状态与证据统一见 [HANDOFF §3、§26—30](HANDOFF.md)：TXT 手工切片已获实机确认，模拟翻译及原生 Agent/审批切片已有指定版本的 CI 证据；完整 S1/S2、全格式、后台恢复和全量功能验收仍未完成。
+规划日期：2026-10-22。当前实施状态与证据统一见 [HANDOFF §3、§33](HANDOFF.md)：TXT 手工切片已获实机确认，模拟翻译、原生 Agent/审批、持久执行记录/Room v3、HTTP/模型发现、SSE 及设置对话框切片已有最新指定提交的 CI 证据；完整 S1/S2、全格式、后台恢复和全量功能验收仍未完成。
 
 本计划执行用户本次决定：彻底重构 LNT，包括 UI；完整实现 LG Termux 的产品功能；仅保留并改造 LNT 的 Koog Agent 框架。不是在旧阅读器上继续增加功能，也不是 React/WebView 或 Node 后端移植。
 
@@ -25,6 +25,11 @@
 | [S2 Agent 切片](S2_AGENT_SLICE.md) | Koog 固定操作、Room v2、单条差异审批与回执恢复的源码边界 |
 | [流式传输](STREAMING.md) | SSE 增量、工具分片、用量/取消与临时预览契约 |
 | [模型端点与对话](MODEL_ENDPOINTS.md) | HTTP/HTTPS、可选凭据、端点模型列表和对话页面契约 |
+| [前台模拟执行](FOREGROUND_TRANSLATION.md) | 应用级执行、前台确认、通知停止和界面重附着的源码契约 |
+| [校对查询与统计](PROOFREADING_QUERY.md) | 字面搜索、状态筛选、同快照计数和编辑窗口成员保留契约 |
+| [人工批量操作](MANUAL_BATCH.md) | 固定选择、显式确认、原子状态/清空写入与终局回执契约 |
+| [共享请求调度](MODEL_SCHEDULING.md) | FIFO、固定并发/RPM、停止检查与事实分离的用量汇总契约 |
+| [字幕纯文本核心](SUBTITLE_CODECS.md) | SRT/LRC/ASS/SSA 源绑定、结构保留、双语和有界渲染；尚未接入工程 |
 | [运行恢复切片](RUN_RECOVERY.md) | 持久执行记录、请求/提交回执核对与不自动重放边界 |
 | [TXT 翻译切片](TXT_TRANSLATION.md) | 本地模拟网关、批次事务、取消与真实模型接入边界 |
 | [原生 TXT 存储契约](NATIVE_STORAGE.md) | `.lnt` v1 TXT schema、实例索引、手工事务、快照和验证边界 |

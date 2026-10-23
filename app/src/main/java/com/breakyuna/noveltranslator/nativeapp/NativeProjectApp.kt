@@ -1,5 +1,8 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,6 +18,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +36,10 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 @Composable
 fun NativeProjectApp(model: NativeProjectViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var notificationsGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 ||
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) }
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { notificationsGranted = it }
     val snackbar = remember { SnackbarHostState() }
     val inputTxt = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importFile(it, false) }
     val inputProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importFile(it, true) }
@@ -100,7 +111,13 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         if (kind == NativeExport.PROJECT) saveProject.launch(name) else saveText.launch(name)
                                     }
                                 }
-                                NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage, model::simulatePage)
+                                NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage,
+                                    model::simulatePage, notificationsGranted, model::queryProofreading,
+                                    NativeBatchActions(model::selectItems, model::toggleItem, model::selectPageItems,
+                                        model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch),
+                                    model::simulateProject) {
+                                    if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                }
                             }
                         }
                     }
@@ -177,35 +194,98 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
 
 @Composable
 internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, previous: () -> Unit, next: () -> Unit,
-                          simulate: () -> Unit) {
-    var confirm by rememberSaveable(state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value,
+                          simulate: () -> Unit, notificationsGranted: Boolean = true,
+                          query: (TextItemQuery) -> Unit = {}, batchActions: NativeBatchActions? = null,
+                          simulateProject: (() -> Unit)? = null,
+                          requestNotifications: () -> Unit = {}) {
+    if (state.manualBatch != null && batchActions != null) NativeManualBatchDialog(state, batchActions)
+    var filtering by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
+        state.project?.ref?.generation?.value) { mutableStateOf(false) }
+    if (filtering) NativeProofreadingQueryDialog(state, onDismiss = { filtering = false }) {
+        filtering = false; query(it)
+    }
+    var confirm by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value,
         state.items.firstOrNull()?.id?.value) { mutableStateOf(false) }
+    var wholeProject by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
+        state.project?.ref?.generation?.value) { mutableStateOf(false) }
+    val pendingPage = state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }
+    val pendingProject = simulateProject != null && (state.itemStatistics?.translatableUnprocessed ?: 0) > 0
     if (confirm) AlertDialog(onDismissRequest = { confirm = false },
         title = { Text(stringResource(R.string.native_simulation)) },
-        text = { Text(stringResource(R.string.native_simulation_confirm)) },
-        confirmButton = { TextButton(onClick = { confirm = false; simulate() }, enabled = !state.busy && !state.runLoadIncomplete) {
+        text = {
+            Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (simulateProject != null) {
+                    TextButton(onClick = { wholeProject = false }, enabled = pendingPage && !state.busy) {
+                        RadioButton(selected = !wholeProject, onClick = null)
+                        Text(stringResource(R.string.native_simulation_scope_page))
+                    }
+                    TextButton(onClick = { wholeProject = true }, enabled = pendingProject && !state.busy) {
+                        RadioButton(selected = wholeProject, onClick = null)
+                        Text(stringResource(R.string.native_simulation_scope_project))
+                    }
+                }
+                Text(stringResource(if (wholeProject) R.string.native_simulation_project_confirm else R.string.native_simulation_confirm))
+                Text(stringResource(R.string.native_background_notice), style = MaterialTheme.typography.bodySmall)
+                if (!notificationsGranted) TextButton(onClick = requestNotifications, enabled = !state.busy) {
+                    Text(stringResource(R.string.native_background_notifications))
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = {
+            confirm = false
+            if (wholeProject) simulateProject?.invoke() else simulate()
+        }, enabled = !state.busy && !state.runLoadIncomplete && !state.proofreadingQuery.active &&
+            (if (wholeProject) pendingProject else pendingPage)) {
             Text(stringResource(R.string.native_simulation_start))
         } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.native_cancel)) } },
     )
     Column(Modifier.fillMaxSize()) {
-        TextButton(onClick = { confirm = true }, enabled = !state.busy && !state.runLoadIncomplete && state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }) {
-            Text(stringResource(R.string.native_simulation))
+        Row(Modifier.fillMaxWidth()) {
+            TextButton(onClick = { wholeProject = !pendingPage && pendingProject; confirm = true }, modifier = Modifier.weight(1f),
+                enabled = !state.busy && !state.selectingItems && !state.runLoadIncomplete && !state.proofreadingQuery.active && (pendingPage || pendingProject)) {
+                Text(stringResource(R.string.native_simulation), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            TextButton(onClick = { filtering = true }, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                Text(stringResource(R.string.native_proof_filter), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (batchActions != null) TextButton(onClick = { batchActions.selecting(!state.selectingItems) },
+                enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                Text(stringResource(if (state.selectingItems) R.string.native_batch_cancel_selection else R.string.native_batch_select),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (state.selectingItems && batchActions != null) NativeBatchToolbar(state, batchActions)
+        if (state.proofreadingQuery.active) state.matchingItems?.let { count ->
+            Text(stringResource(R.string.native_proof_matching, count), Modifier.padding(horizontal = 16.dp),
+                style = MaterialTheme.typography.bodySmall)
         }
         if (state.runLoadIncomplete) Text(stringResource(R.string.native_runs_load_error), color = MaterialTheme.colorScheme.error)
         state.translationProgress?.let { Text(stringResource(R.string.native_simulation_progress, it.committedItems, it.requests),
             Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
+        state.translationProgress?.let { progress -> progress.usageTotals?.let { totals ->
+            state.project?.ref?.let { NativeTranslationUsage(it, totals, progress.run) }
+        } }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = previous, enabled = !state.busy && state.hasPrevious) { Text(stringResource(R.string.native_previous)) }
             TextButton(onClick = next, enabled = !state.busy && state.hasNext) { Text(stringResource(R.string.native_next)) }
         }
-        key(state.items.firstOrNull()?.id?.value) {
+        key(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
+            state.project?.ref?.generation?.value, state.items.firstOrNull()?.id?.value) {
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 if (state.items.isEmpty()) item { Text(stringResource(R.string.native_empty_items)) }
                 items(state.items, key = { it.id.value }) { item ->
-                    Card(Modifier.fillMaxWidth().clickable(enabled = !state.busy) { edit(item.id) }) {
+                    val selectionLabel = stringResource(R.string.native_batch_select_row, item.row.toLong() + 1)
+                    Card(Modifier.fillMaxWidth().clickable(enabled = !state.busy) {
+                        if (state.selectingItems && batchActions != null) batchActions.toggle(item.id) else edit(item.id)
+                    }) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(stringResource(R.string.native_row_status, item.row + 1, stringResource(item.status.label())), style = MaterialTheme.typography.labelLarge)
+                            Row {
+                                if (state.selectingItems && batchActions != null) Checkbox(item.id in state.selectedItems,
+                                    onCheckedChange = { batchActions.toggle(item.id) }, enabled = !state.busy,
+                                    modifier = Modifier.semantics { contentDescription = selectionLabel })
+                                Text(stringResource(R.string.native_row_status, item.row + 1, stringResource(item.status.label())), style = MaterialTheme.typography.labelLarge)
+                            }
                             Text(item.source.ifEmpty { stringResource(R.string.native_blank_line) }, maxLines = 3, overflow = TextOverflow.Ellipsis)
                             HorizontalDivider()
                             Text(item.translation.ifEmpty { stringResource(if (item.status == TextItemStatus.PROCESSED) R.string.native_empty_result else R.string.native_empty_translation) },
@@ -260,7 +340,7 @@ private fun NativePage.icon(): ImageVector = when (this) {
     NativePage.WORKBENCH -> Icons.Default.TableRows
     NativePage.PROOFREADING -> Icons.Default.Edit
 }
-private fun TextItemStatus.label(): Int = when (this) {
+internal fun TextItemStatus.label(): Int = when (this) {
     TextItemStatus.NONE -> R.string.native_status_none
     TextItemStatus.PROCESSED -> R.string.native_status_processed
     TextItemStatus.EXCLUDED -> R.string.native_status_excluded

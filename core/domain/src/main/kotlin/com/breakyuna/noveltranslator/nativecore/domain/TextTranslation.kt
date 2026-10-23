@@ -43,4 +43,5 @@ class TranslationBatch(
 interface TranslationCommitPort {
     suspend fun commitTranslation(lease: RunLease, batch: TranslationBatch): Long
 }
-data class TranslationProgress(val committedItems: Int, val requests: Int, val revision: Long, val usage: RequestUsage)
+data class TranslationProgress(val committedItems: Int, val requests: Int, val revision: Long, val usage: RequestUsage,
+    val usageTotals: RequestUsageTotals? = null, val run: RunIdentity? = null)

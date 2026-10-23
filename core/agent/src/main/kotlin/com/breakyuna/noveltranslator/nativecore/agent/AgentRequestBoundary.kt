@@ -53,6 +53,7 @@ class AgentRequestBoundary(
         val preparation = runtime.beginOperation(run, OperationKind.MODEL_REQUEST)
         val key = request.key()
         var ownsPreview = false
+        var dispatch: OperationLease? = null
         try {
             when (val reservation = persistence.reserveRequest(request)) {
                 RequestReservation.Conflict -> throw AgentAttemptConflict()
@@ -63,47 +64,51 @@ class AgentRequestBoundary(
                 }
                 RequestReservation.Prepared -> Unit
             }
-            currentCoroutineContext().ensureActive()
-            if (!persistence.markDispatched(key)) throw AgentAttemptUncertain()
-            // Recheck Stop/identity after persistence suspensions. A durable dispatch
-            // without an actual send is conservatively uncertain, never auto-retried.
-            currentCoroutineContext().ensureActive()
-            val dispatch = runtime.beginOperation(run, OperationKind.MODEL_REQUEST)
-            try {
+            suspend fun beforeDispatch() {
+                currentCoroutineContext().ensureActive()
+                if (dispatch != null || !persistence.markDispatched(key)) throw AgentAttemptUncertain()
+                // A durable dispatch without a send remains conservatively uncertain.
+                currentCoroutineContext().ensureActive()
+                dispatch = runtime.beginOperation(run, OperationKind.MODEL_REQUEST)
                 ownsPreview = true
                 try { events.previewStarted(key) }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { /* Presentation only. */ }
-                val response = model.complete(request) { event ->
-                    currentCoroutineContext().ensureActive()
-                    try {
-                        events.preview(key, event)
-                    } catch (cancelled: CancellationException) {
-                        throw cancelled
-                    } catch (_: Exception) {
-                        // Presentation failure cannot cause another paid request.
-                    }
-                }
-                // Preserve a known provider receipt even if Stop arrived with it.
-                // Store implementations must bound their IO and commit atomically.
-                val stored = withContext(NonCancellable) {
-                    try {
-                        persistence.completeRequest(key, response)
-                        true
-                    } catch (_: Exception) {
-                        false
-                    }
-                }
-                if (!stored) throw AgentResponseNotStored(key, response)
-                try { events.previewCompleted(key, response.message.id) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* Presentation only. */ }
-                currentCoroutineContext().ensureActive()
-                return validateResponse(request, response)
-            } finally {
-                runtime.endOperation(dispatch)
             }
+            val emit: suspend (AgentModelEvent) -> Unit = { event ->
+                currentCoroutineContext().ensureActive()
+                try {
+                    events.preview(key, event)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // Presentation failure cannot cause another paid request.
+                }
+            }
+            val response = if (model is DispatchAwareAgentModelPort)
+                model.completePrepared(request, ::beforeDispatch, emit)
+            else {
+                beforeDispatch()
+                model.complete(request, emit)
+            }
+            // Preserve a known provider receipt even if Stop arrived with it.
+            // Store implementations must bound their IO and commit atomically.
+            val stored = withContext(NonCancellable) {
+                try {
+                    persistence.completeRequest(key, response)
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+            if (!stored) throw AgentResponseNotStored(key, response)
+            try { events.previewCompleted(key, response.message.id) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Presentation only. */ }
+            currentCoroutineContext().ensureActive()
+            return validateResponse(request, response)
         } finally {
+            dispatch?.let(runtime::endOperation)
             runtime.endOperation(preparation)
             if (ownsPreview) {
                 try {

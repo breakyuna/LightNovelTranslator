@@ -76,6 +76,21 @@ class NativeTextProjectStoreTest {
         assertEquals(1, store.registeredProjects().size)
     }
 
+    @Test fun pageSnapshotReadsCurrentSummaryAndRowsWhileOldRevisionReadsStillFailClosed() = runBlocking {
+        val project = create("first\nsecond")
+        val before = store.readPage(project.ref, limit = 1)
+        val item = before.items.single()
+        val receipt = store.edit(ManualTextEdit(CommandId("edit-page"), project.ref, item.id,
+            before.summary.revision, item.fingerprint, "translated"))
+        expect(TextProjectException.Reason.STALE_PAGE) { store.items(project.ref, before.summary.revision) }
+        val after = store.readPage(project.ref, limit = 1)
+        assertEquals(receipt.revision, after.summary.revision)
+        assertEquals("translated", after.items.single().translation)
+        assertEquals("", before.items.single().translation)
+        assertEquals(0L, before.summary.revision)
+        assertEquals("second", store.readPage(project.ref, afterId = item.id.value, limit = 1).items.single().source)
+    }
+
     @Test fun repeatedCommandCannotChangeItsApprovedManualIntent() = runBlocking {
         val project = create("source")
         val item = store.items(project.ref, 0).items.single()

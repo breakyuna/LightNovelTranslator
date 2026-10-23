@@ -32,6 +32,7 @@ class RuntimeCoordinator : RuntimePort {
         val owner: RuntimeOwner,
     ) : RunLease {
         var phase = RuntimePhase.RUNNING
+        var clearSelectedChat: ChatIdentity? = null
         val operations = mutableSetOf<Operation>()
     }
 
@@ -63,16 +64,24 @@ class RuntimeCoordinator : RuntimePort {
     }
 
     override fun beginRun(identity: RunIdentity, owner: RuntimeOwner): RunLease = mutate {
+        reserveRunLocked(identity, owner, selected)
+    }
+
+    override fun beginRunSelectingChat(identity: RunIdentity, owner: RuntimeOwner, chat: ChatIdentity): RunLease = mutate {
+        reserveRunLocked(identity, owner, chat)
+    }
+
+    private fun reserveRunLocked(identity: RunIdentity, owner: RuntimeOwner, chat: ChatIdentity?): RunLease {
         ensureOpen()
         if (active != null || projectWrite != null || authenticationWrite != null ||
             (owner == RuntimeOwner.AGENT && skillWrite != null)
         ) unavailable(Reason.BUSY)
-        val chat = selected
         if (chat == null || identity.projectId != chat.projectId ||
             (identity.chatId != null && identity.chatId != chat.chatId) ||
             (owner == RuntimeOwner.AGENT && identity.chatId == null)
         ) unavailable(Reason.WRONG_PROJECT)
-        Run(identity, owner).also {
+        return Run(identity, owner).also {
+            selected = chat
             active = it
             advanceLocked()
         }
@@ -106,9 +115,10 @@ class RuntimeCoordinator : RuntimePort {
         true
     }
 
-    override fun finishRun(run: RunLease): Unit = mutate {
+    override fun finishRun(run: RunLease, clearSelectedChat: ChatIdentity?): Unit = mutate {
         if (active === run) {
             val current = active!!
+            if (current.phase != RuntimePhase.FINISHING) current.clearSelectedChat = clearSelectedChat
             current.phase = RuntimePhase.FINISHING
             releaseFinishedRunLocked()
             advanceLocked()
@@ -198,6 +208,7 @@ class RuntimeCoordinator : RuntimePort {
     private fun releaseFinishedRunLocked() {
         val run = active ?: return
         if (run.phase == RuntimePhase.FINISHING && run.operations.isEmpty() && projectWrite?.run !== run) {
+            if (run.clearSelectedChat != null && selected == run.clearSelectedChat) selected = null
             active = null
         }
     }

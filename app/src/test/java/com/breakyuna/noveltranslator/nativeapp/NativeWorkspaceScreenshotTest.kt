@@ -118,6 +118,20 @@ class NativeWorkspaceScreenshotTest {
         assertTrue(started)
     }
 
+    @Test fun requestingOptionalNotificationsDoesNotStartTheSimulation() {
+        var requested = 0
+        var started = false
+        val state = NativeProjectUiState(project = summary, items = listOf(ItemPreview.of(first)))
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            Proofreading(state, {}, {}, {}, { started = true }, notificationsGranted = false) { requested++ }
+        } } }
+        compose.onNodeWithText(context.getString(R.string.native_simulation)).performClick()
+        compose.onNodeWithText(context.getString(R.string.native_background_notifications)).performScrollTo().performClick()
+        assertEquals(1, requested); assertFalse(started)
+        compose.onNodeWithText(context.getString(R.string.native_simulation_start)).performClick()
+        assertTrue(started)
+    }
+
     @Test fun editorPresentsDraftAndExplicitSave() {
         var saved = false
         val draft = NativeEditDraft(ref, first, 0, first.fingerprint, "Synthetic translation", TextItemStatus.PROCESSED, CommandId("save"))

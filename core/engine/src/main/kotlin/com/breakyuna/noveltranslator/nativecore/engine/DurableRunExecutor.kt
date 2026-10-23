@@ -17,6 +17,15 @@ class DurableRunExecutor(private val runtime: RuntimePort, private val journal: 
         require(ref.projectId == identity.projectId)
         currentCoroutineContext().ensureActive()
         val lease = runtime.beginRun(identity, owner)
+        return executeReserved(ref, lease, owner, block = block)
+    }
+
+    /** Only engine-owned launchers transfer a synchronously reserved lease to this lifetime. */
+    internal suspend fun <T> executeReserved(
+        ref: LocalProjectRef, lease: RunLease, owner: RuntimeOwner,
+        clearSelectedChat: ChatIdentity? = null,
+        block: suspend (RunLease, RunProgressRecorder) -> T,
+    ): T {
         var handle: RunJournalHandle? = null
         var terminal = StoredRunState.FAILED
         var failure: Throwable? = null
@@ -38,7 +47,7 @@ class DurableRunExecutor(private val runtime: RuntimePort, private val journal: 
         }
         try {
             // Once reservation succeeds, cancellation must not skip recording/settling this execution.
-            handle = withContext(NonCancellable) { journal.begin(ref, identity, owner) }
+            handle = withContext(NonCancellable) { journal.begin(ref, lease.identity, owner) }
             currentCoroutineContext().ensureActive()
             val result = coroutineScope { block(lease, recorder) }
             currentCoroutineContext().ensureActive()
@@ -60,7 +69,7 @@ class DurableRunExecutor(private val runtime: RuntimePort, private val journal: 
                         if (failure == null) throw cleanup
                     }
                 }
-            } finally { runtime.finishRun(lease) }
+            } finally { runtime.finishRun(lease, clearSelectedChat) }
         }
     }
 }

@@ -27,6 +27,22 @@ class RuntimeCoordinatorTest {
     private val firstChat = ChatIdentity(ProjectId("project-a"), ChatId("chat-a"))
     private val secondChat = ChatIdentity(ProjectId("project-b"), ChatId("chat-b"))
 
+    @Test fun atomicSelectionDoesNotChangeOnInvalidIdentityOrCompetingRun() {
+        val runtime = runtime()
+        val before = runtime.snapshot()
+        assertReason(RuntimeUnavailable.Reason.WRONG_PROJECT) {
+            runtime.beginRunSelectingChat(identity("wrong"), RuntimeOwner.AGENT, secondChat)
+        }
+        assertEquals(before, runtime.snapshot())
+        val run = runtime.beginRunSelectingChat(identity("one"), RuntimeOwner.AGENT, firstChat)
+        val occupied = runtime.snapshot()
+        assertReason(RuntimeUnavailable.Reason.BUSY) {
+            runtime.beginRunSelectingChat(identity("two"), RuntimeOwner.AGENT, secondChat)
+        }
+        assertEquals(occupied, runtime.snapshot())
+        runtime.finishRun(run)
+    }
+
     @Test
     fun reservationBlocksSwitchingEvenBeforeWorkLaunches() {
         val runtime = runtime()
@@ -223,6 +239,26 @@ class RuntimeCoordinatorTest {
     }
 
     private fun runtime() = RuntimeCoordinator().also { it.selectChat(firstChat) }
+
+    @Test fun finishingRunClearsOnlyItsSelectionWhenLastResourceClosesAndNeverANewerSelection() {
+        val runtime = runtime()
+        val run = runtime.beginRun(identity("one"), RuntimeOwner.AGENT)
+        val operation = runtime.beginOperation(run, OperationKind.TOOL)
+        runtime.finishRun(run, clearSelectedChat = firstChat)
+        runtime.finishRun(run) // Repeated cleanup cannot discard the original release policy.
+        assertEquals(firstChat, runtime.snapshot().selectedChat)
+        runtime.endOperation(operation)
+        assertNull(runtime.snapshot().activeRun)
+        assertNull(runtime.snapshot().selectedChat)
+        runtime.selectChat(secondChat)
+        runtime.finishRun(run, clearSelectedChat = firstChat)
+        assertEquals(secondChat, runtime.snapshot().selectedChat)
+
+        runtime.selectChat(firstChat)
+        val next = runtime.beginRun(identity("two"), RuntimeOwner.AGENT)
+        runtime.finishRun(next, clearSelectedChat = secondChat)
+        assertEquals(firstChat, runtime.snapshot().selectedChat)
+    }
 
     private fun identity(label: String) = RunIdentity(
         firstChat.projectId, firstChat.chatId, RunId(label), CommandId(label),

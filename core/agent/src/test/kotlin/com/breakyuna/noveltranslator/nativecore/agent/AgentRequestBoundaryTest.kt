@@ -2,18 +2,137 @@ package com.breakyuna.noveltranslator.nativecore.agent
 
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.RuntimeCoordinator
+import com.breakyuna.noveltranslator.nativecore.engine.ModelRequestScheduler
+import com.breakyuna.noveltranslator.nativecore.engine.NativeModelGateway
+import com.breakyuna.noveltranslator.nativecore.engine.LocalSimulationModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.*
 import org.junit.Test
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AgentRequestBoundaryTest {
     private val identity = RunIdentity(ProjectId("project"), ChatId("chat"), RunId("run"), CommandId("command"))
+
+    @Test fun cancelledQueueEntryRemainsPreparedAndDoesNotStartAPreviewOrProviderCall() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val request = request(identity); val store = FakeRequestStore(); val sink = PreviewSink()
+        val scheduler = ModelRequestScheduler({ ModelRequestLimits(1, 60) }, { testScheduler.currentTime })
+        scheduler.execute(request.configuration) { }
+        var calls = 0
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model { calls++; response() }, scheduler = scheduler)
+        val boundary = AgentRequestBoundary(runtime, gateway, store, sink)
+        val queued = launch { boundary.complete(run, request) }
+        runCurrent()
+        assertEquals(RequestReservation.Prepared, store.reserveRequest(request))
+        assertEquals(1, runtime.snapshot().activeRun!!.outstandingOperations)
+        queued.cancelAndJoin()
+        assertEquals(0, calls); assertEquals(0, store.saveCount); assertEquals(0, sink.finishCount)
+        assertEquals(RequestReservation.Prepared, store.reserveRequest(request))
+        assertEquals(0, runtime.snapshot().activeRun!!.outstandingOperations)
+        // Only an explicit new call may dispatch the still-prepared attempt.
+        advanceTimeBy(1000); runCurrent()
+        boundary.complete(run, request)
+        assertEquals(1, calls); assertEquals(1, store.saveCount)
+        runtime.finishRun(run)
+    }
+
+    @Test fun stopWhileQueuedDoesNotMarkARequestAsSent() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val request = request(identity); val store = FakeRequestStore(); val sink = PreviewSink()
+        val scheduler = ModelRequestScheduler({ ModelRequestLimits(1, 60) }, { testScheduler.currentTime })
+        scheduler.execute(request.configuration) { }
+        var calls = 0
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model { calls++; response() }, scheduler = scheduler)
+        val queued = async {
+            try { AgentRequestBoundary(runtime, gateway, store, sink).complete(run, request); false }
+            catch (_: RuntimeUnavailable) { true }
+        }
+        runCurrent(); runtime.requestStop(run)
+        advanceTimeBy(1000); runCurrent()
+        assertTrue(queued.await()); assertEquals(0, calls)
+        assertEquals(RequestReservation.Prepared, store.reserveRequest(request))
+        assertEquals(0, sink.finishCount)
+        runtime.finishRun(run)
+    }
+
+    @Test fun stopDuringTheDispatchCallbackKeepsUncertaintyAndBlocksTransport() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val request = request(identity); val store = FakeRequestStore()
+        var calls = 0
+        val sink = object : AgentEventSink {
+            override fun previewStarted(key: AgentRequestKey) { runtime.requestStop(run) }
+            override fun preview(key: AgentRequestKey, event: AgentModelEvent) = Unit
+            override fun previewFinished(key: AgentRequestKey) = Unit
+        }
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model { calls++; response() })
+        try { AgentRequestBoundary(runtime, gateway, store, sink).complete(run, request); fail("Expected stop") }
+        catch (_: RuntimeUnavailable) { }
+        assertEquals(0, calls)
+        assertEquals(RequestReservation.Uncertain, store.reserveRequest(request))
+        assertEquals(0, runtime.snapshot().activeRun!!.outstandingOperations)
+        runtime.finishRun(run)
+    }
+
+    @Test fun stopDuringPreparationBeforeTheScheduledGatewayLeavesTheAttemptUnsent() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val request = request(identity); val store = FakeRequestStore()
+        store.afterReserve = { runtime.requestStop(run) }
+        var calls = 0
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model { calls++; response() })
+        try { AgentRequestBoundary(runtime, gateway, store, PreviewSink()).complete(run, request); fail("Expected stop") }
+        catch (_: RuntimeUnavailable) { }
+        assertEquals(0, calls); assertEquals(0, runtime.snapshot().activeRun!!.outstandingOperations)
+        assertEquals(RequestReservation.Prepared, store.reserveRequest(request))
+        runtime.finishRun(run)
+    }
+
+    @Test fun aReplyReceivedWithCancellationStillCrossesTheSchedulerAndIsStoredExactlyOnce() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val store = FakeRequestStore(); val request = request(identity)
+        var calls = 0
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model {
+            calls++; currentCoroutineContext().cancel(); response()
+        })
+        val boundary = AgentRequestBoundary(runtime, gateway, store, PreviewSink())
+        val job = launch {
+            try { boundary.complete(run, request); fail("Expected cancellation") }
+            catch (_: CancellationException) { }
+        }
+        job.join()
+        assertEquals(1, store.saveCount); assertEquals(1, calls)
+        boundary.complete(run, request)
+        assertEquals(1, store.saveCount); assertEquals(1, calls)
+        runtime.finishRun(run)
+    }
+
+    @Test fun concurrentPreparedCopiesDoNotSendTheSameAttemptTwiceAfterWaiting() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val request = request(identity); val store = FakeRequestStore(); val sink = PreviewSink()
+        val scheduler = ModelRequestScheduler({ ModelRequestLimits(1, 60) }, { testScheduler.currentTime })
+        scheduler.execute(request.configuration) { }
+        var calls = 0
+        val gateway = NativeModelGateway(runtime, LocalSimulationModel(), model { calls++; response() }, scheduler = scheduler)
+        val boundary = AgentRequestBoundary(runtime, gateway, store, sink)
+        val first = async { boundary.complete(run, request) }
+        val duplicate = async {
+            try { boundary.complete(run, request); false } catch (_: AgentAttemptUncertain) { true }
+        }
+        runCurrent(); assertEquals(0, calls)
+        advanceTimeBy(1000); runCurrent(); first.await()
+        advanceTimeBy(1000); runCurrent()
+        assertTrue(duplicate.await()); assertEquals(1, calls); assertEquals(1, store.saveCount)
+        assertEquals(1, sink.finishCount)
+        runtime.finishRun(run)
+    }
 
     @Test fun previewLifecycleKeepsDeltasSeparateAndAnnouncesOnlyDurablyRecordedCompletion() = runTest {
         val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)

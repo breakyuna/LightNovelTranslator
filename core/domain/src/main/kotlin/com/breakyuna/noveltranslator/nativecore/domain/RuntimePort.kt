@@ -19,10 +19,13 @@ interface RuntimePort {
     fun snapshot(): RuntimeSnapshot
     fun selectChat(chat: ChatIdentity?)
     fun beginRun(identity: RunIdentity, owner: RuntimeOwner): RunLease
+    /** Select and reserve atomically; rejection leaves the previous selection intact. */
+    fun beginRunSelectingChat(identity: RunIdentity, owner: RuntimeOwner, chat: ChatIdentity): RunLease
     fun beginOperation(run: RunLease, kind: OperationKind): OperationLease
     fun endOperation(operation: OperationLease)
     fun requestStop(run: RunLease): Boolean
-    fun finishRun(run: RunLease)
+    /** Optionally clear only this selection, atomically when this lease is actually released. */
+    fun finishRun(run: RunLease, clearSelectedChat: ChatIdentity? = null)
     fun beginProjectWrite(run: RunLease? = null): ProjectWriteLease
     fun endProjectWrite(write: ProjectWriteLease)
     fun beginSkillWrite(): SkillWriteLease

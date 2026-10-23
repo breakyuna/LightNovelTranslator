@@ -7,8 +7,7 @@ import com.breakyuna.noveltranslator.nativecore.engine.*
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -41,6 +40,224 @@ class TextTranslationIntegrationTest {
     }
     private fun identity(project: TextProjectSummary) = RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("start"))
     private fun service(model: TranslationModelBackend) = TextTranslationService(runtime, store, store, NativeModelGateway(runtime, model), DurableRunExecutor(runtime, runs))
+
+    @Test fun foregroundProjectScopeProcessesEveryPageWithinOneExecution() = runBlocking {
+        val project = create((1..45).joinToString("\n") { "source-$it" })
+        val local = LocalSimulationModel()
+        val owner = SupervisorJob()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, runs),
+            CoroutineScope(owner + Dispatchers.Default), service(local))
+        try {
+            val handle = runner.prepare(ForegroundTranslationRequest(project.ref, identity(project), local.configuration,
+                0, 0, 20, TranslationScope.PROJECT))
+            assertEquals(0L, store.open(project.ref).revision)
+            assertTrue(runner.foregroundStarted(handle.token))
+            val result = withTimeout(10_000) { handle.await() }
+            assertEquals(45, result.committedItems); assertEquals(3, result.requests)
+            assertEquals(45L, store.open(project.ref).revision)
+            assertEquals(1, runs.recent(project.ref).size)
+            assertEquals(StoredRunState.SUCCEEDED, runs.recent(project.ref).single().state)
+        } finally { owner.cancelAndJoin() }
+    }
+
+    @Test fun foregroundProjectStopOnAnotherPageRetainsOnlyCommittedFactsAndNeverRestarts() = runBlocking {
+        val project = create((1..45).joinToString("\n") { "source-$it" })
+        val local = LocalSimulationModel()
+        val entered = CompletableDeferred<Unit>()
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                if (calls.incrementAndGet() == 2) { entered.complete(Unit); awaitCancellation() }
+                return local.complete(request)
+            }
+        }
+        val owner = SupervisorJob()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, runs),
+            CoroutineScope(owner + Dispatchers.Default), service(backend))
+        try {
+            val handle = runner.prepare(ForegroundTranslationRequest(project.ref, identity(project), backend.configuration,
+                0, 0, 20, TranslationScope.PROJECT))
+            assertTrue(runner.foregroundStarted(handle.token))
+            withTimeout(10_000) { entered.await() }
+            assertTrue(runner.stop(handle.token))
+            try { withTimeout(10_000) { handle.await() }; fail("Expected stop") }
+            catch (timeout: TimeoutCancellationException) { throw timeout }
+            catch (_: CancellationException) { }
+            assertEquals(20L, store.open(project.ref).revision)
+            assertEquals(2, calls.get())
+            assertEquals(StoredRunState.INTERRUPTED, runs.recent(project.ref).single().state)
+            runs.recoverInterrupted(); assertEquals(2, calls.get())
+            assertEquals(ForegroundTranslationPhase.CANCELLED, runner.state.value!!.phase)
+            assertNull(runtime.snapshot().activeRun)
+        } finally { owner.cancelAndJoin() }
+    }
+
+    @Test fun usageSurvivesUnknownResponsesAndLongOverflowWithoutInterruptingCommits() = runBlocking {
+        val project = create("one\ntwo\nthree")
+        val local = LocalSimulationModel()
+        var calls = 0
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                val measurement = if (++calls <= 2) TokenMeasurement(Long.MAX_VALUE, UsageSource.ACTUAL)
+                    else TokenMeasurement(null, UsageSource.UNKNOWN)
+                val response = local.complete(request)
+                return TranslationModelResponse(response.outputs,
+                    RequestUsage(measurement, measurement, measurement, measurement, measurement), response.stop)
+            }
+        }
+        val result = service(backend).translateProject(project.ref, identity(project), backend.configuration, 0, 1)
+        assertEquals(3, result.committedItems); assertEquals(3L, result.revision)
+        assertEquals(UsageSource.UNKNOWN, result.usage.input.source)
+        val totals = requireNotNull(result.usageTotals)
+        assertEquals(3L, totals.responses)
+        assertEquals(java.math.BigInteger.valueOf(Long.MAX_VALUE).multiply(java.math.BigInteger.valueOf(2)), totals.input.actual)
+        assertEquals(1L, totals.input.unknownRequests)
+    }
+
+    @Test fun wholeProjectStreamsPastNoOpPagesAndAccumulatesOneDurableRun() = runBlocking {
+        val sources = (0..12).map { if (it == 5) "" else "source-$it" }
+        val project = create(sources.joinToString("\n"))
+        val rows = store.items(project.ref, 0).items
+        for (index in 0..3) store.edit(ManualTextEdit(CommandId("saved-$index"), project.ref,
+            rows[index].id, index.toLong(), rows[index].fingerprint, "saved-$index"))
+        store.edit(ManualTextEdit(CommandId("exclude"), project.ref, rows[4].id, 4, rows[4].fingerprint, "", TextItemStatus.EXCLUDED))
+        val requested = mutableListOf<List<ItemId>>()
+        val local = LocalSimulationModel()
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                requested.add(request.inputs.map { it.id }); return local.complete(request)
+            }
+        }
+        val result = service(backend).translateProject(project.ref, identity(project), backend.configuration, 5, 4)
+        assertEquals(7, result.committedItems); assertEquals(3, result.requests); assertEquals(12L, result.revision)
+        assertEquals(listOf(listOf(7L, 8L), listOf(9L, 10L, 11L, 12L), listOf(13L)),
+            requested.map { page -> page.map { it.value } })
+        val after = store.items(project.ref, 12).items
+        assertEquals("saved-0", after[0].translation)
+        assertEquals(TextItemStatus.EXCLUDED, after[4].status)
+        assertEquals(TextItemStatus.NONE, after[5].status)
+        assertEquals(0, store.readPage(project.ref).statistics?.translatableUnprocessed)
+        assertEquals(1, store.readPage(project.ref).statistics?.unprocessed)
+        assertEquals("[SIMULATION] source-12", after.last().translation)
+        val journal = runs.recent(project.ref).single()
+        assertEquals(StoredRunState.SUCCEEDED, journal.state)
+        assertEquals(7, journal.checkpoint.committedItems); assertEquals(3, journal.checkpoint.requests)
+        val snapshot = ByteArrayOutputStream(); store.saveProject(project.ref) { snapshot }
+        val imported = store.importProject(CommandId("whole-roundtrip")) { ByteArrayInputStream(snapshot.toByteArray()) }
+        assertEquals(12L, imported.revision)
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun failureOnAnotherPageKeepsTheFirstPageAndOnlyExplicitNewRunContinues() = runBlocking {
+        val project = create((1..45).joinToString("\n") { "source-$it" })
+        val local = LocalSimulationModel()
+        var calls = 0
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                if (++calls == 2) throw AgentModelFailure(ModelFailureKind.AUTHENTICATION)
+                return local.complete(request)
+            }
+        }
+        try { service(backend).translateProject(project.ref, identity(project), backend.configuration, 0, 20); fail("Expected failure") }
+        catch (failure: AgentModelFailure) { assertEquals(ModelFailureKind.AUTHENTICATION, failure.kind) }
+        assertEquals(2, calls); assertEquals(20L, store.open(project.ref).revision)
+        runs.recoverInterrupted(); assertEquals(2, calls)
+        val next = RunIdentity(project.ref.projectId, null, RunId("next-run"), CommandId("explicit-next"))
+        val result = service(local).translateProject(project.ref, next, local.configuration, 20, 20)
+        assertEquals(25, result.committedItems); assertEquals(2, result.requests); assertEquals(45L, result.revision)
+        assertEquals(45, store.items(project.ref, 45).items.count { it.status == TextItemStatus.PROCESSED })
+        assertEquals(2, runs.recent(project.ref).size)
+    }
+
+    @Test fun noOpProjectStillChecksRevisionAndNeverCallsTheModel() = runBlocking {
+        val project = create("\n\n")
+        val local = LocalSimulationModel()
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse = error("Blank rows reached model")
+        }
+        val result = service(backend).translateProject(project.ref, identity(project), backend.configuration, 0, 1)
+        assertEquals(0, result.requests); assertEquals(0, result.committedItems); assertEquals(0L, result.revision)
+        val next = RunIdentity(project.ref.projectId, null, RunId("wrong-revision"), CommandId("wrong-start"))
+        try { service(backend).translateProject(project.ref, next, backend.configuration, 1, 1); fail("Accepted stale revision") }
+        catch (_: TextProjectException) { }
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun foregroundHostUsesOneDurableExecutionAndOnlyCommitsAfterAcknowledgement() = runBlocking {
+        val project = create("one\ntwo")
+        val local = LocalSimulationModel()
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                calls.incrementAndGet(); return local.complete(request)
+            }
+        }
+        val owner = SupervisorJob()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, runs),
+            CoroutineScope(owner + Dispatchers.Default), service(backend))
+        try {
+            val handle = runner.prepare(ForegroundTranslationRequest(project.ref, identity(project), backend.configuration, 0, 0))
+            assertNotNull(runtime.snapshot().activeRun)
+            assertEquals(0, calls.get()); assertEquals(0L, store.open(project.ref).revision)
+            assertTrue(runner.foregroundStarted(handle.token))
+            val result = withTimeout(10_000) { handle.await() }
+            assertEquals(2, result.committedItems); assertEquals(1, calls.get())
+            assertEquals(2L, store.open(project.ref).revision)
+            assertEquals(StoredRunState.SUCCEEDED, runs.recent(project.ref).single().state)
+            assertNull(runtime.snapshot().activeRun)
+        } finally { owner.cancelAndJoin() }
+    }
+
+    @Test fun foregroundStopDuringNextRequestKeepsSavedBatchAndRequiresReviewWithoutReplay() = runBlocking {
+        val project = create((1..21).joinToString("\n") { "source-$it" })
+        val local = LocalSimulationModel()
+        val enteredSecondRequest = CompletableDeferred<Unit>()
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val backend = object : TranslationModelBackend {
+            override val configuration = local.configuration
+            override suspend fun complete(request: TranslationModelRequest): TranslationModelResponse {
+                if (calls.incrementAndGet() == 2) {
+                    enteredSecondRequest.complete(Unit)
+                    awaitCancellation()
+                }
+                return local.complete(request)
+            }
+        }
+        val owner = SupervisorJob()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, runs),
+            CoroutineScope(owner + Dispatchers.Default), service(backend))
+        try {
+            val handle = runner.prepare(ForegroundTranslationRequest(project.ref, identity(project), backend.configuration, 0, 0))
+            assertTrue(runner.foregroundStarted(handle.token))
+            withTimeout(10_000) { enteredSecondRequest.await() }
+            val waiter = launch(start = CoroutineStart.UNDISPATCHED) { handle.await() }
+            waiter.cancelAndJoin()
+            assertEquals(ForegroundTranslationPhase.RUNNING, runner.state.value!!.phase)
+            assertNotNull(runtime.snapshot().activeRun)
+            assertTrue(runner.stop(handle.token))
+            try { withTimeout(10_000) { handle.await() }; fail("Expected stopped execution") }
+            catch (timeout: TimeoutCancellationException) { throw timeout }
+            catch (_: CancellationException) { }
+            assertNull(runtime.snapshot().activeRun)
+            assertEquals(2, calls.get()); assertEquals(20L, store.open(project.ref).revision)
+            assertEquals(20, store.items(project.ref, 20).items.count { it.status == TextItemStatus.PROCESSED })
+            assertEquals(20, runner.state.value!!.progress!!.committedItems)
+            assertEquals(ForegroundTranslationPhase.CANCELLED, runner.state.value!!.phase)
+            // The in-flight request has no recorded response. Journal uncertainty is distinct
+            // from the runner's cancellation, and neither attachment nor recovery replays it.
+            val stored = runs.recent(project.ref).single()
+            assertEquals(StoredRunState.INTERRUPTED, stored.state); assertTrue(stored.needsReview)
+            assertEquals(20, stored.checkpoint.committedItems); assertEquals(2, stored.checkpoint.requests)
+            runs.recoverInterrupted()
+            assertNotNull(runner.attach(handle.token)); assertEquals(2, calls.get())
+        } finally { owner.cancelAndJoin() }
+    }
 
     @Test fun translatesOnlyCurrentPageAndPreservesProcessedExcludedAndBlankRows() = runBlocking {
         val project = create("keep\nexclude\n\nnew\nnext")

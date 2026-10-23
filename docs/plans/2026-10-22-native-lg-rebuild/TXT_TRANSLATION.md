@@ -1,8 +1,8 @@
 # TXT 翻译流水线首个切片
 
-后续源码边界：当前工作区新增持久执行记录与中断核对，应用 Room 升至 v3，尚未构建；本文原切片的 v2 CI 证据不覆盖该增量。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，当前进度见 HANDOFF §28；完整后台执行接续仍未完成。
+后续源码边界：持久执行记录/中断核对与应用 Room v3 已提交并有指定提交 CI 证据，见 [HANDOFF §33](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。§34 工作区另有本页模拟的应用级前台执行源码，未构建，见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)。
 
-当前验证边界：本地模拟和分批写回用例已有指定提交 CI 证据，设备流程/截图仍待验；唯一进度见 [HANDOFF §26—27](HANDOFF.md)。不能继承 §22 TXT 手工版的真机结论。
+当前验证边界：本地模拟和分批写回用例已有指定提交 CI 证据，设备流程/截图仍待验；唯一进度见 [HANDOFF §33](HANDOFF.md)。不能继承 §22 TXT 手工版的真机结论。
 
 本文定义当前本地模拟切片的源码契约，实际进度与验证仅记入 [HANDOFF](HANDOFF.md) §23。不代表统一网关 R11、完整批翻 R13、S1 或 Agent 已完成验收。
 
@@ -34,4 +34,10 @@ TranslationBatch 使用独立类型化端口；存储端验证运行归属和真
 
 已写网关和真实 Room/SQLite 集成测试，包含无效/截断响应、停止和迟到响应、批内回滚、伪造租约、后续失败/取消保留前批、显式继续、保存与重新导入；新增 UI 确认回调用例。均需 PC/获授权 CI 执行，本机只做静态审查，未实际构建。
 
-进程死亡后已提交项目事实可重开，但未提交响应、运行进度与用量不持久化；暂停/断点恢复、后台 Service、全工程任务、真实模型、Agent/审批及复杂格式均未完成。本地模拟由 ViewModel 协程拥有，不宣称后台任务或完整 S1 验收。
+进程死亡后已提交项目事实可重开，未提交响应不自动重放；§28 已增加执行阶段/计数及回执核对，完整用量账本与暂停/原 Run 跨进程接续仍缺。全工程任务、真实翻译模型、完整 Agent/审批及复杂格式均未完成。§23 历史切片由 ViewModel 协程拥有；§34 工作区迁移到应用级前台执行器和 Service，尚未构建或设备验收，仍不关闭完整 S1。
+
+## 后续整工程范围与用量
+
+范围的源码契约扩展见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md) 和 HANDOFF §39。`TextTranslationService.translateProject` / `translateReservedProject` 在单个持久运行中逐页读取，跨页共享修订、计数与用量；`translatePage` 保留原来的单页语义。后端仍为 LocalSimulationModel，新增范围不代表远程付费翻译接入。
+
+两类推理均经过 [共享请求调度](MODEL_SCHEDULING.md)。原 RequestUsage 是保守兼容投影；新增 RequestUsageTotals 分别保留实际、估算及未知响应数，精确累计不会被后续缺失值或 Long 上限抹掉。汇总仍只属于本次进程内运行，没有持久计费账本或错误响应费用覆盖。

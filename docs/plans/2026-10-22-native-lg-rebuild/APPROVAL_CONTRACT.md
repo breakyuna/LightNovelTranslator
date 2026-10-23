@@ -1,10 +1,10 @@
 # 审批与工程变更契约
 
-当前证据见 [HANDOFF §26—27](HANDOFF.md)：单条 TXT 持久审批已有指定提交 CI；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
+当前证据见 [HANDOFF §33](HANDOFF.md)：单条 TXT 持久审批已有指定提交 CI；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
 
-当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。尚未构建，未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度只见 HANDOFF §24。
+当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。单条切片已有指定提交 CI，尚未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度及最新 CI 只见 HANDOFF §33（原开发轮见 §24）。
 
-本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义正式接线前必须实现的恢复协议，不能视为现有端口能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。审批 UI、审批生产存储、审批工程写入口与 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约。
+本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义完整接线必须满足的恢复协议，不能视为现有端口的全部能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。单条 TXT 的审批 UI、持久存储和受控工程写入已有切片；完整多对象审批及 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约的全范围验收。
 
 ## 1. 实际代码与消费者
 

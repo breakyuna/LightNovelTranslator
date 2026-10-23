@@ -16,6 +16,10 @@ import com.breakyuna.noveltranslator.nativecore.engine.DurableRunExecutor
 import com.breakyuna.noveltranslator.nativecore.engine.CompatibleHttpTransport
 import com.breakyuna.noveltranslator.nativecore.engine.CompatibleModelCatalog
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelCatalogPort
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRunner
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /** One process owner for native IO and reservations; no legacy engine or model client. */
 class NativeAppGraph(context: Context) {
@@ -34,4 +38,6 @@ class NativeAppGraph(context: Context) {
     val modelCatalog: NativeModelCatalogPort = gateway
     val conversations = NativeKoogConversation(runtime, projects, agentStore, agentStore, agentStore, gateway)
     val translations = TextTranslationService(runtime, projects, projects, gateway, runs)
+    private val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val backgroundTranslations = ForegroundTranslationRunner(runtime, runs, executionScope, translations)
 }

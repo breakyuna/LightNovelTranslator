@@ -71,6 +71,12 @@ interface AgentModelPort {
     suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse
 }
 
+/** The gateway invokes this durable boundary once after queue eligibility and before transport. */
+interface DispatchAwareAgentModelPort : AgentModelPort {
+    suspend fun completePrepared(request: AgentModelRequest, beforeDispatch: suspend () -> Unit,
+        emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse
+}
+
 enum class ModelFailureKind {
     NETWORK, TIMEOUT, RATE_LIMIT, SERVER, AUTHENTICATION, CONTEXT_OVERFLOW, PARSING, CONTENT,
     TRUNCATED, CONTENT_FILTERED, EMPTY_RESPONSE, UNKNOWN,

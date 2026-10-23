@@ -42,7 +42,7 @@ Project（工程）
 ```
 
 - CI（`.github/workflows/android.yml`）：push 到 `main` / `beta` 或 `workflow_dispatch` 触发，执行 `./gradlew testDebugUnitTest lintDebug assembleRelease`，需要 4 个签名 Secrets；本地打签名 Release 需提供 `ANDROID_KEYSTORE_PATH` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` 环境变量。
-- 单元测试全部是 JVM Robolectric，无需真机，但需要 Android SDK。**本机（Termux/Android 开发设备）禁止执行任何构建与测试**，理由见上文；静态审查（`rg`/`read`/符号核对）是唯一的本地验证手段，汇报时如实说明"未构建验证"。
+- 单元测试在 JVM 执行：Android 模块的相关用例使用 Robolectric，domain/engine 使用纯 JVM 测试；Android 测试任务需要 Android SDK，无需真机。**本机（Termux/Android 开发设备）禁止执行任何构建与测试**，理由见上文；静态审查（`rg`/`read`/符号核对）是唯一的本地验证手段，汇报时如实说明"未构建验证"。
 - 截图测试：Roborazzi，用 `captureRoboImage(filePath = "src/test/screenshots/...")` 显式指定路径，产物在 `app/src/test/screenshots/`。改动 UI 后用 `./gradlew recordRoborazziDebug` 重新录制（同样只在 CI/PC 执行）。新增截图测试沿用现有 `@RunWith(RobolectricTestRunner)` + `@GraphicsMode(NATIVE)` + `@Config(qualifiers = Pixel8, sdk = [35])` 配置。
 - `app/src/test` 下的 `ExampleUnitTest` / `ExampleRobolectricTest` 是模板遗留，不代表真实覆盖。
 
@@ -77,9 +77,9 @@ app/src/main/java/com/breakyuna/noveltranslator/
     └── viewmodel/      # AppViewModel（旧阅读平台 ViewModel）
 ```
 
-实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM；其余为 Android Library。engine 已有进程内协调与生命周期原型；agent 已有类型化请求/只读工具边界，统一网关尚未完整接入；core/agent 新增 Koog 固定查询/准备差异适配，持久单条审批及结构化对话切片已有 CI 证据（见 HANDOFF §26—27），不代表完整 Agent/审批可用。storage 的独立 Room 索引、原生 `.lnt` TXT 数据库、手工事务与一致快照已有指定提交的 CI 证据；新增外部导入、复制、恢复、双语导出和临时产物清理的实现及验收边界见 HANDOFF §20—22。formats/workspace 完整业务尚未实现。
+实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM；其余为 Android Library。engine 已有进程内协调与生命周期原型；agent 已有类型化请求/只读工具边界，固定操作与结构化对话已接共享原生模型网关，完整协议/调度仍未实现；core/agent 新增 Koog 固定查询/准备差异适配，持久单条审批及结构化对话切片已有 CI 证据（见 HANDOFF §26—27），不代表完整 Agent/审批可用。storage 的独立 Room 索引、原生 `.lnt` TXT 数据库、手工事务与一致快照已有指定提交的 CI 证据；新增外部导入、复制、恢复、双语导出和临时产物清理的实现及验收边界见 HANDOFF §20—22。formats 新增 SRT/LRC/ASS/SSA 纯文本解析/写回核心，尚未运行测试或接入工程资产；workspace 完整业务尚未实现。
 
-新入口位于 `app/.../nativeapp`：`NativeAppGraph` 注入共享运行协调器和存储端口；`NativeProjectViewModel` 管理工程、分页预览、单条草稿与系统文件选择结果；`NativeProjectApp` 提供工程首页、Agent 入口、工作台、人工校对和编辑器，文案使用五语 Android 资源。MainActivity 已改接此入口，用户 CI/真机确认和已查看设备截图的范围见 HANDOFF §22；Agent 页已有明确标注的本地 Koog 查询/准备差异和单条审批演练（CI 已覆盖指定版本，设备验收待补），§25 新增自由文本对话、共享远程网关/兼容传输与模型设置实现（已有 CI，真实供应商未联调）；校对页已新增需确认的本页本地模拟流水线（已有 CI，新增设备验收待补），经 NativeModelGateway/翻译运行租约与 ProjectWriteStore 写回，不调用旧引擎。旧源码与用户文件保留，旧库尚未迁移。§28—30 工作区另增持久执行记录/中断核对、对话式 Agent 页、HTTP 端点/可选凭据、GET 模型列表及兼容 SSE 流式预览，均尚未构建；元数据获取不发送聊天或测试推理。实际进度与验证边界只记入重构 HANDOFF。
+新入口位于 `app/.../nativeapp`：`NativeAppGraph` 注入共享运行协调器和存储端口；`NativeProjectViewModel` 管理工程、分页预览、单条草稿与系统文件选择结果；`NativeProjectApp` 提供工程首页、Agent 入口、工作台、人工校对和编辑器，文案使用五语 Android 资源。MainActivity 已改接此入口，用户 CI/真机确认和已查看设备截图的范围见 HANDOFF §22；Agent 页已有明确标注的本地 Koog 查询/准备差异和单条审批演练（CI 已覆盖指定版本，设备验收待补），§25 新增自由文本对话、共享远程网关/兼容传输与模型设置实现（已有 CI，真实供应商未联调）；校对页已新增需确认的本页本地模拟流水线（已有 CI，新增设备验收待补），经 NativeModelGateway/翻译运行租约与 ProjectWriteStore 写回，不调用旧引擎。旧源码与用户文件保留，旧库尚未迁移。§28—32 的持久执行记录/中断核对、对话式 Agent 页、HTTP 端点/可选凭据、GET 模型列表、兼容 SSE 流式预览及单窗口设置/模型选择已提交并通过指定提交 CI（见 HANDOFF §33），尚无新增设备/真实供应商验收；元数据获取不发送聊天或测试推理。§34—36 工作区另有本页模拟翻译的应用级前台执行器、通知停止、界面重附着及生命周期/恢复修复源码；§37—38 另增 TXT 校对的状态/原译字面查询、快照统计、固定编辑窗口与本页人工批选/原子状态及清空写入，均尚未构建；§39 另增共享 FIFO/固定速率调度、整工程本地模拟、实际/估算/未知分离的本次用量汇总及四种字幕纯文本核心，均未构建，字幕尚未接入工程；Agent 对话仍由 ViewModel 持有，完整后台/任务接续未实现。实际进度与验证边界只记入重构 HANDOFF。
 
 理解旧行为时追踪 UI → AppViewModel → Repository / DAO → Engine / BookFileManager。新链路按 UI → 应用服务 → 业务核心/存储端口组织，Agent 与手动操作共用写入口，不再向旧 `AppViewModel` 继续集中新业务。用 `rg` 定位实际调用链。
 
@@ -87,7 +87,7 @@ app/src/main/java/com/breakyuna/noveltranslator/
 
 - **国际化迁移**：旧 UI 使用 `AppStrings` / `ChineseStrings` / `EnglishStrings`，维护旧链路时保持两种语言完整。新 Compose UI 按 `UI_SPEC.md` 迁至 Android 字符串资源，最终覆盖 LG 的中、英、日、韩、德五种语言；不要同时维护两套新文案权威来源。
 - **导航全面重做**：新工程首页、Agent、工作台、校对和全部管理页面按 `UI_SPEC.md` 实现。手机和平板共用路由定义并保留等价功能，不再冻结书架/历史/任务/设置的旧顺序。
-- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，迁移与 `app/schemas/` 用于旧数据读取/迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；`.lg` 仅用于 LG 兼容导入/导出，不得靠改后缀冒充转换。新应用记录使用独立 Room schema；当前源码 NativeAppDatabase 已升至 v3，保留 v1→v2 并新增 v2→v3 迁移；v2 的 Agent 历史/payload、请求/审批、会话和模型配置表已有指定提交 CI 证据，v3 持久执行记录与中断核对尚未构建，2.json/3.json 导出仍待 PC/CI 的 KSP 生成与审阅（保留既有 1.json，不手写）。改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
+- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，迁移与 `app/schemas/` 用于旧数据读取/迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；`.lg` 仅用于 LG 兼容导入/导出，不得靠改后缀冒充转换。新应用记录使用独立 Room schema；当前源码 NativeAppDatabase 已升至 v3，保留 v1→v2 并新增 v2→v3 迁移；v2 的 Agent 历史/payload、请求/审批、会话和模型配置表已有指定提交 CI 证据，v3 持久执行记录、中断核对及迁移用例已有指定提交 CI 证据（见 HANDOFF §33），2.json/3.json 导出仍待 PC/CI 的 KSP 生成与审阅（保留既有 1.json，不手写）。改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
 - 旧书籍文件迁移前仍由 `BookFileManager` 定位，禁止绕过它清理源数据；新原稿、工作区和产物按重构计划分配唯一文件拥有者。不得把大段正文或二进制塞进 UI 状态；请求日志列表只查轻量投影，完整正文按 ID 延迟加载。
 - `remember` / `rememberSaveable` 的 key 必须包含实际依赖的 Project / Chat / Asset / Run 身份，维护旧页面时也包含 Book / Edition 身份，防止切换对象复用旧状态。
 - 大列表必须用 `LazyColumn` / `LazyRow` / `LazyVerticalGrid` 并提供稳定唯一 key；不得在 Composable 或主线程做图片解码、整本文件读取、EPUB 解析、数据库循环和网络请求；高频 Flow（进度、任务状态、日志）只在可见时订阅，避免整页无条件重组。页面切换动画保持短促（现有 NavHost 用 90/70ms fade）。

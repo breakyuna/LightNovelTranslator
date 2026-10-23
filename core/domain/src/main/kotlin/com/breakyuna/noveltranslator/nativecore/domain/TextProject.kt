@@ -85,6 +85,19 @@ class TextItemPage(val revision: Long, items: List<TextProjectItem>) {
     val items: List<TextProjectItem> = java.util.Collections.unmodifiableList(ArrayList(items))
 }
 
+/** Summary and bounded rows from the same read transaction, even while a run commits batches. */
+class TextProjectPage(
+    val summary: TextProjectSummary, items: List<TextProjectItem>,
+    val statistics: TextItemStatistics? = null,
+    val matchingItems: Int = summary.itemCount,
+) {
+    val items: List<TextProjectItem> = java.util.Collections.unmodifiableList(ArrayList(items))
+    init {
+        require(matchingItems in 0..summary.itemCount)
+        require(statistics == null || statistics.total == summary.itemCount)
+    }
+}
+
 /** Manual UI intent, never a model/Agent authorization. All fields participate in deduplication. */
 class ManualTextEdit(
     val commandId: CommandId,
@@ -184,6 +197,10 @@ interface TextProjectPort {
     ): TextProjectSummary
 
     suspend fun open(ref: LocalProjectRef): TextProjectSummary
+    suspend fun readPage(ref: LocalProjectRef, afterId: Long = 0, limit: Int = 100): TextProjectPage
+    suspend fun queryPage(ref: LocalProjectRef, query: TextItemQuery, afterId: Long = 0, limit: Int = 100): TextProjectPage
+    /** Current values for fixed members, regardless of whether an edit still matches [query]. */
+    suspend fun readItemWindow(ref: LocalProjectRef, query: TextItemQuery, window: TextItemWindow): TextProjectPage
     suspend fun importProject(commandId: CommandId, source: () -> InputStream): TextProjectSummary
     suspend fun copyProject(commandId: CommandId, ref: LocalProjectRef): TextProjectSummary
     suspend fun recoverProjects(): ProjectRecoveryReport
@@ -191,6 +208,11 @@ interface TextProjectPort {
     suspend fun item(ref: LocalProjectRef, itemId: ItemId): TextItemDetails?
     suspend fun items(ref: LocalProjectRef, revision: Long, afterId: Long = 0, limit: Int = 100): TextItemPage
     suspend fun edit(command: ManualTextEdit): ManualEditReceipt
+    /** Read-only preparation. Null means the fixed selection already has the requested values. */
+    suspend fun prepareBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        window: TextItemWindow, change: TextBatchChange): ManualTextBatch?
+    /** Atomic all-or-none write and durable replay of the exact prepared payload. */
+    suspend fun editBatch(command: ManualTextBatch): ManualBatchReceipt
     suspend fun receipt(ref: LocalProjectRef, commandId: CommandId): ManualEditReceipt?
     suspend fun saveProject(ref: LocalProjectRef, destination: () -> OutputStream)
     suspend fun exportTxt(ref: LocalProjectRef, destination: () -> OutputStream)
