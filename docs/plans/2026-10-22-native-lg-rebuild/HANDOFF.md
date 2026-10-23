@@ -1030,3 +1030,10 @@ Agent 实际查看 `/sdcard/DCIM/Screenshots` 最新五张截图（2026-10-23 00
 ### 验证边界
 
 本机仅执行 `git diff --check`、冲突标记扫描、`tools/rebuild/check_structure.py` 与静态导入/符号核对，未运行 Gradle、JUnit、Lint、KSP、APK、Roborazzi 或设备/供应商。v3 schema、KSP/Room、全部新适配器与 UI 交互必须由 CI/PC 和真机验证；未取得证据前不关闭 S1/S2、G1—G5 或 98 项矩阵。未提交前本节不代表远端状态。
+
+### §49 CI 结果与修复（2026-10-24）
+
+- 分支 `refactor/translation-agent-2026-10`，提交 `2643b2c`，手动触发 [Actions 40007619940](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40007619940)：test / lint / release 全部 success。
+- test 共 1278 项，0 failure/error/skip（app 726；core 552，含新格式、协议、规划、规则与多资产用例）。lint 与签名 release 成功，APK 22,469,614 字节。
+- 连续修复：资源字符串中的 `Ren'Py` 撇号；格式注册表公共类型；资产回执 `Pair` 访问；v1/v2 懒升级与版本感知 item 列；导入校验的修订链；RenPy raw→普通引号配对；工作台测试调用与质量筛选滚动。
+- 仍未取得：真机/视觉、真实供应商、Robolectric 截图、Room 2/3/4/5 schema 导出、PDF/RGSS/工作区/旧数据迁移和完整 UI。CI 全绿只证明本批量源码可编译、可运行现有与新增 JVM/Robolectric 用例及可签名打包，不关闭 S1/S2、G1—G5 或 98 项矩阵。
