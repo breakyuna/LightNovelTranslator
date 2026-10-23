@@ -82,7 +82,7 @@ private fun QualityFilterDialog(view: TextQualitySelection, dismiss: () -> Unit,
     var term by rememberSaveable(view.index.ref, view.index.revision) { mutableStateOf(view.filter.termRuleId) }
     QualityDialog(dismiss) {
         Text(stringResource(R.string.native_quality_filter), style = MaterialTheme.typography.titleLarge)
-        LazyColumn(Modifier.weight(1f)) {
+        LazyColumn(Modifier.weight(1f).testTag("native-quality-filter-list")) {
             items(TextQualityOutcome.entries, key = { "outcome:" + it.name }) { item ->
                 val count = when (item) {
                     TextQualityOutcome.ALL -> view.index.facts.size
