@@ -13,6 +13,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranslationModeCheckpointTest {
+    private val REF = LocalProjectRef(ProjectId("project"), ProjectInstanceId("instance"), RecoveryGeneration(1))
     private fun row(
         id: Long,
         source: String,

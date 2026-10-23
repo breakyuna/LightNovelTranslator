@@ -112,15 +112,21 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat,
                                     model::fetchAgentModels, model::cancelAction, model::inspectAgentMessage, model::closeAgentMessage,
                                     model.agentStream)
-                                NativePage.WORKBENCH -> Workbench(state, model::cleanupOutputs, model::prepareExport, {
-                                    if (model.prepareAddAsset()) inputAsset.launch(arrayOf("*/*"))
-                                }, { assetId ->
-                                    model.prepareAssetExport(assetId)?.let { saveAsset.launch(it) }
-                                }) { kind ->
-                                    model.prepareExport(kind)?.let { name ->
-                                        if (kind == NativeExport.PROJECT) saveProject.launch(name) else saveText.launch(name)
-                                    }
-                                }
+                                NativePage.WORKBENCH -> Workbench(
+                                    state = state,
+                                    cleanup = model::cleanupOutputs,
+                                    export = { kind ->
+                                        model.prepareExport(kind)?.let { name ->
+                                            if (kind == NativeExport.PROJECT) saveProject.launch(name) else saveText.launch(name)
+                                        }
+                                    },
+                                    addAsset = {
+                                        if (model.prepareAddAsset()) inputAsset.launch(arrayOf("*/*"))
+                                    },
+                                    exportAsset = { assetId ->
+                                        model.prepareAssetExport(assetId)?.let { saveAsset.launch(it) }
+                                    },
+                                )
                                 NativePage.RULES -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy)
                                 NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage,
                                     model::simulatePage, notificationsGranted, model::queryProofreading,
