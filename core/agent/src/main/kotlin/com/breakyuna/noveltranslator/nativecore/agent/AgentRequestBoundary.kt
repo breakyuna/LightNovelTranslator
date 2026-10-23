@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.nativecore.agent
 
 import com.breakyuna.noveltranslator.nativecore.domain.AgentEventSink
 import com.breakyuna.noveltranslator.nativecore.domain.AgentHistory
+import com.breakyuna.noveltranslator.nativecore.domain.AgentModelEvent
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelFailure
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelPort
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelRequest
@@ -9,10 +10,12 @@ import com.breakyuna.noveltranslator.nativecore.domain.AgentModelResponse
 import com.breakyuna.noveltranslator.nativecore.domain.AgentPersistencePort
 import com.breakyuna.noveltranslator.nativecore.domain.AgentRequestKey
 import com.breakyuna.noveltranslator.nativecore.domain.AssistantPart
+import com.breakyuna.noveltranslator.nativecore.domain.DispatchAwareAgentModelPort
 import com.breakyuna.noveltranslator.nativecore.domain.InvalidAgentHistory
 import com.breakyuna.noveltranslator.nativecore.domain.ModelFailureKind
 import com.breakyuna.noveltranslator.nativecore.domain.ModelStopReason
 import com.breakyuna.noveltranslator.nativecore.domain.OperationKind
+import com.breakyuna.noveltranslator.nativecore.domain.OperationLease
 import com.breakyuna.noveltranslator.nativecore.domain.RequestReservation
 import com.breakyuna.noveltranslator.nativecore.domain.RunLease
 import com.breakyuna.noveltranslator.nativecore.domain.RuntimeOwner
@@ -85,8 +88,9 @@ class AgentRequestBoundary(
                     // Presentation failure cannot cause another paid request.
                 }
             }
-            val response = if (model is DispatchAwareAgentModelPort)
-                model.completePrepared(request, ::beforeDispatch, emit)
+            val dispatchAware = model as? DispatchAwareAgentModelPort
+            val response = if (dispatchAware != null)
+                dispatchAware.completePrepared(request, ::beforeDispatch, emit)
             else {
                 beforeDispatch()
                 model.complete(request, emit)
