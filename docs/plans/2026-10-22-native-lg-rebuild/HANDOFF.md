@@ -636,3 +636,24 @@ Agent 实际查看 `/sdcard/DCIM/Screenshots` 最新五张截图（2026-10-23 00
 - 临时探针 `TempDialogIdleProbeTest`（`5d76b0f`，[#39891957322](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39891957322)，idling 超时收紧到 5 秒）逐项结果：对话框纯文本**通过**；普通文本框、`singleLine`+Uri 键盘、密码变换、`rememberSaveable`、限高滚动三文本框、完整表单全部失败；`DialogProperties(usePlatformDefaultWidth = false)` + 滚动三文本框**通过**。结论：Robolectric 下 wrap-content 对话框窗口只要包含文本框就不收敛，与既有 `Editor`（固定窗口）一致；与 `AlertDialog`、限定宽度、滚动、密钥字段无关。
 - 最终处理：设置表单与模型选择统一为 `DialogProperties(usePlatformDefaultWidth = false)` + 全屏 scrim + 居中卡片（宽 280—560dp、表单滚动区限高 420dp、允许一次/取消固定在滚动区外、点击 scrim 关闭）。字段、校验、同端点凭据复用、错误呈现、按钮启用条件与五语文案均未改变。临时探针已删除。
 - 证据边界：新壳层尚未构建与测试，结论以再次重跑的 Actions 为准；组件截图与真机视觉（含横屏、点击外部关闭、键盘布局）仍需 CI/PC 与设备检查。无数据库、迁移、请求协议或安全边界变更。
+
+## 32. 第二十一轮：核对第四次 CI 失败并审查测试（2026-10-23）
+
+用户要求修复并彻底检查其他测试；本轮未获提交、推送或触发 Actions 授权，仅修改工作区与静态审查。
+
+### 已有提交的全量报告
+
+- 在线核对 `a9c2530` 的 [#131 / 39892879953](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39892879953)：release/lint 成功，签名校验及 APK 上传成功，test 失败。本轮下载并解析该次上传的全部 93 份 JUnit XML：app 660 项、core:agent 25 项、core:storage 67 项、core:domain 66 项、core:engine 66 项，共 884 项，1 项失败，0 error、0 skipped。这些是 `a9c2530` 的历史执行证据，不覆盖本轮工作区修改。
+- 唯一失败为 `NativeWorkspaceScreenshotTest.localModelDiscoverySelectsAnIdAndSavesWithoutAKey`：原第 155 行找不到 `fixture-local-model`。该类其他 12 项通过，包含此前 idle 超时的凭据用例；此次没有 `AppNotIdleException`。原用例缺少发现回调次数、选择器出现及返回表单的中间断言，现有报告不能单独判定是发现按钮触摸未生效还是选择器未呈现，不能把猜测写成已证实根因。
+
+### 工作区修复及测试审查
+
+- 设置表单和选择器改在同一个固定窗口 Dialog 内切换，取消选择只返回原表单，字段及表单滚动状态保留。移除全屏父点击/卡片空点击的结构，遮罩改为卡片后方的兄弟节点；Material Surface 自身隔离背后的触摸。表单/列表滚动区按剩余高度分配，保留底部操作按钮，并处理 IME 留白。以上是本轮实现调整，效果待新 CI/设备验证，不声明已证实解决缺失节点。
+- 原失败用例增加发现触发、单窗口、选择器/表单互斥、可见模型、保存次数与关闭完成断言；保存夹具调用真实完成回调。截图改为显式捕获表单节点，避免仍有 Dialog 时默认 `onRoot()` 的多根歧义，也避免保存关闭后捕获空背景。阶段断言失败时将全部未合并语义根写入测试错误，方便下一次 CI 定位。
+- 新增 3 个尚未运行的 UI 回归：延迟回调/加载状态、横屏小视口、80 项列表滚动和搜索/无匹配、选择返回保存；取消及外部点击返回/关闭、不重复获取、卡片内容点击不穿透；空列表仍可手填模型。保留触摸点击，不改用语义 OnClick 绕过真实点击链路，不加 sleep 或扩大 idle 超时。
+- 逐项静态检查相对 `78c380d` 改动的 12 个测试文件：原生 UI、请求回执边界、端点校验、流式预览、SSE/兼容传输、模型发现、持久运行、消息详情/凭据存储/运行恢复及翻译集成。核对夹具、调用链、断言契约、取消/等待、IO/Room 线程及资源关闭；未更改已通过用例的业务期望。
+- 其他补强：凭据 UI 用例增加两次保存的计数和新端点断言；流式取消回执用例将 worker.join 纳入既有 5 秒超时；消息详情用例补不同 recovery generation 的 WRONG_IDENTITY 断言；端点/Key 校验用例补异常堆栈不得含提交值的脱敏断言。
+
+### 验证边界
+
+本机仅做静态审查，未实际构建、测试或 Lint；`tools/rebuild/check_structure.py`（仅文本结构、依赖/导入边界、Kotlin 分隔符、文档/CI 任务引用）及 `git diff --check` 通过，冲突标记扫描未发现匹配。另从 Google Maven 的 Compose ui-test 1.7.0 源码核对新增触摸扩展/查询 API 的导入方式。没有运行 Gradle、单文件 Kotlin/JUnit、真实供应商请求或设备交互，没有生成/查看本轮截图。新增 UI 用例和改动后的既有用例均待 CI/PC 执行；不能将旧提交的 883 项通过当作新代码通过。本轮不关闭 S1/S2 或完整产品验收，未提交、推送或触发 Actions。

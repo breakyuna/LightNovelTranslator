@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
@@ -19,6 +20,11 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.printToString
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
@@ -141,38 +147,148 @@ class NativeWorkspaceScreenshotTest {
 
     @Test fun localModelDiscoverySelectsAnIdAndSavesWithoutAKey() {
         var fetches = 0
+        var saves = 0
         var savedModel = ""
         var savedKey: String? = "not saved"
-        compose.setContent { NativeTheme {
-            NativeModelDialog(null, false, null, false, {}, { endpoint, model, key, _ ->
-                assertEquals("http://127.0.0.1:11434/v1", endpoint); savedModel = model; savedKey = key
+        val visible = mutableStateOf(true)
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            if (visible.value) NativeModelDialog(null, false, null, false, { visible.value = false }, { endpoint, model, key, done ->
+                assertEquals("http://127.0.0.1:11434/v1", endpoint); saves++; savedModel = model; savedKey = key; done()
             }, { _, key, stored, result ->
                 fetches++; assertEquals("", key); assertNull(stored); result(listOf("fixture-local-model"))
             }, {})
-        } }
+        } } }
         compose.onNodeWithText("Ollama").performClick()
-        compose.onNodeWithText(context.getString(R.string.native_models_fetch)).performScrollTo().performClick()
+        fetchModels()
+        compose.runOnIdle { assertEquals("Discovery click must reach the callback", 1, fetches) }
+        assertModelStage("native-model-picker")
+        compose.onNodeWithTag("native-model-form").assertDoesNotExist()
+        compose.onNodeWithText("fixture-local-model").assertIsDisplayed()
         compose.onNodeWithText("fixture-local-model").performClick()
+        assertModelStage("native-model-form")
+        compose.onNodeWithTag("native-model-picker").assertDoesNotExist()
+        compose.onNodeWithTag("native-model-form").captureRoboImage(filePath = "src/test/screenshots/native-model-local.png")
         compose.onNodeWithText(context.getString(R.string.native_save)).performClick()
-        assertEquals(1, fetches); assertEquals("fixture-local-model", savedModel); assertEquals("", savedKey)
-        compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-model-local.png")
+        compose.runOnIdle {
+            assertEquals(1, fetches); assertEquals(1, saves)
+            assertEquals("fixture-local-model", savedModel); assertEquals("", savedKey); assertFalse(visible.value)
+        }
+        compose.onNodeWithTag("native-model-window").assertDoesNotExist()
+    }
+
+    @Test @Config(qualifiers = "w640dp-h360dp-land-mdpi", sdk = [35])
+    fun delayedDiscoveryCanScrollSearchAndReturnToTheSameFormInACompactWindow() {
+        val loading = mutableStateOf(false)
+        var deliver: ((List<String>) -> Unit)? = null
+        var savedModel = ""
+        var savedKey: String? = null
+        val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "http://localhost:1234/v1", "original", false)
+        compose.setContent { NativeTheme {
+            NativeModelDialog(settings, loading.value, null, loading.value, {}, { _, model, key, _ ->
+                savedModel = model; savedKey = key
+            }, { _, _, _, result -> deliver = result; loading.value = true }, { loading.value = false })
+        } }
+        compose.onNodeWithText(context.getString(R.string.native_save)).assertIsDisplayed()
+        fetchModels()
+        assertModelStage("native-model-form")
+        compose.runOnIdle {
+            assertTrue("Fixture must receive a discovery request", loading.value)
+            requireNotNull(deliver)((1..80).map { "fixture-model-${it.toString().padStart(3, '0')}" })
+            loading.value = false
+        }
+        assertModelStage("native-model-picker")
+        compose.onNodeWithTag("native-model-list").performScrollToNode(hasText("fixture-model-080"))
+        compose.onNodeWithText("fixture-model-080").assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_models_search)).performTextReplacement("missing")
+        compose.onNodeWithText(context.getString(R.string.native_models_no_match)).assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_models_search)).performTextReplacement("070")
+        compose.onNodeWithTag("native-model-list").performScrollToNode(hasText("fixture-model-070"))
+        compose.onNodeWithText("fixture-model-070").performClick()
+        assertModelStage("native-model-form")
+        compose.onNodeWithText(context.getString(R.string.native_save)).assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals("fixture-model-070", savedModel); assertEquals("", savedKey) }
+    }
+
+    @Test fun pickerCancelAndOutsideTapPreserveTheFormAndDoNotRefetch() {
+        var fetches = 0
+        var dismisses = 0
+        var savedModel = ""
+        val visible = mutableStateOf(true)
+        val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "http://localhost:1234/v1", "original", false)
+        compose.setContent { NativeTheme {
+            if (visible.value) NativeModelDialog(settings, false, null, false, { dismisses++; visible.value = false },
+                { _, model, _, _ -> savedModel = model }, { _, _, _, result -> fetches++; result(listOf("fixture-model")) }, {})
+        } }
+        // A touch on ordinary card content must not hit the backdrop behind it.
+        compose.onNodeWithText(context.getString(R.string.native_model_configure)).performClick()
+        compose.runOnIdle { assertEquals(0, dismisses) }
+        fetchModels()
+        assertModelStage("native-model-picker")
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        assertModelStage("native-model-form")
+        compose.onNodeWithText(context.getString(R.string.native_models_count, 1)).performScrollTo().performClick()
+        assertModelStage("native-model-picker")
+        compose.onNodeWithTag("native-model-scrim").performTouchInput { click(Offset(2f, 2f)) }
+        assertModelStage("native-model-form")
+        compose.onNodeWithText(context.getString(R.string.native_save)).performClick()
+        compose.runOnIdle { assertEquals(1, fetches); assertEquals(0, dismisses); assertEquals("original", savedModel) }
+        compose.onNodeWithTag("native-model-scrim").performTouchInput { click(Offset(2f, 2f)) }
+        compose.onNodeWithTag("native-model-window").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(1, dismisses) }
+    }
+
+    @Test fun emptyDiscoveryStillAllowsAnExplicitManualModel() {
+        var fetches = 0
+        var savedModel = ""
+        compose.setContent { NativeTheme {
+            NativeModelDialog(null, false, null, false, {}, { _, model, _, _ -> savedModel = model },
+                { _, _, _, result -> fetches++; result(emptyList()) }, {})
+        } }
+        compose.onNodeWithText("LM Studio").performClick()
+        fetchModels()
+        compose.runOnIdle { assertEquals(1, fetches) }
+        assertModelStage("native-model-form")
+        compose.onNodeWithTag("native-model-picker").assertDoesNotExist()
+        compose.onNodeWithText(context.getString(R.string.native_models_empty)).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_model_name)).performScrollTo().performTextReplacement("manual-model")
+        compose.onNodeWithText(context.getString(R.string.native_save)).performClick()
+        compose.runOnIdle { assertEquals("manual-model", savedModel) }
+    }
+
+    private fun fetchModels() {
+        compose.onNodeWithText(context.getString(R.string.native_models_fetch))
+            .performScrollTo().assertIsDisplayed().performClick()
+    }
+
+    private fun assertModelStage(tag: String) {
+        try {
+            compose.onAllNodesWithTag("native-model-window").assertCountEquals(1)
+            compose.onNodeWithTag(tag).assertIsDisplayed()
+        } catch (failure: AssertionError) {
+            // Keep all dialog/activity roots in the CI XML report before the fixture is disposed.
+            val roots = compose.onAllNodes(isRoot(), useUnmergedTree = true).printToString(maxDepth = Int.MAX_VALUE)
+            throw AssertionError("Expected model dialog stage: $tag\n$roots", failure)
+        }
     }
 
     @Test fun savedCredentialCannotFollowAnEditedEndpointImplicitly() {
         val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "https://example.com/api/models", "model", true)
         var capturedKey: String? = "not saved"
         var capturedEndpoint = ""
+        var saves = 0
         compose.setContent { NativeTheme {
             NativeModelDialog(settings, false, null, false, {}, { endpoint, _, key, _ ->
-                capturedEndpoint = endpoint; capturedKey = key
+                saves++; capturedEndpoint = endpoint; capturedKey = key
             }, { _, _, _, _ -> }, {})
         } }
         compose.onNodeWithText(context.getString(R.string.native_save)).performClick()
+        assertEquals(1, saves)
         assertNull(capturedKey)
         assertEquals(settings.endpoint, NativeModelEndpoint.normalize(capturedEndpoint))
         compose.onNodeWithText(context.getString(R.string.native_model_endpoint)).performTextReplacement("http://192.168.1.2:1234/v1")
         compose.onNodeWithText(context.getString(R.string.native_save)).performClick()
-        assertEquals("", capturedKey)
+        assertEquals(2, saves); assertEquals("", capturedKey)
+        assertEquals("http://192.168.1.2:1234/v1", capturedEndpoint)
     }
 
     @Test fun composerStaysVisibleWhileTimelineScrollsAndMessagesUseRoles() {

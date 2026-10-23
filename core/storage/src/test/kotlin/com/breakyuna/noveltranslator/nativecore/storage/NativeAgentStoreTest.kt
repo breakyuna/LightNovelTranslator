@@ -186,6 +186,10 @@ class NativeAgentStoreTest {
         val detail = agent.messageDetail(project.ref, chat, message.id.value)
         assertEquals(body, detail.text); assertEquals("fixture thinking", detail.reasoning)
         try { agent.messageDetail(project.ref, ChatId("other-chat"), message.id.value); fail() } catch (_: IllegalArgumentException) { }
+        try {
+            agent.messageDetail(project.ref.copy(generation = RecoveryGeneration(project.ref.generation.value + 1)), chat, message.id.value)
+            fail("Accepted a different recovery generation")
+        } catch (error: TextProjectException) { assertEquals(TextProjectException.Reason.WRONG_IDENTITY, error.reason) }
         val copy = projects.copyProject(CommandId("details-copy"), project.ref)
         try { agent.messageDetail(copy.ref, chat, message.id.value); fail() } catch (_: IllegalArgumentException) { }
     }

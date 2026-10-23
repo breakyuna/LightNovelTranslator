@@ -13,6 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -23,9 +24,8 @@ import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /**
- * Compose never reports idle for text fields in a wrap-content dialog window (both [AlertDialog]
- * and a default [Dialog]): the dialog's intrinsic width pass and the text field keep remeasuring.
- * A fixed-size window with a centered, bounded card settles, matching the existing Editor dialog.
+ * CI's Robolectric probes did not settle text fields in a wrap-content dialog window.
+ * Keep a fixed-size window and switch between the form and picker inside that same window.
  */
 @Composable
 internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, error: Int?, loading: Boolean,
@@ -49,6 +49,7 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
     val stored = settings?.reference?.takeIf { keepKey && canKeep && secret.isEmpty() }
     var available by remember(endpoint, secret, stored) { mutableStateOf<List<String>?>(null) }
     var picker by remember(endpoint, secret, stored) { mutableStateOf(false) }
+    val formScroll = rememberScrollState()
     val latestLoading by rememberUpdatedState(loading)
     val latestCancel by rememberUpdatedState(cancel)
     DisposableEffect(Unit) { onDispose { if (latestLoading) latestCancel() } }
@@ -60,14 +61,16 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
             save(endpoint, model, if (stored != null) null else secret) { secret = ""; dismiss() }
         } catch (_: InvalidModelSettings) { invalid = true }
     }
-    Dialog(onDismissRequest = { if (!busy || loading) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        DialogScrim(onDismiss = { if (!busy || loading) close() }) {
-            Surface(Modifier.padding(24.dp).widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().clickable(
-                interactionSource = remember { MutableInteractionSource() }, indication = null) { },
+    fun dismissVisibleContent() { if (picker) picker = false else if (!busy || loading) close() }
+    Dialog(onDismissRequest = { dismissVisibleContent() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        DialogScrim(onDismiss = { dismissVisibleContent() }) {
+            Surface(Modifier.padding(24.dp).imePadding().widthIn(max = 560.dp).fillMaxWidth(),
                 shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                if (picker) {
+                    NativeModelPicker(requireNotNull(available), model, { model = it; picker = false }, { picker = false })
+                } else Column(Modifier.testTag("native-model-form").padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Text(stringResource(R.string.native_model_configure), style = MaterialTheme.typography.headlineSmall)
-                    Column(Modifier.fillMaxWidth().heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    Column(Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 420.dp).verticalScroll(formScroll),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(stringResource(R.string.native_model_config_notice))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -113,32 +116,23 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
             }
         }
     }
-    if (picker) NativeModelPicker(requireNotNull(available), model, { model = it; picker = false }, { picker = false })
 }
 
 @Composable
 private fun NativeModelPicker(models: List<String>, current: String, select: (String) -> Unit, dismiss: () -> Unit) {
     var search by remember { mutableStateOf("") }
     val filtered = remember(models, search) { models.filter { it.contains(search, ignoreCase = true) } }
-    Dialog(onDismissRequest = dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        DialogScrim(onDismiss = dismiss) {
-            Surface(Modifier.padding(24.dp).widthIn(min = 280.dp, max = 560.dp).fillMaxWidth().clickable(
-                interactionSource = remember { MutableInteractionSource() }, indication = null) { },
-                shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text(stringResource(R.string.native_models_select), style = MaterialTheme.typography.headlineSmall)
-                    OutlinedTextField(search, { search = it.take(200) }, label = { Text(stringResource(R.string.native_models_search)) }, singleLine = true)
-                    if (filtered.isEmpty()) Text(stringResource(R.string.native_models_no_match), Modifier.padding(12.dp))
-                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
-                        items(filtered, key = { it }) { id -> TextButton(onClick = { select(id) }, modifier = Modifier.fillMaxWidth()) {
-                            Text(id, color = if (id == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                        } }
-                    }
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
-                    }
-                }
-            }
+    Column(Modifier.testTag("native-model-picker").padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Text(stringResource(R.string.native_models_select), style = MaterialTheme.typography.headlineSmall)
+        OutlinedTextField(search, { search = it.take(200) }, label = { Text(stringResource(R.string.native_models_search)) }, singleLine = true)
+        if (filtered.isEmpty()) Text(stringResource(R.string.native_models_no_match), Modifier.padding(12.dp))
+        LazyColumn(Modifier.testTag("native-model-list").fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp)) {
+            items(filtered, key = { it }) { id -> TextButton(onClick = { select(id) }, modifier = Modifier.fillMaxWidth()) {
+                Text(id, color = if (id == current) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            } }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
         }
     }
 }
@@ -146,7 +140,11 @@ private fun NativeModelPicker(models: List<String>, current: String, select: (St
 /** Full-bleed dialog window: dismiss on a scrim tap, which a fixed-size window no longer provides. */
 @Composable
 private fun DialogScrim(onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxSize().clickable(
-        interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() },
-        contentAlignment = Alignment.Center) { content() }
+    Box(Modifier.testTag("native-model-window").fillMaxSize(), contentAlignment = Alignment.Center) {
+        // Surface blocks touches behind the card. A sibling backdrop needs no no-op card click
+        // handler, and does not merge the form/list into a full-window clickable semantics node.
+        Box(Modifier.matchParentSize().testTag("native-model-scrim").clickable(
+            interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() })
+        content()
+    }
 }

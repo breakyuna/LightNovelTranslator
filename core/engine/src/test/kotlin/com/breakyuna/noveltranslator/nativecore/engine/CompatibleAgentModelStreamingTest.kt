@@ -125,8 +125,8 @@ class CompatibleAgentModelStreamingTest {
                 val response = model.complete(request) { }
                 withContext(NonCancellable) { result.complete(response) }
             }
-            owner.set(worker); worker.start(); worker.join()
-            val response = withTimeout(5000) { result.await() }
+            owner.set(worker); worker.start()
+            val response = withTimeout(5000) { worker.join(); result.await() }
             assertTrue(closed.get()); assertEquals(20L, response.usage.input.tokens)
             assertEquals(ModelStopReason.COMPLETE, response.stopReason)
         } finally { runtime.finishRun(lease) }

@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.nativecore.domain
 
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class NativeModelSettingsValidationTest {
@@ -13,14 +14,17 @@ class NativeModelSettingsValidationTest {
         for (endpoint in listOf("ftp://example.com", "https://user@example.com",
             "https://example.com?token=private", "https://example.com#fragment",
             "https://example.com/" + "x".repeat(2048))) {
-            assertThrows(InvalidModelSettings::class.java) {
+            val failure = assertThrows(InvalidModelSettings::class.java) {
                 NativeModelSettingsValidation.validate(endpoint, "model", "fixture-key")
             }
+            assertFalse(failure.stackTraceToString().contains(endpoint))
+            assertFalse(failure.stackTraceToString().contains("fixture-key"))
         }
         for (key in listOf("has space", "非ASCII", "line\nfeed", "x".repeat(8193))) {
-            assertThrows(InvalidModelSettings::class.java) {
+            val failure = assertThrows(InvalidModelSettings::class.java) {
                 NativeModelSettingsValidation.validate("https://example.com", "model", key)
             }
+            assertFalse(failure.stackTraceToString().contains(key))
         }
     }
 
