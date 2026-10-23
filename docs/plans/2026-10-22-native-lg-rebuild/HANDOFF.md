@@ -25,28 +25,28 @@
 
 ## 3. 实施状态
 
-当前已提交且通过 CI 的代码基线为 `refactor/translation-agent-2026-10` / `f766cee`。2026-10-23 在线确认本地 HEAD 与 GitHub 分支一致，开始本次文档同步时工作区干净；[Actions #132 / 39895675399](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39895675399) 的 test/lint/release 全部成功。§28—30 持久执行记录、Room v3、HTTP/模型发现、对话页面和 SSE，以及 §31—32 对话框修复/测试补强均已提交并取得该次 CI 证据，不再作为“未提交/未构建”的当前状态。各开发轮当时的未验证说明保留为历史，已提交版本的最新 CI 证据见 §33；当前工作区另有 §34—39 前台模拟执行、重附着修复、校对查询/批量写入、共享调度、整工程模拟、用量汇总及字幕纯文本核心，尚未构建，不继承该 CI 结果。
+当前已提交且通过 CI 的代码基线为 `refactor/translation-agent-2026-10` / `8e74fff`（2026-10-23 覆盖 §34—40 源码）；[Actions #136 / 39949770529](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39949770529) test/lint/release 全部成功，1010 项用例 0 失败。此前 `f766cee` 的 #132 仍是 §28—32 的证据；§33 记录当次 887 项结果，§41 记录本次推送、三次失败修复与最终全绿。当前工作区在 docs-only 交接提交前为干净；§34—40 不再是“未提交/未构建”。设备、供应商、schema 2/3 导出与截图证据仍未取得，不能继承 CI 全绿关闭 S1/S2。
 
 | 范围 | 当前状态 | 实际证据 / 未完成 |
 |---|---|---|
 | R00 基线与行为索引 | 已建立，细项继续核对 | 194 条消费者定位、98 个功能 ID 均有可追踪来源；不等于 98 项已实现或验收 |
 | R01 模块装配 | CI 构建已通过，完整 M1 未通过 | 新模块可编译并产出签名 APK；依赖锁定、完整 G1—G5 和设备边界仍需补齐 |
 | TXT 工程与人工校对 | 手工切片已获 CI/用户真机确认 | 创建、导入/复制、编辑、保存重开、四种导出与原生重导入见 §22；不扩展为所有存储故障/格式验收 |
-| TXT 校对查询与批量操作 | §37—38 新增源码，未构建 | 状态/原译查询、统计、窗口成员保留、本页批选/状态/清空与原子回执已接线；完整筛选/跨页/替换/质量告警仍缺 |
-| S1 本地模拟翻译 | 既有写回/持久记录有 CI；§34—39 前台执行、整工程范围及汇总源码未构建 | 当前页/整工程显式选择、分页读取/分批提交、跨页失败/停止、Token 事实分离有待运行用例；完整模拟设备流程未验收，不能关闭 S1 |
-| S2 原生 Agent | 既有对话/单条审批、HTTP/模型发现、SSE/表单有 CI；§39 调度/派发登记接线未构建 | Koog 工具循环、结构化历史、可选凭据、正文/思考预览及取消回执已有夹具测试；真实供应商、KeyStore 真机和 Agent 端到端设备流程未验收 |
+| TXT 校对查询与批量操作 | §37—38 已构建并通过 CI，设备验收待补 | 状态/原译查询、统计、窗口成员保留、本页批选/状态/清空与原子回执已由 Actions #136 覆盖；完整筛选/跨页/替换/质量告警仍缺 |
+| S1 本地模拟翻译 | 既有写回/持久记录与 §34—39 前台执行/整工程源码均有 CI | 当前页/整工程显式选择、分页读取/分批提交、跨页失败/停止、Token 事实分离已有运行用例；完整模拟设备流程未验收，不能关闭 S1 |
+| S2 原生 Agent | 既有对话/单条审批、HTTP/模型发现、SSE/表单及 §39 调度/派发接线均有 CI | Koog 工具循环、结构化历史、可选凭据、正文/思考预览、取消回执及共享调度边界已有夹具测试；真实供应商、KeyStore 真机和 Agent 端到端设备流程未验收 |
 | 应用存储与审批 | Room v3 与迁移/中断核对已有 CI | v1 升级链、v2→v3 和审批冲突/回执用例通过；2.json/3.json 导出仍缺，设备升级、全对象/部分接受仍待完成 |
-| R02/R06 运行与后台 | 进程内协调及持久记录有 CI；本页模拟前台 Service 已有未构建源码 | §34—35 新增应用级任务、通知停止、UI 重订阅和宿主生命周期隔离；Agent 前台化、队列、暂停/同 Run 跨进程接续仍未实现 |
-| R30—R35 原生界面 | TXT 手工页已实机确认，Agent/模拟增量有 CI | 原生组件 16 项通过，含横屏小视口、模型选择/搜索/取消；无 native PNG 产物，完整管理页、多设备视觉/键盘/设备交互仍缺 |
-| R11 共享推理调度 | §39 新增源码，未构建 | Agent/翻译共用 FIFO、固定并发、RPM/隐藏 RPS 与停止检查；尚无完整 Key 池、自动探测、持久用量账本或协议全集 |
-| R03/R05/R20—R29 全格式/工作区 | 主要业务未落地；§39 新增四种字幕纯文本核心源码 | SRT/LRC/ASS/SSA 解析/写回尚未运行或接入工程；VTT、.lg/Pi、PDF/EPUB/游戏格式、脚本/技能和联网工具仍待实现 |
+| R02/R06 运行与后台 | 进程内协调及持久记录有 CI；前台 Service 已由 CI 构建 | §34—35 应用级任务、通知停止、UI 重订阅和宿主生命周期隔离已编译并跑组件用例；真机前台/通知/重建、Agent 前台化、队列、暂停/同 Run 跨进程接续仍未验收 |
+| R30—R35 原生界面 | TXT 手工页已实机确认，Agent/模拟/校对增量有 CI | app 704 项组件/单元用例通过，含横屏小视口、模型选择/搜索/取消、校对筛选与批选；仍无 native PNG 产物，完整管理页、多设备视觉/键盘/设备交互仍缺 |
+| R11 共享推理调度 | §39 已构建并通过 CI | Agent/翻译共用 FIFO、固定并发、RPM/隐藏 RPS、停止检查及派发登记边界已覆盖；尚无完整 Key 池、自动探测、持久用量账本或协议全集 |
+| R03/R05/R20—R29 全格式/工作区 | 主要业务未落地；§39 字幕纯文本核心已通过 CI | SRT/LRC/ASS/SSA 解析/写回 17 项用例运行通过，但尚未接入工程资产；VTT、.lg/Pi、PDF/EPUB/游戏格式、脚本/技能和联网工具仍待实现 |
 | R36—R39 升级交付 | 字段映射样本已写，正式迁移未开始 | 旧数据保留，未迁移/删除或完成旧主链路退役；完整升级、性能和全功能验收未完成 |
 
-整体已推进到 TXT 手工闭环已实机确认、模拟翻译和 Agent/持久记录/流式切片可构建且 CI 全绿的阶段。完整 S1/S2、98 项功能矩阵和 G1—G5 仍开放，不按源码行数或局部测试数计算完成百分比。具体测试数量只见 §33，不能用 CI 全绿替代供应商、设备或完整产品验收。
+整体已推进到 TXT 手工闭环已实机确认、模拟翻译/校对批选/Agent/持久记录/流式/调度切片可构建且 CI 全绿的阶段。完整 S1/S2、98 项功能矩阵和 G1—G5 仍开放，不按源码行数或局部测试数计算完成百分比。具体测试数量见 §33 与 §41，不能用 CI 全绿替代供应商、设备或完整产品验收。
 
 ## 4. 下一轮顺序
 
-1. 补齐权威 Room v2/v3 schema 导出并审阅；已有运行迁移测试不代替导出 schema 与设备升级证据。专门录制并实际查看 native 组件截图，本机禁止构建，须由 PC 或获授权的 CI 执行。
+1. 补齐权威 Room v2/v3 schema 导出并审阅；本次 #136 仍只产出 1.json，且无 native PNG（Roborazzi 录制未开启），需在 PC/CI 专门生成后查看。已有运行迁移测试不代替导出 schema、截图与设备升级证据。
 2. 验收模拟翻译、Agent 多会话/审批/中断核对、模型发现、SSE/思考/工具提示/停止/断网，以及横屏/小屏/键盘和 KeyStore 的设备闭环；真实模型联调与付费调用须另有明确授权。
 3. 在持久执行记录基础上推进后台 Service、持久策略检查点、原 Run 执行接续、请求调度/用量账本及完整审批与工具；当前重启核对不自动执行或重发。
 4. 按原计划推进复杂格式、.lg/Pi 兼容、脚本/技能工作区、规则与完整管理 UI、旧数据迁移，维持 G1—G5 和全量验收门槛。
@@ -838,3 +838,37 @@ Agent 实际查看 `/sdcard/DCIM/Screenshots` 最新五张截图（2026-10-23 00
 导航在忙碌期间禁用的既有行为保持，后续需单独设计运行状态与页面导航解耦；分页全工程统计仍未缓存，新增源文资格统计会读取 NONE 源文字段，目标设备大工程耗时仍待测量，不声称已解决性能问题。完整产品与 §39 未完成范围保持。
 
 本机仅静态审查，未实际构建、测试或 Lint。已执行 tools/rebuild/check_structure.py（结构、依赖、包名、API 地雷、Kotlin 词法分隔符及文档链接检查通过）、git diff --check（无问题）、冲突标记扫描（无匹配）及 git status --short --branch；已核对统计全部构造点和 RuntimePort 实现/调用点。不沿用已有 CI 证明本轮变更。未进行设备/视觉或供应商验收。
+
+
+## 41. CI 验证：§34—40 首次全量构建（2026-10-23）
+
+用户要求把当前分支推送 GitHub、触发 Actions 并监控。分支 `refactor/translation-agent-2026-10`，未改动 `main`/`beta`。本轮先把 §34—40 的未提交源码与文档合成 `b236344`（81 文件，+5125/−189），推送后用 `workflow_dispatch` 触发；随后按失败日志修复三处编译/测试问题，最终 `8e74fff` 取得全绿。
+
+### 失败、根因与修复
+
+- [#133 / 39947763078](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39947763078)：test/lint/release 均停在 `:core:agent:compile*Kotlin`，`AgentRequestBoundary.kt` 未解析 `OperationLease`、`AgentModelEvent`、`DispatchAwareAgentModelPort`。§39 新增调度接线时漏了三个 domain 导入；`edca775` 补入导入，并用局部变量承载调度感知端口，避免依赖跨模块智能转换。
+- [#134 / 39948120434](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39948120434)：越过 agent 后停在 `:app:compile*Kotlin`，`NativeProjectViewModel.saveProofreadingQuery` 对 domain 的 `query.status` 做智能转换被拒绝。`d5c4c68` 改为先取局部变量再访问 `name`。
+- [#135 / 39948559626](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39948559626)：lint/release 成功，test 仅 4 项 `NativeProofreadingQueryDialogTest` 失败；均在 `performScrollTo` 上 60 秒 `AppNotIdleException`（Compose 未 idle，12 万次以上重试）。根因与 §31 设置表单相同：`AlertDialog` 的 wrap-content 窗口包含文本框时持续重复测量。`8e74fff` 按既有模型设置对话框改为 `DialogProperties(usePlatformDefaultWidth = false)` 全屏窗口 + 居中限高卡片，滚动区用 `weight` 取得有界高度，按钮固定在滚动区外；testTag、启用条件和五语文案未变。
+- [#136 / 39949770529](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39949770529)：提交 `8e74fff`，test/lint/release 全部 success，耗时约 6 分钟。
+
+### 已取得的远端证据
+
+| 模块 | tests | failures | errors | skipped |
+|---|---:|---:|---:|---:|
+| app | 704 | 0 | 0 | 0 |
+| core:agent | 31 | 0 | 0 | 0 |
+| core:storage | 92 | 0 | 0 | 0 |
+| core:engine | 90 | 0 | 0 | 0 |
+| core:domain | 76 | 0 | 0 | 0 |
+| core:formats | 17 | 0 | 0 | 0 |
+| 合计 | 1010 | 0 | 0 | 0 |
+
+- 数字来自本次下载的 111 份 JUnit XML，不是本机测试或方法计数。`core:formats` 首次进入 CI，17 项字幕纯文本用例全部通过；此前“新增用例均未运行”的边界对 §34—40 已结束，但设备/供应商边界不变。
+- Lint 上传 5 份 XML：app 75 issue、0 Error/Fatal，其余 4 个模块 0 issue。不登记为零警告。
+- release 的签名校验、`assembleRelease`、`apksigner verify` 和上传均成功；产物为 `LightNovelTranslator-refactor-translation-agent-2026-10-signed`，APK 21,928,174 字节。本轮未安装或发布。
+- 仍缺：test 产物只有 `core/storage/schemas/.../1.json`，没有 2.json/3.json；日志中 `:core:storage:kspDebugKotlin` 为 FROM-CACHE，`:app:finalizeTestRoborazziDebug` 为 SKIPPED。也没有 `native-*.png`（CI 未开启 Roborazzi 录制）。因此校对/批选截图尚未生成或查看，Room v2/v3 权威 schema 导出仍未完成。
+- 本机仍只做静态审查（`tools/rebuild/check_structure.py`、`git diff --check`、冲突标记扫描），未运行 Gradle、测试或 Lint；以上结论来自远端运行与产物。没有设备、通知权限、Activity 重建、真实供应商或 KeyStore 验收。
+
+### 结论与剩余
+
+§34—40 源码现已具备可编译、可运行测试和可签名打包的 CI 证据，S1/S2 仍不能关闭。下一步优先补 schema 2/3 导出与 Roborazzi 录制，再按 §34—40 文档做真机前台/通知/重建、校对批选与字幕接入验收；完整调度/用量账本、后台接续、复杂格式/工作区和旧数据迁移缺口保持不变。本轮最终为 `8e74fff` 代码提交 + 本交接文档提交，文档提交不再触发额外构建。
