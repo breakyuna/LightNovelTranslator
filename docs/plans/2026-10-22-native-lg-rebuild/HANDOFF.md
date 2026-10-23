@@ -626,3 +626,11 @@ Agent 实际查看 `/sdcard/DCIM/Screenshots` 最新五张截图（2026-10-23 00
 其中端点校验类共 5 例、NativeAgentStoreTest 共 18 例、AgentRequestBoundaryTest 共 16 例、NativeWorkspaceScreenshotTest 共 13 例；表中分别仅计新增的 3、1、2、6 例。第一次审查修复后的 §29/§30 累计为 18/23，本轮新增工具名与布局回归 2 例后 §30 为 25。
 
 本机仅做源码/调用点与方法计数、结构/文档链接、diff 空白和冲突标记静态检查；静态审查，未实际构建，未运行测试/Lint、生成或查看新截图、设备验证或供应商联调。新增布局用例仍需 CI/PC 执行与设备视觉检查。保留其他未提交改动，未提交、推送或触发 Actions。
+
+
+## 31. 第二十轮：首次全链路 CI 结果与设置对话框壳层修复（2026-10-23）
+
+- 提交 `afc513d` 推送 `refactor/translation-agent-2026-10`，因该分支不在 push 触发列表，用 `workflow_dispatch` 触发 [#39889698588](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39889698588)：`release`、`lint` 成功（签名 APK 与 Lint 均产出），`test` 失败。
+- 失败只涉及本轮新增的两个组件用例：`NativeWorkspaceScreenshotTest.savedCredentialCannotFollowAnEditedEndpointImplicitly` 与 `localModelDiscoverySelectsAnIdAndSavesWithoutAKey`，都在 `setContent` 的首个 `waitForIdle` 上 60 秒 `AppNotIdleException`（约 12 万次轮询仍未 idle，提示 measure/layout 不收敛）。两者是本仓库首次渲染"可滚动表单 + 多个文本框"的 Material3 `AlertDialog` 文本槽；既有 `Editor`（`Dialog` + `Surface` + 滚动 + 文本框）与纯文本 `AlertDialog` 用例均通过。
+- 处理：设置表单与模型选择改为有界 `Dialog` + `Surface`（表单滚动区 `heightIn(max = 420.dp)`，允许一次/取消固定在滚动区外），不再让 `AlertDialog` 的固有宽度测量与滚动列表/文本框互相触发。字段、校验、同端点凭据复用、错误呈现、按钮启用条件与五语文案均未改变；这是 UI 壳层调整，组件截图与真机视觉需要重新录制/查看。
+- 证据边界：本轮仅静态核对调用点、导入与资源键；新壳层尚未构建与测试，结论以重跑的 Actions 为准。无数据库、迁移、请求协议或安全边界变更。
