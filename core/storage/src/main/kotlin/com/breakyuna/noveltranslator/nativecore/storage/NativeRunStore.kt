@@ -43,13 +43,16 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
             check(row.state == "RUNNING")
             val revision = checkpoint.revision
             val request = checkpoint.agentRequest
+            val attempt = request?.attemptId ?: checkpoint.translationAttempt
             require(checkpoint.committedItems >= row.committedItems && checkpoint.requests >= row.requests)
             require(row.revision == null || (revision != null && revision >= row.revision))
             require(request == null || request.run == handle.run)
+            require(checkpoint.translationAttempt == null || (row.owner == RuntimeOwner.TRANSLATION.name && handle.run.chatId == null))
             // Never erase an unresolved request/commit by beginning another one.
             when (row.stage) {
                 "REQUESTING" -> require(checkpoint.stage == StoredRunStage.RESPONSE_RECORDED ||
-                    (checkpoint.stage == StoredRunStage.REQUESTING && request?.attemptId?.value == row.requestAttemptId &&
+                    (checkpoint.stage == StoredRunStage.REQUESTING && attempt?.value == row.requestAttemptId &&
+                        request?.branchId?.value == row.requestBranchId &&
                         checkpoint.requests == row.requests))
                 "COMMITTING" -> require(checkpoint.stage == StoredRunStage.COMMITTED ||
                     (checkpoint.stage == StoredRunStage.COMMITTING && checkpoint.pendingCommands == commands(row)))
@@ -57,7 +60,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
             check(db.runs().update(row.copy(stage = checkpoint.stage.name, revision = checkpoint.revision,
                 committedItems = checkpoint.committedItems, requests = checkpoint.requests,
                 pendingCommands = JsonArray(checkpoint.pendingCommands.map { JsonPrimitive(it.value) }).toString(),
-                requestAttemptId = checkpoint.agentRequest?.attemptId?.value, requestBranchId = checkpoint.agentRequest?.branchId?.value,
+                requestAttemptId = attempt?.value, requestBranchId = checkpoint.agentRequest?.branchId?.value,
                 updatedAt = now())) == 1)
         }
     }
@@ -109,6 +112,13 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
 
     private fun reconcileRequest(row: NativeRunRow): NativeRunRow {
         if (row.stage != "REQUESTING" || row.requestAttemptId == null) return row
+        if (row.owner == RuntimeOwner.TRANSLATION.name) {
+            // The remote adapter must reserve this audit row before HTTP. Absence proves the
+            // process never crossed that boundary; legacy checkpoints without attempts stay uncertain.
+            val receipt = db.translationRequests().find(row.requestAttemptId) ?: return row.copy(stage = "ACCEPTED")
+            if (!NativeTranslationAuditStore.matches(receipt, ref(row), storedHandle(row).run)) return row.copy(needsReview = true)
+            return if (receipt.state == "RECEIVED") row.copy(stage = "RESPONSE_RECORDED") else row
+        }
         val key = request(row) ?: return row.copy(needsReview = true)
         val receipt = db.agent().request(row.requestAttemptId) ?: return row.copy(stage = "ACCEPTED")
         if (receipt.requestKey != AgentRequestFingerprint.key(key)) return row.copy(needsReview = true)
@@ -121,6 +131,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
 
     override suspend fun recent(ref: LocalProjectRef, limit: Int): List<StoredRun> = io {
         require(limit in 1..20)
+        val context = currentCoroutineContext()
         db.runs().recent(ref.instanceId.value, ref.generation.value, ref.projectId.value, limit).map { row ->
             val settled = if (row.state == "WAITING_APPROVAL") when (db.runs().approvalState(
                 row.instanceId, row.generation, row.projectId, row.chatId, row.runId)) {
@@ -131,7 +142,10 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
             } else row
             if (settled != row) check(db.runs().update(settled.copy(updatedAt = now())) == 1)
             StoredRun(storedHandle(row), RuntimeOwner.valueOf(row.owner), StoredRunState.valueOf(settled.state),
-                RunCheckpoint(StoredRunStage.valueOf(row.stage), row.revision, row.committedItems, row.requests, commands(row), request(row)), row.needsReview)
+                RunCheckpoint(StoredRunStage.valueOf(row.stage), row.revision, row.committedItems, row.requests, commands(row), request(row),
+                    row.requestAttemptId?.takeIf { row.owner == RuntimeOwner.TRANSLATION.name && row.stage == "REQUESTING" }?.let(::RequestAttemptId)),
+                row.needsReview, if (row.owner == RuntimeOwner.TRANSLATION.name)
+                    NativeTranslationAuditStore.totals(db, ref, storedHandle(row).run) { context.ensureActive() } else null)
         }
     }
 
@@ -141,7 +155,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
             .also { require(it.size <= 20 && it.distinct().size == it.size) }
     }
     private fun ref(row: NativeRunRow) = LocalProjectRef(ProjectId(row.projectId), ProjectInstanceId(row.instanceId), RecoveryGeneration(row.generation))
-    private fun request(row: NativeRunRow): AgentRequestKey? = row.requestAttemptId?.let {
+    private fun request(row: NativeRunRow): AgentRequestKey? = row.requestAttemptId?.takeIf { row.owner == RuntimeOwner.AGENT.name }?.let {
         AgentRequestKey(storedHandle(row).run, BranchId(requireNotNull(row.requestBranchId)), RequestAttemptId(it))
     }
     private fun storedHandle(row: NativeRunRow) = RunJournalHandle(row.executionId, ref(row),

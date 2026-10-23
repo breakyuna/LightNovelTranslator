@@ -20,49 +20,57 @@ class TextTranslationService(
     suspend fun translatePage(
         ref: LocalProjectRef, identity: RunIdentity, configuration: ModelConfigurationRef,
         expectedRevision: Long, afterId: Long, pageSize: Int = 40,
-        progress: (TranslationProgress) -> Unit = {},
+        options: RemoteTranslationOptions? = null, progress: (TranslationProgress) -> Unit = {},
     ): TranslationProgress = withContext(Dispatchers.Default) {
         require(identity.projectId == ref.projectId && identity.chatId == null && pageSize in 1..100)
         currentCoroutineContext().ensureActive()
         runs.execute(ref, identity, RuntimeOwner.TRANSLATION) { lease, recorder ->
-            translateReservedPage(ref, lease, recorder, configuration, expectedRevision, afterId, pageSize, progress)
+            translateReservedPage(ref, lease, recorder, configuration, expectedRevision, afterId, pageSize, progress, options)
         }
     }
 
     /** A single durable run streams the entire project, retaining only one page at a time. */
     suspend fun translateProject(
         ref: LocalProjectRef, identity: RunIdentity, configuration: ModelConfigurationRef,
-        expectedRevision: Long, pageSize: Int = 40, progress: (TranslationProgress) -> Unit = {},
+        expectedRevision: Long, pageSize: Int = 40, options: RemoteTranslationOptions? = null, progress: (TranslationProgress) -> Unit = {},
     ): TranslationProgress = withContext(Dispatchers.Default) {
         require(identity.projectId == ref.projectId && identity.chatId == null && pageSize in 1..100)
         currentCoroutineContext().ensureActive()
         runs.execute(ref, identity, RuntimeOwner.TRANSLATION) { lease, recorder ->
-            translateReservedProject(ref, lease, recorder, configuration, expectedRevision, pageSize, progress)
+            translateReservedProject(ref, lease, recorder, configuration, expectedRevision, pageSize, progress, options)
         }
     }
 
     /** Caller already owns the durable execution; this method never reserves a second run. */
     internal suspend fun translateReservedPage(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
-        expectedRevision: Long, afterId: Long, pageSize: Int, progress: (TranslationProgress) -> Unit,
+        expectedRevision: Long, afterId: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null,
     ): TranslationProgress = translateReserved(ref, lease, recorder, configuration, expectedRevision,
-        afterId, pageSize, false, progress)
+        afterId, pageSize, false, progress, options)
 
     internal suspend fun translateReservedProject(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
-        expectedRevision: Long, pageSize: Int, progress: (TranslationProgress) -> Unit,
+        expectedRevision: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null,
     ): TranslationProgress = translateReserved(ref, lease, recorder, configuration, expectedRevision,
-        0, pageSize, true, progress)
+        0, pageSize, true, progress, options)
 
     private suspend fun translateReserved(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
         expectedRevision: Long, afterId: Long, pageSize: Int, wholeProject: Boolean,
-        progress: (TranslationProgress) -> Unit,
+        progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions?,
     ): TranslationProgress = withContext(Dispatchers.Default) {
         require(lease.identity.projectId == ref.projectId && lease.identity.chatId == null && pageSize in 1..100)
         val identity = lease.identity
         active.set(lease)
         try {
+            val policySnapshot = if (options != null) {
+                val policies = projects as? ProjectTextPolicyPort ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
+                policies.textPolicy(ref)
+            } else null
+            require(policySnapshot == null || (policySnapshot.ref == ref && policySnapshot.revision == expectedRevision))
+            val context = currentCoroutineContext()
+            val policy = policySnapshot?.policy ?: ProjectTextPolicy()
+            val processor = if (options != null) TextPolicyProcessor(policy) { context.ensureActive() } else null
             var revision = expectedRevision
             var committed = 0
             var requests = 0
@@ -79,20 +87,35 @@ class TextTranslationService(
                 while (index < pending.size) {
                     currentCoroutineContext().ensureActive()
                     val inputs = mutableListOf<TextProjectItem>()
+                    val prepared = LinkedHashMap<ItemId, TextPolicyProcessor.Prepared?>()
                     var chars = 0
-                    while (index < pending.size && inputs.size < 20) {
+                    while (index < pending.size && inputs.size < (options?.batchSize ?: 20)) {
                         val next = pending[index]
                         // Reserve room for the simulation marker as well as a normal model response.
                         if (next.source.length > 65_500) throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
-                        if (inputs.isNotEmpty() && chars + next.source.length > 32_768) break
-                        inputs.add(next); chars += next.source.length; index++
+                        val transformed = processor?.prepare(next.source)
+                        val size = transformed?.text?.length ?: next.source.length
+                        if (inputs.isNotEmpty() && chars + size > (options?.batchCharacters ?: 32_768)) break
+                        prepared[next.id] = transformed
+                        inputs.add(next); chars += size; index++
                     }
-                    requests++
-                    recorder.checkpoint(RunCheckpoint(StoredRunStage.REQUESTING, revision, committed, requests))
-                    progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
-                    val response = gateway.complete(lease, TranslationModelRequest(ref, identity,
+                    val request = TranslationModelRequest(ref, identity,
                         RequestAttemptId(UUID.randomUUID().toString()), configuration,
-                        inputs.map { TranslationInput(it.id, it.source, it.fingerprint) }))
+                        inputs.map { item ->
+                            val text = prepared[item.id]
+                            TranslationInput(item.id, text?.text ?: item.source, item.fingerprint, text?.terms ?: emptyList())
+                        }, options, policySnapshot?.fingerprint, if (policy.promptEnabled) policy.prompt else "")
+                    val beforeDispatch: suspend () -> Unit = {
+                        currentCoroutineContext().ensureActive()
+                        requests++
+                        recorder.checkpoint(RunCheckpoint(StoredRunStage.REQUESTING, revision, committed, requests,
+                            translationAttempt = if (options != null) request.attempt else null))
+                        progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
+                    }
+                    val dispatchGateway = gateway as? DispatchAwareTranslationGateway
+                    val response = if (dispatchGateway != null)
+                        dispatchGateway.completePrepared(lease, request, beforeDispatch)
+                    else { beforeDispatch(); gateway.complete(lease, request) }
                     recorder.checkpoint(RunCheckpoint(StoredRunStage.RESPONSE_RECORDED, revision, committed, requests))
                     usage = addUsage(usage, response.usage, requests == 1)
                     totals = totals.add(response.usage)
@@ -100,7 +123,8 @@ class TextTranslationService(
                     val outputs = response.outputs.associateBy { it.id }
                     val edits = inputs.mapIndexed { offset, item -> ManualTextEdit(
                         CommandId(UUID.randomUUID().toString()), ref, item.id, Math.addExact(revision, offset.toLong()),
-                        item.fingerprint, outputs.getValue(item.id).text,
+                        item.fingerprint, prepared[item.id]?.let { requireNotNull(processor).finish(it, outputs.getValue(item.id).text) }
+                            ?: outputs.getValue(item.id).text,
                     ) }
                     currentCoroutineContext().ensureActive()
                     recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTING, revision, committed, requests, edits.map { it.commandId }))

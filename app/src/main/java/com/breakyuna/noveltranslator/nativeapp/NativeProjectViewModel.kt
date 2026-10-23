@@ -9,6 +9,9 @@ import androidx.lifecycle.viewModelScope
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.TranslatorApplication
 import com.breakyuna.noveltranslator.nativecore.domain.*
+import com.breakyuna.noveltranslator.nativecore.engine.TextLiteralReplacer
+import com.breakyuna.noveltranslator.nativecore.engine.ProjectQualityScanner
+import com.breakyuna.noveltranslator.nativecore.engine.TextProofreadingInspector
 import com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationHandle
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRunner
@@ -27,11 +30,12 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class NativePage { AGENT, WORKBENCH, PROOFREADING }
+enum class NativePage { AGENT, WORKBENCH, PROOFREADING, RULES }
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 class ItemPreview(val id: ItemId, val row: Int, val source: String, val translation: String,
@@ -54,6 +58,10 @@ class NativeEditDraft(
     )
 }
 
+class NativeEditorReplacement(val ref: LocalProjectRef, val command: CommandId, val preview: TextReplacementPreview) {
+    override fun toString(): String = "NativeEditorReplacement(redacted)"
+}
+
 data class NativeProjectUiState(
     val projects: List<RegisteredProject> = emptyList(),
     val project: TextProjectSummary? = null,
@@ -64,12 +72,18 @@ data class NativeProjectUiState(
     val proofreadingQuery: TextItemQuery = TextItemQuery(),
     val itemStatistics: TextItemStatistics? = null,
     val matchingItems: Int? = null,
+    val qualityView: TextQualitySelection? = null,
+    val qualityProgress: TextQualityScanProgress? = null,
+    val qualityInvalidated: Boolean = false,
     val selectingItems: Boolean = false,
     val selectedItems: Set<ItemId> = emptySet(),
     val manualBatch: ManualTextBatch? = null,
     val manualBatchConflict: Boolean = false,
     val editor: NativeEditDraft? = null,
+    val editorQuality: TextProofreadingResult? = null,
+    val editorReplacement: NativeEditorReplacement? = null,
     val busy: Boolean = false,
+    val foregroundTranslationActive: Boolean = false,
     val notice: Int? = null,
     val error: Int? = null,
     val recoveryProblems: Int = 0,
@@ -89,7 +103,18 @@ data class NativeProjectUiState(
     val modelCatalogLoading: Boolean = false,
     val agentMessageDetail: AgentMessageDetail? = null,
     val modelSettingsError: Int? = null,
-)
+    val policyDraft: NativePolicyDraft? = null,
+    val policyLoadIncomplete: Boolean = false,
+    val policyInvalidRuleId: String? = null,
+) {
+    val qualityCurrent: Boolean get() {
+        val current = project ?: return false
+        val index = qualityView?.index ?: return false
+        return index.ref == current.ref && index.revision == current.revision && index.query == proofreadingQuery &&
+            !qualityInvalidated && !policyLoadIncomplete && policyDraft?.dirty != true &&
+            (policyDraft == null || policyDraft.base == index.policyFingerprint && policyDraft.revision <= index.revision)
+    }
+}
 
 /** Small workspace controller. Every database/file action goes through the native port. */
 class NativeProjectViewModel internal constructor(
@@ -123,6 +148,7 @@ class NativeProjectViewModel internal constructor(
             ?.let { backgroundTranslations.attach(it.token) }
         if (attachment != null) {
             observedSimulation = attachment
+            mutable.value = mutable.value.copy(foregroundTranslationActive = live != null)
             if (live != null) saved["native_recovery_pending"] = true
             try {
                 refreshSimulationView(running = true) {
@@ -180,7 +206,18 @@ class NativeProjectViewModel internal constructor(
         recoverDirectory()
         val registered = projects.registeredProjects()
         mutable.value = mutable.value.copy(projects = registered)
-        mutable.value.project?.let { loadPage(it.ref, cursors.last()); loadAgent(it.ref) }
+        mutable.value.project?.let {
+            if (mutable.value.qualityView != null) {
+                val page = readStandardProofreadingPage(it.ref, mutable.value.proofreadingQuery, 0)
+                cursors.clear(); cursors.add(0)
+                mutable.value = mutable.value.copy(qualityView = null, qualityInvalidated = false, qualityProgress = null,
+                    project = page.summary, items = page.items.take(PAGE_SIZE).map { item -> ItemPreview.of(item) },
+                    itemStatistics = page.statistics, matchingItems = page.matchingItems,
+                    hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
+            } else loadPage(it.ref, cursors.last())
+            loadAgent(it.ref)
+            if (mutable.value.policyDraft?.dirty != true) loadTextPolicy(it.ref, restore = false)
+        }
     }
 
     fun open(ref: LocalProjectRef) = action { openInternal(ref) }
@@ -382,14 +419,112 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    private suspend fun loadTextPolicy(ref: LocalProjectRef, restore: Boolean) {
+        try {
+            var snapshot = graph.projects.textPolicy(ref)
+            val savedDraft = if (restore) decodePolicyDraft(saved.get<ArrayList<String>>("native_policy_draft"))?.takeIf { it.ref == ref } else null
+            val receipt = savedDraft?.let { graph.projects.textPolicyReceipt(ProjectPolicyEdit(it.command, it.ref, it.revision, it.base, it.policy)) }
+            if (receipt?.status == PolicyEditStatus.COMMITTED) {
+                // The save may have committed just before cancellation hid its return value.
+                // Re-read latest facts; never replace them with the old submitted draft.
+                snapshot = graph.projects.textPolicy(ref)
+                check(snapshot.revision >= receipt.revision)
+            }
+            val draft = if (savedDraft != null && receipt?.status != PolicyEditStatus.COMMITTED) NativePolicyDraft(savedDraft.ref, savedDraft.revision, savedDraft.base,
+                savedDraft.policy, savedDraft.command, savedDraft.conflict || receipt != null || snapshot.revision != savedDraft.revision || snapshot.fingerprint != savedDraft.base)
+                else NativePolicyDraft.from(snapshot)
+            mutable.value = mutable.value.copy(policyDraft = draft, policyLoadIncomplete = false, policyInvalidRuleId = null, editorQuality = null)
+            if (draft.dirty) saved["native_policy_draft"] = encodePolicyDraft(draft)
+            else saved.remove<ArrayList<String>>("native_policy_draft")
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { mutable.value = mutable.value.copy(policyLoadIncomplete = true) }
+    }
+
+    private suspend fun refreshCleanTextPolicy(ref: LocalProjectRef) {
+        // Item commits advance the shared revision. Only an untouched draft may
+        // adopt the latest snapshot; a dirty draft must retain its conflict baseline.
+        if (mutable.value.project?.ref == ref && mutable.value.policyDraft?.dirty != true)
+            loadTextPolicy(ref, restore = false)
+    }
+
+    fun changeTextPolicy(policy: ProjectTextPolicy) {
+        if (mutable.value.busy || mutable.value.policyLoadIncomplete) return
+        val draft = mutable.value.policyDraft ?: return
+        if (draft.ref != mutable.value.project?.ref) return
+        try {
+            ProjectTextPolicyCodec.encode(policy)
+            val changed = draft.changed(policy)
+            mutable.value = mutable.value.copy(policyDraft = changed, policyInvalidRuleId = null, editorQuality = null)
+            if (changed.dirty) saved["native_policy_draft"] = encodePolicyDraft(changed)
+            else saved.remove<ArrayList<String>>("native_policy_draft")
+        } catch (_: IllegalArgumentException) { mutable.value = mutable.value.copy(error = R.string.native_policy_invalid) }
+    }
+
+    fun reloadTextPolicy() = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        loadTextPolicy(ref, restore = false)
+    }
+
+    fun saveTextPolicy() = action {
+        val draft = mutable.value.policyDraft ?: return@action
+        if (!draft.dirty || draft.conflict || draft.ref != mutable.value.project?.ref || mutable.value.policyLoadIncomplete) return@action
+        try { withContext(Dispatchers.Default) { TextRuleValidation.validate(draft.policy) { ensureActive() } } }
+        catch (error: InvalidTextRule) {
+            mutable.value = mutable.value.copy(error = R.string.native_policy_invalid, policyInvalidRuleId = error.ruleId)
+            return@action
+        }
+        val receipt = graph.projects.editTextPolicy(ProjectPolicyEdit(draft.command, draft.ref, draft.revision, draft.base, draft.policy))
+        if (receipt.status != PolicyEditStatus.COMMITTED) {
+            val rejected = NativePolicyDraft(draft.ref, draft.revision, draft.base, draft.policy, draft.command, true)
+            saved["native_policy_draft"] = encodePolicyDraft(rejected)
+            mutable.value = mutable.value.copy(policyDraft = rejected, error = R.string.native_conflict)
+            return@action
+        }
+        // The receipt is already a committed fact. Refresh failure cannot turn it into a rollback.
+        saved.remove<ArrayList<String>>("native_policy_draft")
+        mutable.value = mutable.value.copy(policyDraft = NativePolicyDraft.from(ProjectPolicySnapshot(draft.ref, receipt.revision, draft.policy)),
+            project = mutable.value.project?.let { it.copy(revision = maxOf(it.revision, receipt.revision)) }, notice = R.string.native_saved)
+        try {
+            loadTextPolicy(draft.ref, restore = false)
+            if (mutable.value.qualityView == null) loadPage(draft.ref, cursors.last())
+            else {
+                val rows = mutable.value.items
+                if (rows.isNotEmpty()) {
+                    val page = projects.readItemWindow(draft.ref, mutable.value.proofreadingQuery, TextItemWindow(rows.map { it.id }))
+                    mutable.value = mutable.value.copy(project = page.summary, items = page.items.map { ItemPreview.of(it) },
+                        itemStatistics = page.statistics, matchingItems = null)
+                }
+            }
+            if (mutable.value.policyLoadIncomplete) mutable.value = mutable.value.copy(error = R.string.native_policy_refresh_failed)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { mutable.value = mutable.value.copy(policyLoadIncomplete = true, error = R.string.native_policy_refresh_failed) }
+    }
+
     fun simulatePage() = simulate(com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PAGE)
     fun simulateProject() = simulate(com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT)
 
+    fun translateRemote(ref: LocalProjectRef, revision: Long, configuration: ModelConfigurationRef,
+        options: RemoteTranslationOptions, wholeProject: Boolean) = startTranslation(
+        if (wholeProject) com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT
+        else com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PAGE, ref, revision, configuration, options)
+
+    private fun simulate(scope: com.breakyuna.noveltranslator.nativecore.engine.TranslationScope) =
+        startTranslation(scope)
+
     /** Both scopes require explicit confirmation; the project scope starts at its first item. */
-    private fun simulate(scope: com.breakyuna.noveltranslator.nativecore.engine.TranslationScope) = action {
-        if (mutable.value.runLoadIncomplete) return@action
+    private fun startTranslation(scope: com.breakyuna.noveltranslator.nativecore.engine.TranslationScope,
+        confirmedRef: LocalProjectRef? = null, confirmedRevision: Long? = null,
+        configuration: ModelConfigurationRef = graph.simulationConfiguration,
+        options: RemoteTranslationOptions? = null) = action {
+        if (mutable.value.runLoadIncomplete || mutable.value.policyLoadIncomplete) return@action
+        if (mutable.value.policyDraft?.dirty == true) { mutable.value = mutable.value.copy(error = R.string.native_policy_unsaved); return@action }
         val project = mutable.value.project ?: return@action
-        if (mutable.value.editor != null || mutable.value.proofreadingQuery.active || mutable.value.manualBatch != null || mutable.value.selectingItems) return@action
+        if (options != null) {
+            if (confirmedRef != project.ref || confirmedRevision != project.revision)
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            graph.modelSettings.resolve(configuration) // No latest-model fallback after confirmation.
+        }
+        if (mutable.value.editor != null || mutable.value.proofreadingQuery.active || mutable.value.qualityView != null || mutable.value.manualBatch != null || mutable.value.selectingItems) return@action
         val ref = project.ref
         val wholeProject = scope == com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT
         if (wholeProject) {
@@ -400,7 +535,8 @@ class NativeProjectViewModel internal constructor(
         mutable.value = mutable.value.copy(translationProgress = null)
         val handle = backgroundTranslations.prepare(ForegroundTranslationRequest(ref,
             RunIdentity(ref.projectId, null, RunId(UUID.randomUUID().toString()), commandId()),
-            graph.simulationConfiguration, project.revision, after, PAGE_SIZE, scope))
+            configuration, project.revision, after, PAGE_SIZE, scope, options))
+        mutable.value = mutable.value.copy(foregroundTranslationActive = true)
         if (wholeProject) { cursors.clear(); cursors.add(0L) }
         saved["native_simulation_token"] = handle.token
         saved["native_simulation_cursors"] = ArrayList(cursors)
@@ -421,7 +557,7 @@ class NativeProjectViewModel internal constructor(
         saved["native_ref"] = encodeRef(request.ref)
         saved["native_page"] = NativePage.PROOFREADING.name
         saveProofreadingQuery(request.ref, TextItemQuery())
-        mutable.value = mutable.value.copy(page = NativePage.PROOFREADING, proofreadingQuery = TextItemQuery())
+        mutable.value = mutable.value.copy(page = NativePage.PROOFREADING, proofreadingQuery = TextItemQuery(), qualityView = null, qualityInvalidated = false, qualityProgress = null)
         loadPage(request.ref, request.afterId)
     }
 
@@ -437,17 +573,20 @@ class NativeProjectViewModel internal constructor(
         val observer = launch {
             backgroundTranslations.state.collect { snapshot ->
                 if (snapshot?.token == handle.token)
-                    mutable.value = mutable.value.copy(translationProgress = snapshot.progress)
+                    mutable.value = mutable.value.copy(translationProgress = snapshot.progress,
+                        foregroundTranslationActive = snapshot.phase.active)
             }
         }
         try {
             val result = handle.await()
-            mutable.value = mutable.value.copy(translationProgress = result, notice = R.string.native_simulation_done)
+            mutable.value = mutable.value.copy(translationProgress = result,
+                notice = if (handle.request.options == null) R.string.native_simulation_done else R.string.native_remote_done)
         } finally {
             observer.cancel()
             // A destroyed UI leaves a live service alone. A settled run re-reads committed facts.
             val snapshot = backgroundTranslations.state.value
             if (snapshot?.token == handle.token && !snapshot.phase.active) {
+                mutable.value = mutable.value.copy(foregroundTranslationActive = false)
                 withContext(NonCancellable) {
                     if (mutable.value.error == R.string.native_background_refresh_failed)
                         mutable.value = mutable.value.copy(error = null)
@@ -458,6 +597,7 @@ class NativeProjectViewModel internal constructor(
                         mutable.value = mutable.value.copy(projects = projects.registeredProjects())
                     }
                     refreshSimulationView(running = false) { loadPage(handle.request.ref, handle.request.afterId) }
+                    loadTextPolicy(handle.request.ref, restore = true)
                     loadRuns(handle.request.ref)
                 }
                 if (saved.get<String>("native_simulation_token") == handle.token) {
@@ -515,26 +655,154 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    /** Bind before the picker; an imported format asset always targets this project revision. */
+    fun prepareAddAsset(): Boolean {
+        val project = mutable.value.project ?: return false
+        if (mutable.value.busy || mutable.value.policyDraft?.dirty == true) return false
+        saved["native_add_asset"] = arrayListOf(commandId().value, project.revision.toString())
+        return true
+    }
+
+    fun addAssetFile(uri: Uri?) {
+        val intent = saved.get<ArrayList<String>>("native_add_asset")?.toList()
+        if (uri == null) { saved.remove<ArrayList<String>>("native_add_asset"); return }
+        if (intent == null) return
+        queuedAction {
+            val project = mutable.value.project ?: return@queuedAction
+            if (intent[1].toLongOrNull() != project.revision) {
+                mutable.value = mutable.value.copy(error = R.string.native_conflict)
+                return@queuedAction
+            }
+            val input = withContext(Dispatchers.IO) {
+                val rawName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                } ?: "asset.bin"
+                val basename = rawName.substringAfterLast('/').substringAfterLast('\\')
+                    .map { if (it.isISOControl()) '_' else it }.joinToString("").take(180).ifBlank { "asset.bin" }
+                val output = ByteArrayOutputStream()
+                val coroutine = currentCoroutineContext()
+                resolver.openInputStream(uri)?.use { stream ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        coroutine.ensureActive()
+                        val read = stream.read(buffer)
+                        if (read < 0) break
+                        if (output.size().toLong() + read > 64L * 1024 * 1024) {
+                            throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                } ?: throw java.io.IOException()
+                basename to output.toByteArray()
+            }
+            val receipt = graph.formatProjects.importAsset(CommandId(intent[0]), project.ref, project.revision,
+                RelativePath(input.first), input.second)
+            if (receipt.status != AssetMutationStatus.COMMITTED) {
+                mutable.value = mutable.value.copy(error = R.string.native_conflict)
+                return@queuedAction
+            }
+            saved.remove<ArrayList<String>>("native_add_asset")
+            openInternal(project.ref)
+        }
+    }
+
+    fun prepareAssetExport(assetId: Long): String? {
+        val project = mutable.value.project ?: return null
+        if (mutable.value.busy) return null
+        val asset = project.assets.firstOrNull { it.id == assetId } ?: return null
+        saved["native_asset_export"] = arrayListOf(encodeRef(project.ref).joinToString("|"), assetId.toString())
+        val name = asset.path.value.substringAfterLast('/').take(180)
+        return name.ifBlank { "asset-${asset.id}" }
+    }
+
+    fun completeAssetExport(uri: Uri?) {
+        val pending = saved.get<ArrayList<String>>("native_asset_export")
+        if (uri == null) { saved.remove<ArrayList<String>>("native_asset_export"); return }
+        if (pending == null) return
+        val ref = decodeRef(pending[0].split("|"))
+        val assetId = pending[1].toLongOrNull() ?: return
+        queuedAction {
+            val destination = { resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException() }
+            graph.formatProjects.exportAsset(ref, assetId, FormatWriteOptions(), destination)
+            saved.remove<ArrayList<String>>("native_asset_export")
+            mutable.value = mutable.value.copy(notice = R.string.native_exported)
+        }
+    }
+
     fun selectPage(page: NativePage) {
-        if (mutable.value.busy || mutable.value.editor != null || mutable.value.manualBatch != null) return
+        if ((mutable.value.busy && !mutable.value.foregroundTranslationActive) || mutable.value.editor != null || mutable.value.manualBatch != null) return
         mutable.value = mutable.value.copy(page = page)
         saved["native_page"] = page.name
     }
 
+    fun discardPolicyAndHome() {
+        if (mutable.value.busy) return
+        saved.remove<ArrayList<String>>("native_policy_draft")
+        mutable.value = mutable.value.copy(policyDraft = null, policyInvalidRuleId = null)
+        home()
+    }
+
     fun home() {
-        if (mutable.value.busy || mutable.value.editor != null || mutable.value.manualBatch != null || graph.runtime.snapshot().activeRun != null) return
+        if (mutable.value.busy || mutable.value.editor != null || mutable.value.manualBatch != null || mutable.value.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return
         agentPreviews.clear()
+        saved.remove<ArrayList<String>>("native_policy_draft")
         graph.runtime.selectChat(null)
         saved.remove<ArrayList<String>>("native_ref")
         saved.remove<String>("native_page")
         clearProofreadingQuery()
         cursors.clear(); cursors.add(0)
         mutable.value = mutable.value.copy(project = null, items = emptyList(), hasNext = false, hasPrevious = false,
-            proofreadingQuery = TextItemQuery(), itemStatistics = null, matchingItems = null,
+            proofreadingQuery = TextItemQuery(), itemStatistics = null, matchingItems = null, qualityView = null, qualityInvalidated = false, qualityProgress = null,
             selectingItems = false, selectedItems = emptySet(), manualBatch = null, manualBatchConflict = false,
             agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(), runLoadIncomplete = false,
-            agentMessageDetail = null)
+            agentMessageDetail = null, policyDraft = null, policyLoadIncomplete = false, policyInvalidRuleId = null)
         refresh()
+    }
+
+    private val qualityScanner get() = ProjectQualityScanner(projects, graph.projects)
+
+    fun scanQuality(options: TextProofreadingOptions) = action {
+        val state = mutable.value
+        val project = state.project ?: return@action
+        if (state.editor != null || state.manualBatch != null || state.selectingItems ||
+            state.policyLoadIncomplete || state.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return@action
+        try {
+            val index = qualityScanner.scan(project.ref, project.revision, state.proofreadingQuery, options) { progress ->
+                mutable.update { current -> if (current.project?.ref == project.ref) current.copy(qualityProgress = progress) else current }
+            }
+            val selection = withContext(Dispatchers.Default) { index.select(TextQualityFilter()) { ensureActive() } }
+            val page = qualityScanner.page(selection, limit = PAGE_SIZE + 1)
+            cursors.clear(); cursors.add(0)
+            mutable.value = mutable.value.copy(qualityView = selection, qualityInvalidated = false,
+                project = page.summary, items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) },
+                matchingItems = page.matchingItems, itemStatistics = page.statistics,
+                hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
+                selectingItems = false, selectedItems = emptySet())
+        } finally { mutable.update { it.copy(qualityProgress = null) } }
+    }
+
+    fun filterQuality(filter: TextQualityFilter) = action {
+        val state = mutable.value
+        val view = state.qualityView ?: return@action
+        if (!state.qualityCurrent || state.editor != null || state.manualBatch != null || state.selectingItems) return@action
+        val selection = withContext(Dispatchers.Default) { view.index.select(filter) { ensureActive() } }
+        val page = qualityScanner.page(selection, limit = PAGE_SIZE + 1)
+        cursors.clear(); cursors.add(0)
+        mutable.value = mutable.value.copy(qualityView = selection, project = page.summary,
+            items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, itemStatistics = page.statistics,
+            matchingItems = page.matchingItems, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
+    }
+
+    fun clearQuality() = action {
+        val state = mutable.value
+        val ref = state.project?.ref ?: return@action
+        if (state.editor != null || state.manualBatch != null || state.selectingItems) return@action
+        val page = readStandardProofreadingPage(ref, state.proofreadingQuery, 0)
+        cursors.clear(); cursors.add(0)
+        mutable.value = mutable.value.copy(qualityView = null, qualityInvalidated = false, qualityProgress = null,
+            project = page.summary, items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) },
+            itemStatistics = page.statistics, matchingItems = page.matchingItems,
+            hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
     }
 
     /** Apply explicitly; typing and changing draft controls never read or write the project. */
@@ -542,10 +810,10 @@ class NativeProjectViewModel internal constructor(
         val state = mutable.value
         val ref = state.project?.ref ?: return@action
         if (state.editor != null || state.manualBatch != null || graph.runtime.snapshot().activeRun != null) return@action
-        val page = readProofreadingPage(ref, query, 0)
+        val page = readStandardProofreadingPage(ref, query, 0)
         cursors.clear(); cursors.add(0)
         saveProofreadingQuery(ref, query)
-        mutable.value = mutable.value.copy(project = page.summary, proofreadingQuery = query,
+        mutable.value = mutable.value.copy(project = page.summary, proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, itemStatistics = page.statistics,
             matchingItems = page.matchingItems, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
             selectingItems = false, selectedItems = emptySet(),
@@ -605,6 +873,7 @@ class NativeProjectViewModel internal constructor(
             selectingItems = false, selectedItems = emptySet(), items = previews,
             project = mutable.value.project?.let { it.copy(revision = maxOf(it.revision, receipt.revision)) },
             itemStatistics = null, matchingItems = null, notice = R.string.native_batch_done)
+        refreshCleanTextPolicy(batch.ref)
         if (previews.isNotEmpty()) {
             try {
                 val page = projects.readItemWindow(batch.ref, mutable.value.proofreadingQuery, TextItemWindow(previews.map { it.id }))
@@ -646,6 +915,69 @@ class NativeProjectViewModel internal constructor(
         setDraft(draft)
     }
 
+    fun prepareEditorReplacement(options: TextReplacementOptions) = action {
+        val draft = mutable.value.editor ?: return@action
+        mutable.value = mutable.value.copy(editorReplacement = null)
+        val preview = withContext(Dispatchers.Default) {
+            val context = currentCoroutineContext()
+            TextLiteralReplacer.preview(draft.text, options) { context.ensureActive() }
+        }
+        if (mutable.value.editor === draft && mutable.value.project?.ref == draft.ref)
+            mutable.value = mutable.value.copy(editorReplacement = NativeEditorReplacement(draft.ref, draft.command, preview))
+    }
+
+    fun applyEditorReplacement(expected: NativeEditorReplacement) {
+        val state = mutable.value
+        val draft = state.editor ?: return
+        if (state.busy || state.editorReplacement !== expected || expected.ref != draft.ref || expected.command != draft.command ||
+            draft.ref != state.project?.ref || !expected.preview.changed) return
+        setDraft(draft.changed(text = expected.preview.text, status = TextItemStatus.PROCESSED))
+    }
+
+    fun navigateEditor(direction: TextItemDirection, discardDirty: Boolean = false) = action {
+        val state = mutable.value
+        val draft = state.editor ?: return@action
+        if (draft.conflict || draft.ref != state.project?.ref || draft.dirty && !discardDirty) return@action
+        val view = state.qualityView
+        val details = if (view != null) {
+            if (!state.qualityCurrent) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            val position = view.ids.binarySearchBy(draft.item.id.value) { it.value }
+            if (position < 0) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            val next = position + if (direction == TextItemDirection.NEXT) 1 else -1
+            view.ids.getOrNull(next)?.let { id ->
+                val item = projects.item(draft.ref, id) ?: throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+                if (item.revision != draft.revision || view.index.fact(id)?.fingerprint != item.item.fingerprint)
+                    throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+                item
+            }
+        } else graph.projects.adjacentTextItem(draft.ref, draft.revision, state.proofreadingQuery, draft.item.id, direction)
+        if (details == null) mutable.value = mutable.value.copy(notice = R.string.native_editor_boundary)
+        else setDraft(NativeEditDraft(draft.ref, details.item, details.revision, details.item.fingerprint,
+            details.item.translation, details.item.status, commandId()))
+    }
+
+    fun inspectEditor(options: TextProofreadingOptions) = action {
+        val draft = mutable.value.editor ?: return@action
+        mutable.value = mutable.value.copy(editorQuality = null)
+        if (draft.conflict || mutable.value.policyLoadIncomplete || mutable.value.policyDraft?.dirty == true) {
+            mutable.value = mutable.value.copy(error = R.string.native_quality_unavailable)
+            return@action
+        }
+        val snapshot = graph.projects.textPolicy(draft.ref)
+        if (snapshot.revision != draft.revision) {
+            setDraft(NativeEditDraft(draft.ref, draft.item, draft.revision, draft.fingerprint, draft.text,
+                draft.status, draft.command, conflict = true))
+            throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        }
+        val result = withContext(Dispatchers.Default) {
+            val context = currentCoroutineContext()
+            TextProofreadingInspector(snapshot.policy) { context.ensureActive() }
+                .inspect(draft.item.source, draft.text, draft.status, options)
+        }
+        if (mutable.value.editor === draft && mutable.value.project?.ref == draft.ref)
+            mutable.value = mutable.value.copy(editorQuality = result)
+    }
+
     fun editText(text: String) {
         if (mutable.value.busy) return
         if (text.length > TextProjectLimits().maxItemChars) { mutable.value = mutable.value.copy(error = R.string.native_limit); return }
@@ -676,6 +1008,7 @@ class NativeProjectViewModel internal constructor(
             mutable.value = mutable.value.copy(editor = null, items = rows,
                 project = mutable.value.project?.copy(revision = result.revision), notice = R.string.native_saved,
                 itemStatistics = null, matchingItems = null)
+            refreshCleanTextPolicy(draft.ref)
             // Read current values/counts for the same members, even when an edited item no
             // longer matches the filter. Applying the query or changing page reselects members.
             if (rows.isNotEmpty()) {
@@ -724,7 +1057,7 @@ class NativeProjectViewModel internal constructor(
     private suspend fun openInternal(ref: LocalProjectRef) {
         if (mutable.value.manualBatch != null) return
         val query = restoreProofreadingQuery(ref)
-        val page = readProofreadingPage(ref, query, 0)
+        val page = readStandardProofreadingPage(ref, query, 0)
         val summary = page.summary
         agentPreviews.clear()
         if (graph.runtime.snapshot().activeRun == null) graph.runtime.selectChat(null)
@@ -740,14 +1073,16 @@ class NativeProjectViewModel internal constructor(
             it.ref == ref && graph.runtime.snapshot().activeRun == null }
         if (batch != null) saved["native_page"] = NativePage.PROOFREADING.name
         mutable.value = mutable.value.copy(project = summary, page = if (batch != null) NativePage.PROOFREADING else selectedPage,
-            editor = null, translationProgress = null,
+            editor = null, editorQuality = null, editorReplacement = null, translationProgress = null,
+            policyDraft = null, policyLoadIncomplete = true, policyInvalidRuleId = null,
             selectingItems = false, selectedItems = emptySet(), manualBatch = batch,
             manualBatchConflict = batch != null && saved.get<Boolean>("manual_batch_conflict") == true,
-            proofreadingQuery = query, itemStatistics = page.statistics, matchingItems = page.matchingItems,
+            proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null, itemStatistics = page.statistics, matchingItems = page.matchingItems,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
             agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(),
             runLoadIncomplete = false, agentMessageDetail = null, agentChatId = null, agentInput = "")
         loadAgent(ref)
+        loadTextPolicy(ref, restore = true)
     }
 
     private suspend fun loadPage(ref: LocalProjectRef, after: Long) {
@@ -758,7 +1093,17 @@ class NativeProjectViewModel internal constructor(
             hasNext = page.items.size > PAGE_SIZE, hasPrevious = cursors.size > 1)
     }
 
-    private suspend fun readProofreadingPage(ref: LocalProjectRef, query: TextItemQuery, after: Long): TextProjectPage =
+    private suspend fun readProofreadingPage(ref: LocalProjectRef, query: TextItemQuery, after: Long): TextProjectPage {
+        val view = mutable.value.qualityView
+        if (view != null) {
+            if (!mutable.value.qualityCurrent || view.index.ref != ref || view.index.query != query)
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            return qualityScanner.page(view, after, PAGE_SIZE + 1)
+        }
+        return readStandardProofreadingPage(ref, query, after)
+    }
+
+    private suspend fun readStandardProofreadingPage(ref: LocalProjectRef, query: TextItemQuery, after: Long): TextProjectPage =
         if (query.active) projects.queryPage(ref, query, after, PAGE_SIZE + 1)
         else projects.readPage(ref, after, PAGE_SIZE + 1)
 
@@ -802,9 +1147,10 @@ class NativeProjectViewModel internal constructor(
         saved["draft_item"] = draft.item.id.value; saved["draft_revision"] = draft.revision
         saved["draft_fingerprint"] = draft.fingerprint.sha256; saved["draft_text"] = draft.text
         saved["draft_status"] = draft.status.name; saved["draft_command"] = draft.command.value
-        mutable.value = mutable.value.copy(editor = draft)
+        mutable.value = mutable.value.copy(editor = draft, editorQuality = null, editorReplacement = null)
     }
     private fun clearDraft() {
+        mutable.value = mutable.value.copy(editorQuality = null, editorReplacement = null)
         for (key in listOf("draft_item", "draft_revision", "draft_fingerprint", "draft_text", "draft_status", "draft_command")) saved.remove<Any>(key)
     }
     private fun restoreRef(): LocalProjectRef? = saved.get<ArrayList<String>>("native_ref")?.let(::decodeRef)
@@ -824,7 +1170,10 @@ class NativeProjectViewModel internal constructor(
         job = viewModelScope.launch {
             try { block() }
             catch (error: CancellationException) { mutable.value = mutable.value.copy(notice = R.string.native_cancelled); throw error }
-            catch (error: Exception) { mutable.value = mutable.value.copy(error = when (error) {
+            catch (error: Exception) { mutable.value = mutable.value.copy(
+                qualityInvalidated = mutable.value.qualityInvalidated || mutable.value.qualityView != null &&
+                    error is TextProjectException && error.reason == TextProjectException.Reason.STALE_PAGE,
+                policyInvalidRuleId = (error as? InvalidTextRule)?.ruleId ?: mutable.value.policyInvalidRuleId, error = when (error) {
                 is TextProjectException -> when (error.reason) {
                     TextProjectException.Reason.LIMIT_EXCEEDED -> R.string.native_limit
                     TextProjectException.Reason.INVALID_TEXT -> R.string.native_encoding_error
@@ -835,6 +1184,7 @@ class NativeProjectViewModel internal constructor(
                 }
                 is InvalidAgentHistory -> R.string.native_agent_history_error
                 is ForegroundTranslationStartFailed -> R.string.native_background_unavailable
+                is InvalidTextRule -> R.string.native_policy_invalid
                 is InvalidModelSettings -> R.string.native_model_settings_error
                 is AgentApprovalUnavailable -> R.string.native_agent_load_error
                 is InvalidToolArgument -> R.string.native_agent_invalid_item

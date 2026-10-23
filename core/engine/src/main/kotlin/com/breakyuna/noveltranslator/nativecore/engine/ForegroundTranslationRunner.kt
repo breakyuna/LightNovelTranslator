@@ -12,6 +12,7 @@ data class ForegroundTranslationRequest(
     val ref: LocalProjectRef, val identity: RunIdentity, val configuration: ModelConfigurationRef,
     val expectedRevision: Long, val afterId: Long, val pageSize: Int = 40,
     val scope: TranslationScope = TranslationScope.PAGE,
+    val options: RemoteTranslationOptions? = null,
 ) {
     init {
         require(identity.projectId == ref.projectId && identity.chatId == null)
@@ -56,9 +57,9 @@ class ForegroundTranslationRunner(
         this(runtime, runs, scope, { request, lease, recorder, progress ->
             when (request.scope) {
                 TranslationScope.PAGE -> translations.translateReservedPage(request.ref, lease, recorder, request.configuration,
-                    request.expectedRevision, request.afterId, request.pageSize, progress)
+                    request.expectedRevision, request.afterId, request.pageSize, progress, request.options)
                 TranslationScope.PROJECT -> translations.translateReservedProject(request.ref, lease, recorder, request.configuration,
-                    request.expectedRevision, request.pageSize, progress)
+                    request.expectedRevision, request.pageSize, progress, request.options)
             }
         })
 

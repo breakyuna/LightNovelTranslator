@@ -39,7 +39,7 @@ class NativeTextProjectStore(
     private val runtime: RuntimePort,
     private val limits: TextProjectLimits = TextProjectLimits(),
     private val importLimits: NativeImportLimits = NativeImportLimits(),
-) : TextProjectPort, TranslationCommitPort {
+) : TextProjectPort, TranslationCommitPort, ProjectTextPolicyPort, TextItemNavigationPort, ProjectAssetPort {
     private val io = Dispatchers.IO
     private val context = context.applicationContext
     private val app = NativeAppDatabase.open(this.context)
@@ -122,6 +122,25 @@ class NativeTextProjectStore(
 
     override suspend fun open(ref: LocalProjectRef): TextProjectSummary = operation {
         project(ref) { db -> NativeProjectDatabase.transaction(db) { NativeProjectDatabase.summary(db, ref) } }
+    }
+
+    override suspend fun textPolicy(ref: LocalProjectRef): ProjectPolicySnapshot = operation {
+        project(ref) { db -> NativeProjectDatabase.transaction(db) { ProjectWriteStore.policy(db, ref) } }
+    }
+
+    override suspend fun editTextPolicy(command: ProjectPolicyEdit): PolicyEditReceipt = operation {
+        val coroutine = currentCoroutineContext()
+        TextRuleValidation.validate(command.policy) { coroutine.ensureActive() }
+        withWriteLease {
+            project(command.ref) { db -> ProjectWriteStore.editPolicy(db, command) { coroutine.ensureActive() } }
+        }
+    }
+
+    override suspend fun textPolicyReceipt(command: ProjectPolicyEdit): PolicyEditReceipt? = operation {
+        project(command.ref) { db -> NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, command.ref)
+            ProjectWriteStore.checkedPolicyReceipt(db, command)
+        } }
     }
 
     override suspend fun item(ref: LocalProjectRef, itemId: ItemId): TextItemDetails? = operation {
@@ -236,19 +255,7 @@ class NativeTextProjectStore(
     private fun queriedPage(db: SQLiteDatabase, ref: LocalProjectRef, query: TextItemQuery,
         afterId: Long, limit: Int, window: TextItemWindow?): TextProjectPage {
         val summary = NativeProjectDatabase.summary(db, ref)
-        val clauses = mutableListOf("1 = 1")
-        val arguments = mutableListOf<String>()
-        query.status?.let { clauses.add("status = ?"); arguments.add(it.name) }
-        if (query.text.isNotEmpty()) {
-            clauses.add(when (query.field) {
-                TextSearchField.BOTH -> "(instr(source, ?) > 0 OR instr(translation, ?) > 0)"
-                TextSearchField.SOURCE -> "instr(source, ?) > 0"
-                TextSearchField.TRANSLATION -> "instr(translation, ?) > 0"
-            })
-            arguments.add(query.text)
-            if (query.field == TextSearchField.BOTH) arguments.add(query.text)
-        }
-        val where = clauses.joinToString(" AND ")
+        val (where, arguments) = queryPredicate(query)
         val matching = db.rawQuery("SELECT COUNT(*) FROM items WHERE $where", arguments.toTypedArray()).use {
             if (!it.moveToFirst()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
             it.getInt(0)
@@ -270,6 +277,38 @@ class NativeTextProjectStore(
         return TextProjectPage(summary, rows, itemStatistics(db), matching)
     }
 
+    private fun queryPredicate(query: TextItemQuery): Pair<String, List<String>> {
+        val clauses = mutableListOf("1 = 1")
+        val arguments = mutableListOf<String>()
+        query.status?.let { clauses.add("status = ?"); arguments.add(it.name) }
+        if (query.text.isNotEmpty()) {
+            clauses.add(when (query.field) {
+                TextSearchField.BOTH -> "(instr(source, ?) > 0 OR instr(translation, ?) > 0)"
+                TextSearchField.SOURCE -> "instr(source, ?) > 0"
+                TextSearchField.TRANSLATION -> "instr(translation, ?) > 0"
+            })
+            arguments.add(query.text)
+            if (query.field == TextSearchField.BOTH) arguments.add(query.text)
+        }
+        return clauses.joinToString(" AND ") to arguments
+    }
+
+    override suspend fun adjacentTextItem(ref: LocalProjectRef, revision: Long, query: TextItemQuery,
+        anchor: ItemId, direction: TextItemDirection): TextItemDetails? = operation {
+        require(revision >= 0)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val (where, arguments) = queryPredicate(query)
+            val comparison = if (direction == TextItemDirection.NEXT) ">" else "<"
+            val order = if (direction == TextItemDirection.NEXT) "ASC" else "DESC"
+            db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE $where AND id $comparison ? ORDER BY id $order LIMIT 1",
+                (arguments + anchor.value.toString()).toTypedArray()).use { cursor ->
+                if (cursor.moveToFirst()) TextItemDetails(summary.revision, NativeProjectDatabase.item(cursor)) else null
+            }
+        } }
+    }
+
     private fun itemStatistics(db: SQLiteDatabase): TextItemStatistics {
         val counts = mutableMapOf<TextItemStatus, Int>()
         var translatable = 0
@@ -283,7 +322,9 @@ class NativeTextProjectStore(
             }
         }
         return TextItemStatistics(counts[TextItemStatus.NONE] ?: 0, counts[TextItemStatus.PROCESSED] ?: 0,
-            counts[TextItemStatus.EXCLUDED] ?: 0, translatable)
+            counts[TextItemStatus.EXCLUDED] ?: 0, translatable,
+            (counts[TextItemStatus.RULE_SKIPPED] ?: 0) + (counts[TextItemStatus.LANGUAGE_SKIPPED] ?: 0),
+            counts[TextItemStatus.ERROR] ?: 0, counts[TextItemStatus.DUPLICATED] ?: 0)
     }
 
     override suspend fun items(ref: LocalProjectRef, revision: Long, afterId: Long, limit: Int): TextItemPage = operation {
@@ -426,7 +467,8 @@ class NativeTextProjectStore(
             NativeProjectDatabase.summary(db, ref)
             FileOutputStream(output).use { file ->
                 val buffered = file.buffered()
-                db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items ORDER BY row_index, id", null).use { cursor ->
+                db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items " +
+                    "WHERE asset_id IN (SELECT id FROM assets WHERE file_type = 'TXT') ORDER BY row_index, id", null).use { cursor ->
                     var first = true
                     while (cursor.moveToNext()) {
                         coroutine.ensureActive()
@@ -454,16 +496,17 @@ class NativeTextProjectStore(
         val coroutine = currentCoroutineContext()
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             NativeProjectDatabase.summary(db, ref)
-            val expected = db.rawQuery("SELECT original_size, sha256, codec FROM assets WHERE id = 1", null).use {
-                if (!it.moveToFirst() || it.getString(2) != "raw-v1") fail(TextProjectException.Reason.CORRUPT_PROJECT)
-                it.getLong(0) to it.getString(1)
+            val expected = db.rawQuery("SELECT id, original_size, sha256, codec FROM assets WHERE file_type = 'TXT' ORDER BY ordinal, id LIMIT 1", null).use {
+                if (!it.moveToFirst() || it.getString(3) != "raw-v1") fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                Triple(it.getLong(0), it.getLong(1), it.getString(2))
             }
-            if (expected.first !in 0..limits.maxSourceBytes.toLong()) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+            if (expected.second !in 0..limits.maxSourceBytes.toLong()) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             val digest = MessageDigest.getInstance("SHA-256")
             var size = 0L
             var part = 0
             FileOutputStream(output).use { file ->
-                db.rawQuery("SELECT part, data FROM asset_chunks WHERE asset_id = 1 ORDER BY part", null).use { cursor ->
+                db.rawQuery("SELECT part, data FROM asset_chunks WHERE asset_id = ? ORDER BY part",
+                    arrayOf(expected.first.toString())).use { cursor ->
                     while (cursor.moveToNext()) {
                         coroutine.ensureActive()
                         val bytes = cursor.getBlob(1)
@@ -471,7 +514,7 @@ class NativeTextProjectStore(
                             fail(TextProjectException.Reason.CORRUPT_PROJECT)
                         }
                         size += bytes.size
-                        if (size > expected.first) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                        if (size > expected.second) fail(TextProjectException.Reason.CORRUPT_PROJECT)
                         digest.update(bytes)
                         file.write(bytes)
                     }
@@ -479,9 +522,127 @@ class NativeTextProjectStore(
                 file.fd.sync()
             }
             val actual = digest.digest().joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
-            if (size != expected.first || actual != expected.second) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+            if (size != expected.second || actual != expected.third) fail(TextProjectException.Reason.CORRUPT_PROJECT)
         } }
         deliver(output, destination)
+    }
+
+    override suspend fun assets(ref: LocalProjectRef): List<ProjectAssetSummary> = operation {
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, ref)
+            NativeProjectDatabase.assetSummaries(db)
+        } }
+    }
+
+    override suspend fun projectSettings(ref: LocalProjectRef): ProjectSettings = operation {
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, ref)
+            NativeProjectDatabase.projectSettings(db)
+        } }
+    }
+
+    override suspend fun editProjectSettings(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        settings: ProjectSettings): AssetMutationReceipt = operation {
+        require(expectedRevision >= 0)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(ref) { db -> ProjectAssetWriteStore.editSettings(db, commandId, ref, expectedRevision,
+                settings) { coroutine.ensureActive() } }
+        }
+    }
+
+    override suspend fun importAsset(plan: AssetImportPlan): AssetMutationReceipt = operation {
+        if (plan.bytes.size > limits.maxSourceBytes * 8) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        if (plan.units.size > limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(plan.ref) { db -> ProjectAssetWriteStore.importAsset(db, plan) { coroutine.ensureActive() } }
+        }
+    }
+
+    override suspend fun removeAsset(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        assetId: Long): AssetMutationReceipt = operation {
+        require(expectedRevision >= 0 && assetId > 0)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(ref) { db -> ProjectAssetWriteStore.remove(db, commandId, ref, expectedRevision, assetId) {
+                coroutine.ensureActive()
+            } }
+        }
+    }
+
+    override suspend fun reorderAssets(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        assetIds: List<Long>): AssetMutationReceipt = operation {
+        require(expectedRevision >= 0 && assetIds.size in 1..100 && assetIds.all { it > 0 })
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(ref) { db -> ProjectAssetWriteStore.reorder(db, commandId, ref, expectedRevision, assetIds) {
+                coroutine.ensureActive()
+            } }
+        }
+    }
+
+    override suspend fun resetAsset(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        assetId: Long): AssetMutationReceipt = operation {
+        require(expectedRevision >= 0 && assetId > 0)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(ref) { db -> ProjectAssetWriteStore.reset(db, commandId, ref, expectedRevision, assetId) {
+                coroutine.ensureActive()
+            } }
+        }
+    }
+
+    override suspend fun readAsset(ref: LocalProjectRef, assetId: Long): ByteArray = operation {
+        require(assetId > 0)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, ref)
+            assetBytes(db, assetId)
+        } }
+    }
+
+    override suspend fun exportAsset(ref: LocalProjectRef, assetId: Long, destination: () -> OutputStream): Unit = operation {
+        require(assetId > 0)
+        val bytes = project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, ref)
+            assetBytes(db, assetId)
+        } }
+        val output = temporary("asset")
+        try {
+            FileOutputStream(output).use { it.write(bytes); it.fd.sync() }
+            deliver(output, destination)
+        } catch (error: Throwable) {
+            if (output.exists()) output.delete()
+            throw error
+        }
+    }
+
+    private fun assetBytes(db: SQLiteDatabase, assetId: Long): ByteArray {
+        val expected = db.rawQuery("SELECT original_size,sha256 FROM assets WHERE id=?",
+            arrayOf(assetId.toString())).use {
+            if (!it.moveToFirst()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+            it.getLong(0) to it.getString(1)
+        }
+        if (expected.first < 0 || expected.first > 64L * 1024 * 1024) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        val output = java.io.ByteArrayOutputStream(expected.first.toInt())
+        val digest = MessageDigest.getInstance("SHA-256")
+        var size = 0L
+        db.rawQuery("SELECT part,data FROM asset_chunks WHERE asset_id=? ORDER BY part",
+            arrayOf(assetId.toString())).use { cursor ->
+            var part = 0
+            while (cursor.moveToNext()) {
+                val bytes = cursor.getBlob(1)
+                if (cursor.getInt(0) != part++ || bytes.size !in 1..NativeProjectDatabase.CHUNK_BYTES) {
+                    fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                }
+                size += bytes.size
+                if (size > expected.first) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                digest.update(bytes); output.write(bytes)
+            }
+        }
+        val actual = digest.digest().joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
+        if (size != expected.first || actual != expected.second) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+        return output.toByteArray()
     }
 
     /** Own this adapter at application scope; close only after its callers have stopped. */

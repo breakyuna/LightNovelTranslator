@@ -18,6 +18,7 @@ tasks.withType<Test>().configureEach {
 }
 
 dependencies {
+  api(libs.re2j)
   api(libs.kotlinx.serialization.json)
   testImplementation(libs.junit)
 }

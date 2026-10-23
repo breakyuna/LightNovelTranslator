@@ -41,6 +41,48 @@ class TextTranslationIntegrationTest {
     private fun identity(project: TextProjectSummary) = RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("start"))
     private fun service(model: TranslationModelBackend) = TextTranslationService(runtime, store, store, NativeModelGateway(runtime, model), DurableRunExecutor(runtime, runs))
 
+    @Test fun remoteProjectRunCarriesFrozenOptionsAndKeepsEarlierBatchesAfterFailure() = runBlocking {
+        val project = create("one\ntwo\nthree\nfour\nfive")
+        val config = ModelConfigurationRef("remote", 1)
+        val options = RemoteTranslationOptions("en", instructions = "fixture", batchSize = 2)
+        var calls = 0
+        val remote = object : ConfiguredTranslationBackend {
+            override suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse {
+                assertEquals(options, request.options); assertEquals(config, request.configuration)
+                assertTrue(request.inputs.size <= 2)
+                if (++calls == 2) throw AgentModelFailure(ModelFailureKind.SERVER)
+                return TranslationModelResponse(request.inputs.map { TranslationOutput(it.id, "translated:" + it.source) },
+                    unknownRequestUsage(), ModelStopReason.COMPLETE)
+            }
+        }
+        val service = TextTranslationService(runtime, store, store,
+            NativeModelGateway(runtime, LocalSimulationModel(), remoteTranslation = remote), DurableRunExecutor(runtime, runs))
+        try { service.translateProject(project.ref, identity(project), config, 0, options = options); fail("Expected second batch failure") }
+        catch (error: AgentModelFailure) { assertEquals(ModelFailureKind.SERVER, error.kind) }
+        assertEquals(2, calls); assertEquals(2L, store.open(project.ref).revision)
+        assertEquals(listOf(TextItemStatus.PROCESSED, TextItemStatus.PROCESSED, TextItemStatus.NONE, TextItemStatus.NONE, TextItemStatus.NONE),
+            store.readPage(project.ref).items.map { it.status })
+    }
+
+    @Test fun foregroundCommandRejectsChangedRemoteLanguageBeforeAnyDispatch() = runBlocking {
+        val project = create("source")
+        val owner = SupervisorJob()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, runs),
+            CoroutineScope(owner + Dispatchers.Default), service(LocalSimulationModel()))
+        val request = ForegroundTranslationRequest(project.ref, identity(project), ModelConfigurationRef("remote", 1),
+            0, 0, options = RemoteTranslationOptions("en"))
+        try {
+            val handle = runner.prepare(request)
+            try { runner.prepare(request.copy(options = RemoteTranslationOptions("ja"))); fail("Rebound command") }
+            catch (_: ForegroundTranslationConflict) { }
+            assertSame(handle, runner.prepare(request))
+            assertEquals(0L, store.open(project.ref).revision)
+            runner.stop(handle.token)
+            try { handle.await() } catch (_: CancellationException) { }
+            assertNull(runtime.snapshot().activeRun)
+        } finally { owner.cancelAndJoin() }
+    }
+
     @Test fun foregroundProjectScopeProcessesEveryPageWithinOneExecution() = runBlocking {
         val project = create((1..45).joinToString("\n") { "source-$it" })
         val local = LocalSimulationModel()

@@ -1,6 +1,6 @@
 # 审批与工程变更契约
 
-当前证据见 [HANDOFF §33](HANDOFF.md)：单条 TXT 持久审批已有指定提交 CI；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
+当前证据见 [HANDOFF §3、§41](HANDOFF.md)：单条 TXT 持久审批已有指定提交 CI；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
 
 当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。单条切片已有指定提交 CI，尚未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度及最新 CI 只见 HANDOFF §33（原开发轮见 §24）。
 

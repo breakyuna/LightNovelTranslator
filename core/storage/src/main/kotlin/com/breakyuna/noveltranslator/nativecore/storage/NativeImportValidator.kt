@@ -12,9 +12,11 @@ internal object NativeImportValidator {
         if (file.length() > budget.maxFileBytes) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         NativeProjectDatabase.open(file).use { db ->
             NativeProjectDatabase.validateSchema(db)
+            val version = db.version
             for ((table, columns) in listOf(
                 "project" to listOf("singleton", "revision", "fingerprint_version"),
-                "assets" to listOf("id", "original_size"), "asset_chunks" to listOf("asset_id", "part"),
+                "assets" to listOf("id", "original_size"),
+                "asset_chunks" to listOf("asset_id", "part"),
                 "items" to listOf("id", "asset_id", "row_index"),
                 "item_revisions" to listOf("revision", "item_id", "generation", "committed_at"),
                 "write_receipts" to listOf("generation", "item_id", "revision", "committed_at"),
@@ -26,17 +28,19 @@ internal object NativeImportValidator {
                 if (!it.moveToFirst() || it.getString(0) != "ok" || it.moveToNext()) corrupt()
             }
             db.rawQuery("PRAGMA foreign_key_check", null).use { if (it.moveToFirst()) corrupt() }
-            if (count(db, "project") != 1L || count(db, "assets") != 1L) corrupt()
+            if (count(db, "project") != 1L) corrupt()
+            if (version < 3 && count(db, "assets") != 1L) corrupt()
+            if (version >= 3 && count(db, "assets") !in 1..1_000L) corrupt()
             requireTextBudget(db, "project", "name", 200)
             requireTextBudget(db, "project", "project_id", 2048)
             for ((table, columns) in listOf(
-                "assets" to listOf("path" to 4096, "file_type" to 16, "codec" to 16, "sha256" to 64),
-                "items" to listOf("fingerprint" to 64, "status" to 16),
-                "item_revisions" to listOf("previous_fingerprint" to 64, "fingerprint" to 64, "status" to 16,
+                "assets" to listOf("path" to 4096, "file_type" to 32, "codec" to 16, "sha256" to 64),
+                "items" to listOf("fingerprint" to 64, "status" to 32),
+                "item_revisions" to listOf("previous_fingerprint" to 64, "fingerprint" to 64, "status" to 32,
                     "instance_id" to 2048, "command_id" to 2048),
                 "write_receipts" to listOf("instance_id" to 2048, "command_id" to 2048, "digest" to 64, "outcome" to 32),
             )) for ((column, max) in columns) requireTextBudget(db, table, column, max)
-            val metadata = db.rawQuery("SELECT project_id, name, revision, fingerprint_version FROM project WHERE singleton = 1", null).use {
+            val project = db.rawQuery("SELECT project_id, name, revision, fingerprint_version FROM project WHERE singleton = 1", null).use {
                 if (!it.moveToFirst() || it.getLong(2) < 0 || it.getInt(3) != 1) corrupt()
                 val name = it.getString(1)
                 if (name.isBlank() || name.length > 200 || name.any(Char::isISOControl)) corrupt()
@@ -45,7 +49,7 @@ internal object NativeImportValidator {
                 if (id.length > 2048) corrupt()
                 ProjectId(id) to it.getLong(2)
             }
-            validateAsset(db, limits, checkActive)
+            val assetIds = validateAssets(db, version, limits, checkActive)
             if (count(db, "items") > limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             if (count(db, "item_revisions") > budget.maxHistoryRows || count(db, "write_receipts") > budget.maxHistoryRows) {
                 fail(TextProjectException.Reason.LIMIT_EXCEEDED)
@@ -53,62 +57,74 @@ internal object NativeImportValidator {
             requireTextBudget(db, "items", "source", limits.maxItemChars)
             requireTextBudget(db, "items", "translation", limits.maxItemChars)
             requireTextBudget(db, "item_revisions", "translation", limits.maxItemChars)
+            if (version >= 3) {
+                requireTextBudget(db, "items", "tag", 4096)
+                requireTextBudget(db, "items", "extra_field", 65_536)
+                requireTextBudget(db, "items", "name_source", 32 * 4096)
+                requireTextBudget(db, "items", "name_translation", 32 * 4096)
+            }
             var validationChars = 0L
             val chains = HashMap<Long, Pair<ObjectFingerprint, ObjectFingerprint>>()
             fun charge(chars: Long) {
                 validationChars += chars
                 if (validationChars > budget.maxValidationChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             }
-            db.rawQuery("SELECT ${NativeProjectDatabase.ITEM_COLUMNS}, asset_id FROM items ORDER BY id", null).use { cursor ->
+            val itemColumns = if (version >= 3) NativeProjectDatabase.ITEM_COLUMNS
+                else NativeProjectDatabase.ITEM_COLUMNS_V2 + ", asset_id"
+            db.rawQuery("SELECT $itemColumns FROM items ORDER BY id", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     checkActive()
-                    if (cursor.getLong(0) <= 0 || cursor.getLong(1) !in 0 until limits.maxItems.toLong() || cursor.getLong(6) != 1L) corrupt()
+                    if (cursor.getLong(0) <= 0 || cursor.getLong(1) !in 0 until limits.maxItems.toLong()) corrupt()
+                    val assetId = if (version >= 3) cursor.getLong(6) else cursor.getLong(6)
+                    if (assetId !in assetIds) corrupt()
                     charge(cursor.getString(2).length.toLong() * 2 + cursor.getString(3).length)
-                    val item = NativeProjectDatabase.item(cursor)
+                    val item = NativeProjectDatabase.item(cursor, version)
                     if (item.source.length > limits.maxItemChars || item.translation.length > limits.maxItemChars) {
                         fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                     }
-                    chains[item.id.value] = TextProjectFingerprint.item(item.id, item.row, item.source, "", TextItemStatus.NONE) to item.fingerprint
+                    chains[item.id.value] = item.fingerprint to item.fingerprint
                 }
             }
             val maxItemId = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(id), 0) FROM items")
+            val sequenceNames = if (version >= 3) setOf("items", "assets") else setOf("items")
             db.rawQuery("SELECT name, seq FROM sqlite_sequence", null).use {
-                var seen = false
+                val seen = mutableSetOf<String>()
                 while (it.moveToNext()) {
-                    if (seen || it.getString(0) != "items" || it.getLong(1) < maxItemId) corrupt()
-                    seen = true
+                    val name = it.getString(0)
+                    if (name !in sequenceNames || !seen.add(name)) {
+                        // sqlite_sequence also holds AUTOINCREMENT tables with no rows; tolerate.
+                        if (name == "sqlite_sequence") continue
+                    }
+                    if (name == "items" && it.getLong(1) < maxItemId) corrupt()
                 }
-                if (maxItemId > 0 && !seen) corrupt()
+                if (maxItemId > 0 && "items" !in seen) corrupt()
             }
-            // All successful v1 edits produce one immutable revision. Never import a truncated history.
-            if (count(db, "item_revisions") != metadata.second) corrupt()
-            db.rawQuery("""SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
-                r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
-                i.row_index, i.source,
-                (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
-                    AND w.command_id = r.command_id) FROM item_revisions r JOIN items i ON i.id = r.item_id ORDER BY r.revision""", null).use { cursor ->
-                var revision = 0L
-                while (cursor.moveToNext()) {
-                    checkActive()
-                    if (cursor.getLong(0) != ++revision || cursor.getLong(7) <= 0 || cursor.getLong(9) < 0) corrupt()
-                    if (cursor.getString(4).length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
-                    charge(cursor.getString(11).length.toLong() + cursor.getString(4).length)
-                    ObjectFingerprint(cursor.getString(2))
-                    val chain = chains[cursor.getLong(1)] ?: corrupt()
-                    if (chain.first.sha256 != cursor.getString(2)) corrupt()
-                    val expected = TextProjectFingerprint.item(ItemId(cursor.getLong(1)), cursor.getInt(10),
-                        cursor.getString(11), cursor.getString(4), TextItemStatus.valueOf(cursor.getString(5)))
-                    if (expected.sha256 != cursor.getString(3)) corrupt()
-                    chains[cursor.getLong(1)] = expected to chain.second
-                    boundedIdentity(cursor.getString(6)); boundedIdentity(cursor.getString(8))
-                    if (cursor.isNull(12)) corrupt()
-                    val intent = ManualTextEdit(CommandId(cursor.getString(8)),
-                        LocalProjectRef(metadata.first, ProjectInstanceId(cursor.getString(6)), RecoveryGeneration(cursor.getLong(7))),
-                        ItemId(cursor.getLong(1)), revision - 1, ObjectFingerprint(cursor.getString(2)),
-                        cursor.getString(4), TextItemStatus.valueOf(cursor.getString(5)))
-                    if (TextProjectFingerprint.command(intent) != cursor.getString(12)) corrupt()
-                }
+            val policyCount = if (version >= 2) count(db, "policy_revisions") else 0
+            val assetCount = if (version >= 3) count(db, "asset_revisions") else 0
+            if (count(db, "item_revisions") + policyCount + assetCount != project.second) corrupt()
+            if (project.second > budget.maxHistoryRows) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+            if (policyCount > budget.maxHistoryRows ||
+                (version >= 2 && count(db, "policy_receipts") > budget.maxHistoryRows) ||
+                (version >= 3 && (count(db, "asset_revisions") > budget.maxHistoryRows ||
+                    count(db, "asset_receipts") > budget.maxHistoryRows))) {
+                fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             }
+            if (version >= 2) {
+                charge(validatePolicy(db, project.first, project.second, budget.maxValidationChars, checkActive))
+            }
+            if (version >= 3) validateAssetsMetadata(db, project.second, budget.maxValidationChars, checkActive)
+            val revisionQuery = when {
+                version >= 3 -> "SELECT revision FROM item_revisions UNION ALL SELECT revision FROM policy_revisions " +
+                    "UNION ALL SELECT revision FROM asset_revisions ORDER BY revision"
+                version == 2 -> "SELECT revision FROM item_revisions UNION ALL SELECT revision FROM policy_revisions ORDER BY revision"
+                else -> "SELECT revision FROM item_revisions ORDER BY revision"
+            }
+            db.rawQuery(revisionQuery, null).use {
+                var global = 0L
+                while (it.moveToNext()) { checkActive(); if (it.getLong(0) != ++global) corrupt() }
+                if (global != project.second) corrupt()
+            }
+            validateItemRevisions(db, version, limits, project, chains, ::charge, checkActive)
             if (chains.values.any { it.first != it.second }) corrupt()
             db.rawQuery("SELECT instance_id, generation, command_id, digest, item_id, outcome, revision, committed_at FROM write_receipts", null).use { cursor ->
                 while (cursor.moveToNext()) {
@@ -116,7 +132,7 @@ internal object NativeImportValidator {
                     boundedIdentity(cursor.getString(0)); boundedIdentity(cursor.getString(2))
                     ObjectFingerprint(cursor.getString(3))
                     ManualEditStatus.valueOf(cursor.getString(5))
-                    if (cursor.getLong(1) <= 0 || cursor.getLong(4) <= 0 || cursor.getLong(6) !in 0..metadata.second || cursor.getLong(7) < 0) corrupt()
+                    if (cursor.getLong(1) <= 0 || cursor.getLong(4) <= 0 || cursor.getLong(6) !in 0..project.second || cursor.getLong(7) < 0) corrupt()
                 }
             }
             db.rawQuery("""SELECT 1 FROM item_revisions r LEFT JOIN write_receipts w ON
@@ -128,42 +144,262 @@ internal object NativeImportValidator {
                 w.instance_id = r.instance_id AND w.generation = r.generation AND w.command_id = r.command_id
                 WHERE w.outcome = 'COMMITTED' AND (r.revision IS NULL OR r.revision != w.revision OR r.item_id != w.item_id
                     OR r.committed_at != w.committed_at) LIMIT 1""", null).use { if (it.moveToFirst()) corrupt() }
-            return metadata.first
+            return project.first
         }
     }
 
-    private fun validateAsset(db: SQLiteDatabase, limits: TextProjectLimits, checkActive: () -> Unit) {
-        val asset = db.rawQuery("SELECT path, file_type, codec, original_size, sha256 FROM assets WHERE id = 1", null).use {
-            if (!it.moveToFirst() || it.getString(1) != "TXT" || it.getString(2) != "raw-v1") corrupt()
-            val path = RelativePath(it.getString(0))
-            if (path.value.length > 4096 || !path.value.endsWith(".txt", ignoreCase = true)) corrupt()
-            TextProjectFingerprint.utf8(path.value)
-            val size = it.getLong(3)
-            if (size !in 0..limits.maxSourceBytes.toLong()) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
-            size to ObjectFingerprint(it.getString(4)).sha256
+    private fun validateItemRevisions(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
+        project: Pair<ProjectId, Long>, chains: HashMap<Long, Pair<ObjectFingerprint, ObjectFingerprint>>,
+        charge: (Long) -> Unit, checkActive: () -> Unit) {
+        val sql = if (version >= 3) {
+            """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
+                r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
+                i.row_index, i.source, i.asset_id, i.slot, i.tag, i.name_source, i.name_translation,
+                i.extra_field, i.skip_internal_filter,
+                (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
+                    AND w.command_id = r.command_id) FROM item_revisions r JOIN items i ON i.id = r.item_id ORDER BY r.revision"""
+        } else {
+            """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
+                r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
+                i.row_index, i.source, i.asset_id, 0, '', NULL, NULL, '{}', 0,
+                (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
+                    AND w.command_id = r.command_id) FROM item_revisions r JOIN items i ON i.id = r.item_id ORDER BY r.revision"""
         }
-        // Check lengths before getBlob(), avoiding an oversized untrusted CursorWindow value.
-        db.rawQuery("SELECT 1 FROM asset_chunks WHERE typeof(data) != 'blob' OR length(data) > ? OR length(data) = 0 OR asset_id != 1 LIMIT 1",
-            arrayOf(NativeProjectDatabase.CHUNK_BYTES.toString())).use { if (it.moveToFirst()) corrupt() }
+        db.rawQuery(sql, null).use { cursor ->
+            var revision = 0L
+            while (cursor.moveToNext()) {
+                checkActive()
+                val next = cursor.getLong(0)
+                if ((version == 1 && next != revision + 1) || next <= revision || next > project.second ||
+                    cursor.getLong(7) <= 0 || cursor.getLong(9) < 0) corrupt()
+                revision = next
+                if (cursor.getString(4).length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                charge(cursor.getString(11).length.toLong() + cursor.getString(4).length)
+                ObjectFingerprint(cursor.getString(2))
+                val chain = chains[cursor.getLong(1)] ?: corrupt()
+                if (chain.first.sha256 != cursor.getString(2)) corrupt()
+                val status = try { TextItemStatus.valueOf(cursor.getString(5)) }
+                catch (_: IllegalArgumentException) { corrupt() }
+                val expected = if (version >= 3) {
+                    val metadata = TextItemMetadata(cursor.getString(14),
+                        NativeProjectDatabase.decodeNames(cursor.getString(15)),
+                        NativeProjectDatabase.decodeNames(cursor.getString(16)), cursor.getString(17),
+                        cursor.getInt(18) != 0)
+                    TextProjectFingerprint.item(ItemId(cursor.getLong(1)), cursor.getInt(10),
+                        cursor.getString(11), cursor.getString(4), status, metadata, cursor.getLong(12), cursor.getInt(13))
+                } else {
+                    TextProjectFingerprint.item(ItemId(cursor.getLong(1)), cursor.getInt(10),
+                        cursor.getString(11), cursor.getString(4), status)
+                }
+                if (expected.sha256 != cursor.getString(3)) corrupt()
+                chains[cursor.getLong(1)] = expected to chain.second
+                boundedIdentity(cursor.getString(6)); boundedIdentity(cursor.getString(8))
+                if (cursor.isNull(19)) corrupt()
+                val intent = ManualTextEdit(CommandId(cursor.getString(8)),
+                    LocalProjectRef(project.first, ProjectInstanceId(cursor.getString(6)), RecoveryGeneration(cursor.getLong(7))),
+                    ItemId(cursor.getLong(1)), revision - 1, ObjectFingerprint(cursor.getString(2)),
+                    cursor.getString(4), status)
+                if (TextProjectFingerprint.command(intent) != cursor.getString(19)) corrupt()
+            }
+        }
+    }
+
+    private fun validateAssets(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
+                               checkActive: () -> Unit): Set<Long> {
+        val ids = mutableSetOf<Long>()
+        val expectedOrder = if (version >= 3) 0 else 0
+        var order = expectedOrder
+        val sql = if (version >= 3) {
+            "SELECT id,path,file_type,codec,original_size,sha256,ordinal,enabled,metadata FROM assets ORDER BY ordinal,id"
+        } else {
+            "SELECT id,path,file_type,codec,original_size,sha256,ordinal,enabled,metadata FROM " +
+                "(SELECT id,path,file_type,codec,original_size,sha256,0 AS ordinal,1 AS enabled,'{}' AS metadata FROM assets)"
+        }
+        db.rawQuery(sql, null).use { cursor ->
+            while (cursor.moveToNext()) {
+                checkActive()
+                val id = cursor.getLong(0)
+                if (id <= 0 || !ids.add(id)) corrupt()
+                val path = try { RelativePath(cursor.getString(1)) } catch (_: IllegalArgumentException) { corrupt() }
+                if (path.value.length > 4096) corrupt()
+                TextProjectFingerprint.utf8(path.value)
+                val format = try { ProjectAssetFormat.valueOf(cursor.getString(2)) } catch (_: IllegalArgumentException) { corrupt() }
+                if (version < 3 && (format != ProjectAssetFormat.TXT ||
+                        !path.value.endsWith(".txt", ignoreCase = true))) corrupt()
+                if (cursor.getString(3) != "raw-v1") corrupt()
+                val ordinal = cursor.getInt(6)
+                if (version >= 3 && ordinal != order) corrupt()
+                order++
+                if (version >= 3) {
+                    val enabled = cursor.getInt(7)
+                    if (enabled !in 0..1) corrupt()
+                    val metadata = cursor.getString(8)
+                    if (metadata.length > 65_536) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                    JsonObjectValue.parse(metadata, JsonInputLimits(65_536, 32))
+                }
+                val size = cursor.getLong(4)
+                if (size !in 0..MAX_ASSET_BYTES) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                val sha = ObjectFingerprint(cursor.getString(5)).sha256
+                validateChunks(db, id, size, sha, checkActive)
+            }
+        }
+        if (ids.isEmpty()) corrupt()
+        return ids
+    }
+
+    private fun validateChunks(db: SQLiteDatabase, assetId: Long, size: Long, sha: String, checkActive: () -> Unit) {
+        db.rawQuery("SELECT 1 FROM asset_chunks WHERE asset_id=? AND (typeof(data) != 'blob' OR length(data) > ? " +
+            "OR length(data) = 0) LIMIT 1", arrayOf(assetId.toString(), NativeProjectDatabase.CHUNK_BYTES.toString())).use {
+            if (it.moveToFirst()) corrupt()
+        }
+        val expectedChunks = if (size == 0L) 0L else (size + NativeProjectDatabase.CHUNK_BYTES - 1) / NativeProjectDatabase.CHUNK_BYTES
+        val actualChunks = db.rawQuery("SELECT COUNT(*) FROM asset_chunks WHERE asset_id=?",
+            arrayOf(assetId.toString())).use { if (!it.moveToFirst()) corrupt(); it.getLong(0) }
+        if (actualChunks != expectedChunks) corrupt()
         val digest = MessageDigest.getInstance("SHA-256")
-        val chunks = (asset.first + NativeProjectDatabase.CHUNK_BYTES - 1) / NativeProjectDatabase.CHUNK_BYTES
-        if (count(db, "asset_chunks") != chunks) corrupt()
-        var size = 0L
+        var total = 0L
         var part = 0L
-        db.rawQuery("SELECT part, data FROM asset_chunks ORDER BY part", null).use {
+        db.rawQuery("SELECT part,data FROM asset_chunks WHERE asset_id=? ORDER BY part",
+            arrayOf(assetId.toString())).use {
             while (it.moveToNext()) {
                 checkActive()
                 if (it.getLong(0) != part++) corrupt()
                 val bytes = it.getBlob(1)
-                val expectedLength = minOf(NativeProjectDatabase.CHUNK_BYTES.toLong(), asset.first - size).toInt()
+                val expectedLength = minOf(NativeProjectDatabase.CHUNK_BYTES.toLong(), size - total).toInt()
                 if (bytes.size != expectedLength) corrupt()
-                size += bytes.size
-                if (size > asset.first) corrupt()
+                total += bytes.size
+                if (total > size) corrupt()
                 digest.update(bytes)
             }
         }
         val hash = digest.digest().joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
-        if (size != asset.first || hash != asset.second) corrupt()
+        if (total != size || hash != sha) corrupt()
+    }
+
+    private fun validateAssetsMetadata(db: SQLiteDatabase, revision: Long, maxChars: Long, checkActive: () -> Unit) {
+        requireTextBudget(db, "project_settings", "payload", ProjectSettingsCodec.MAX_CHARS)
+        requireTextBudget(db, "project_settings", "fingerprint", 64)
+        if (count(db, "project_settings") != 1L) corrupt()
+        db.rawQuery("SELECT payload,fingerprint FROM project_settings WHERE singleton=1", null).use {
+            if (!it.moveToFirst()) corrupt()
+            val settings = ProjectSettingsCodec.decode(it.getString(0))
+            if (settings.fingerprint().sha256 != it.getString(1)) corrupt()
+        }
+        for ((table, columns) in listOf(
+            "asset_receipts" to listOf("generation", "revision", "committed_at"),
+            "asset_revisions" to listOf("revision", "generation", "committed_at"),
+        )) {
+            db.rawQuery("SELECT 1 FROM $table WHERE " + columns.joinToString(" OR ") { "typeof($it) != 'integer'" } + " LIMIT 1", null).use {
+                if (it.moveToFirst()) corrupt()
+            }
+        }
+        for (table in listOf("asset_receipts", "asset_revisions")) {
+            for (column in listOf("instance_id", "command_id")) requireTextBudget(db, table, column, 2048)
+        }
+        requireTextBudget(db, "asset_receipts", "digest", 64)
+        requireTextBudget(db, "asset_receipts", "outcome", 32)
+        requireTextBudget(db, "asset_receipts", "kind", 32)
+        requireTextBudget(db, "asset_revisions", "payload", 131_072)
+        var chars = 0L
+        db.rawQuery("SELECT instance_id,generation,command_id,digest,outcome,revision,asset_id,kind,committed_at FROM asset_receipts", null).use {
+            while (it.moveToNext()) {
+                checkActive(); boundedIdentity(it.getString(0)); boundedIdentity(it.getString(2))
+                ObjectFingerprint(it.getString(3))
+                AssetMutationStatus.valueOf(it.getString(4))
+                AssetMutationKind.valueOf(it.getString(7))
+                if (it.getLong(1) <= 0 || it.getLong(5) !in 0..revision || it.getLong(8) < 0) corrupt()
+            }
+        }
+        db.rawQuery("SELECT revision,kind,asset_id,payload,instance_id,generation,command_id,committed_at FROM asset_revisions", null).use {
+            var previous = 0L
+            while (it.moveToNext()) {
+                checkActive()
+                val value = it.getLong(0)
+                if (value <= previous || value > revision) corrupt()
+                previous = value
+                AssetMutationKind.valueOf(it.getString(1))
+                boundedIdentity(it.getString(4)); boundedIdentity(it.getString(6))
+                if (it.getLong(5) <= 0 || it.getLong(7) < 0) corrupt()
+                val payload = it.getString(3)
+                chars += payload.length
+                if (chars > maxChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                JsonObjectValue.parse(payload, JsonInputLimits(131_072, 64))
+            }
+        }
+    }
+
+    private fun validatePolicy(db: SQLiteDatabase, project: ProjectId, revision: Long, maxChars: Long, checkActive: () -> Unit): Long {
+        if (count(db, "text_policy") != 1L) corrupt()
+        for (table in listOf("text_policy", "policy_revisions")) {
+            requireTextBudget(db, table, "payload", ProjectTextPolicyCodec.MAX_CHARS)
+            requireTextBudget(db, table, "fingerprint", 64)
+        }
+        for ((table, columns) in listOf("text_policy" to listOf("singleton"),
+            "policy_revisions" to listOf("revision", "generation", "committed_at"),
+            "policy_receipts" to listOf("generation", "revision", "committed_at"))) {
+            db.rawQuery("SELECT 1 FROM $table WHERE " + columns.joinToString(" OR ") { "typeof($it)!='integer'" } + " LIMIT 1", null).use {
+                if (it.moveToFirst()) corrupt()
+            }
+        }
+        for ((table, columns) in listOf("text_policy" to listOf("payload", "fingerprint"),
+            "policy_revisions" to listOf("payload", "previous_fingerprint", "fingerprint", "instance_id", "command_id"),
+            "policy_receipts" to listOf("instance_id", "command_id", "digest", "outcome", "fingerprint"))) {
+            db.rawQuery("SELECT 1 FROM $table WHERE " + columns.joinToString(" OR ") { "typeof($it)!='text'" } + " LIMIT 1", null).use {
+                if (it.moveToFirst()) corrupt()
+            }
+        }
+        for (table in listOf("policy_revisions", "policy_receipts")) {
+            for (column in listOf("instance_id", "command_id")) requireTextBudget(db, table, column, 2048)
+        }
+        for (column in listOf("fingerprint", "digest")) requireTextBudget(db, "policy_receipts", column, 64)
+        requireTextBudget(db, "policy_revisions", "previous_fingerprint", 64)
+        requireTextBudget(db, "policy_receipts", "outcome", 32)
+        var chars = 0L
+        fun decode(payload: String): ProjectTextPolicy {
+            chars += payload.length
+            if (chars > maxChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+            return ProjectTextPolicyCodec.decode(payload).also { TextRuleValidation.validate(it, checkActive) }
+        }
+        val current = db.rawQuery("SELECT payload,fingerprint FROM text_policy WHERE singleton=1", null).use {
+            if (!it.moveToFirst()) corrupt()
+            val policy = decode(it.getString(0))
+            if (policy.fingerprint().sha256 != it.getString(1)) corrupt()
+            policy.fingerprint()
+        }
+        var previous = ProjectTextPolicy().fingerprint()
+        db.rawQuery("SELECT revision,previous_fingerprint,fingerprint,payload,instance_id,generation,command_id,committed_at FROM policy_revisions ORDER BY revision", null).use {
+            while (it.moveToNext()) {
+                checkActive()
+                if (it.getLong(0) !in 1..revision || it.getLong(5) <= 0 || it.getLong(7) < 0 || it.getString(1) != previous.sha256) corrupt()
+                boundedIdentity(it.getString(4)); boundedIdentity(it.getString(6))
+                val policy = decode(it.getString(3))
+                val next = policy.fingerprint()
+                if (next.sha256 != it.getString(2)) corrupt()
+                val ref = LocalProjectRef(project, ProjectInstanceId(it.getString(4)), RecoveryGeneration(it.getLong(5)))
+                val command = ProjectPolicyEdit(CommandId(it.getString(6)), ref, it.getLong(0) - 1, previous, policy)
+                db.rawQuery("SELECT digest,outcome,revision,fingerprint,committed_at FROM policy_receipts WHERE instance_id=? AND generation=? AND command_id=?",
+                    arrayOf(ref.instanceId.value, ref.generation.value.toString(), command.commandId.value)).use { receipt ->
+                    if (!receipt.moveToFirst() || receipt.getString(0) != command.digest() || receipt.getString(1) != "COMMITTED" ||
+                        receipt.getLong(2) != it.getLong(0) || receipt.getString(3) != next.sha256 || receipt.getLong(4) != it.getLong(7)) corrupt()
+                }
+                previous = next
+            }
+        }
+        if (previous != current) corrupt()
+        db.rawQuery("SELECT instance_id,generation,command_id,digest,outcome,revision,fingerprint,committed_at FROM policy_receipts", null).use {
+            while (it.moveToNext()) {
+                checkActive(); boundedIdentity(it.getString(0)); boundedIdentity(it.getString(2))
+                ObjectFingerprint(it.getString(3)); ObjectFingerprint(it.getString(6))
+                if (it.getLong(1) <= 0 || it.getLong(5) !in 0..revision || it.getLong(7) < 0) corrupt()
+                PolicyEditStatus.valueOf(it.getString(4))
+            }
+        }
+        db.rawQuery("""SELECT 1 FROM policy_receipts w LEFT JOIN policy_revisions r ON
+            w.instance_id=r.instance_id AND w.generation=r.generation AND w.command_id=r.command_id
+            WHERE w.outcome='COMMITTED' AND (r.revision IS NULL OR r.revision!=w.revision OR r.fingerprint!=w.fingerprint OR r.committed_at!=w.committed_at) LIMIT 1""", null).use { if (it.moveToFirst()) corrupt() }
+        db.rawQuery("""SELECT 1 FROM policy_receipts p JOIN write_receipts w ON
+            p.instance_id=w.instance_id AND p.generation=w.generation AND p.command_id=w.command_id LIMIT 1""", null).use { if (it.moveToFirst()) corrupt() }
+        return chars
     }
 
     private fun requireTextBudget(db: SQLiteDatabase, table: String, column: String, limit: Int) {
@@ -178,4 +414,5 @@ internal object NativeImportValidator {
     private fun count(db: SQLiteDatabase, table: String): Long = NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM $table")
     private fun corrupt(): Nothing = fail(TextProjectException.Reason.CORRUPT_PROJECT)
     private fun fail(reason: TextProjectException.Reason): Nothing = throw TextProjectException(reason)
+    private const val MAX_ASSET_BYTES = 64L * 1024 * 1024
 }

@@ -88,7 +88,8 @@ class NativeTranslationService : Service() {
                 ?: getString(R.string.native_background_running)
         }
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(getString(R.string.native_simulation)).setContentText(text).setContentIntent(open)
+            .setContentTitle(getString(if (snapshot.request.options == null) R.string.native_simulation else R.string.native_remote_translate))
+            .setContentText(text).setContentIntent(open)
             .setOngoing(true).setOnlyAlertOnce(true).setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.native_agent_stop), stop).build()

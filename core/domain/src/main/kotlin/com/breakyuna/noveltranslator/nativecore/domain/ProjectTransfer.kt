@@ -1,6 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
-/** Bounded import of the native TXT v1 subset, not an LG/ZIP/backup importer. */
+/** Bounded import of the native TXT v1/v2 subset, not an LG/ZIP/backup importer. */
 data class NativeImportLimits(
     val maxFileBytes: Long = 256L * 1024 * 1024,
     val maxHistoryRows: Int = 200_000,

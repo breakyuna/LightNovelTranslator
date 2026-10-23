@@ -11,6 +11,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
  */
 internal object ProjectWriteStore {
     fun edit(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt {
+        rejectPolicyCommand(db, command.ref, command.commandId)
         if (batchReceiptCount(db, command.ref, command.commandId) != 0)
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         return editBound(db, command, beforeCommit)
@@ -18,6 +19,7 @@ internal object ProjectWriteStore {
 
     private fun editBound(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt =
         NativeProjectDatabase.transaction(db) {
+            rejectPolicyCommand(db, command.ref, command.commandId)
             val digest = TextProjectFingerprint.command(command)
             val previous = find(db, command.ref, command.commandId)
             if (previous != null) {
@@ -40,7 +42,7 @@ internal object ProjectWriteStore {
             if (status == ManualEditStatus.COMMITTED) {
                 checkNotNull(item)
                 val fingerprint = TextProjectFingerprint.item(item.id, item.row, item.source,
-                    command.translation, command.status)
+                    command.translation, command.status, item.metadata, item.assetId, item.slot)
                 check(db.update("items", ContentValues().apply {
                     put("translation", command.translation); put("status", command.status.name)
                     put("fingerprint", fingerprint.sha256)
@@ -66,6 +68,7 @@ internal object ProjectWriteStore {
 
     fun editBatch(db: SQLiteDatabase, command: ManualTextBatch, beforeCommit: () -> Unit): ManualBatchReceipt =
         NativeProjectDatabase.transaction(db) {
+            rejectPolicyCommand(db, command.ref, command.commandId)
             if (find(db, command.ref, command.commandId) != null)
                 throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
             val storedCount = batchReceiptCount(db, command.ref, command.commandId)
@@ -128,6 +131,7 @@ internal object ProjectWriteStore {
         find(db, ref, commandId)?.second
 
     fun checkedReceipt(db: SQLiteDatabase, command: ManualTextEdit): ManualEditReceipt? {
+        rejectPolicyCommand(db, command.ref, command.commandId)
         if (batchReceiptCount(db, command.ref, command.commandId) != 0)
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         val previous = find(db, command.ref, command.commandId) ?: return null
@@ -135,6 +139,81 @@ internal object ProjectWriteStore {
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         }
         return previous.second
+    }
+
+    private fun rejectPolicyCommand(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId) {
+        if (db.version >= 2 && policyReceipt(db, ref, commandId) != null)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+    }
+
+    fun policy(db: SQLiteDatabase, ref: LocalProjectRef): ProjectPolicySnapshot {
+        val summary = NativeProjectDatabase.summary(db, ref)
+        if (db.version == 1) return ProjectPolicySnapshot(ref, summary.revision, ProjectTextPolicy())
+        val value = db.rawQuery("SELECT payload, fingerprint FROM text_policy WHERE singleton=1", null).use {
+            if (!it.moveToFirst()) throw TextProjectException(TextProjectException.Reason.CORRUPT_PROJECT)
+            val policy = ProjectTextPolicyCodec.decode(it.getString(0))
+            if (policy.fingerprint().sha256 != it.getString(1)) throw TextProjectException(TextProjectException.Reason.CORRUPT_PROJECT)
+            policy
+        }
+        return ProjectPolicySnapshot(ref, summary.revision, value)
+    }
+
+    fun editPolicy(db: SQLiteDatabase, command: ProjectPolicyEdit, beforeCommit: () -> Unit): PolicyEditReceipt =
+        NativeProjectDatabase.transaction(db) {
+            NativeProjectDatabase.summary(db, command.ref)
+            if (find(db, command.ref, command.commandId) != null || batchReceiptCount(db, command.ref, command.commandId) != 0)
+                throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+            val prior = policyReceipt(db, command.ref, command.commandId)
+            if (prior != null) {
+                if (prior.first != command.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction prior.second
+            }
+            val current = policy(db, command.ref)
+            val status = when {
+                command.expectedRevision != current.revision -> PolicyEditStatus.STALE_REVISION
+                command.base != current.fingerprint -> PolicyEditStatus.STALE_FINGERPRINT
+                else -> PolicyEditStatus.COMMITTED
+            }
+            // Migration, the policy, its global revision and the terminal receipt share one transaction.
+            NativeProjectDatabase.migratePolicy(db)
+            val next = if (status == PolicyEditStatus.COMMITTED) Math.addExact(current.revision, 1) else current.revision
+            val fingerprint = if (status == PolicyEditStatus.COMMITTED) command.policy.fingerprint() else current.fingerprint
+            val now = System.currentTimeMillis().coerceAtLeast(0)
+            if (status == PolicyEditStatus.COMMITTED) {
+                val payload = ProjectTextPolicyCodec.encode(command.policy)
+                db.execSQL("UPDATE text_policy SET payload=?,fingerprint=? WHERE singleton=1", arrayOf(payload, fingerprint.sha256))
+                db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(next))
+                db.insertOrThrow("policy_revisions", null, ContentValues().apply {
+                    put("revision", next); put("previous_fingerprint", current.fingerprint.sha256)
+                    put("fingerprint", fingerprint.sha256); put("payload", payload)
+                    put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                    put("command_id", command.commandId.value); put("committed_at", now)
+                })
+            }
+            db.insertOrThrow("policy_receipts", null, ContentValues().apply {
+                put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                put("command_id", command.commandId.value); put("digest", command.digest()); put("outcome", status.name)
+                put("revision", next); put("fingerprint", fingerprint.sha256); put("committed_at", now)
+            })
+            beforeCommit()
+            PolicyEditReceipt(command.commandId, command.ref, status, next, fingerprint, now)
+        }
+
+    fun checkedPolicyReceipt(db: SQLiteDatabase, command: ProjectPolicyEdit): PolicyEditReceipt? {
+        if (find(db, command.ref, command.commandId) != null || batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        val previous = policyReceipt(db, command.ref, command.commandId) ?: return null
+        if (previous.first != command.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        return previous.second
+    }
+
+    private fun policyReceipt(db: SQLiteDatabase, ref: LocalProjectRef, command: CommandId): Pair<String, PolicyEditReceipt>? {
+        if (db.version == 1) return null
+        return db.rawQuery("SELECT digest,outcome,revision,fingerprint,committed_at FROM policy_receipts WHERE instance_id=? AND generation=? AND command_id=?",
+            arrayOf(ref.instanceId.value, ref.generation.value.toString(), command.value)).use {
+            if (!it.moveToFirst()) null else it.getString(0) to PolicyEditReceipt(command, ref,
+                PolicyEditStatus.valueOf(it.getString(1)), it.getLong(2), ObjectFingerprint(it.getString(3)), it.getLong(4))
+        }
     }
 
     private fun batchReceiptCount(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Int =

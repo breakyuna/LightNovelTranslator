@@ -9,7 +9,8 @@ import kotlinx.coroutines.coroutineScope
 class NativeModelGateway(private val runtime: RuntimePort, private val backend: TranslationModelBackend,
     private val agentTransport: AgentModelPort? = null,
     private val catalog: NativeModelCatalogPort? = null,
-    private val scheduler: ModelRequestScheduler = ModelRequestScheduler()) : TranslationModelGateway, DispatchAwareAgentModelPort, NativeModelCatalogPort {
+    private val scheduler: ModelRequestScheduler = ModelRequestScheduler(),
+    private val remoteTranslation: ConfiguredTranslationBackend? = null) : DispatchAwareTranslationGateway, DispatchAwareAgentModelPort, NativeModelCatalogPort {
     override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?): List<String> {
         currentCoroutineContext().ensureActive()
         return (catalog ?: throw AgentModelFailure(ModelFailureKind.CONTENT)).models(endpoint, key, savedCredential)
@@ -37,14 +38,29 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
         }
     }
 
-    override suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse {
-        require(lease.identity == request.run && request.configuration == backend.configuration)
+    override suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse =
+        completePrepared(lease, request) {}
+
+    override suspend fun completePrepared(lease: RunLease, request: TranslationModelRequest,
+        beforeDispatch: suspend () -> Unit): TranslationModelResponse {
+        require(lease.identity == request.run)
+        val local = request.configuration == backend.configuration
+        require(if (local) request.options == null else request.options != null)
+        val remote = if (local) null else remoteTranslation ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
         currentCoroutineContext().ensureActive()
         return scheduler.execute(request.configuration) {
+            val owner = runtime.snapshot().activeRun
+            if (owner == null || owner.identity != request.run || owner.owner != RuntimeOwner.TRANSLATION ||
+                owner.phase != RuntimePhase.RUNNING) throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
             val operation = runtime.beginOperation(lease, OperationKind.MODEL_REQUEST)
             try {
                 currentCoroutineContext().ensureActive()
-                val result = try { coroutineScope { backend.complete(request) } }
+                beforeDispatch()
+                currentCoroutineContext().ensureActive()
+                val active = runtime.snapshot().activeRun
+                if (active == null || active.identity != request.run || active.owner != RuntimeOwner.TRANSLATION ||
+                    active.phase != RuntimePhase.RUNNING) throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
+                val result = try { coroutineScope { if (local) backend.complete(request) else requireNotNull(remote).complete(lease, request) } }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (classified: AgentModelFailure) { throw classified }
                 catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.UNKNOWN) }

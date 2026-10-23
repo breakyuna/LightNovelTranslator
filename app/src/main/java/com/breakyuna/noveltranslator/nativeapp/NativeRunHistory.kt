@@ -30,6 +30,7 @@ internal fun NativeRunHistory(state: NativeProjectUiState) {
                         }))
                     if (run.owner == RuntimeOwner.TRANSLATION) Text(stringResource(R.string.native_runs_committed, run.checkpoint.committedItems),
                         style = MaterialTheme.typography.bodySmall)
+                    run.translationUsage?.let { NativeTranslationUsage(run.handle.ref, it, run.handle.run) }
                     if (run.state == StoredRunState.INTERRUPTED) Text(stringResource(
                         if (run.needsReview) R.string.native_runs_uncertain else R.string.native_runs_recovery),
                         style = MaterialTheme.typography.bodySmall)

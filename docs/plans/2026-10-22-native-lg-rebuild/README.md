@@ -1,6 +1,6 @@
 # LNT 原生 Android 全面重构计划
 
-规划日期：2026-10-22。当前实施状态与证据统一见 [HANDOFF §3、§33](HANDOFF.md)：TXT 手工切片已获实机确认，模拟翻译、原生 Agent/审批、持久执行记录/Room v3、HTTP/模型发现、SSE 及设置对话框切片已有最新指定提交的 CI 证据；完整 S1/S2、全格式、后台恢复和全量功能验收仍未完成。
+规划日期：2026-10-22。当前实施状态与证据统一见 [HANDOFF §3、§33](HANDOFF.md)：TXT 手工切片已获实机确认，模拟翻译/前台执行/整工程范围、校对查询/批选、原生 Agent/审批、持久执行记录/Room v3、HTTP/模型发现、SSE、共享调度及字幕纯文本核心已有指定提交 CI 证据；§43 另增远程 TXT 批翻、持久请求/Token 元数据与 Room v4/运行中切页源码，未提交、未构建。§44 新增 `.lnt` v2 规则/提示词与原生管理/远程文本流水线源码，同样未构建。§45—47 另增全文草稿检查、已保存译文质量扫描/筛选统计、相邻匹配定位与草稿替换源码，算法与局限见 [TEXT_QUALITY](TEXT_QUALITY.md)、[QUALITY_SCAN](QUALITY_SCAN.md) 和 [EDITOR_TOOLS](EDITOR_TOOLS.md)，未构建。完整 S1/S2、全格式、后台恢复和全量功能验收仍未完成。
 
 本计划执行用户本次决定：彻底重构 LNT，包括 UI；完整实现 LG Termux 的产品功能；仅保留并改造 LNT 的 Koog Agent 框架。不是在旧阅读器上继续增加功能，也不是 React/WebView 或 Node 后端移植。
 
@@ -28,6 +28,8 @@
 | [前台模拟执行](FOREGROUND_TRANSLATION.md) | 应用级执行、前台确认、通知停止和界面重附着的源码契约 |
 | [校对查询与统计](PROOFREADING_QUERY.md) | 字面搜索、状态筛选、同快照计数和编辑窗口成员保留契约 |
 | [人工批量操作](MANUAL_BATCH.md) | 固定选择、显式确认、原子状态/清空写入与终局回执契约 |
+| [工程规则与提示词](RULES_AND_PROMPTS.md) | `.lnt` v2/兼容 v1、四类规则、RE2/J 语法/预算、草稿与远程流水线，尚未构建 |
+| [远程 TXT 批翻](REMOTE_TRANSLATION.md) | 远程确认、严格输出、持久请求/Token 回执与待验证的 Room v4 源码 |
 | [共享请求调度](MODEL_SCHEDULING.md) | FIFO、固定并发/RPM、停止检查与事实分离的用量汇总契约 |
 | [字幕纯文本核心](SUBTITLE_CODECS.md) | SRT/LRC/ASS/SSA 源绑定、结构保留、双语和有界渲染；尚未接入工程 |
 | [运行恢复切片](RUN_RECOVERY.md) | 持久执行记录、请求/提交回执核对与不自动重放边界 |

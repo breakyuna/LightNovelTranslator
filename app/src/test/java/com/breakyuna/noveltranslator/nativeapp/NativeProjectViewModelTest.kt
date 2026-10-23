@@ -50,7 +50,7 @@ class NativeProjectViewModelTest {
         try {
             stores.forEach { it.clear() }
             owner.cancelAndJoin()
-            graph.agentStore.close(); graph.modelSettings.close(); graph.runStore.close(); graph.projects.close()
+            graph.agentStore.close(); graph.modelSettings.close(); graph.translationAudit.close(); graph.runStore.close(); graph.projects.close()
             graph.runtime.close()
         } finally { Dispatchers.resetMain() }
     }
@@ -67,6 +67,233 @@ class NativeProjectViewModelTest {
     private fun request(project: TextProjectSummary, after: Long = 0) = ForegroundTranslationRequest(project.ref,
         RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("simulate")), graph.simulationConfiguration,
         project.revision, after)
+
+    @Test fun replacementPreviewOnlyUpdatesTheMatchingDraftAfterApplyAndNeverSavesImplicitly() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("replace-ui"), "fixture", RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }; model.edit(ItemId(1)); model.state.first { !it.busy }
+            model.editText("one one")
+            model.prepareEditorReplacement(TextReplacementOptions("one", "two")); model.state.first { !it.busy }
+            val stale = model.state.value.editorReplacement!!
+            assertEquals("one one", model.state.value.editor!!.text)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            model.editText("changed"); model.applyEditorReplacement(stale)
+            assertEquals("changed", model.state.value.editor!!.text); assertNull(model.state.value.editorReplacement)
+            model.prepareEditorReplacement(TextReplacementOptions("changed", "translated")); model.state.first { !it.busy }
+            model.applyEditorReplacement(model.state.value.editorReplacement!!)
+            assertEquals("translated", model.state.value.editor!!.text); assertTrue(model.state.value.editor!!.dirty)
+            assertEquals("", graph.projects.item(project.ref, ItemId(1))!!.item.translation)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            model.saveEditor(); model.state.first { !it.busy }
+            assertEquals("translated", graph.projects.item(project.ref, ItemId(1))!!.item.translation)
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun qualityPagingUsesTheIndexAndSavingAnEditInvalidatesItUntilExplicitClear() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("quality-pages"), "fixture", RelativePath("source.txt"),
+                (1..45).joinToString("\n") { "source $it" }.toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.scanQuality(TextProofreadingOptions()); val scanned = model.state.first { !it.busy }
+            assertTrue(scanned.qualityCurrent); assertEquals(45, scanned.qualityView!!.ids.size)
+            model.nextPage(); val next = model.state.first { !it.busy }
+            assertEquals(5, next.items.size); assertEquals(ItemId(41), next.items.first().id)
+            model.edit(next.items.first().id); model.state.first { !it.busy }
+            model.editText("译文"); model.saveEditor(); val savedEdit = model.state.first { !it.busy }
+            assertFalse(savedEdit.qualityCurrent); assertNotNull(savedEdit.qualityView)
+            assertEquals(1L, savedEdit.policyDraft!!.revision); assertFalse(savedEdit.policyDraft!!.dirty)
+            assertEquals(ItemId(41), savedEdit.items.first().id)
+            model.clearQuality(); val cleared = model.state.first { !it.busy }
+            assertNull(cleared.qualityView); assertEquals(ItemId(1), cleared.items.first().id)
+            assertFalse(cleared.hasPrevious); assertEquals(1L, graph.projects.open(project.ref).revision)
+            model.scanQuality(TextProofreadingOptions()); model.state.first { !it.busy }
+            model.changeTextPolicy(model.state.value.policyDraft!!.policy.changed(prompt = "changed"))
+            assertFalse(model.state.value.qualityCurrent)
+            model.saveTextPolicy(); val savedRules = model.state.first { !it.busy }
+            assertFalse(savedRules.policyLoadIncomplete); assertFalse(savedRules.qualityCurrent)
+            assertEquals(2L, savedRules.project!!.revision)
+            model.refresh(); val refreshed = model.state.first { !it.busy }
+            assertNull(refreshed.qualityView); assertEquals(ItemId(1), refreshed.items.first().id)
+        }
+    }
+
+    @Test fun editorNavigationUsesMatchingItemsAndRequiresExplicitDraftDiscardWithoutWriting() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("adjacent-ui"), "fixture", RelativePath("source.txt"),
+                "keep first\nskip\nkeep last".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.queryProofreading(TextItemQuery(text = "keep", field = TextSearchField.SOURCE)); model.state.first { !it.busy }
+            model.edit(ItemId(1)); model.state.first { !it.busy }; model.editText("draft")
+            model.navigateEditor(TextItemDirection.NEXT); model.state.first { !it.busy }
+            assertEquals(ItemId(1), model.state.value.editor!!.item.id); assertEquals("draft", model.state.value.editor!!.text)
+            model.navigateEditor(TextItemDirection.NEXT, true); model.state.first { !it.busy }
+            assertEquals(ItemId(3), model.state.value.editor!!.item.id); assertEquals("", model.state.value.editor!!.text)
+            model.navigateEditor(TextItemDirection.PREVIOUS); model.state.first { !it.busy }
+            assertEquals(ItemId(1), model.state.value.editor!!.item.id)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            assertEquals("", graph.projects.item(project.ref, ItemId(1))!!.item.translation)
+            model.closeEditor(); model.scanQuality(TextProofreadingOptions()); model.state.first { !it.busy }
+            model.filterQuality(TextQualityFilter(TextQualityOutcome.NOT_EVALUATED)); model.state.first { !it.busy }
+            model.edit(ItemId(1)); model.state.first { !it.busy }
+            model.navigateEditor(TextItemDirection.NEXT); val moved = model.state.first { !it.busy }
+            assertEquals(ItemId(3), moved.editor!!.item.id)
+            model.navigateEditor(TextItemDirection.NEXT); val boundary = model.state.first { !it.busy }
+            assertEquals(ItemId(3), boundary.editor!!.item.id); assertEquals(R.string.native_editor_boundary, boundary.notice)
+        }
+    }
+
+    @Test fun qualityUsesTheFullDraftAndSavedRulesWithoutWritingAndEditsInvalidateItsResult() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("quality-ui"), "fixture", RelativePath("source.txt"),
+                ("a".repeat(300) + " Alice <x>").toByteArray())
+            val initial = graph.projects.textPolicy(project.ref)
+            val policy = ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "Alice", "艾莉丝"),
+                ProjectTextRule("protect", TextRuleKind.PROTECT, "<x>")))
+            graph.projects.editTextPolicy(ProjectPolicyEdit(CommandId("quality-rules"), project.ref, initial.revision, initial.fingerprint, policy))
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            val item = model.state.value.items.first()
+            assertFalse(item.source.contains("Alice"))
+            model.edit(item.id); model.state.first { !it.busy }
+            model.editText("译文")
+            model.inspectEditor(TextProofreadingOptions()); val checked = model.state.first { !it.busy }
+            assertTrue(TextWarningCode.TEXT_PRESERVE in checked.editorQuality!!.codes)
+            assertEquals(listOf("term"), checked.editorQuality!!.missingTermRuleIds)
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+            assertEquals("", graph.projects.item(project.ref, item.id)!!.item.translation)
+            model.editText("艾莉丝 <x>")
+            assertNull(model.state.value.editorQuality)
+            model.inspectEditor(TextProofreadingOptions()); val corrected = model.state.first { !it.busy }
+            assertFalse(TextWarningCode.TEXT_PRESERVE in corrected.editorQuality!!.codes)
+            assertFalse(TextWarningCode.GLOSSARY in corrected.editorQuality!!.codes)
+            model.changeTextPolicy(policy.changed(prompt = "unsaved"))
+            assertNull(model.state.value.editorQuality)
+            model.inspectEditor(TextProofreadingOptions()); val blocked = model.state.first { !it.busy }
+            assertNull(blocked.editorQuality); assertEquals(R.string.native_quality_unavailable, blocked.error)
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun policyDraftSurvivesControllerRecreationAndExplicitSaveUpdatesTheGlobalRevision() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("rules-ui"), "fixture", RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (firstStore, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy }
+            val policy = ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "source", "target")), "prompt", true)
+            first.changeTextPolicy(policy)
+            assertTrue(first.state.value.policyDraft!!.dirty)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            first.simulateProject(); first.state.first { !it.busy }
+            assertNull(graph.backgroundTranslations.state.value)
+            firstStore.clear(); first.viewModelScope.coroutineContext.job.join()
+            val (_, second) = model(saved, graph.projects, graph.backgroundTranslations)
+            second.state.first { !it.busy }
+            assertEquals(policy.fingerprint(), second.state.value.policyDraft!!.policy.fingerprint())
+            assertTrue(second.state.value.policyDraft!!.dirty)
+            second.saveTextPolicy(); val done = second.state.first { !it.busy }
+            assertFalse(done.policyDraft!!.dirty); assertEquals(1L, done.project!!.revision)
+            assertEquals(policy.fingerprint(), graph.projects.textPolicy(project.ref).fingerprint)
+            assertNull(saved.get<ArrayList<String>>("native_policy_draft"))
+        }
+    }
+
+    private suspend fun commitItemForPolicyTest(model: NativeProjectViewModel, batch: Boolean) {
+        if (batch) {
+            model.selectItems(true); model.toggleItem(ItemId(1))
+            model.prepareManualBatch(TextBatchChange.EXCLUDE)
+            val prepared = model.state.first { !it.busy }.manualBatch!!
+            model.confirmManualBatch(prepared)
+        } else {
+            model.edit(ItemId(1)); model.state.first { !it.busy }
+            model.editText("translated"); model.saveEditor()
+        }
+        model.state.first { !it.busy }
+    }
+
+    @Test fun itemCommitsRefreshCleanRulesBeforeTheNextPolicyEdit() = runBlocking {
+        withTimeout(10_000) {
+            for (batch in listOf(false, true)) {
+                val project = graph.projects.createTxt(CommandId("clean-rules-$batch"), "fixture",
+                    RelativePath("source.txt"), "source".toByteArray())
+                val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                    project.ref.instanceId.value, project.ref.generation.value.toString())))
+                val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+                model.state.first { !it.busy }
+                commitItemForPolicyTest(model, batch)
+                val clean = model.state.value.policyDraft!!
+                assertEquals(1L, clean.revision); assertFalse(clean.dirty); assertFalse(clean.conflict)
+                assertFalse(model.state.value.policyLoadIncomplete)
+                model.changeTextPolicy(clean.policy.changed(prompt = "after item commit"))
+                model.saveTextPolicy(); val done = model.state.first { !it.busy }
+                assertNull(done.error); assertFalse(done.policyDraft!!.dirty)
+                assertEquals(2L, done.project!!.revision)
+                assertEquals("after item commit", graph.projects.textPolicy(project.ref).policy.prompt)
+                assertNull(saved.get<ArrayList<String>>("native_policy_draft"))
+            }
+        }
+    }
+
+    @Test fun itemCommitsPreserveDirtyRulesAndTheirStaleRevisionProtection() = runBlocking {
+        withTimeout(10_000) {
+            for (batch in listOf(false, true)) {
+                val project = graph.projects.createTxt(CommandId("dirty-rules-$batch"), "fixture",
+                    RelativePath("source.txt"), "source".toByteArray())
+                val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                    project.ref.instanceId.value, project.ref.generation.value.toString())))
+                val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+                model.state.first { !it.busy }
+                model.changeTextPolicy(model.state.value.policyDraft!!.policy.changed(prompt = "unsaved"))
+                val dirty = model.state.value.policyDraft!!
+                commitItemForPolicyTest(model, batch)
+                assertSame(dirty, model.state.value.policyDraft)
+                assertEquals(encodePolicyDraft(dirty), saved.get<ArrayList<String>>("native_policy_draft"))
+                assertEquals(1L, graph.projects.open(project.ref).revision)
+                model.saveTextPolicy(); val rejected = model.state.first { !it.busy }
+                assertEquals(R.string.native_conflict, rejected.error)
+                assertTrue(rejected.policyDraft!!.conflict); assertTrue(rejected.policyDraft!!.dirty)
+                assertEquals(0L, rejected.policyDraft!!.revision)
+                assertEquals(dirty.command, rejected.policyDraft!!.command)
+                assertEquals("unsaved", rejected.policyDraft!!.policy.prompt)
+                assertEquals(1L, graph.projects.open(project.ref).revision)
+                assertEquals("", graph.projects.textPolicy(project.ref).policy.prompt)
+            }
+        }
+    }
+
+    @Test fun aLostPolicySaveResponseReconcilesWithoutOverwritingLaterRules() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("rules-reconcile"), "fixture", RelativePath("source.txt"), "source".toByteArray())
+            val initial = graph.projects.textPolicy(project.ref)
+            val submitted = ProjectTextPolicy(prompt = "submitted", promptEnabled = true)
+            val draft = NativePolicyDraft(project.ref, 0, initial.fingerprint, submitted, CommandId("lost-response"))
+            graph.projects.editTextPolicy(ProjectPolicyEdit(draft.command, draft.ref, draft.revision, draft.base, draft.policy))
+            val newer = ProjectTextPolicy(prompt = "newer", promptEnabled = true)
+            val first = graph.projects.textPolicy(project.ref)
+            graph.projects.editTextPolicy(ProjectPolicyEdit(CommandId("newer"), project.ref, first.revision, first.fingerprint, newer))
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString()), "native_policy_draft" to encodePolicyDraft(draft)))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            val restored = model.state.first { !it.busy }
+            assertEquals("newer", restored.policyDraft!!.policy.prompt)
+            assertFalse(restored.policyDraft!!.dirty); assertFalse(restored.policyDraft!!.conflict)
+            assertNull(saved.get<ArrayList<String>>("native_policy_draft"))
+            assertEquals(2L, graph.projects.open(project.ref).revision)
+        }
+    }
 
     @Test fun directProjectSimulationWithOnlyBlankPendingRowsDoesNotReserveOrStartAService() = runBlocking {
         withTimeout(10_000) {
@@ -372,6 +599,12 @@ class NativeProjectViewModelTest {
             assertTrue(first.busy); assertEquals(project.ref, first.project!!.ref)
             assertEquals(20L, first.project.revision); assertTrue(first.hasPrevious); assertFalse(first.hasNext)
             assertEquals(2, first.recoveryProblems); assertEquals(0, recoveries.get()); assertNull(first.error)
+            assertTrue(first.foregroundTranslationActive)
+            firstModel.selectPage(NativePage.WORKBENCH)
+            assertEquals(NativePage.WORKBENCH, firstModel.state.value.page)
+            assertTrue(firstModel.state.value.busy)
+            assertEquals(ForegroundTranslationPhase.RUNNING, runner.state.value!!.phase)
+            firstModel.selectPage(NativePage.PROOFREADING)
             firstStore.clear(); firstModel.viewModelScope.coroutineContext.job.join()
             assertEquals(ForegroundTranslationPhase.RUNNING, runner.state.value!!.phase)
             assertNotNull(graph.runtime.snapshot().activeRun)
@@ -383,6 +616,7 @@ class NativeProjectViewModelTest {
             assertEquals(0, recoveries.get())
             releaseSecond.complete(Unit)
             val done = secondModel.state.first { !it.busy }
+            assertFalse(done.foregroundTranslationActive)
             assertEquals(21, done.translationProgress!!.committedItems)
             assertTrue(done.items.all { it.status == TextItemStatus.PROCESSED })
             assertEquals(21L, done.project!!.revision); assertEquals(0, done.recoveryProblems)

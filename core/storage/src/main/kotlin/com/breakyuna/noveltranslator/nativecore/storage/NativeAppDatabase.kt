@@ -34,15 +34,22 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v3. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class], version = 3, exportSchema = true)
+/** Independent app store v4. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class], version = 4, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
     abstract fun agent(): NativeAgentDao
     abstract fun models(): NativeModelSettingsDao
     abstract fun runs(): NativeRunDao
+    abstract fun translationRequests(): NativeTranslationRequestDao
 
     companion object {
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_requests (attemptId TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, configurationId TEXT NOT NULL, configurationRevision INTEGER NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, usage TEXT, failure TEXT, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_translation_requests_instanceId_generation_runId_commandId ON native_translation_requests(instanceId,generation,runId,commandId)")
+            }
+        }
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_runs (executionId TEXT NOT NULL PRIMARY KEY, processId TEXT NOT NULL, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT, runId TEXT NOT NULL, commandId TEXT NOT NULL, owner TEXT NOT NULL, state TEXT NOT NULL, stage TEXT NOT NULL, revision INTEGER, committedItems INTEGER NOT NULL, requests INTEGER NOT NULL, pendingCommands TEXT NOT NULL, requestAttemptId TEXT, requestBranchId TEXT, needsReview INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
@@ -67,6 +74,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
     }
 }

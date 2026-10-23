@@ -3,13 +3,14 @@ package com.breakyuna.noveltranslator.nativecore.domain
 import java.io.OutputStream
 import java.io.InputStream
 import java.security.MessageDigest
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /** Native project format; LG files require a separate compatibility converter. */
 object NativeProjectFormat {
     const val EXTENSION = "lnt"
-    const val SCHEMA_VERSION = 1
+    const val SCHEMA_VERSION = 3
     const val APPLICATION_ID = 0x4c4e5431 // LNT1, independent of the filename.
 }
 
@@ -38,7 +39,18 @@ enum class TxtEncoding(val charsetName: String) {
     GB18030("GB18030"), SHIFT_JIS("Shift_JIS"),
 }
 
-enum class TextItemStatus { NONE, PROCESSED, EXCLUDED }
+enum class TextItemStatus {
+    NONE,
+    PROCESSED,
+    ERROR,
+    EXCLUDED,
+    RULE_SKIPPED,
+    LANGUAGE_SKIPPED,
+    DUPLICATED;
+
+    /** Only these three states can be set by a human edit or manual batch. */
+    val manual: Boolean get() = this == NONE || this == PROCESSED || this == EXCLUDED
+}
 
 data class TextProjectSummary(
     val ref: LocalProjectRef,
@@ -46,6 +58,8 @@ data class TextProjectSummary(
     val revision: Long,
     val assetPath: RelativePath,
     val itemCount: Int,
+    val assets: List<ProjectAssetSummary> = emptyList(),
+    val settings: ProjectSettings? = null,
 )
 
 /**
@@ -79,6 +93,9 @@ class TextProjectItem(
     val translation: String,
     val status: TextItemStatus,
     val fingerprint: ObjectFingerprint,
+    val assetId: Long = 1,
+    val slot: Int = row,
+    val metadata: TextItemMetadata = TextItemMetadata(),
 )
 
 class TextItemPage(val revision: Long, items: List<TextProjectItem>) {
@@ -138,7 +155,8 @@ object TextProjectFingerprint {
     fun bytes(value: ByteArray): String = MessageDigest.getInstance("SHA-256")
         .digest(value).joinToString("") { (it.toInt() and 255).toString(16).padStart(2, '0') }
 
-    fun item(id: ItemId, row: Int, source: String, translation: String, status: TextItemStatus): ObjectFingerprint =
+    fun item(id: ItemId, row: Int, source: String, translation: String, status: TextItemStatus,
+             metadata: TextItemMetadata = TextItemMetadata(), assetId: Long = 1, slot: Int = row): ObjectFingerprint =
         ObjectFingerprint(hash(buildJsonObject {
             put("version", 1)
             put("item", id.value)
@@ -146,6 +164,21 @@ object TextProjectFingerprint {
             put("source", source)
             put("translation", translation)
             put("status", status.name)
+            if (!metadata.isDefault || assetId != 1L || slot != row) {
+                put("asset", assetId)
+                put("slot", slot)
+                put("metadata", buildJsonObject {
+                    put("tag", metadata.tag)
+                    put("extra", metadata.extraField)
+                    put("skip", metadata.skipInternalFilter)
+                    metadata.nameSource?.let { names ->
+                        put("name_source", kotlinx.serialization.json.JsonArray(names.map { JsonPrimitive(it) }))
+                    }
+                    metadata.nameTranslation?.let { names ->
+                        put("name_translation", kotlinx.serialization.json.JsonArray(names.map { JsonPrimitive(it) }))
+                    }
+                })
+            }
         }.toString()))
 
     fun command(edit: ManualTextEdit): String = hash(buildJsonObject {

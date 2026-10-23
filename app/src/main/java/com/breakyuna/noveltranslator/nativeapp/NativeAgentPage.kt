@@ -119,7 +119,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 }), style = MaterialTheme.typography.bodySmall)
             }
             if (state.busy) item(key = "working") { Text(stringResource(R.string.native_working), style = MaterialTheme.typography.bodySmall) }
-            item(key = "open-editor") { TextButton(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy) { Text(stringResource(R.string.native_open_proofreading)) } }
+            item(key = "open-editor") { TextButton(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy || state.foregroundTranslationActive) { Text(stringResource(R.string.native_open_proofreading)) } }
             if (state.recentRuns.isNotEmpty()) item(key = "runs") {
                 Column {
                     TextButton(onClick = { runs = !runs }) { Text(stringResource(R.string.native_runs_title)) }
@@ -209,11 +209,7 @@ private fun NativeApprovalCard(approval: TextApproval, enabled: Boolean, allow: 
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(stringResource(R.string.native_agent_approval_title, approval.row + 1), style = MaterialTheme.typography.titleMedium)
             Text(stringResource(R.string.native_agent_approval_effect))
-            Text(stringResource(R.string.native_row_status, approval.row + 1, stringResource(when (approval.beforeStatus) {
-                TextItemStatus.NONE -> R.string.native_status_none
-                TextItemStatus.PROCESSED -> R.string.native_status_processed
-                TextItemStatus.EXCLUDED -> R.string.native_status_excluded
-            })))
+            Text(stringResource(R.string.native_row_status, approval.row + 1, stringResource(approval.beforeStatus.label())))
             Text(stringResource(R.string.native_agent_before), style = MaterialTheme.typography.labelLarge)
             SelectionContainer { Text(approval.before.ifEmpty { stringResource(R.string.native_empty_result) }) }
             Text(stringResource(R.string.native_agent_after), style = MaterialTheme.typography.labelLarge)

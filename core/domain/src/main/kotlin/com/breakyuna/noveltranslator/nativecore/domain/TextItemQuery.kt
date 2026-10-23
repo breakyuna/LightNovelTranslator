@@ -24,12 +24,17 @@ data class TextItemStatistics(
     val unprocessed: Int, val processed: Int, val excluded: Int,
     /** NONE rows whose source satisfies the translation service's isNotBlank predicate. */
     val translatableUnprocessed: Int,
+    val skipped: Int = 0,
+    val errors: Int = 0,
+    val duplicated: Int = 0,
 ) {
     init {
         require(unprocessed >= 0 && processed >= 0 && excluded >= 0)
+        require(skipped >= 0 && errors >= 0 && duplicated >= 0)
         require(translatableUnprocessed in 0..unprocessed)
     }
-    val total: Int get() = Math.addExact(Math.addExact(unprocessed, processed), excluded)
+    val total: Int get() = Math.addExact(Math.addExact(Math.addExact(unprocessed, processed), excluded),
+        Math.addExact(skipped, Math.addExact(errors, duplicated)))
 }
 
 /** Fixed, bounded page membership. Refreshing edits never silently drops/reorders a member. */

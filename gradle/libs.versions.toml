@@ -1,4 +1,5 @@
 [versions]
+re2j = "1.8"
 androidMinSdk = "24"
 androidCompileSdk = "36"
 androidCompileSdkMinor = "1"
@@ -56,6 +57,7 @@ googleid = "1.1.1"
 
 
 [libraries]
+re2j = { module = "com.google.re2j:re2j", version.ref = "re2j" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

@@ -11,6 +11,7 @@ class RunCheckpoint(
     val requests: Int = 0,
     pendingCommands: List<CommandId> = emptyList(),
     val agentRequest: AgentRequestKey? = null,
+    val translationAttempt: RequestAttemptId? = null,
 ) {
     val pendingCommands: List<CommandId> = frozenList(pendingCommands)
     init {
@@ -18,6 +19,8 @@ class RunCheckpoint(
         require(committedItems >= 0 && requests >= 0)
         require(this.pendingCommands.size <= 20 && this.pendingCommands.distinct().size == this.pendingCommands.size)
         require(this.pendingCommands.isEmpty() || stage == StoredRunStage.COMMITTING)
+        require(agentRequest == null || translationAttempt == null)
+        require(translationAttempt == null || stage == StoredRunStage.REQUESTING)
     }
 }
 
@@ -26,6 +29,7 @@ data class RunJournalHandle(val executionId: String, val ref: LocalProjectRef, v
 class StoredRun(
     val handle: RunJournalHandle, val owner: RuntimeOwner, val state: StoredRunState,
     val checkpoint: RunCheckpoint, val needsReview: Boolean,
+    val translationUsage: RequestUsageTotals? = null,
 )
 
 interface RunJournalPort {

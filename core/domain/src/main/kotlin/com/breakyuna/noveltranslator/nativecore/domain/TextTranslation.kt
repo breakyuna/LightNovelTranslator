@@ -1,17 +1,24 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
 /** Immutable, bounded model boundary. Bodies deliberately have no generated toString(). */
-class TranslationInput(val id: ItemId, val source: String, val fingerprint: ObjectFingerprint)
+class TranslationInput(val id: ItemId, val source: String, val fingerprint: ObjectFingerprint,
+    terms: List<TranslationTerm> = emptyList()) {
+    val terms: List<TranslationTerm> = frozenList(terms)
+}
 class TranslationOutput(val id: ItemId, val text: String)
 class TranslationModelRequest(
     val ref: LocalProjectRef, val run: RunIdentity, val attempt: RequestAttemptId,
     val configuration: ModelConfigurationRef, inputs: List<TranslationInput>,
+    val options: RemoteTranslationOptions? = null,
+    val policyFingerprint: ObjectFingerprint? = null, val projectInstructions: String = "",
 ) {
     val inputs: List<TranslationInput> = frozenList(inputs)
     init {
         require(run.projectId == ref.projectId && this.inputs.size in 1..20)
         require(this.inputs.map { it.id }.toSet().size == this.inputs.size)
         require(this.inputs.sumOf { it.source.length.toLong() } <= 65_536)
+        require(projectInstructions.length <= 16_384 && '\u0000' !in projectInstructions)
+        TextProjectFingerprint.utf8(projectInstructions)
     }
 }
 class TranslationModelResponse(outputs: List<TranslationOutput>, val usage: RequestUsage, val stop: ModelStopReason) {
@@ -25,6 +32,17 @@ interface TranslationModelBackend {
 }
 interface TranslationModelGateway {
     suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse
+}
+
+/** Resolved by exact configuration revision inside the shared gateway, never by UI code. */
+interface ConfiguredTranslationBackend {
+    suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse
+}
+
+/** Persist dispatch only after queue eligibility; waiting for capacity is not a sent request. */
+interface DispatchAwareTranslationGateway : TranslationModelGateway {
+    suspend fun completePrepared(lease: RunLease, request: TranslationModelRequest,
+        beforeDispatch: suspend () -> Unit): TranslationModelResponse
 }
 
 class TranslationBatch(
