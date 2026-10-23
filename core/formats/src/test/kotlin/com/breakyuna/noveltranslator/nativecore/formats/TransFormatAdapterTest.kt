@@ -395,3 +395,7 @@ class TransFormatAdapterTest {
         }
     }
 }
+
+/** Test convenience: production callers always pass a frozen output policy. */
+private fun TransFormatAdapter.write(original: String, units: List<FormatUnit>): String =
+    write(original, units, FormatWriteOptions())
