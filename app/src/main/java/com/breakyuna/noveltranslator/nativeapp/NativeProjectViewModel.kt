@@ -775,7 +775,8 @@ class NativeProjectViewModel internal constructor(
         saved["proof_query_ref"] = encodeRef(ref)
         saved["proof_query_text"] = query.text
         saved["proof_query_field"] = query.field.name
-        if (query.status == null) saved.remove<String>("proof_query_status") else saved["proof_query_status"] = query.status.name
+        val status = query.status
+        if (status == null) saved.remove<String>("proof_query_status") else saved["proof_query_status"] = status.name
     }
 
     private fun clearProofreadingQuery() {
