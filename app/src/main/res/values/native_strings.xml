@@ -30,7 +30,7 @@
     <string name="native_export_asset">Export</string>
     <string name="native_asset_summary">Asset %1$s, %2$d items</string>
     <string name="native_asset_empty">No fixed assets</string>
-    <string name="native_assets_description">Import a text, subtitle, JSON, EPUB, XLSX, Ren'Py, TRANS, RPG Maker or PDF asset. The source is frozen in the project.</string>
+    <string name="native_assets_description">Import a text, subtitle, JSON, EPUB, XLSX, RenPy, TRANS, RPG Maker or PDF asset. The source is frozen in the project.</string>
     <string name="native_previous">Previous page</string>
     <string name="native_next">Next page</string>
     <string name="native_empty_items">This asset has no text entries. The original file is preserved.</string>

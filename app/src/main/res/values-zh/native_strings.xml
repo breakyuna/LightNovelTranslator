@@ -30,7 +30,7 @@
     <string name="native_export_asset">导出</string>
     <string name="native_asset_summary">资产 %1$s，%2$d 个条目</string>
     <string name="native_asset_empty">暂无固化资产</string>
-    <string name="native_assets_description">导入文本、字幕、JSON、EPUB、XLSX、Ren'Py、TRANS、RPG Maker 或 PDF 资产，原稿会固化到工程中。</string>
+    <string name="native_assets_description">导入文本、字幕、JSON、EPUB、XLSX、RenPy、TRANS、RPG Maker 或 PDF 资产，原稿会固化到工程中。</string>
     <string name="native_previous">上一页</string>
     <string name="native_next">下一页</string>
     <string name="native_empty_items">此资产没有文本条目，原始文件仍保留。</string>

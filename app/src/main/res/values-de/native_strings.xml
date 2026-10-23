@@ -30,7 +30,7 @@
     <string name="native_export_asset">Exportieren</string>
     <string name="native_asset_summary">Asset %1$s, %2$d Einträge</string>
     <string name="native_asset_empty">Keine festen Assets</string>
-    <string name="native_assets_description">Text-, Untertitel-, JSON-, EPUB-, XLSX-, Ren'Py-, TRANS-, RPG-Maker- oder PDF-Asset importieren. Die Quelle wird im Projekt fixiert.</string>
+    <string name="native_assets_description">Text-, Untertitel-, JSON-, EPUB-, XLSX-, RenPy-, TRANS-, RPG-Maker- oder PDF-Asset importieren. Die Quelle wird im Projekt fixiert.</string>
     <string name="native_previous">Vorherige Seite</string>
     <string name="native_next">Nächste Seite</string>
     <string name="native_empty_items">Keine Texteinträge. Die Originaldatei bleibt erhalten.</string>
