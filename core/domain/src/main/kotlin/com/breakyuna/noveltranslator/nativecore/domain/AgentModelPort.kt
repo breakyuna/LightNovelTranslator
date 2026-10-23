@@ -59,6 +59,11 @@ sealed interface AgentModelEvent {
     data class TextDelta(val text: String) : AgentModelEvent {
         override fun toString(): String = "TextDelta(redacted)"
     }
+    data class ThinkingDelta(val text: String) : AgentModelEvent {
+        override fun toString(): String = "ThinkingDelta(redacted)"
+    }
+    /** Metadata preview only; incomplete tool arguments never enter the execution path. */
+    data class ToolCallDelta(val index: Int) : AgentModelEvent
 }
 
 /** Narrow gateway consumed by Koog adaptation. No adapter may start its own HTTP client. */

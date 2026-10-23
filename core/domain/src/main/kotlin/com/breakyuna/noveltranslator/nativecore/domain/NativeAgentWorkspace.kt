@@ -2,6 +2,8 @@ package com.breakyuna.noveltranslator.nativecore.domain
 
 data class AgentApprovalResult(val id: String, val row: Int, val state: TextApprovalState)
 class AgentChatLine(val id: String, val role: String, val text: String)
+/** One explicitly opened message; large bodies stay out of the timeline projection. */
+class AgentMessageDetail(val id: String, val role: String, val text: String, val reasoning: String = "", val tools: String = "")
 enum class TextApprovalState { PENDING, REJECTED, CONSUMED, COMMITTED, CONFLICT, CANCELLED }
 /** Bounded full difference, loaded only for one pending approval; never log this object. */
 class TextApproval(

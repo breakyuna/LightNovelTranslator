@@ -34,14 +34,22 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v2. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class], version = 2, exportSchema = true)
+/** Independent app store v3. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class], version = 3, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
     abstract fun agent(): NativeAgentDao
     abstract fun models(): NativeModelSettingsDao
+    abstract fun runs(): NativeRunDao
 
     companion object {
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_runs (executionId TEXT NOT NULL PRIMARY KEY, processId TEXT NOT NULL, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT, runId TEXT NOT NULL, commandId TEXT NOT NULL, owner TEXT NOT NULL, state TEXT NOT NULL, stage TEXT NOT NULL, revision INTEGER, committedItems INTEGER NOT NULL, requests INTEGER NOT NULL, pendingCommands TEXT NOT NULL, requestAttemptId TEXT, requestBranchId TEXT, needsReview INTEGER NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_runs_instanceId_generation_createdAt ON native_runs(instanceId,generation,createdAt)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_runs_state_processId ON native_runs(state,processId)")
+            }
+        }
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_chats (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, createdAt INTEGER NOT NULL, selected INTEGER NOT NULL)")
@@ -59,6 +67,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build()
     }
 }

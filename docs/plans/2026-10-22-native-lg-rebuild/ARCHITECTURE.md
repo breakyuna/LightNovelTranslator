@@ -1,6 +1,8 @@
 # 原生 LG 目标架构
 
-当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它覆盖 TXT 工程、人工校对与系统文件导入导出；新增当前页本地模拟经 NativeModelGateway → TextTranslationService → TranslationCommitPort → ProjectWriteStore 接线（待 CI/设备验证，见 TXT_TRANSLATION.md），没有真实供应商或完整 Agent 生产接入；用户 CI 与 TXT 手工实机确认的证据边界见 HANDOFF §22。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §22。
+当前实现的构建/测试证据见 [HANDOFF §26—27](HANDOFF.md)。新 Agent/模拟切片已通过指定提交 CI；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
+
+当前接线边界：MainActivity → nativeapp/NativeProjectApp → NativeProjectViewModel → NativeAppGraph 注入的 TextProjectPort / RuntimeCoordinator → NativeTextProjectStore / ProjectWriteStore。它覆盖 TXT 工程、人工校对与系统文件导入导出；新增当前页本地模拟经 NativeModelGateway → TextTranslationService → TranslationCommitPort → ProjectWriteStore 接线（已有 CI，新增设备验收待补，见 TXT_TRANSLATION.md），没有真实供应商或完整 Agent 生产接入；用户 CI 与 TXT 手工实机确认的证据边界见 HANDOFF §22。旧 AppViewModel/Koog/翻译引擎不在新启动业务链上，仍保留为迁移来源；下文其余服务和完整模型是目标设计，不由这次入口切换自动实现。实际进度见 [HANDOFF](HANDOFF.md) §22。
 
 这是拟实施设计，现状与授权见 [总入口](README.md)。功能验收以 [功能矩阵](FEATURE_MATRIX.md) 为准，实施依赖见 [任务计划](IMPLEMENTATION_PLAN.md)。
 
@@ -351,7 +353,12 @@ R36 分为早期字段映射样本与后期正式迁移。R00 后用合成旧库
 上述资料于 2026-10-22 查询。没有由此推断新增依赖已经编译、真机可用或格式输出已经一致。
 
 
-当前 S2 单条切片：nativeapp → nativecore.agent.NativeKoogWorkspace → AgentRequestBoundary/AgentToolRegistry → NativeAgentStore（独立应用 Room v2）→ ProjectWriteStore。查询/准备操作使用本地固定后端，真正项目写入只由界面显式允许一次后走存储内部授权路径；不开放通用 PROJECT_WRITE。正文/消费绑定和跨库回执核对见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，完整 Agent 工具循环和 Run/恢复设计仍待后续实现，本轮未构建。
+当前 S2 单条切片：nativeapp → nativecore.agent.NativeKoogWorkspace → AgentRequestBoundary/AgentToolRegistry → NativeAgentStore（独立应用 Room v3，审批表在 v2 引入）→ ProjectWriteStore。查询/准备操作使用本地固定后端，真正项目写入只由界面显式允许一次后走存储内部授权路径；不开放通用 PROJECT_WRITE。正文/消费绑定和跨库回执核对见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，结构化工具循环的后续实现见 §25，完整 Run/恢复仍待实现，指定提交 CI 证据见 HANDOFF §26。
 
 
-§25 对话源码接线扩展为 NativeKoogConversation → AgentRequestBoundary → 共享 NativeModelGateway → core/engine CompatibleAgentModel；NativeModelSettingsStore 拥有独立 Keystore 密文和配置修订，NativeAgentStore 拥有结构化历史、选中会话与请求回执。原生 Room v2 目标尚未生成或验证，真实供应商尚未联调；完整执行、恢复和计量目标未因此关闭，见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。
+§25 对话源码接线扩展为 NativeKoogConversation → AgentRequestBoundary → 共享 NativeModelGateway → core/engine CompatibleAgentModel；NativeModelSettingsStore 拥有独立 Keystore 密文和配置修订，NativeAgentStore 拥有结构化历史、选中会话与请求回执。原生 Room v2 运行迁移已有 CI 用例证据，2.json 仍未导出，真实供应商尚未联调；完整执行、恢复和计量目标未因此关闭，见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。
+
+
+### 持久执行记录切片接线
+
+`nativeapp → DurableRunExecutor → RunJournalPort → NativeRunStore` 为当前工作区新增接线，应用 Room 源码升至 v3，并保留 v1→v2、增加 v2→v3 显式迁移。它保存执行与请求/提交边界，重启只核对现有回执，不恢复执行权或自动重放。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，实际进度与未验证范围见 HANDOFF §28；前台 Service 与原 Run 的执行接续仍是本章目标。

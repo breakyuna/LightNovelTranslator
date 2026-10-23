@@ -15,6 +15,48 @@ import org.junit.Test
 class AgentRequestBoundaryTest {
     private val identity = RunIdentity(ProjectId("project"), ChatId("chat"), RunId("run"), CommandId("command"))
 
+    @Test fun previewLifecycleKeepsDeltasSeparateAndAnnouncesOnlyDurablyRecordedCompletion() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val store = FakeRequestStore(); val order = mutableListOf<String>()
+        val sink = object : AgentEventSink {
+            override fun previewStarted(key: AgentRequestKey) { order.add("started") }
+            override fun preview(key: AgentRequestKey, event: AgentModelEvent) {
+                assertEquals(0, store.saveCount); order.add("delta")
+            }
+            override fun previewCompleted(key: AgentRequestKey, message: MessageId) {
+                assertEquals(1, store.saveCount); order.add("recorded")
+            }
+            override fun previewFinished(key: AgentRequestKey) { order.add("finished") }
+        }
+        val gateway = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+                emit(AgentModelEvent.TextDelta("partial")); emit(AgentModelEvent.ThinkingDelta("thinking")); return response()
+            }
+        }
+        try {
+            AgentRequestBoundary(runtime, gateway, store, sink).complete(run, request(identity))
+            assertEquals(listOf("started", "delta", "delta", "recorded", "finished"), order)
+            assertEquals(1, store.saveCount)
+        } finally { runtime.finishRun(run) }
+    }
+
+    @Test fun streamFailureRetainsUncertainDispatchAndNeverPersistsPartialAssistant() = runTest {
+        val runtime = runtime(); val run = runtime.beginRun(identity, RuntimeOwner.AGENT)
+        val store = FakeRequestStore(); val sink = PreviewSink(); var calls = 0
+        val gateway = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+                calls++; emit(AgentModelEvent.TextDelta("not a complete response")); throw AgentModelFailure(ModelFailureKind.NETWORK)
+            }
+        }
+        val boundary = AgentRequestBoundary(runtime, gateway, store, sink)
+        try {
+            try { boundary.complete(run, request(identity)); fail() } catch (_: AgentModelFailure) { }
+            assertEquals(0, store.saveCount); assertEquals(1, sink.finishCount)
+            try { boundary.complete(run, request(identity)); fail() } catch (_: AgentAttemptUncertain) { }
+            assertEquals(1, calls)
+        } finally { runtime.finishRun(run) }
+    }
+
     @Test
     fun completedAttemptReplaysReceiptWithoutAnotherModelCallOrUsageWrite() = runTest {
         val runtime = runtime()

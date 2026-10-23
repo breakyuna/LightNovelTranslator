@@ -31,7 +31,11 @@ interface AgentPersistencePort {
 
 /** Non-blocking presentation sink; every update must retain its full request identity. */
 interface AgentEventSink {
+    fun previewStarted(key: AgentRequestKey) = Unit
     fun preview(key: AgentRequestKey, event: AgentModelEvent)
+    /** A final provider receipt was persisted, but the canonical conversation may not yet contain it. */
+    fun previewCompleted(key: AgentRequestKey, message: MessageId) = Unit
+    fun previewCommitted(key: AgentRequestKey) = Unit
     fun previewFinished(key: AgentRequestKey)
 }
 

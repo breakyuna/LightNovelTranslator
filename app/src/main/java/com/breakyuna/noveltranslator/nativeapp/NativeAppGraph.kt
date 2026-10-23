@@ -11,17 +11,27 @@ import com.breakyuna.noveltranslator.nativecore.engine.NativeModelGateway
 import com.breakyuna.noveltranslator.nativecore.engine.TextTranslationService
 import com.breakyuna.noveltranslator.nativecore.engine.RuntimeCoordinator
 import com.breakyuna.noveltranslator.nativecore.storage.NativeTextProjectStore
+import com.breakyuna.noveltranslator.nativecore.storage.NativeRunStore
+import com.breakyuna.noveltranslator.nativecore.engine.DurableRunExecutor
+import com.breakyuna.noveltranslator.nativecore.engine.CompatibleHttpTransport
+import com.breakyuna.noveltranslator.nativecore.engine.CompatibleModelCatalog
+import com.breakyuna.noveltranslator.nativecore.domain.NativeModelCatalogPort
 
 /** One process owner for native IO and reservations; no legacy engine or model client. */
 class NativeAppGraph(context: Context) {
     val runtime = RuntimeCoordinator()
     val projects = NativeTextProjectStore(context.applicationContext, runtime)
+    val runStore = NativeRunStore(context.applicationContext, projects, runtime)
+    val runs = DurableRunExecutor(runtime, runStore)
     val agentStore = NativeAgentStore(context.applicationContext, projects, runtime)
     val agentQueries = NativeKoogWorkspace(runtime, projects, agentStore)
     private val simulation = LocalSimulationModel()
     val simulationConfiguration = simulation.configuration
     val modelSettings = NativeModelSettingsStore(context.applicationContext, runtime)
-    private val gateway = NativeModelGateway(runtime, simulation, CompatibleAgentModel(modelSettings, runtime))
+    private val http = CompatibleHttpTransport()
+    private val gateway = NativeModelGateway(runtime, simulation, CompatibleAgentModel(modelSettings, runtime, http),
+        CompatibleModelCatalog(modelSettings, runtime, http))
+    val modelCatalog: NativeModelCatalogPort = gateway
     val conversations = NativeKoogConversation(runtime, projects, agentStore, agentStore, agentStore, gateway)
-    val translations = TextTranslationService(runtime, projects, projects, gateway)
+    val translations = TextTranslationService(runtime, projects, projects, gateway, runs)
 }

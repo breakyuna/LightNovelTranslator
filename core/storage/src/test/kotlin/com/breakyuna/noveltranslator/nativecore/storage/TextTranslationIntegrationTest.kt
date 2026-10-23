@@ -25,20 +25,22 @@ class TextTranslationIntegrationTest {
     private lateinit var context: Context
     private lateinit var runtime: RuntimeCoordinator
     private lateinit var store: NativeTextProjectStore
+    private lateinit var runs: NativeRunStore
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext()
         context.deleteDatabase("lnt_native_app.db")
         File(context.filesDir, "native_projects").deleteRecursively()
         runtime = RuntimeCoordinator(); store = NativeTextProjectStore(context, runtime)
+        runs = NativeRunStore(context, store, runtime)
     }
-    @After fun cleanup() = runBlocking { store.close(); runtime.close() }
+    @After fun cleanup() = runBlocking { runs.close(); store.close(); runtime.close() }
     private suspend fun create(text: String): TextProjectSummary {
         val project = store.createTxt(CommandId("create"), "test", RelativePath("test.txt"), text.toByteArray())
         runtime.selectChat(ChatIdentity(project.ref.projectId, ChatId("workspace")))
         return project
     }
     private fun identity(project: TextProjectSummary) = RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("start"))
-    private fun service(model: TranslationModelBackend) = TextTranslationService(runtime, store, store, NativeModelGateway(runtime, model))
+    private fun service(model: TranslationModelBackend) = TextTranslationService(runtime, store, store, NativeModelGateway(runtime, model), DurableRunExecutor(runtime, runs))
 
     @Test fun translatesOnlyCurrentPageAndPreservesProcessedExcludedAndBlankRows() = runBlocking {
         val project = create("keep\nexclude\n\nnew\nnext")

@@ -71,6 +71,9 @@ class AgentRequestBoundary(
             val dispatch = runtime.beginOperation(run, OperationKind.MODEL_REQUEST)
             try {
                 ownsPreview = true
+                try { events.previewStarted(key) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Presentation only. */ }
                 val response = model.complete(request) { event ->
                     currentCoroutineContext().ensureActive()
                     try {
@@ -92,6 +95,9 @@ class AgentRequestBoundary(
                     }
                 }
                 if (!stored) throw AgentResponseNotStored(key, response)
+                try { events.previewCompleted(key, response.message.id) }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { /* Presentation only. */ }
                 currentCoroutineContext().ensureActive()
                 return validateResponse(request, response)
             } finally {

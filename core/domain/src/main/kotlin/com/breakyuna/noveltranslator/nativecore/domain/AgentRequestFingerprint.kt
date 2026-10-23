@@ -12,6 +12,11 @@ import kotlinx.serialization.json.put
 /** Shared by storage and Agent adapters; never include credentials in model refs. */
 object AgentRequestFingerprint {
     const val FORMAT_VERSION = 1
+    /** Preserve the existing app-store key encoding; shared with run-receipt reconciliation. */
+    fun key(key: AgentRequestKey): String = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(buildJsonObject {
+        put("project", key.run.projectId.value); put("chat", key.run.chatId?.value); put("run", key.run.runId.value)
+        put("command", key.run.commandId.value); put("branch", key.branchId.value); put("attempt", key.attemptId.value)
+    }.toString()))
     fun sha256(request: AgentModelRequest): String {
         val encoded = buildJsonObject {
             put("version", FORMAT_VERSION)

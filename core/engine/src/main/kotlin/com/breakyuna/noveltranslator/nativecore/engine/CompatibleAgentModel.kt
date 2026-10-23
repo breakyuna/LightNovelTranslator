@@ -1,20 +1,17 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.*
-import java.io.ByteArrayOutputStream
-import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** Bounded non-streaming Chat Completions transport; only called through the shared gateway. */
-class CompatibleAgentModel(private val settings: NativeModelSettingsPort, private val runtime: RuntimePort) : AgentModelPort {
-    private val client = OkHttpClient.Builder().retryOnConnectionFailure(false).followRedirects(false)
-        .followSslRedirects(false).callTimeout(90, TimeUnit.SECONDS).build()
+/** Bounded streaming Chat Completions transport; only called through the shared gateway. */
+class CompatibleAgentModel(private val settings: NativeModelSettingsPort, private val runtime: RuntimePort,
+    private val transport: CompatibleHttpTransport = CompatibleHttpTransport()) : AgentModelPort {
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         try {
             currentCoroutineContext().ensureActive()
@@ -23,7 +20,8 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             val providerIds = request.history.filterIsInstance<AgentMessage.Assistant>().flatMap { it.parts }
                 .filterIsInstance<AssistantPart.ToolCall>().associate { it.call.id to requireNotNull(it.call.providerCallId) }
             val body = buildJsonObject {
-                put("model", config.model); put("stream", false)
+                put("model", config.model); put("stream", true)
+                put("stream_options", buildJsonObject { put("include_usage", true) })
                 put("messages", JsonArray(request.history.map { message(it, providerIds) }))
                 if (request.tools.isNotEmpty()) put("tools", JsonArray(request.tools.map {
                     buildJsonObject { put("type", "function"); put("function", buildJsonObject {
@@ -32,56 +30,28 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                 }))
             }.toString()
             if (TextProjectFingerprint.utf8(body).size > 2 * 1024 * 1024) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
-            val http = Request.Builder().url(config.endpoint + "/chat/completions")
-                .header("Authorization", "Bearer $secret").post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).header("Accept", "text/event-stream")
+                .post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
             currentCoroutineContext().ensureActive()
             val active = runtime.snapshot().activeRun
             if (active == null || active.identity != request.run || active.phase != RuntimePhase.RUNNING) throw CancellationException("Agent request stopped")
-            val payload = execute(http)
+            // A completed provider result must survive prompt cancellation at the IO return boundary.
+            // AgentRequestBoundary persists it before checking Stop; partial streams never set this slot.
+            val received = AtomicReference<String?>(null)
+            val payload = try {
+                transport.read(http, streaming = true) { input, contentType ->
+                    val result = if (contentType == "application/json" || contentType?.endsWith("+json") == true) transport.readUtf8(input)
+                        else CompatibleChatStream().read(input, emit)
+                    received.set(result)
+                    result
+                }
+            } catch (failure: Exception) { received.get() ?: throw failure }
             return try { parse(payload) }
             catch (classified: AgentModelFailure) { throw classified }
             catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.PARSING) }
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (classified: AgentModelFailure) { throw classified }
         catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.UNKNOWN) }
-    }
-    private suspend fun execute(request: Request): String = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, error: IOException) {
-                if (continuation.isActive) continuation.resumeWith(Result.failure(AgentModelFailure(
-                    if (error is java.net.SocketTimeoutException || error is java.io.InterruptedIOException) ModelFailureKind.TIMEOUT else ModelFailureKind.NETWORK)))
-            }
-            override fun onResponse(call: Call, response: Response) {
-                val result: Result<String> = try { response.use {
-                    if (!it.isSuccessful) throw AgentModelFailure(when (it.code) {
-                        401, 403 -> ModelFailureKind.AUTHENTICATION
-                        408, 504 -> ModelFailureKind.TIMEOUT
-                        429 -> ModelFailureKind.RATE_LIMIT
-                        in 500..599 -> ModelFailureKind.SERVER
-                        else -> ModelFailureKind.CONTENT
-                    })
-                    val output = ByteArrayOutputStream()
-                    val stream = it.body?.byteStream() ?: throw AgentModelFailure(ModelFailureKind.EMPTY_RESPONSE)
-                    stream.use { input ->
-                        val buffer = ByteArray(16 * 1024)
-                        while (true) {
-                            if (!continuation.isActive) throw CancellationException()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            if (output.size().toLong() + read > 2L * 1024 * 1024) throw AgentModelFailure(ModelFailureKind.CONTENT)
-                            output.write(buffer, 0, read)
-                        }
-                    }
-                    val decoder = Charsets.UTF_8.newDecoder().onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                    Result.success(decoder.decode(java.nio.ByteBuffer.wrap(output.toByteArray())).toString())
-                } } catch (failure: Exception) {
-                    Result.failure(if (failure is AgentModelFailure || failure is CancellationException) failure else AgentModelFailure(ModelFailureKind.NETWORK))
-                }
-                if (continuation.isActive) continuation.resumeWith(result)
-            }
-        })
     }
     private fun message(value: AgentMessage, providerIds: Map<ToolCallId, String>): JsonObject = buildJsonObject {
         when (value) {
@@ -114,6 +84,13 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         val choices = root.getValue("choices").jsonArray
         if (choices.size != 1) throw AgentModelFailure(ModelFailureKind.PARSING)
         val choice = choices.single().jsonObject
+        val stop = when (choice.getValue("finish_reason").jsonPrimitive.content) {
+            "stop" -> ModelStopReason.COMPLETE
+            "tool_calls" -> ModelStopReason.TOOL_CALLS
+            "length" -> ModelStopReason.TRUNCATED
+            "content_filter" -> ModelStopReason.CONTENT_FILTERED
+            else -> throw AgentModelFailure(ModelFailureKind.PARSING)
+        }
         val value = choice.getValue("message").jsonObject
         val parts = mutableListOf<AssistantPart>()
         value["content"]?.takeUnless { it == JsonNull }?.let { parts.add(AssistantPart.Text(it.jsonPrimitive.content)) }
@@ -121,7 +98,7 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         val calls = value["tool_calls"]?.jsonArray.orEmpty()
         if (calls.size > 8) throw AgentModelFailure(ModelFailureKind.PARSING)
         val providerIds = mutableSetOf<String>()
-        for (element in calls) {
+        for (element in if (stop == ModelStopReason.TRUNCATED || stop == ModelStopReason.CONTENT_FILTERED) emptyList() else calls) {
             val call = element.jsonObject
             require(call.getValue("type").jsonPrimitive.content == "function")
             val id = call.getValue("id").jsonPrimitive.content
@@ -130,13 +107,6 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             parts.add(AssistantPart.ToolCall(AgentToolCall(ToolCallId(UUID.randomUUID().toString()),
                 function.getValue("name").jsonPrimitive.content,
                 JsonObjectValue.parse(function.getValue("arguments").jsonPrimitive.content, JsonInputLimits(512 * 1024, 32)), id)))
-        }
-        val stop = when (choice.getValue("finish_reason").jsonPrimitive.content) {
-            "stop" -> ModelStopReason.COMPLETE
-            "tool_calls" -> ModelStopReason.TOOL_CALLS
-            "length" -> ModelStopReason.TRUNCATED
-            "content_filter" -> ModelStopReason.CONTENT_FILTERED
-            else -> throw AgentModelFailure(ModelFailureKind.PARSING)
         }
         val usage = root["usage"]?.takeUnless { it == JsonNull }?.jsonObject
         fun metric(value: JsonElement?): TokenMeasurement {
@@ -147,7 +117,9 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         }
         val promptDetails = usage?.get("prompt_tokens_details")?.takeUnless { it == JsonNull }?.jsonObject
         val completionDetails = usage?.get("completion_tokens_details")?.takeUnless { it == JsonNull }?.jsonObject
-        return AgentModelResponse(AgentMessage.Assistant(MessageId(UUID.randomUUID().toString()), parts),
+        val message = AgentMessage.Assistant(MessageId(UUID.randomUUID().toString()), parts)
+        if (AgentMessageCodec.encode(message).length > 512 * 1024) throw AgentModelFailure(ModelFailureKind.CONTENT)
+        return AgentModelResponse(message,
             RequestUsage(metric(usage?.get("prompt_tokens")), metric(promptDetails?.get("cached_tokens") ?: usage?.get("prompt_cache_hit_tokens")),
                 metric(null), metric(completionDetails?.get("reasoning_tokens")), metric(usage?.get("completion_tokens"))), stop)
     }

@@ -70,6 +70,24 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         db.agent().messages(ref.instanceId.value, ref.generation.value, chatId.value).asReversed()
             .map { AgentChatLine(it.id, it.role, it.body.take(2000)) }
     }
+    suspend fun messageDetail(ref: LocalProjectRef, chat: ChatId, id: String): AgentMessageDetail = io {
+        projects.open(ref)
+        val row = requireNotNull(db.agent().message(id))
+        require(row.instanceId == ref.instanceId.value && row.generation == ref.generation.value && row.chatId == chat.value)
+        val payload = row.payload ?: return@io AgentMessageDetail(row.id, row.role, row.body)
+        require(payload.length <= 512 * 1024)
+        val pretty = Json { prettyPrint = true }
+        fun format(value: JsonObjectValue) = pretty.encodeToString(JsonElement.serializer(), value.json)
+        when (val message = AgentMessageCodec.decode(payload)) {
+            is AgentMessage.User -> AgentMessageDetail(row.id, row.role, message.parts.filterIsInstance<UserPart.Text>().joinToString("\n") { it.text })
+            is AgentMessage.Assistant -> AgentMessageDetail(row.id, row.role,
+                message.parts.filterIsInstance<AssistantPart.Text>().joinToString("\n") { it.text },
+                message.parts.filterIsInstance<AssistantPart.Thinking>().mapNotNull { it.text }.joinToString("\n"),
+                message.parts.filterIsInstance<AssistantPart.ToolCall>().joinToString("\n\n") { it.call.name + "\n" + format(it.call.arguments) })
+            is AgentMessage.ToolResult -> AgentMessageDetail(row.id, row.role, message.toolName + "\n" + format(message.result))
+            is AgentMessage.System -> AgentMessageDetail(row.id, row.role, message.text)
+        }
+    }
     override suspend fun append(ref: LocalProjectRef, chatId: ChatId, role: String, text: String): Unit = io {
         require(role in setOf("USER", "ASSISTANT", "SYSTEM") && text.length <= 65_536)
         TextProjectFingerprint.utf8(text); projects.open(ref)
@@ -265,10 +283,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             } else check(db.agent().complete(key.attemptId.value, requestKey(key), text, response.message.id.value, usage) == 1)
         }
     }
-    private fun requestKey(key: AgentRequestKey): String = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(buildJsonObject {
-        put("project", key.run.projectId.value); put("chat", key.run.chatId?.value); put("run", key.run.runId.value)
-        put("command", key.run.commandId.value); put("branch", key.branchId.value); put("attempt", key.attemptId.value)
-    }.toString()))
+    private fun requestKey(key: AgentRequestKey): String = AgentRequestFingerprint.key(key)
     private fun encodeUsage(usage: RequestUsage) = JsonArray(listOf(usage.input, usage.cacheRead, usage.cacheWrite, usage.thinking, usage.output).map {
         buildJsonObject { put("tokens", it.tokens?.let(::JsonPrimitive) ?: JsonNull); put("source", it.source.name) }
     }).toString()

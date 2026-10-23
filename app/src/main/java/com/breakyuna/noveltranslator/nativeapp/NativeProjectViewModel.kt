@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.TranslatorApplication
 import com.breakyuna.noveltranslator.nativecore.domain.*
+import com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController
 import java.io.ByteArrayOutputStream
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
@@ -70,6 +71,11 @@ data class NativeProjectUiState(
     val modelSettings: NativeModelSettings? = null,
     val agentInput: String = "",
     val agentLoadIncomplete: Boolean = false,
+    val recentRuns: List<StoredRun> = emptyList(),
+    val runLoadIncomplete: Boolean = false,
+    val modelCatalogLoading: Boolean = false,
+    val agentMessageDetail: AgentMessageDetail? = null,
+    val modelSettingsError: Int? = null,
 )
 
 /** Small workspace controller. Every database/file action goes through the native port. */
@@ -80,6 +86,8 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
     private val mutable = MutableStateFlow(NativeProjectUiState(encoding =
         runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8)))
     val state = mutable.asStateFlow()
+    private val agentPreviews = AgentStreamPreviewController()
+    val agentStream = agentPreviews.state
     private var job: Job? = null
     private var agentLease: RunLease? = null
     private var agentChat = ChatId("native-agent-main")
@@ -88,6 +96,9 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
 
     init { action {
         val recovery = projects.recoverProjects()
+        try { graph.runStore.recoverInterrupted() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { mutable.value = mutable.value.copy(runLoadIncomplete = true) }
         val registered = projects.registeredProjects()
         val legacy = withContext(Dispatchers.IO) { application.getDatabasePath("light_novel_translation_platform.db").exists() }
         mutable.value = mutable.value.copy(projects = registered, recoveryProblems = recovery.problems.size, legacyData = legacy)
@@ -118,10 +129,42 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         openInternal(result.ref)
     }
 
-    fun saveAgentModel(endpoint: String, model: String, key: String, onSaved: () -> Unit) = action {
-        val settings = graph.modelSettings.save(endpoint, model, key)
-        mutable.value = mutable.value.copy(modelSettings = settings, notice = R.string.native_model_saved)
-        onSaved()
+    fun saveAgentModel(endpoint: String, model: String, key: String?, onSaved: () -> Unit) = action {
+        mutable.value = mutable.value.copy(modelSettingsError = null)
+        try {
+            val settings = graph.modelSettings.save(endpoint, model, key)
+            mutable.value = mutable.value.copy(modelSettings = settings, notice = R.string.native_model_saved)
+            onSaved()
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            mutable.value = mutable.value.copy(modelSettingsError = if (error is InvalidModelSettings) R.string.native_model_settings_error else R.string.native_io_error)
+        }
+    }
+    fun fetchAgentModels(endpoint: String, key: String, savedCredential: ModelConfigurationRef?, onLoaded: (List<String>) -> Unit) = action {
+        mutable.value = mutable.value.copy(modelCatalogLoading = true, modelSettingsError = null)
+        try {
+            val models = graph.modelCatalog.models(endpoint, key, savedCredential)
+            currentCoroutineContext().ensureActive()
+            onLoaded(models)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            mutable.value = mutable.value.copy(modelSettingsError = if (error is InvalidModelSettings) R.string.native_model_settings_error
+                else if (error is AgentModelFailure && error.kind == ModelFailureKind.AUTHENTICATION) R.string.native_models_auth_error
+                else R.string.native_models_fetch_error)
+        } finally { mutable.value = mutable.value.copy(modelCatalogLoading = false) }
+    }
+    fun inspectAgentMessage(id: String) = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        val detail = graph.agentStore.messageDetail(ref, agentChat, id)
+        mutable.value = mutable.value.copy(agentMessageDetail = detail)
+    }
+    fun closeAgentMessage() { mutable.value = mutable.value.copy(agentMessageDetail = null) }
+    private suspend fun refreshAgentTimeline(ref: LocalProjectRef, chat: ChatId) {
+        val messages = graph.agentStore.messages(ref, chat)
+        withContext(Dispatchers.Main.immediate) {
+            if (mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+                mutable.value = mutable.value.copy(agentMessages = messages)
+        }
     }
     fun agentInput(text: String) {
         if (mutable.value.busy || text.length > 8000) return
@@ -134,36 +177,45 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
     fun selectAgentChat(chat: ChatId) = action {
         val ref = mutable.value.project?.ref ?: return@action
         graph.agentStore.selectChat(ref, chat)
+        agentPreviews.clear()
         loadAgent(ref)
     }
     fun newAgentChat() = action {
         val ref = mutable.value.project?.ref ?: return@action
         graph.agentStore.newChat(ref)
+        agentPreviews.clear()
         loadAgent(ref)
     }
     fun sendAgentMessage() = action {
-        if (mutable.value.agentLoadIncomplete) return@action
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val ref = mutable.value.project?.ref ?: return@action
         val configuration = mutable.value.modelSettings?.reference ?: return@action
         val text = mutable.value.agentInput
         if (text.isBlank() || mutable.value.approval != null) return@action
         try {
-            agentRun(ref) { lease ->
-                graph.conversations.send(lease, ref, configuration, text) {
-                    withContext(Dispatchers.Main.immediate) {
-                        saved.remove<String>("agent_input_text")
-                        mutable.value = mutable.value.copy(agentInput = "")
+            agentRun(ref) { lease, recorder ->
+                val session = agentPreviews.open(ref, lease.identity)
+                var completed = false
+                try {
+                    val result = graph.conversations.send(lease, ref, configuration, text, recorder, preview = session,
+                        updated = { refreshAgentTimeline(ref, requireNotNull(lease.identity.chatId)) }) {
+                        withContext(Dispatchers.Main.immediate) {
+                            saved.remove<String>("agent_input_text")
+                            mutable.value = mutable.value.copy(agentInput = "")
+                        }
                     }
-                }
+                    completed = true
+                    result
+                } finally { session.close(keepPartial = !completed) }
             }
         } finally { withContext(NonCancellable) { loadAgent(ref) } }
     }
 
     fun queryAgentProject() = action {
-        if (mutable.value.agentLoadIncomplete) return@action
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val ref = mutable.value.project?.ref ?: return@action
         try {
-            agentRun(ref) { lease ->
+            agentRun(ref) { lease, _ ->
                 graph.agentStore.append(ref, agentChat, "USER", getApplication<Application>().getString(R.string.native_agent_query))
                 val text = graph.agentQueries.query(lease, ref)
                 val result = JsonObjectValue.parse(text, JsonInputLimits(16_384, 8)).json
@@ -176,28 +228,28 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
     }
 
     fun prepareAgentEdit(itemIdText: String, translation: String) = action {
-        if (mutable.value.agentLoadIncomplete) return@action
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val ref = mutable.value.project?.ref ?: return@action
         val item = ItemId(ToolArguments.long(ToolScalar.NumberToken(itemIdText), "itemId", 1, Long.MAX_VALUE))
         try {
-            agentRun(ref) { lease -> graph.agentQueries.prepare(lease, ref, graph.agentStore, item, translation) }
+            agentRun(ref) { lease, _ -> graph.agentQueries.prepare(lease, ref, graph.agentStore, item, translation) }
         } finally { withContext(NonCancellable) { loadAgent(ref) } }
     }
 
     fun rejectAgentEdit() = action {
-        if (mutable.value.agentLoadIncomplete) return@action
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val approval = mutable.value.approval ?: return@action
         graph.agentStore.reject(approval.ref, approval.id, approval.digest)
         loadAgent(approval.ref)
     }
 
     fun allowAgentEdit() = action {
-        if (mutable.value.agentLoadIncomplete) return@action
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val approval = mutable.value.approval ?: return@action
         if (approval.state != TextApprovalState.PENDING) return@action
         try {
-            val result = agentRun(approval.ref, approval.runId, approval.commandId) { lease ->
-                graph.agentStore.apply(lease, approval.ref, approval.id, approval.digest)
+            val result = agentRun(approval.ref, approval.runId, approval.commandId) { lease, recorder ->
+                graph.agentStore.apply(lease, approval.ref, approval.id, approval.digest).also { recorder.approvalResult(it) }
             }
             mutable.value = mutable.value.copy(notice = when (result) {
                 TextApprovalState.COMMITTED -> R.string.native_saved
@@ -231,27 +283,47 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
             saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") ?: "" else ""
         mutable.value = mutable.value.copy(agentMessages = messages, approval = approval, agentResults = results,
             agentChatId = selectedChat, agentChats = chats, modelSettings = settings, agentInput = draft,
-            agentLoadIncomplete = incomplete)
+            agentLoadIncomplete = incomplete, agentMessageDetail = null)
+        loadRuns(ref)
     }
 
     private suspend fun <T> agentRun(ref: LocalProjectRef, runId: RunId = RunId(UUID.randomUUID().toString()),
-                                     command: CommandId = commandId(), block: suspend (RunLease) -> T): T {
+                                     command: CommandId = commandId(), block: suspend (RunLease, RunProgressRecorder) -> T): T {
         graph.runtime.selectChat(ChatIdentity(ref.projectId, agentChat))
-        val lease = graph.runtime.beginRun(RunIdentity(ref.projectId, agentChat, runId, command), RuntimeOwner.AGENT)
-        agentLease = lease
-        try { return block(lease) }
-        catch (cancelled: CancellationException) {
-            withContext(NonCancellable) { graph.agentStore.cancelPending(ref, runId) }
-            throw cancelled
+        agentPreviews.clear()
+        try {
+            return graph.runs.execute(ref, RunIdentity(ref.projectId, agentChat, runId, command), RuntimeOwner.AGENT) { lease, recorder ->
+                agentLease = lease
+                try {
+                    val result = block(lease, recorder)
+                    if (graph.agentStore.pending(ref, agentChat)?.runId == runId) recorder.waitingForApproval()
+                    result
+                } catch (cancelled: CancellationException) {
+                    withContext(NonCancellable) { graph.agentStore.cancelPending(ref, runId) }
+                    throw cancelled
+                }
+            }
         } finally {
-            graph.runtime.finishRun(lease)
             agentLease = null
             graph.runtime.selectChat(null)
         }
     }
 
+    private suspend fun loadRuns(ref: LocalProjectRef) {
+        try {
+            graph.runStore.recoverInterrupted()
+            val runs = graph.runStore.recent(ref)
+            mutable.value = mutable.value.copy(recentRuns = runs, runLoadIncomplete = false)
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            // Keep same-project facts visible, but never hide a recovery/journal failure.
+            mutable.value = mutable.value.copy(runLoadIncomplete = true)
+        }
+    }
+
     /** Explicitly confirmed local simulation, limited to the currently loaded proofreading page. */
     fun simulatePage() = action {
+        if (mutable.value.runLoadIncomplete) return@action
         val project = mutable.value.project ?: return@action
         if (mutable.value.editor != null) return@action
         val ref = project.ref
@@ -268,7 +340,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         } finally {
             // Re-read committed facts even when cancellation reached us after the commit boundary.
             graph.runtime.selectChat(null)
-            withContext(NonCancellable) { loadPage(ref, after) }
+            withContext(NonCancellable) { loadPage(ref, after); loadRuns(ref) }
         }
     }
 
@@ -327,12 +399,14 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
 
     fun home() {
         if (mutable.value.busy || mutable.value.editor != null) return
+        agentPreviews.clear()
         graph.runtime.selectChat(null)
         saved.remove<ArrayList<String>>("native_ref")
         saved.remove<String>("native_page")
         cursors.clear(); cursors.add(0)
         mutable.value = mutable.value.copy(project = null, items = emptyList(), hasNext = false, hasPrevious = false,
-            agentMessages = emptyList(), approval = null, agentResults = emptyList())
+            agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(), runLoadIncomplete = false,
+            agentMessageDetail = null)
         refresh()
     }
 
@@ -434,6 +508,7 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
     private suspend fun openInternal(ref: LocalProjectRef) {
         val summary = projects.open(ref)
         val page = projects.items(ref, summary.revision, limit = PAGE_SIZE + 1)
+        agentPreviews.clear()
         graph.runtime.selectChat(null)
         cursors.clear(); cursors.add(0)
         val same = restoreRef() == ref
@@ -442,7 +517,8 @@ class NativeProjectViewModel(application: Application, private val saved: SavedS
         saved["native_ref"] = encodeRef(ref)
         mutable.value = mutable.value.copy(project = summary, page = selectedPage, editor = null, translationProgress = null,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
-            agentMessages = emptyList(), approval = null, agentResults = emptyList())
+            agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(),
+            runLoadIncomplete = false, agentMessageDetail = null, agentChatId = null, agentInput = "")
         loadAgent(ref)
     }
 

@@ -153,6 +153,7 @@ class NativeAgentStoreTest {
             db.execSQL("DROP TABLE native_agent_messages")
             db.execSQL("DROP TABLE native_agent_approvals")
             db.execSQL("DROP TABLE native_agent_requests")
+            db.execSQL("DROP TABLE native_runs")
             db.execSQL("DELETE FROM room_master_table")
             db.version = 1
         }
@@ -172,6 +173,21 @@ class NativeAgentStoreTest {
         } finally { runtime.finishRun(lease) }
         assertEquals(0L, projects.open(original.ref).revision)
         assertEquals(0L, projects.open(copy.ref).revision)
+    }
+
+    @Test fun fullMessageDetailsRemainBoundToProjectGenerationAndChat() = runBlocking {
+        val project = project()
+        val body = "full message ".repeat(300)
+        val message = AgentMessage.Assistant(MessageId("full-message"), listOf(
+            AssistantPart.Text(body), AssistantPart.Thinking("fixture thinking", null)))
+        agent.appendMessage(project.ref, chat, message)
+        val preview = agent.messages(project.ref, chat).single()
+        assertTrue(preview.text.length <= 2000)
+        val detail = agent.messageDetail(project.ref, chat, message.id.value)
+        assertEquals(body, detail.text); assertEquals("fixture thinking", detail.reasoning)
+        try { agent.messageDetail(project.ref, ChatId("other-chat"), message.id.value); fail() } catch (_: IllegalArgumentException) { }
+        val copy = projects.copyProject(CommandId("details-copy"), project.ref)
+        try { agent.messageDetail(copy.ref, chat, message.id.value); fail() } catch (_: IllegalArgumentException) { }
     }
     @Test fun dispatchedRequestIsUncertainUntilResponseAndUsageArePersisted() = runBlocking {
         val project = project()

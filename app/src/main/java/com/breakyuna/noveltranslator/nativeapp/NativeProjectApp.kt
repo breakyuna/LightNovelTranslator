@@ -77,7 +77,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                         icon = { Icon(page.icon(), null) }, label = { Text(stringResource(page.label())) },
                     ) } }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
-                        if (state.busy) {
+                        if (state.busy && (state.project == null || state.page != NativePage.AGENT || state.editor != null)) {
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                                 Text(stringResource(R.string.native_working), Modifier.padding(top = 12.dp))
@@ -90,7 +90,11 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     onImport = { if (model.prepareImport(true)) inputProject.launch(arrayOf("*/*")) }, onOpen = model::open,
                                     onCopy = model::copy, onEncoding = model::changeEncoding)
                             } else when (state.page) {
-                                NativePage.AGENT -> NativeAgentPage(state, model::queryAgentProject, model::prepareAgentEdit, model::allowAgentEdit, model::rejectAgentEdit, model::selectPage, model::agentInput, model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat)
+                                NativePage.AGENT -> NativeAgentPage(state, model::queryAgentProject, model::prepareAgentEdit,
+                                    model::allowAgentEdit, model::rejectAgentEdit, model::selectPage, model::agentInput,
+                                    model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat,
+                                    model::fetchAgentModels, model::cancelAction, model::inspectAgentMessage, model::closeAgentMessage,
+                                    model.agentStream)
                                 NativePage.WORKBENCH -> Workbench(state, model::cleanupOutputs) { kind ->
                                     model.prepareExport(kind)?.let { name ->
                                         if (kind == NativeExport.PROJECT) saveProject.launch(name) else saveText.launch(name)
@@ -179,15 +183,16 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
     if (confirm) AlertDialog(onDismissRequest = { confirm = false },
         title = { Text(stringResource(R.string.native_simulation)) },
         text = { Text(stringResource(R.string.native_simulation_confirm)) },
-        confirmButton = { TextButton(onClick = { confirm = false; simulate() }, enabled = !state.busy) {
+        confirmButton = { TextButton(onClick = { confirm = false; simulate() }, enabled = !state.busy && !state.runLoadIncomplete) {
             Text(stringResource(R.string.native_simulation_start))
         } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.native_cancel)) } },
     )
     Column(Modifier.fillMaxSize()) {
-        TextButton(onClick = { confirm = true }, enabled = !state.busy && state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }) {
+        TextButton(onClick = { confirm = true }, enabled = !state.busy && !state.runLoadIncomplete && state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }) {
             Text(stringResource(R.string.native_simulation))
         }
+        if (state.runLoadIncomplete) Text(stringResource(R.string.native_runs_load_error), color = MaterialTheme.colorScheme.error)
         state.translationProgress?.let { Text(stringResource(R.string.native_simulation_progress, it.committedItems, it.requests),
             Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {

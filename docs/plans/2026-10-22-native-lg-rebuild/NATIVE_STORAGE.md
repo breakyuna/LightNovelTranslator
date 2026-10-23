@@ -1,5 +1,9 @@
 # 原生 TXT 存储契约
 
+后续源码边界：当前工作区新增持久执行记录与中断核对，应用 Room 升至 v3，尚未构建；本文原切片的 v2 CI 证据不覆盖该增量。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，当前进度见 HANDOFF §28；完整后台执行接续仍未完成。
+
+当前验证边界见 [HANDOFF §26—27](HANDOFF.md)：指定提交 CI 已覆盖原生存储、模拟批次、单条审批和 Room v2 运行迁移；2.json 权威导出、真实设备升级/故障及完整恢复仍待补。
+
 本文说明首个 `.lnt` TXT 切片的源码边界。实施进度、实际验证和未完成项只记入 [HANDOFF](HANDOFF.md)；TXT 存储基线已有指定提交的 CI 证据；新增导入/恢复与 nativeapp 接线的用户 CI/真机确认见 HANDOFF §22，不表示完成 S1 验收。
 
 ## 1. 格式与所有权
@@ -8,7 +12,7 @@
   不能改用 `PRAGMA journal_mode` 断言：Android 每次可写打开都会把连接日志模式设成平台默认（AOSP 为 `TRUNCATE`），而 `DELETE/TRUNCATE/PERSIST` 不写进文件头，只有 WAL 持久化。快照保证的是"不是 WAL、经 ATTACH 逻辑复制"，不是某个连接的 rollback 子模式。
 - 这是仅支持单 TXT 资产的原生 v1，不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
 - 私有工程位于 `filesDir/native_projects/<本机生成的 UUID>/project.lnt`。路径不使用工程名称或外部文件名；逻辑资产路径经 `RelativePath` 验证，实际文件访问拒绝符号链接改写。
-- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v2，v1→v2 增加 Agent 记录表，尚待构建/迁移验证，见 S2_AGENT_SLICE），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
+- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v3：v1→v2 的 Agent 记录表已有指定提交 CI，v2→v3 的执行表尚未构建，导出/设备升级待补，见 RUN_RECOVERY），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
 - 原稿使用 `raw-v1` 原始字节分块，单块最多 64 KiB，保存原始长度及 SHA-256；不是 Zstd，也不冒充 LG schema。`.lg` 转换仍由后续 CompatibilityStore 实现。
 
 ## 2. Schema 与端口
@@ -85,9 +89,9 @@ nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支�
 
 ## 7. 本地模拟翻译写回扩展
 
-新增 TranslationCommitPort，限定真实 TRANSLATION 运行租约，批次外层事务复用 ProjectWriteStore 的条目指纹、修订和回执；批内冲突/取消整体回滚，前批事实保留，本模拟切片未改变 .lnt v1 与当时的 Room 版本。后续单条 Agent 审批见 §8；模拟入口不能作为 Agent 写权限。请求和运行边界见 [TXT_TRANSLATION](TXT_TRANSLATION.md)，实际进度见 HANDOFF §23；本轮新增代码尚待 CI/设备验证。
+新增 TranslationCommitPort，限定真实 TRANSLATION 运行租约，批次外层事务复用 ProjectWriteStore 的条目指纹、修订和回执；批内冲突/取消整体回滚，前批事实保留，本模拟切片未改变 .lnt v1 与当时的 Room 版本。后续单条 Agent 审批见 §8；模拟入口不能作为 Agent 写权限。请求和运行边界见 [TXT_TRANSLATION](TXT_TRANSLATION.md)，实际进度见 HANDOFF §23；该切片已有指定提交 CI，新增设备验收仍待补。
 
 
 ## 8. Agent 单条审批与应用 schema v2
 
-当前源码新增 NativeAgentStore 与应用 Room v2：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不影响 .lnt v1 和旧阅读库；生成的 Room 2.json 尚缺，后续 PC/CI 生成审阅，不能继承 v1 的验证结论。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。
+当前源码新增 NativeAgentStore 与应用 Room v2：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不影响 .lnt v1 和旧阅读库；生成的 Room 2.json 尚缺，后续 PC/CI 生成审阅；v2 运行迁移已有自身 CI 用例证据，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。

@@ -7,7 +7,12 @@ import kotlinx.coroutines.coroutineScope
 
 /** One scheduling/validation boundary for the first translation slice; no implicit retries. */
 class NativeModelGateway(private val runtime: RuntimePort, private val backend: TranslationModelBackend,
-    private val agentTransport: AgentModelPort? = null) : TranslationModelGateway, AgentModelPort {
+    private val agentTransport: AgentModelPort? = null,
+    private val catalog: NativeModelCatalogPort? = null) : TranslationModelGateway, AgentModelPort, NativeModelCatalogPort {
+    override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?): List<String> {
+        currentCoroutineContext().ensureActive()
+        return (catalog ?: throw AgentModelFailure(ModelFailureKind.CONTENT)).models(endpoint, key, savedCredential)
+    }
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         currentCoroutineContext().ensureActive()
         val owner = runtime.snapshot().activeRun

@@ -1,6 +1,6 @@
 # LNT 原生 Android 全面重构计划
 
-日期：2026-10-22。状态：实施已启动；已有模块骨架、运行/审批原型、R00 消费者静态审计和 TXT 存储基线的 CI 证据；新增原生工程工作区、导入/复制/恢复与校对导出代码，用户已确认 CI 与本轮 TXT 手工真机检查通过，证据及未验范围见 HANDOFF §22。完整 Agent、自动翻译及复杂格式仍未接通，尚无功能 ID 通过完整验收。
+规划日期：2026-10-22。当前实施状态与证据统一见 [HANDOFF §3、§26—30](HANDOFF.md)：TXT 手工切片已获实机确认，模拟翻译及原生 Agent/审批切片已有指定版本的 CI 证据；完整 S1/S2、全格式、后台恢复和全量功能验收仍未完成。
 
 本计划执行用户本次决定：彻底重构 LNT，包括 UI；完整实现 LG Termux 的产品功能；仅保留并改造 LNT 的 Koog Agent 框架。不是在旧阅读器上继续增加功能，也不是 React/WebView 或 Node 后端移植。
 
@@ -23,6 +23,9 @@
 | [基线保护说明](BASELINE_GUIDE.md) | 本机源码归档、校验收据、旧资料读取与 Koog 解耦索引 |
 | [Agent 对话切片](AGENT_CONVERSATION.md) | 结构化历史、模型配置/凭据、远程传输和工具循环边界 |
 | [S2 Agent 切片](S2_AGENT_SLICE.md) | Koog 固定操作、Room v2、单条差异审批与回执恢复的源码边界 |
+| [流式传输](STREAMING.md) | SSE 增量、工具分片、用量/取消与临时预览契约 |
+| [模型端点与对话](MODEL_ENDPOINTS.md) | HTTP/HTTPS、可选凭据、端点模型列表和对话页面契约 |
+| [运行恢复切片](RUN_RECOVERY.md) | 持久执行记录、请求/提交回执核对与不自动重放边界 |
 | [TXT 翻译切片](TXT_TRANSLATION.md) | 本地模拟网关、批次事务、取消与真实模型接入边界 |
 | [原生 TXT 存储契约](NATIVE_STORAGE.md) | `.lnt` v1 TXT schema、实例索引、手工事务、快照和验证边界 |
 | [静态审查与构建交接](STATIC_REVIEW.md) | 新模块实际边界、运行原型说明、LG 消费链及 PC/CI 命令 |
