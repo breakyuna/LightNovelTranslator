@@ -49,9 +49,9 @@ fun nativeProjectTools(runtime: RuntimePort, projects: TextProjectPort, ref: Loc
             }),
         RegisteredAgentTool("list_items", "List bounded item metadata without full bodies",
             ToolParameterSchema(mapOf(
-                "after_id" to ToolParameter.Integer(0, Long.MAX_VALUE),
-                "limit" to ToolParameter.Integer(1, 50),
-                "status" to ToolParameter.Text(0, 32),
+                "after_id" to ToolParameter.Integer(0, Long.MAX_VALUE, required = false),
+                "limit" to ToolParameter.Integer(1, 50, required = false),
+                "status" to ToolParameter.Text(0, 32, required = false),
             )), ToolEffect.READ_ONLY, AgentToolHandler { run, args ->
                 require(run.projectId == ref.projectId)
                 val after = args.integer("after_id") ?: 0L
@@ -65,8 +65,8 @@ fun nativeProjectTools(runtime: RuntimePort, projects: TextProjectPort, ref: Loc
         RegisteredAgentTool("search_items", "Literal substring search over the bound project",
             ToolParameterSchema(mapOf(
                 "text" to ToolParameter.Text(1, TextItemQuery.MAX_TEXT_LENGTH),
-                "limit" to ToolParameter.Integer(1, 20),
-                "status" to ToolParameter.Text(0, 32),
+                "limit" to ToolParameter.Integer(1, 20, required = false),
+                "status" to ToolParameter.Text(0, 32, required = false),
             )), ToolEffect.READ_ONLY, AgentToolHandler { run, args ->
                 require(run.projectId == ref.projectId)
                 val text = requireNotNull(args.text("text"))

@@ -31,7 +31,9 @@ class ManualTextBatchTest {
         assertThrows(IllegalArgumentException::class.java) { batch(targets = emptyList()) }
         assertThrows(IllegalArgumentException::class.java) { batch(targets = listOf(target, target)) }
         assertThrows(IllegalArgumentException::class.java) { batch(targets = prepared.targets.reversed()) }
-        assertThrows(IllegalArgumentException::class.java) { batch(targets = (1L..101L).map { target.copy(id = ItemId(it)) }) }
+        assertThrows(IllegalArgumentException::class.java) {
+            batch(targets = (1L..(ManualTextBatch.MAX_TARGETS.toLong() + 1)).map { target.copy(id = ItemId(it)) })
+        }
         assertThrows(IllegalArgumentException::class.java) { batch(revision = -1) }
     }
 }

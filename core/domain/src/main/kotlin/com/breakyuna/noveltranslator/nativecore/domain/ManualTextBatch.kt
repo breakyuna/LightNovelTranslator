@@ -18,7 +18,7 @@ class ManualTextBatch(
 ) {
     val targets: List<TextBatchTarget> = java.util.Collections.unmodifiableList(ArrayList(targets))
     init {
-        require(expectedRevision >= 0 && this.targets.size in 1..100_000)
+        require(expectedRevision >= 0 && this.targets.size in 1..MAX_TARGETS)
         require(commandId.value.length <= 2048)
         require(this.targets.zipWithNext().all { (a, b) -> a.id.value < b.id.value })
     }
@@ -39,6 +39,9 @@ class ManualTextBatch(
     }
 
     companion object {
+        /** Matches TextProjectLimits.maxItems: a full-query batch may cover the whole project. */
+        const val MAX_TARGETS = 100_000
+
         /** Only generated ASCII/hex enters a receipt-prefix lookup, never caller SQL patterns. */
         fun receiptPrefix(commandId: CommandId): String = "manual-batch-v1:" +
             TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(commandId.value)) + ":"
