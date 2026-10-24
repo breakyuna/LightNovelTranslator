@@ -37,7 +37,16 @@ class WorkspaceFileStore(
 
     override suspend fun read(id: WorkspaceMaterialId, limitBytes: Long): WorkspaceMaterialContent {
         require(limitBytes >= 0)
-        val summary = summary(id) ?: throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.NOT_FOUND)
+        val kind = kindOf(id) ?: throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.NOT_FOUND)
+        // The identity binds one path to the fingerprint observed when it was listed. Resolve the
+        // path component so a rewritten file is reported as a mismatch instead of new content.
+        val prefix = id.value.substringBeforeLast('-')
+        val expectedSha = id.value.substringAfterLast('-')
+        val summary = list(kind).firstOrNull { it.id.value.substringBeforeLast('-') == prefix }
+            ?: throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.NOT_FOUND)
+        if (summary.sha256 != expectedSha) {
+            throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.FINGERPRINT_MISMATCH)
+        }
         if (summary.sizeBytes > limitBytes) {
             throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.TOO_LARGE)
         }
@@ -110,8 +119,9 @@ class WorkspaceFileStore(
             val size = canonical.length()
             if (size !in 0..WorkspaceHardLimits.MAX_SINGLE_BYTES) continue
             val hash = try { sha256Hex(canonical) } catch (_: IOException) { continue }
+            val pathHash = sha256Hex((kind.name + ":" + path.value).toByteArray()).take(40)
             result += WorkspaceMaterialSummary(
-                WorkspaceMaterialId(kind.name + "-" + sha256Hex((kind.name + ":" + path.value).toByteArray()).take(40)),
+                WorkspaceMaterialId(kind.name + "-" + pathHash + "-" + hash),
                 kind, path, hash, size, mediaType(path.value), ordinal++,
             )
         }

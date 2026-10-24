@@ -141,7 +141,7 @@ class WorkspaceChangeTest {
     fun receiptStatusMustAgreeWithCommittedAndConflictLists() {
         val path = WorkspacePath("work/a.txt")
         val committed = WorkspaceCommittedChange(path, WorkspaceChangeOperation.CREATE, digestOf("a"))
-        val conflict = WorkspaceConflict(path, WorkspaceConflictReason.STALE_FINGERPRINT)
+        val conflict = WorkspaceConflict(WorkspacePath("work/b.txt"), WorkspaceConflictReason.STALE_FINGERPRINT)
 
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceApplyReceipt(
