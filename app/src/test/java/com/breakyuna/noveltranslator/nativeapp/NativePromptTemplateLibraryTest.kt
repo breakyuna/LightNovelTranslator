@@ -42,8 +42,16 @@ class NativePromptTemplateLibraryTest {
             runCatching { compose.onNodeWithTag("native-template-t1").assertIsEnabled(); true }.getOrDefault(false)
         }
         compose.onNodeWithTag("native-template-t1").performScrollTo().performClick()
-        compose.waitUntil(5_000) {
-            runCatching { compose.onNodeWithTag("native-policy-apply").assertIsEnabled(); true }.getOrDefault(false)
+        try {
+            compose.waitUntil(5_000) {
+                runCatching { compose.onNodeWithTag("native-policy-apply").assertIsEnabled(); true }.getOrDefault(false)
+            }
+        } catch (failure: ComposeTimeoutException) {
+            println("LNT-DEBUG-ROW " + compose.onNodeWithTag("native-template-t1", useUnmergedTree = true)
+                .fetchSemanticsNode().config)
+            println("LNT-DEBUG-APPLY " + compose.onNodeWithTag("native-policy-apply", useUnmergedTree = true)
+                .fetchSemanticsNode().config)
+            throw failure
         }
         assertNull(used)
         compose.onNodeWithTag("native-policy-apply").performClick()
