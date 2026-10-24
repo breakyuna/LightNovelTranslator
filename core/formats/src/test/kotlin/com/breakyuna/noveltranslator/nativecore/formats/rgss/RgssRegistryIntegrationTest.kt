@@ -7,12 +7,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RgssRegistryIntegrationTest {
-    @Test fun rgssArchivesAndScriptsAreDetectedWithoutClaimingGenericDataFiles() {
+    @Test fun rgssArchivesScriptsAndDataFilesAreDetectedWithoutClaimingOtherData() {
         assertEquals(ProjectAssetFormat.RPGMAKER_RGSS, ProjectAssetFormat.detect("Game.rgssad"))
         assertEquals(ProjectAssetFormat.RPGMAKER_RGSS, ProjectAssetFormat.detect("Game.rgss2a"))
         assertEquals(ProjectAssetFormat.RPGMAKER_RGSS, ProjectAssetFormat.detect("Data/Scripts.rvdata2"))
-        assertEquals(ProjectAssetFormat.BINARY, ProjectAssetFormat.detect("Data/Actors.rxdata"))
-        assertEquals(ProjectAssetFormat.BINARY, ProjectAssetFormat.detect("Data/Map001.rvdata2"))
+        assertEquals(ProjectAssetFormat.RPGMAKER_RGSS, ProjectAssetFormat.detect("Data/Actors.rxdata"))
+        assertEquals(ProjectAssetFormat.RPGMAKER_RGSS, ProjectAssetFormat.detect("Data/Map001.rvdata2"))
+        assertEquals(ProjectAssetFormat.BINARY, ProjectAssetFormat.detect("Other/Actors.rxdata"))
+        assertEquals(ProjectAssetFormat.BINARY, ProjectAssetFormat.detect("Other/Map001.rvdata2"))
     }
 
     @Test fun installedCatalogExposesTheRgssBinaryAdapterExactlyOnce() {
