@@ -40,7 +40,7 @@ class AgentCompactionPromptTest {
         val text = AgentCompactionPrompt.build(request(listOf(
             user("u1"),
             AgentMessage.Assistant(MessageId("a1"),
-                listOf(AssistantPart.ToolCall(call), AssistantPart.Thinking("private-reasoning")), continuation = null),
+                listOf(AssistantPart.ToolCall(call), AssistantPart.Thinking("private-reasoning", null)), continuation = null),
             AgentMessage.ToolResult(MessageId("r1"), call.id, call.name, json(), false),
         )))
         assertTrue(text.contains("project_summary"))
