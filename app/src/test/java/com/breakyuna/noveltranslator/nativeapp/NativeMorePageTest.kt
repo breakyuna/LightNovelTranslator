@@ -4,10 +4,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat
 import com.breakyuna.noveltranslator.nativecore.domain.ProjectId
@@ -53,8 +55,10 @@ class NativeMorePageTest {
         compose.onNodeWithTag("native-more-settings").performScrollTo().performClick()
         compose.onNodeWithTag("native-more-appearance").performScrollTo().performClick()
         assertEquals(1, rules); assertEquals(1, models); assertEquals(1, settings); assertEquals(1, appearance)
-        compose.onNodeWithTag("native-more-formats").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithTag("native-more-notifications").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-formats"))
+        compose.onNodeWithTag("native-more-formats").assertIsDisplayed()
+        compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-notifications"))
+        compose.onNodeWithTag("native-more-notifications").assertIsDisplayed()
     }
 
     @Test fun missingNotificationPermissionIsActionableButGrantedStateIsReadOnly() {
@@ -67,7 +71,8 @@ class NativeMorePageTest {
                 }
             }
         }
-        compose.onNodeWithTag("native-more-notifications").performScrollTo().performClick()
+        compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-notifications"))
+        compose.onNodeWithTag("native-more-notifications").performClick()
         assertEquals(true, asked)
     }
 
