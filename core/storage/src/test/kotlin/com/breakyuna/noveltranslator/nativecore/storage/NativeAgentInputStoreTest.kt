@@ -456,6 +456,7 @@ class NativeAgentInputStoreTest {
                 db.agentInput().insertSteerAttempts(listOf(attemptRow.copy(position = 1)))
             }
         }
+        Unit
     }
 
     @Test

@@ -357,6 +357,7 @@ class NativeNameEditTest {
             assertEquals("""["艾丽丝"]""", revisionNames(db, ItemId(2))[3L])
         }
         importSnapshot("import-after-upgrade", imported.ref)
+        Unit
     }
 
     @Test fun v5ImportRejectsWrongNameColumnTypesAndOversizedSnapshots() = runBlocking {
