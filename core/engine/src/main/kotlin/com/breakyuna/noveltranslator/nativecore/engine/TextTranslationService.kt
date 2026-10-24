@@ -191,8 +191,9 @@ class TextTranslationService(
             savedRetry?.let { saved ->
                 require(saved.initialAdditional == options?.additionalRequestsPerBatch)
                 saved.terminalFailure?.let { throw AgentModelFailure(it) }
-                if (saved.active != null) {
-                    val items = saved.active.ids.map { id -> projects.item(ref, id)?.item ?: throw TranslationTaskNeedsReview() }
+                val activeRetry = saved.active
+                if (activeRetry != null) {
+                    val items = activeRetry.ids.map { id -> projects.item(ref, id)?.item ?: throw TranslationTaskNeedsReview() }
                     val pending = tasks?.remaining(lease, ref, items) ?: throw TranslationTaskNeedsReview()
                     // A canonical task receipt must prove every active primary was committed.
                     // An unknown/failed/unsent active attempt is not permission to replay it.
