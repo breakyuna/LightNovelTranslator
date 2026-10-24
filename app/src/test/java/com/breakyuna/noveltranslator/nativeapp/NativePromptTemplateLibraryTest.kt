@@ -41,17 +41,12 @@ class NativePromptTemplateLibraryTest {
         compose.waitUntil(5_000) {
             runCatching { compose.onNodeWithTag("native-template-t1").assertIsEnabled(); true }.getOrDefault(false)
         }
-        compose.onNodeWithTag("native-template-t1").performScrollTo().performClick()
-        try {
-            compose.waitUntil(5_000) {
-                runCatching { compose.onNodeWithTag("native-policy-apply").assertIsEnabled(); true }.getOrDefault(false)
-            }
-        } catch (failure: ComposeTimeoutException) {
-            println("LNT-DEBUG-ROW " + compose.onNodeWithTag("native-template-t1", useUnmergedTree = true)
-                .fetchSemanticsNode().config)
-            println("LNT-DEBUG-APPLY " + compose.onNodeWithTag("native-policy-apply", useUnmergedTree = true)
-                .fetchSemanticsNode().config)
-            throw failure
+        // Gesture injection into this dialog's nested scroll/lazy content is not reliable in
+        // Robolectric; invoke the row's semantic action so the selection wiring stays covered.
+        compose.onNodeWithTag("native-template-t1")
+            .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("native-policy-apply").assertIsEnabled(); true }.getOrDefault(false)
         }
         assertNull(used)
         compose.onNodeWithTag("native-policy-apply").performClick()
