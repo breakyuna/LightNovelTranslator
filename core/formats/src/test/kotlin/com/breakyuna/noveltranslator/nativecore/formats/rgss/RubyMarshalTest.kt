@@ -68,7 +68,8 @@ class RubyMarshalTest {
         val symbols = RubyMarshal.parse(symbolStream) as MarshalArray
         assertSame(symbols.elements[0], symbols.elements[1])
 
-        val objectStream = bytes(4, 8, 0x5B, 7, 0x22, 7, 0x68, 0x69, 0x40, 0)
+        // Ruby's object table includes the root array at index 0, so the repeated string is @1.
+        val objectStream = bytes(4, 8, 0x5B, 7, 0x22, 7, 0x68, 0x69, 0x40, 6)
         val objects = RubyMarshal.parse(objectStream) as MarshalArray
         assertSame(objects.elements[0], objects.elements[1])
 

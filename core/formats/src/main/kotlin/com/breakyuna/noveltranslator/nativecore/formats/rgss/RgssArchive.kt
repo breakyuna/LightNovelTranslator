@@ -422,7 +422,7 @@ object RgssArchiveCodec {
     }
 
     private fun decodePayload(input: ByteArray, limits: RgssArchiveLimits, remaining: Long): Pair<ByteArray, Boolean> {
-        if (input.size >= 2 && input[0].toInt() == 0x78 && input[1].toInt() == 0x9C.toInt()) {
+        if (input.size >= 2 && (input[0].toInt() and 0xFF) == 0x78 && (input[1].toInt() and 0xFF) == 0x9C) {
             if (remaining <= 0L) throw RgssArchiveException(RgssArchiveException.Reason.LIMIT, "total bytes")
             val cap = minOf(limits.maxEntryBytes.toLong(), remaining).toInt()
             return inflate(input, cap) to true
@@ -443,6 +443,9 @@ object RgssArchiveCodec {
             while (!inflater.finished()) {
                 val count = inflater.inflate(buffer)
                 if (count == 0) {
+                    // A finished stream can legitimately yield zero output (for example an empty
+                    // deflated payload); only an unfinished stream without input is an error.
+                    if (inflater.finished()) break
                     if (inflater.needsInput() || inflater.needsDictionary()) {
                         throw RgssArchiveException(RgssArchiveException.Reason.COMPRESSION)
                     }

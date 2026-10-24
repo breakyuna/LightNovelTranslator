@@ -12,7 +12,9 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.TextLiteralReplacer
 import com.breakyuna.noveltranslator.nativecore.engine.ProjectQualityScanner
 import com.breakyuna.noveltranslator.nativecore.engine.TextProofreadingInspector
-import com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentHandle
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentRequest
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentStartFailed
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationHandle
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRunner
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRequest
@@ -135,7 +137,7 @@ class NativeProjectViewModel internal constructor(
     private val mutable = MutableStateFlow(NativeProjectUiState(recoveryProblems = saved["native_recovery_problems"] ?: 0, encoding =
         runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8)))
     val state = mutable.asStateFlow()
-    private val agentPreviews = AgentStreamPreviewController()
+    private val agentPreviews = graph.agentPreviews
     val agentStream = agentPreviews.state
     private var job: Job? = null
     private var agentLease: RunLease? = null
@@ -145,6 +147,21 @@ class NativeProjectViewModel internal constructor(
     private var observedSimulation: ForegroundTranslationHandle? = null
 
     init { action {
+        // Attach the application-owned Agent before any fallible project IO or recovery.
+        val agentSnapshot = graph.backgroundAgents.state.value
+        val agentAttachment = agentSnapshot?.takeIf { it.phase.active ||
+            saved.get<String>("native_agent_token") == it.token }?.let { graph.backgroundAgents.attach(it.token) }
+        if (agentAttachment != null) {
+            if (agentSnapshot?.phase?.active == true) saved["native_recovery_pending"] = true
+            saved["native_agent_token"] = agentAttachment.token
+            refreshSimulationView(running = true) {
+                initializeProjects(application, recover = agentSnapshot?.phase?.active != true)
+                openInternal(agentAttachment.request.ref)
+            }
+            awaitAgent(agentAttachment)
+            return@action
+        }
+        saved.remove<String>("native_agent_token")
         val snapshot = backgroundTranslations.state.value
         val live = snapshot?.takeIf { it.phase.active }
         val ref = live?.request?.ref ?: restoreRef()
@@ -201,6 +218,12 @@ class NativeProjectViewModel internal constructor(
             running.request.ref == mutable.value.project?.ref)) {
             backgroundTranslations.stop(running.token)
             return // Keep waiting until durable cleanup releases the actual reservation.
+        }
+        val agent = graph.backgroundAgents.state.value
+        if (agent?.phase?.active == true && (saved.get<String>("native_agent_token") == agent.token ||
+            agent.request.ref == mutable.value.project?.ref)) {
+            graph.backgroundAgents.stop(agent.token)
+            return // Wait for application-owned request and journal cleanup.
         }
         graph.translations.stop(); agentLease?.let { graph.runtime.requestStop(it) }; job?.cancel()
     }
@@ -324,23 +347,59 @@ class NativeProjectViewModel internal constructor(
         val configuration = mutable.value.modelSettings?.reference ?: return@action
         val text = mutable.value.agentInput
         if (text.isBlank() || mutable.value.approval != null) return@action
-        try {
-            agentRun(ref) { lease, recorder ->
-                val session = agentPreviews.open(ref, lease.identity)
-                var completed = false
-                try {
-                    val result = graph.conversations.send(lease, ref, configuration, text, recorder, preview = session,
-                        updated = { refreshAgentTimeline(ref, requireNotNull(lease.identity.chatId)) }) {
-                        withContext(Dispatchers.Main.immediate) {
-                            saved.remove<String>("agent_input_text")
-                            mutable.value = mutable.value.copy(agentInput = "")
-                        }
-                    }
-                    completed = true
-                    result
-                } finally { session.close(keepPartial = !completed) }
+        val handle = graph.backgroundAgents.prepare(ForegroundAgentRequest(ref,
+            RunIdentity(ref.projectId, agentChat, RunId(UUID.randomUUID().toString()), commandId()), configuration, text))
+        saved["native_agent_token"] = handle.token
+        try { NativeAgentService.start(getApplication<Application>(), handle.token) }
+        catch (_: Exception) { graph.backgroundAgents.startFailed(handle.token) }
+        awaitAgent(handle)
+    }
+
+    private suspend fun awaitAgent(handle: ForegroundAgentHandle) = coroutineScope {
+        val ref = handle.request.ref
+        val chat = requireNotNull(handle.request.identity.chatId)
+        val observer = launch {
+            var timelineRevision = -1L
+            graph.backgroundAgents.state.collect { snapshot ->
+                if (snapshot?.token != handle.token) return@collect
+                if (snapshot.progress?.accepted == true && mutable.value.project?.ref == ref &&
+                    mutable.value.agentChatId == chat && mutable.value.agentInput == handle.request.input) {
+                    saved.remove<String>("agent_input_text")
+                    mutable.value = mutable.value.copy(agentInput = "")
+                }
+                val next = snapshot.progress?.timelineRevision ?: 0L
+                if (timelineRevision != next) {
+                    timelineRevision = next
+                    refreshSimulationView(running = snapshot.phase.active) { refreshAgentTimeline(ref, chat) }
+                }
             }
-        } finally { withContext(NonCancellable) { loadAgent(ref) } }
+        }
+        try { handle.await() }
+        finally {
+            observer.cancel()
+            val settled = graph.backgroundAgents.state.value?.let { it.token == handle.token && !it.phase.active } == true
+            // UI cancellation only detaches. It never stops the application runner.
+            if (settled) withContext(NonCancellable) {
+                // A fast completion may be conflated before the UI observer sees acceptance.
+                if (graph.backgroundAgents.state.value?.progress?.accepted == true &&
+                    saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
+                    saved.get<String>("agent_input_chat") == chat.value &&
+                    saved.get<String>("agent_input_text") == handle.request.input) {
+                    saved.remove<String>("agent_input_text")
+                    if (mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+                        mutable.value = mutable.value.copy(agentInput = "")
+                }
+                if (saved.get<String>("native_agent_token") == handle.token) saved.remove<String>("native_agent_token")
+                if (saved.get<Boolean>("native_recovery_pending") == true) refreshSimulationView(running = false) {
+                    recoverDirectory()
+                    mutable.value = mutable.value.copy(projects = projects.registeredProjects())
+                }
+                if (mutable.value.project?.ref == ref) {
+                    refreshSimulationView(running = false) { loadPage(ref, cursors.last()) }
+                    loadAgent(ref)
+                }
+            }
+        }
     }
 
     fun queryAgentProject() = action {
@@ -1243,9 +1302,10 @@ class NativeProjectViewModel internal constructor(
         val query = restoreProofreadingQuery(ref)
         val page = readStandardProofreadingPage(ref, query, 0)
         val summary = page.summary
-        agentPreviews.clear()
+        if (graph.backgroundAgents.state.value?.phase?.active != true) agentPreviews.clear()
         if (graph.runtime.snapshot().activeRun == null) graph.runtime.selectChat(null)
-        else if (backgroundTranslations.state.value?.takeIf { it.phase.active }?.request?.ref != ref)
+        else if (backgroundTranslations.state.value?.takeIf { it.phase.active }?.request?.ref != ref &&
+            graph.backgroundAgents.state.value?.takeIf { it.phase.active }?.request?.ref != ref)
             throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
         cursors.clear(); cursors.add(0)
         val same = restoreRef() == ref
@@ -1375,7 +1435,7 @@ class NativeProjectViewModel internal constructor(
                     else -> R.string.native_io_error
                 }
                 is InvalidAgentHistory -> R.string.native_agent_history_error
-                is ForegroundTranslationStartFailed -> R.string.native_background_unavailable
+                is ForegroundTranslationStartFailed, is ForegroundAgentStartFailed -> R.string.native_background_unavailable
                 is InvalidTextRule -> R.string.native_policy_invalid
                 is InvalidModelSettings -> R.string.native_model_settings_error
                 is AgentApprovalUnavailable -> R.string.native_agent_load_error

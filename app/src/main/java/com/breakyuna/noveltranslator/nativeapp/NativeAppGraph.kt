@@ -54,5 +54,26 @@ class NativeAppGraph(context: Context) {
     val formatProjects = ProjectFormatService(projects, projects)
     val translations = TextTranslationService(runtime, projects, projects, gateway, runs)
     private val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    val agentPreviews = com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController()
+    val backgroundAgents = com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentRunner(runtime, runs, executionScope,
+        runTurn = { request, lease, recorder, emit ->
+            val session = agentPreviews.open(request.ref, request.identity)
+            var completed = false
+            var progress = com.breakyuna.noveltranslator.nativecore.engine.AgentExecutionProgress()
+            try {
+                conversations.send(lease, request.ref, request.configuration, request.input, recorder, session,
+                    updated = { progress = progress.copy(timelineRevision = progress.timelineRevision + 1); emit(progress) },
+                    accepted = { progress = progress.copy(accepted = true); emit(progress) })
+                if (agentStore.pending(request.ref, requireNotNull(request.identity.chatId))?.runId == request.identity.runId)
+                    recorder.waitingForApproval()
+                completed = true
+                progress
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                    agentStore.cancelPending(request.ref, request.identity.runId)
+                }
+                throw cancelled
+            } finally { session.close(keepPartial = !completed) }
+        })
     val backgroundTranslations = ForegroundTranslationRunner(runtime, runs, executionScope, translations)
 }

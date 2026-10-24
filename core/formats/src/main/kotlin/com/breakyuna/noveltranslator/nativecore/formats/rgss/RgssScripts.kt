@@ -376,6 +376,9 @@ object RgssScriptsCodec {
             while (!inflater.finished()) {
                 val count = inflater.inflate(buffer)
                 if (count == 0) {
+                    // A finished stream can legitimately yield zero output (for example an empty
+                    // deflated script); only an unfinished stream without input is an error.
+                    if (inflater.finished()) break
                     if (inflater.needsInput() || inflater.needsDictionary()) {
                         throw RgssScriptsException(RgssScriptsException.Reason.COMPRESSION)
                     }
