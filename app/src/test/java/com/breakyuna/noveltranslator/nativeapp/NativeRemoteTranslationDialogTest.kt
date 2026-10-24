@@ -34,7 +34,7 @@ class NativeRemoteTranslationDialogTest {
     @Test fun draftsAndCancellationDoNotStartRemoteCalls() {
         var starts = 0; var closed = false
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            NativeRemoteTranslationDialog(state(), { closed = true }) { _, _, _, _, _ -> starts++ }
+            NativeRemoteTranslationDialog(state(), { closed = true }, start = { _, _, _, _, _ -> starts++ })
         } } }
         compose.onNodeWithTag("native-remote-start").assertIsNotEnabled()
         compose.onNodeWithTag("native-remote-target").performScrollTo().performTextInput("English")
@@ -47,10 +47,10 @@ class NativeRemoteTranslationDialogTest {
     @Test fun explicitConfirmationPassesTheDisplayedRevisionAndModelExactlyOnce() {
         var starts = 0
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            NativeRemoteTranslationDialog(state(), {}) { selectedRef, revision, selectedConfig, options, whole ->
+            NativeRemoteTranslationDialog(state(), {}, start = { selectedRef, revision, selectedConfig, options, whole ->
                 starts++; assertEquals(ref, selectedRef); assertEquals(12L, revision); assertEquals(config, selectedConfig)
                 assertEquals("English", options.targetLanguage); assertFalse(whole)
-            }
+            })
         } } }
         compose.onNodeWithTag("native-remote-target").performScrollTo().performTextInput("English")
         compose.onNodeWithTag("native-remote-start").performClick()
