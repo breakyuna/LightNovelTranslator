@@ -33,8 +33,8 @@ class WorkspaceSkillSummary(
     val contentPath: WorkspacePath? = null,
     val contentSha256: String? = null,
 ) {
-    val languages: Set<String> = workspaceFrozenSet(languages.map { it.trim().lowercase(Locale.ROOT) })
-    val tags: Set<String> = workspaceFrozenSet(tags.map { it.trim().lowercase(Locale.ROOT) })
+    val languages: Set<String> = workspaceFrozenSet(languages.map { it.trim().lowercase(Locale.ROOT) }.toSet())
+    val tags: Set<String> = workspaceFrozenSet(tags.map { it.trim().lowercase(Locale.ROOT) }.toSet())
 
     init {
         requireNormalizedName(name)
@@ -98,7 +98,7 @@ class WorkspaceSkillConflict(
 
 sealed interface WorkspaceSkillRegistration {
     class Registered(val registry: SkillRegistry) : WorkspaceSkillRegistration
-    class Conflicted(val conflicts: List<WorkspaceSkillConflict>) : WorkspaceSkillRegistration {
+    class Conflicted(conflicts: List<WorkspaceSkillConflict>) : WorkspaceSkillRegistration {
         val conflicts: List<WorkspaceSkillConflict> = workspaceFrozenList(conflicts)
     }
 }

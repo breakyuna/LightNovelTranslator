@@ -67,12 +67,12 @@ class CompatibleTranslationModel(
             } catch (failure: Exception) { received.get() ?: throw failure }
             val result: Result<TranslationModelResponse> = try { Result.success(CompatibleTranslationProtocol.response(request, payload)) }
                 catch (classified: AgentModelFailure) { Result.failure(classified) }
-            val usage = result.getOrNull()?.usage ?: try {
+            val receipt = result.getOrNull()?.usage ?: try {
                 CompatibleUsage.parse(JsonObjectValue.parse(payload, JsonInputLimits(2 * 1024 * 1024, 64)).json)
             } catch (_: Exception) { unknownRequestUsage() }
             val error = result.exceptionOrNull()
             withContext(NonCancellable) {
-                audit.received(handle, usage, (error as? AgentModelFailure)?.kind)
+                audit.received(handle, receipt, (error as? AgentModelFailure)?.kind)
             }
             currentCoroutineContext().ensureActive()
             val value = result.getOrThrow()

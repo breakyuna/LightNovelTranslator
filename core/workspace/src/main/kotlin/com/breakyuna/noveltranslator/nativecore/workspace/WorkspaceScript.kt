@@ -109,7 +109,7 @@ class WorkspaceScriptRequest(
     val entryPoint: String,
     arguments: Map<String, String> = emptyMap(),
     materials: List<WorkspaceMaterialDescriptor>,
-    val grantedCapabilities: Set<WorkspaceCapability>,
+    grantedCapabilities: Set<WorkspaceCapability>,
     val limits: WorkspaceScriptLimits,
     val deadlineAtMillis: Long,
     val cancellation: WorkspaceCancellation,
