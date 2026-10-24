@@ -1,8 +1,8 @@
 # 共享请求调度与用量汇总契约
 
-当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
 
-开发记录见 HANDOFF §39，当前 CI 证据与验证边界见 [HANDOFF §3、§49](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
+开发记录见 HANDOFF §39，当前 CI 证据与验证边界见 [HANDOFF §3](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
 
 ## 请求资格
 
@@ -37,19 +37,23 @@
 
 调度回归包括 FIFO、排队/在途取消、并发与 RPS、RPM 跨配置修订、独立资源、无隐式重试、响应与取消竞态，以及停止后的 Agent/翻译不派发。用量回归包括实测/估算/未知分离、分量缺失、Long 以上精确累计、三页写回及对话框切换运行。
 
-上述回归已纳入提交 `8e74fff` 的 Actions #136 全量 test/lint/release 成功基线，统计见 HANDOFF §41；仍需验收设备取消、前台服务、界面视觉和大工程预算。
+上述回归已纳入提交 `8e74fff` 的 Actions #136 全量 test/lint/release 成功基线，统计见 HANDOFF §41；当前总基线为 `77daf74` / #158。仍需验收设备取消、前台服务、界面视觉和大工程预算。
 
 ## 后续独立核心与接线边界
 
-§49 的 KeyPool、ModelProtocolTransport、CapabilityCatalog 与用量账本已有独立核心和 CI；§69 未构建源码已把协议/多密钥/KeyPool 选择与进程内 UsageLedger 接入 Agent/翻译网关，并把协议/多密钥列存入 Room v5。Key 冷却/禁用仍只在进程内，跨进程持久化、OAuth、动态探测/限额、费用定价及完整跨 Agent 持久账本仍待实施；现有共享 FIFO/并发/RPM 接线继续使用。
+§49 的 KeyPool、ModelProtocolTransport、CapabilityCatalog 与用量账本已有独立核心和 CI；§69 源码（#158 覆盖）已把协议/多密钥/KeyPool 选择与 UsageLedger 接入 Agent/翻译网关，并把协议/多密钥列存入 Room v5。§79 已接密钥冷却/禁用/轮换的持久状态；OAuth、动态探测/限额、费用定价及完整跨 Agent 账本仍待实施；现有共享 FIFO/并发/RPM 接线继续使用。
 
 
-§78 新增源码：Agent 与翻译后端共用应用图中的同一 ModelKeyPool，认证禁用/冷却按不可变配置修订共享；全部认证禁用返回 AUTHENTICATION，冷却耗尽仍返回 RATE_LIMIT。未构建，跨进程状态持久化仍待实现。
+§78 源码（#158 覆盖）：Agent 与翻译后端共用应用图中的同一 ModelKeyPool，认证禁用/冷却按不可变配置修订共享；全部认证禁用返回 AUTHENTICATION，冷却耗尽仍返回 RATE_LIMIT。跨进程状态持久化由 §79 补齐，完整设备验证仍待。
 
 
-§79 新增源码（未构建）：共享密钥池经 ModelKeyStatePort / NativeModelKeyStateStore 保存轮换、禁用和冷却的无凭据事实；进程重建按配置修订恢复。坏状态拒绝，派发前轮换保存失败阻止请求；响应后的保存失败不覆盖已收到结果并阻止后续派发。§80 后续已接派发/响应与用量账本同事务持久化，验证状态以 HANDOFF §3 为准；动态限额、完整认证管理 UI 和真实供应商验证仍缺。
+§79 源码（#158 覆盖）：共享密钥池经 ModelKeyStatePort / NativeModelKeyStateStore 保存轮换、禁用和冷却的无凭据事实；进程重建按配置修订恢复。坏状态拒绝，派发前轮换保存失败阻止请求；响应后的保存失败不覆盖已收到结果并阻止后续派发。§80 后续已接派发/响应与用量账本同事务持久化，验证状态以 HANDOFF §3 为准；动态限额、完整认证管理 UI 和真实供应商验证仍缺。
 
 
-## 事务持久账本与界面（§80，未构建）
+## 事务持久账本与界面（§80，#158 覆盖）
 
-应用 Room v6 新增轻量 usage receipts，Agent 与翻译请求的准备/派发/响应和账本更新在同一事务完成；原回执重放不重复计数。读取按全局/完整工程身份/Chat/Run/配置修订筛选，一致快照逐页累计五类实际/估算/未知用量。已派发缺回执单列等待或未知；旧版本无账本元数据的历史不推算。应用图与顶部五语账本入口已接该持久端口，进程内 UsageLedgerRecorder 不再挂接生产后端。费用定价、完整明细/导出与供应商/设备验收仍缺；本节更新上文“仅进程内”的历史边界，实际证据以 HANDOFF §80 为准。
+应用 Room v6 新增轻量 usage receipts，Agent 与翻译请求的准备/派发/响应和账本更新在同一事务完成；原回执重放不重复计数。读取按全局/完整工程身份/Chat/Run/配置修订筛选，一致快照逐页累计五类实际/估算/未知用量。已派发缺回执单列等待或未知；旧版本无账本元数据的历史不推算。应用图与顶部五语账本入口已接该持久端口，进程内 UsageLedgerRecorder 不再挂接生产后端。费用定价仍缺；§99—100 已补请求明细分页与 JSONL 导出（#158 覆盖），供应商/设备验收仍缺；实际证据以 HANDOFF §3 为准。
+
+## 费用核心（§110，未接线）
+
+§110 新增 `ModelPricing`/`PriceTable`/`UsageCost`/`UsageCostCalculator`：价格以每百万 token 的整数微单位保存，成本用 BigDecimal 12 位小数；input/cacheRead/cacheWrite/output/thinking 分量独立，thinking 必须显式按 output 或单独定价；actual 与 estimated 分开，未知回执与缺价显式保留，不伪造零费用。尚未接模型配置、用量账本 UI、真实供应商价格或持久价格表，因此当前账本仍只展示 Token 事实，不展示费用。

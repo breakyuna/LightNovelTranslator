@@ -42,4 +42,21 @@ class NativePromptTemplateStoreTest {
         assertTrue(cleared.templates.templates.isEmpty())
         assertEquals(empty.fingerprint, cleared.fingerprint)
     }
+
+    @Test fun importPreviewCannotOverwriteALibraryChangedSincePreview() = runBlocking {
+        val original = store.read()
+        val incoming = PromptTemplateSet(listOf(PromptTemplate("incoming", "Imported", body = "Imported body")))
+        val preview = original.templates.previewImport(PromptTemplateCodec.decode(PromptTemplateCodec.encode(incoming)),
+            PromptTemplateImportMode.REPLACE)
+        val newer = store.replace(original.fingerprint,
+            PromptTemplateSet(listOf(PromptTemplate("newer", "New edit", body = "Keep this edit"))))
+        try { store.replace(preview.expected, preview.templates); fail("Applied a stale import") }
+        catch (_: IllegalArgumentException) { }
+        val reopened = NativePromptTemplateStore(context).read()
+        assertEquals(newer.fingerprint, reopened.fingerprint)
+        assertEquals("Keep this edit", reopened.templates.templates.single().body)
+        val fresh = reopened.templates.previewImport(incoming, PromptTemplateImportMode.UPDATE)
+        store.replace(fresh.expected, fresh.templates)
+        assertEquals(setOf("newer", "incoming"), store.read().templates.templates.map { it.id }.toSet())
+    }
 }

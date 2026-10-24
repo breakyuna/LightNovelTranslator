@@ -11,7 +11,7 @@ import kotlinx.serialization.json.*
 
 /** Device-local Room authority. No imported .lnt file can supply these execution records. */
 class NativeAgentStore(context: Context, private val projects: NativeTextProjectStore,
-    private val runtime: RuntimePort) : NativeAgentWorkspacePort, AgentPersistencePort, AgentConversationPort {
+    private val runtime: RuntimePort) : NativeAgentWorkspacePort, AgentPersistencePort, AgentConversationPort, AgentAutoContextPort {
     private val db = NativeAppDatabase.open(context)
     private val mutex = Mutex()
     private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) {
@@ -67,9 +67,20 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
     }
     override suspend fun messages(ref: LocalProjectRef, chatId: ChatId): List<AgentChatLine> = io {
         projects.open(ref)
-        db.agent().messages(ref.instanceId.value, ref.generation.value, chatId.value).asReversed()
-            .map { AgentChatLine(it.id, it.role, it.body.take(2000)) }
+        db.agent().messagePreviews(ref.instanceId.value, ref.generation.value, chatId.value).asReversed()
+            .map { AgentChatLine(it.id, it.role, it.preview) }
     }
+    /** SQL projects only short previews; the complete payload is loaded by messageDetail. */
+    suspend fun messagePage(ref: LocalProjectRef, chat: ChatId, cursor: AgentMessageCursor? = null): AgentMessagePage = io {
+        projects.open(ref)
+        require(cursor == null || cursor.ref == ref && cursor.chat == chat) { "Foreign history cursor" }
+        val rows = db.agent().messagePage(ref.instanceId.value, ref.generation.value, chat.value,
+            cursor?.beforeTime, cursor?.beforeId?.value)
+        val visible = rows.take(30)
+        AgentMessagePage(visible.asReversed().map { AgentChatLine(it.id, it.role, it.preview) },
+            rows.takeIf { it.size > 30 }?.get(29)?.let { AgentMessageCursor(ref, chat, it.createdAt, MessageId(it.id)) })
+    }
+
     suspend fun messageDetail(ref: LocalProjectRef, chat: ChatId, id: String): AgentMessageDetail = io {
         projects.open(ref)
         val row = requireNotNull(db.agent().message(id))
@@ -92,7 +103,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         require(role in setOf("USER", "ASSISTANT", "SYSTEM") && text.length <= 65_536)
         TextProjectFingerprint.utf8(text); projects.open(ref)
         transaction {
-            val previous = db.agent().messages(ref.instanceId.value, ref.generation.value, chatId.value).firstOrNull()?.createdAt ?: 0
+            val previous = db.agent().lastMessageTime(ref.instanceId.value, ref.generation.value, chatId.value)
             db.agent().insertMessage(NativeAgentMessageRow(uuid(), ref.instanceId.value, ref.generation.value,
                 chatId.value, role, text, maxOf(now(), Math.addExact(previous, 1))))
         }
@@ -107,6 +118,240 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
         rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) }.also { AgentHistory.validate(it, allowPendingAtTail = true) }
     }
+    private fun contextRows(ref: LocalProjectRef, chat: ChatId): Pair<NativeAgentContextRow?, List<NativeAgentMessageRow>> {
+        val context = db.agent().context(ref.instanceId.value, ref.generation.value, chat.value)
+        if (context != null) {
+            require(context.summary.isNotBlank() && context.summary.length <= 16_384 && context.revision > 0)
+            val boundary = requireNotNull(db.agent().message(context.boundaryId))
+            require(boundary.instanceId == ref.instanceId.value && boundary.generation == ref.generation.value &&
+                boundary.chatId == chat.value && boundary.createdAt == context.boundaryTime && boundary.payload != null)
+        }
+        val time = context?.boundaryTime ?: -1L
+        val id = context?.boundaryId.orEmpty()
+        if (db.agent().contextChars(ref.instanceId.value, ref.generation.value, chat.value, time, id) > 2L * 1024 * 1024)
+            throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
+        val rows = db.agent().contextMessages(ref.instanceId.value, ref.generation.value, chat.value, time, id)
+        if (rows.size > 256) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
+        return context to rows
+    }
+
+    override suspend fun modelHistory(ref: LocalProjectRef, chat: ChatId): List<AgentMessage> = io {
+        projects.open(ref)
+        val (context, rows) = contextRows(ref, chat)
+        val summary = context?.let { listOf(AgentMessage.System(MessageId("context-summary-" + it.revision),
+            "User-maintained summary of earlier conversation; verify current project facts with tools.\n" + it.summary)) }.orEmpty()
+        (summary + rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) }).also {
+            AgentHistory.validate(it, allowPendingAtTail = true)
+        }
+    }
+
+    private fun contextFingerprint(context: NativeAgentContextRow?, rows: List<NativeAgentMessageRow>): ObjectFingerprint {
+        val encoded = buildJsonObject {
+            put("summary", context?.summary.orEmpty()); put("revision", context?.revision ?: 0)
+            put("boundary", context?.boundaryId.orEmpty())
+            put("messages", JsonArray(rows.map { JsonArray(listOf(JsonPrimitive(it.id), JsonPrimitive(it.createdAt), JsonPrimitive(it.payload))) }))
+        }.toString()
+        return ObjectFingerprint(TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(encoded)))
+    }
+
+    private fun contextPreview(ref: LocalProjectRef, chat: ChatId): Pair<AgentContextPreview, NativeAgentMessageRow> {
+        val (context, rows) = contextRows(ref, chat)
+        val cut = AgentContextCut.index(rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) })
+        return AgentContextPreview(ref, chat, contextFingerprint(context, rows),
+            context?.summary.orEmpty(), cut, rows.size - cut) to rows[cut - 1]
+    }
+
+    private fun autoContextPreview(ref: LocalProjectRef, chat: ChatId,
+        retainUserTurns: Int): Pair<AgentAutoContextPreview, NativeAgentMessageRow> {
+        require(retainUserTurns in 1..64)
+        val (context, rows) = contextRows(ref, chat)
+        val cut = requireNotNull(AgentCompactionPlanner.safeCut(
+            rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) }, retainUserTurns)) { "No safe context cut" }
+        val boundary = rows[cut.index - 1]
+        require(boundary.id == cut.boundary.value) { "Context boundary mismatch" }
+        val preview = AgentContextPreview(ref, chat, contextFingerprint(context, rows),
+            context?.summary.orEmpty(), cut.archivedMessages, cut.retainedMessages)
+        return AgentAutoContextPreview(preview, context?.revision ?: 0L, cut.boundary, retainUserTurns) to boundary
+    }
+
+    suspend fun prepareContext(ref: LocalProjectRef, chat: ChatId): AgentContextPreview = io {
+        val write = runtime.beginProjectWrite()
+        try { projects.open(ref); transaction { contextPreview(ref, chat).first } }
+        finally { runtime.endProjectWrite(write) }
+    }
+
+    suspend fun compactContext(preview: AgentContextPreview, summary: String): Unit = io {
+        require(summary.isNotBlank() && summary.length <= 16_384)
+        TextProjectFingerprint.utf8(summary)
+        val write = runtime.beginProjectWrite()
+        try {
+            projects.open(preview.ref)
+            require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, preview.chat.value) == null)
+            transaction {
+                val (current, boundary) = contextPreview(preview.ref, preview.chat)
+                require(current == preview) { "Conversation changed" }
+                val old = db.agent().context(preview.ref.instanceId.value, preview.ref.generation.value, preview.chat.value)
+                db.agent().context(NativeAgentContextRow(preview.ref.instanceId.value, preview.ref.generation.value,
+                    preview.chat.value, boundary.id, boundary.createdAt, summary, preview.fingerprint.sha256,
+                    Math.addExact(old?.revision ?: 0, 1L)))
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun prepareAutoContext(ref: LocalProjectRef, chat: ChatId,
+        retainUserTurns: Int): AgentAutoContextPreview = io {
+        val write = runtime.beginProjectWrite()
+        try { projects.open(ref); transaction { autoContextPreview(ref, chat, retainUserTurns).first } }
+        finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun saveAutoContext(preview: AgentAutoContextPreview, summary: String): Unit = io {
+        require(summary.isNotBlank() && summary.length <= 16_384)
+        TextProjectFingerprint.utf8(summary)
+        val ref = preview.context.ref
+        val write = runtime.beginProjectWrite()
+        try {
+            projects.open(ref)
+            require(db.agent().unresolved(ref.instanceId.value, ref.generation.value, preview.context.chat.value) == null)
+            transaction {
+                val (current, boundary) = autoContextPreview(ref, preview.context.chat, preview.retainUserTurns)
+                require(current == preview) { "Conversation changed" }
+                val old = db.agent().context(ref.instanceId.value, ref.generation.value, preview.context.chat.value)
+                require((old?.revision ?: 0L) == preview.revision) { "Context revision changed" }
+                db.agent().context(NativeAgentContextRow(ref.instanceId.value, ref.generation.value,
+                    preview.context.chat.value, boundary.id, boundary.createdAt, summary,
+                    preview.context.fingerprint.sha256, Math.addExact(old?.revision ?: 0L, 1L)))
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    private class BranchSource(val target: NativeAgentMessageRow, val context: NativeAgentContextRow?)
+
+    private fun visitBranch(ref: LocalProjectRef, chat: ChatId, target: NativeAgentMessageRow,
+        checkActive: () -> Unit, visit: (NativeAgentMessageRow) -> Unit) {
+        var time = -1L
+        var id = ""
+        var count = 0
+        while (true) {
+            checkActive()
+            val rows = db.agent().branchPage(ref.instanceId.value, ref.generation.value, chat.value,
+                time, id, target.createdAt, target.id)
+            if (rows.isEmpty()) break
+            rows.forEach { row ->
+                checkActive()
+                require(++count <= 10_000) { "Branch history exceeds message budget" }
+                require(row.createdAt > time || row.createdAt == time && row.id > id)
+                visit(row)
+                time = row.createdAt; id = row.id
+            }
+        }
+        require(id == target.id && time == target.createdAt)
+    }
+
+    private fun branchPreview(ref: LocalProjectRef, chat: ChatId, message: MessageId, checkActive: () -> Unit): Pair<AgentBranchPreview, BranchSource> {
+        val target = requireNotNull(db.agent().message(message.value))
+        require(target.instanceId == ref.instanceId.value && target.generation == ref.generation.value && target.chatId == chat.value)
+        require(db.agent().branchChars(ref.instanceId.value, ref.generation.value, chat.value, target.createdAt, target.id) <= 32L * 1024 * 1024)
+        val context = db.agent().context(ref.instanceId.value, ref.generation.value, chat.value)?.takeIf {
+            it.boundaryTime < target.createdAt || it.boundaryTime == target.createdAt && it.boundaryId < target.id
+        }
+        context?.let { require(it.summary.isNotBlank() && it.summary.length <= 16_384 && it.revision > 0) }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        fun hash(text: String) {
+            val bytes = TextProjectFingerprint.utf8(text)
+            digest.update(java.nio.ByteBuffer.allocate(4).putInt(bytes.size).array()); digest.update(bytes)
+        }
+        hash(ref.projectId.value); hash(ref.instanceId.value); hash(ref.generation.value.toString()); hash(chat.value)
+        hash(db.agent().lastMessageTime(ref.instanceId.value, ref.generation.value, chat.value).toString())
+        hash(context?.summary.orEmpty()); hash(context?.revision?.toString().orEmpty()); hash(context?.boundaryId.orEmpty())
+        val validator = AgentHistoryValidator()
+        val tailValidator = AgentHistoryValidator()
+        var count = 0
+        var archived = 0
+        var activeBytes = 0L
+        var selected: AgentMessage? = null
+        visitBranch(ref, chat, target, checkActive) { row ->
+            val payload = requireNotNull(row.payload)
+            require(payload.length <= 512 * 1024)
+            val decoded = AgentMessageCodec.decode(payload)
+            validator.append(decoded)
+            hash(row.id); hash(row.createdAt.toString()); hash(payload)
+            count++
+            if (context == null || archived > 0) {
+                tailValidator.append(decoded)
+                activeBytes += TextProjectFingerprint.utf8(payload).size
+            }
+            if (context != null && row.id == context.boundaryId) {
+                require(row.createdAt == context.boundaryTime)
+                validator.finish()
+                archived = count
+            }
+            selected = decoded
+        }
+        validator.finish(); tailValidator.finish()
+        require(context == null || archived > 0) { "Missing inherited context boundary" }
+        require(count - archived <= 256 && activeBytes <= 2L * 1024 * 1024) { "Branch requires a bounded model context" }
+        val fingerprint = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
+        return AgentBranchPreview(ref, chat, message, ObjectFingerprint(fingerprint), count,
+            AgentBranchHistory.editable(requireNotNull(selected))) to BranchSource(target, context)
+    }
+
+    suspend fun prepareBranch(ref: LocalProjectRef, chat: ChatId, message: MessageId): AgentBranchPreview = io {
+        val write = runtime.beginProjectWrite()
+        val coroutine = currentCoroutineContext()
+        try { projects.open(ref); transaction { branchPreview(ref, chat, message) { coroutine.ensureActive() }.first } }
+        finally { runtime.endProjectWrite(write) }
+    }
+
+    suspend fun createBranch(preview: AgentBranchPreview, command: CommandId, replacement: String?): ChatId = io {
+        replacement?.let { require(it.isNotBlank() && it.length <= 8000); TextProjectFingerprint.utf8(it) }
+        val digest = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(JsonArray(listOf(
+            JsonPrimitive(preview.ref.projectId.value), JsonPrimitive(preview.ref.instanceId.value),
+            JsonPrimitive(preview.ref.generation.value), JsonPrimitive(preview.chat.value), JsonPrimitive(preview.message.value),
+            JsonPrimitive(preview.fingerprint.sha256), replacement?.let(::JsonPrimitive) ?: JsonNull)).toString()))
+        val write = runtime.beginProjectWrite()
+        val coroutine = currentCoroutineContext()
+        try {
+            projects.open(preview.ref)
+            transaction {
+                db.agent().branch(command.value)?.let { receipt ->
+                    require(receipt.digest == digest && receipt.sourceChat == preview.chat.value && receipt.message == preview.message.value)
+                    return@transaction ChatId(receipt.targetChat)
+                }
+                val (current, source) = branchPreview(preview.ref, preview.chat, preview.message) { coroutine.ensureActive() }
+                require(current == preview) { "Conversation changed" }
+                require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, preview.chat.value) == null)
+                db.agent().currentChat(preview.ref.instanceId.value, preview.ref.generation.value)?.let { selected ->
+                    require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, selected.id) == null)
+                }
+                require(replacement == null || preview.editable)
+                val targetChat = createChat(preview.ref)
+                val baseTime = now()
+                var index = 0L
+                var inheritedBoundary: Pair<String, Long>? = null
+                visitBranch(preview.ref, preview.chat, source.target, { coroutine.ensureActive() }) { row ->
+                    val message = AgentBranchHistory.copy(AgentMessageCodec.decode(requireNotNull(row.payload)), MessageId(uuid()),
+                        replacement.takeIf { row.id == source.target.id })
+                    val payload = AgentMessageCodec.encode(message)
+                    require(payload.length <= 512 * 1024)
+                    val body = if (row.id == source.target.id && replacement != null) replacement.take(2000) else row.body.take(2000)
+                    val timestamp = Math.addExact(baseTime, index++)
+                    db.agent().insertMessage(row.copy(id = message.id.value, chatId = targetChat.value,
+                        createdAt = timestamp, body = body, payload = payload))
+                    if (row.id == source.context?.boundaryId) inheritedBoundary = message.id.value to timestamp
+                }
+                source.context?.let { context ->
+                    val boundary = requireNotNull(inheritedBoundary)
+                    db.agent().context(NativeAgentContextRow(preview.ref.instanceId.value, preview.ref.generation.value,
+                        targetChat.value, boundary.first, boundary.second, context.summary, preview.fingerprint.sha256, 1L))
+                }
+                db.agent().branch(NativeAgentBranchRow(command.value, preview.chat.value, targetChat.value,
+                    preview.message.value, digest))
+                targetChat
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
     override suspend fun appendMessage(ref: LocalProjectRef, chat: ChatId, message: AgentMessage): Unit = io {
         projects.open(ref)
         require(message !is AgentMessage.System) { "System context is owned by the host" }
@@ -124,11 +369,14 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
                 require(existing.instanceId == ref.instanceId.value && existing.generation == ref.generation.value &&
                     existing.chatId == chat.value && existing.payload == payload)
             } else {
-                if (db.agent().historyCount(ref.instanceId.value, ref.generation.value, chat.value) >= 256)
+                val context = db.agent().context(ref.instanceId.value, ref.generation.value, chat.value)
+                val time = context?.boundaryTime ?: -1L
+                val boundary = context?.boundaryId.orEmpty()
+                if (db.agent().contextCount(ref.instanceId.value, ref.generation.value, chat.value, time, boundary) >= 256)
                     throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
-                if (db.agent().historyChars(ref.instanceId.value, ref.generation.value, chat.value) + TextProjectFingerprint.utf8(payload).size > 2L * 1024 * 1024)
+                if (db.agent().contextChars(ref.instanceId.value, ref.generation.value, chat.value, time, boundary) + TextProjectFingerprint.utf8(payload).size > 2L * 1024 * 1024)
                     throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
-                val previous = db.agent().messages(ref.instanceId.value, ref.generation.value, chat.value).firstOrNull()?.createdAt ?: 0
+                val previous = db.agent().lastMessageTime(ref.instanceId.value, ref.generation.value, chat.value)
                 db.agent().insertMessage(NativeAgentMessageRow(message.id.value, ref.instanceId.value, ref.generation.value,
                     chat.value, when (message) { is AgentMessage.User -> "USER"; is AgentMessage.Assistant -> "ASSISTANT"; else -> "TOOL" },
                     preview, maxOf(now(), Math.addExact(previous, 1)), payload))

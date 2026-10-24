@@ -84,35 +84,42 @@ class InvalidAgentHistory(val reason: Reason) : IllegalArgumentException("Invali
  */
 object AgentHistory {
     fun validate(messages: List<AgentMessage>, allowPendingAtTail: Boolean = false) {
-        val messageIds = mutableSetOf<MessageId>()
-        val callIds = mutableSetOf<ToolCallId>()
-        val pending = mutableMapOf<ToolCallId, String>()
-        var conversationStarted = false
-        for (message in messages) {
-            if (!messageIds.add(message.id)) invalid(InvalidAgentHistory.Reason.DUPLICATE_MESSAGE)
-            if (pending.isNotEmpty() && message !is AgentMessage.ToolResult) {
-                invalid(InvalidAgentHistory.Reason.MISSING_RESULT)
+        val validator = AgentHistoryValidator()
+        messages.forEach(validator::append)
+        validator.finish(allowPendingAtTail)
+    }
+}
+
+/** Incremental equivalent used when copying archived history without loading every body. */
+class AgentHistoryValidator {
+    private val messageIds = mutableSetOf<MessageId>()
+    private val callIds = mutableSetOf<ToolCallId>()
+    private val pending = mutableMapOf<ToolCallId, String>()
+    private var conversationStarted = false
+
+    fun append(message: AgentMessage) {
+        if (!messageIds.add(message.id)) invalid(InvalidAgentHistory.Reason.DUPLICATE_MESSAGE)
+        if (pending.isNotEmpty() && message !is AgentMessage.ToolResult) invalid(InvalidAgentHistory.Reason.MISSING_RESULT)
+        when (message) {
+            is AgentMessage.System -> if (conversationStarted) invalid(InvalidAgentHistory.Reason.SYSTEM_POSITION)
+            is AgentMessage.User -> conversationStarted = true
+            is AgentMessage.Assistant -> {
+                if (message.parts.isEmpty()) invalid(InvalidAgentHistory.Reason.EMPTY_ASSISTANT)
+                conversationStarted = true
+                message.parts.filterIsInstance<AssistantPart.ToolCall>().forEach { part ->
+                    if (!callIds.add(part.call.id)) invalid(InvalidAgentHistory.Reason.DUPLICATE_CALL)
+                    pending[part.call.id] = part.call.name
+                }
             }
-            when (message) {
-                is AgentMessage.System -> if (conversationStarted) invalid(InvalidAgentHistory.Reason.SYSTEM_POSITION)
-                is AgentMessage.User -> conversationStarted = true
-                is AgentMessage.Assistant -> {
-                    if (message.parts.isEmpty()) invalid(InvalidAgentHistory.Reason.EMPTY_ASSISTANT)
-                    conversationStarted = true
-                    message.parts.filterIsInstance<AssistantPart.ToolCall>().forEach { part ->
-                        if (!callIds.add(part.call.id)) invalid(InvalidAgentHistory.Reason.DUPLICATE_CALL)
-                        pending[part.call.id] = part.call.name
-                    }
-                }
-                is AgentMessage.ToolResult -> {
-                    conversationStarted = true
-                    if (pending[message.callId] != message.toolName) invalid(InvalidAgentHistory.Reason.UNMATCHED_RESULT)
-                    pending.remove(message.callId)
-                }
+            is AgentMessage.ToolResult -> {
+                conversationStarted = true
+                if (pending[message.callId] != message.toolName) invalid(InvalidAgentHistory.Reason.UNMATCHED_RESULT)
+                pending.remove(message.callId)
             }
         }
+    }
+    fun finish(allowPendingAtTail: Boolean = false) {
         if (!allowPendingAtTail && pending.isNotEmpty()) invalid(InvalidAgentHistory.Reason.MISSING_RESULT)
     }
-
     private fun invalid(reason: InvalidAgentHistory.Reason): Nothing = throw InvalidAgentHistory(reason)
 }

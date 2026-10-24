@@ -21,7 +21,7 @@ class RgssFormatException(val reason: Reason, detail: String = "") :
     IllegalArgumentException(
         "RGSS format: $reason" + (if (detail.isEmpty()) "" else " ($detail)"),
     ) {
-    enum class Reason { HEADER, SCRIPT, BINDING, LIMIT, PATH, IO }
+    enum class Reason { HEADER, SCRIPT, DATA, BINDING, LIMIT, PATH, IO, ENCODING }
 }
 
 private const val MAX_UNITS = 100_000
@@ -34,15 +34,26 @@ private fun safeWarningPath(value: String): String =
 /**
  * RGSS adapter for the shared format contract.
  *
- * Read accepts either an RGSSAD v1 / RGSSAD v3 archive or a bare Scripts.rxdata byte string. Script
- * entries are decoded and ordinary Ruby string literals become `RULE_SKIPPED` units (the rule layer
- * decides whether they are dialogue). Every non-script archive member is copied unchanged on write.
+ * Read accepts either an RGSSAD v1 / RGSSAD v3 archive, a bare Scripts.rxdata byte string, or a bare
+ * non-script data file (`Data/<name>.rxdata`, `Data/<name>.rvdata`, `Data/<name>.rvdata2`). Script entries are
+ * decoded and ordinary Ruby string literals become `RULE_SKIPPED` units (the rule layer decides
+ * whether they are dialogue). Non-script data files are scanned with [RgssDataCodec], which applies
+ * an explicit `RPG::` text-slot/event-command whitelist; both sources stay distinguishable through
+ * the unit tag (member path) and the `kind` field (`ruby` or `marshal`).
  *
- * Constructs the scanner cannot prove safe (heredoc, interpolation, percent/regex literals, unknown
- * escapes) reject that script with a warning; they never produce a partial rewrite. Non-script
- * Marshal data files are not yet translated by this core and are reported only through metadata.
+ * Constructs the Ruby scanner cannot prove safe (heredoc, interpolation, percent/regex literals,
+ * unknown escapes) reject that script with a warning. Unsupported or ambiguous Marshal data files
+ * are skipped with a warning as well. Neither path ever produces a partial rewrite: write failures
+ * reject the whole asset.
  */
-class RgssFormatAdapter : BinaryFormatAdapter {
+class RgssFormatAdapter(
+    /**
+     * Periodic cancellation hook for data-file traversal; the adapter is synchronous, so callers
+     * enforce their own deadline by throwing here. Throw a type other than [RgssDataException],
+     * otherwise a read treats it as a per-file warning. Script scanning keeps its existing behavior.
+     */
+    private val checkActive: () -> Unit = {},
+) : BinaryFormatAdapter {
     override val format: ProjectAssetFormat = ProjectAssetFormat.RPGMAKER_RGSS
 
     override fun read(bytes: ByteArray, path: RelativePath): FormatDocument {
@@ -53,31 +64,42 @@ class RgssFormatAdapter : BinaryFormatAdapter {
         var entryCount = 0
         var scriptFiles = 0
         var dataFiles = 0
+        var dataScanned = 0
+        var dataSkipped = 0
         if (isArchive) {
             val archive = RgssArchiveCodec.read(bytes)
             archiveVersion = archive.version
             entryCount = archive.entries.size
             val scriptEntries = archive.entries.filter { isScriptPath(it.path) }.sortedBy { it.path }
-            dataFiles = archive.entries.count { isDataFile(it.path) && !isScriptPath(it.path) }
+            val dataEntries = archive.entries
+                .filter { isDataFile(it.path) && !isScriptPath(it.path) }
+                .sortedBy { it.path }
+            dataFiles = dataEntries.size
             if (scriptEntries.isEmpty()) {
                 warnings.add(FormatWarning("rgss.no_scripts", "", null, "Archive has no Scripts.rxdata"))
             }
-            if (dataFiles > 0) {
-                warnings.add(
-                    FormatWarning(
-                        "rgss.data_files_not_scanned",
-                        "",
-                        null,
-                        "Non-script Marshal data files are not translated by this core",
-                    ),
-                )
-            }
+            // Scripts keep their historical first position so script-only archives produce exactly
+            // the same unit order as before data-file support was added.
             for (entry in scriptEntries) {
                 if (collector.limited) break
                 scriptFiles += 1
                 addScripts(readScripts(entry.data), entry.path, collector)
             }
+            for (entry in dataEntries) {
+                if (collector.limited) break
+                if (addData(entry.data, entry.path, collector)) dataScanned += 1 else dataSkipped += 1
+            }
+        } else if (isScriptPath(path.value) && isBareScripts(bytes)) {
+            entryCount = 1
+            scriptFiles = 1
+            addScripts(readScripts(bytes), path.value, collector)
+        } else if (isDataFile(path.value) && !isScriptPath(path.value) && isBareScripts(bytes)) {
+            entryCount = 1
+            dataFiles = 1
+            if (addData(bytes, path.value, collector)) dataScanned = 1 else dataSkipped = 1
         } else if (isBareScripts(bytes)) {
+            // Preserve the pre-existing fallback: a Marshal 4.8 byte string with an unrelated path
+            // was (and still is) interpreted as a bare Scripts payload.
             entryCount = 1
             scriptFiles = 1
             addScripts(readScripts(bytes), path.value, collector)
@@ -102,6 +124,8 @@ class RgssFormatAdapter : BinaryFormatAdapter {
             put("entries", entryCount)
             put("script_files", scriptFiles)
             put("data_files", dataFiles)
+            put("data_scanned", dataScanned)
+            put("data_skipped", dataSkipped)
             put("units", collector.units.size)
         }.toString()
         return FormatDocument(format, collector.units, warnings, engine, metadata)
@@ -118,7 +142,7 @@ class RgssFormatAdapter : BinaryFormatAdapter {
             val groups = LinkedHashMap<String, MutableList<FormatUnit>>()
             for (unit in units) {
                 if (effectiveTarget(unit, options) == null) continue
-                if (!isScriptPath(unit.tag)) {
+                if (!isScriptPath(unit.tag) && !isDataFile(unit.tag)) {
                     throw RgssFormatException(RgssFormatException.Reason.BINDING, "unit tag")
                 }
                 groups.getOrPut(unit.tag) { ArrayList() }.add(unit)
@@ -134,17 +158,30 @@ class RgssFormatAdapter : BinaryFormatAdapter {
                     continue
                 }
                 matched.add(entry.path)
-                val scripts = readScripts(entry.data)
-                val updated = applyEdits(scripts, group, options)
-                entries.add(entry.withData(RgssScriptsCodec.write(updated), entry.compressed))
-                changed = true
+                if (isScriptPath(entry.path)) {
+                    val scripts = readScripts(entry.data)
+                    val updated = applyEdits(scripts, group, options)
+                    entries.add(entry.withData(RgssScriptsCodec.write(updated), entry.compressed))
+                    changed = true
+                } else {
+                    val updated = applyDataEdits(entry.data, entry.path, group, options)
+                    if (updated.contentEquals(entry.data)) {
+                        entries.add(entry)
+                    } else {
+                        entries.add(entry.withData(updated, entry.compressed))
+                        changed = true
+                    }
+                }
             }
             if (matched.size != groups.size) {
-                throw RgssFormatException(RgssFormatException.Reason.BINDING, "unknown script entry")
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "unknown entry")
             }
             return if (changed) RgssArchiveCodec.write(RgssArchive(archive.version, entries)) else original
         }
         if (isBareScripts(original)) {
+            if (isDataFile(path.value) && !isScriptPath(path.value)) {
+                return applyDataEdits(original, path.value, units, options)
+            }
             val scripts = readScripts(original)
             return RgssScriptsCodec.write(applyEdits(scripts, units, options))
         }
@@ -181,6 +218,45 @@ class RgssFormatAdapter : BinaryFormatAdapter {
         }
     }
 
+    /** Returns true when the data file was scanned (even if the whitelist produced no units). */
+    private fun addData(data: ByteArray, tag: String, collector: UnitCollector): Boolean {
+        val scan = try {
+            RgssDataCodec.scan(data, tag, checkActive = checkActive)
+        } catch (failure: RgssDataException) {
+            collector.warnings.add(
+                FormatWarning(
+                    dataWarningCode(failure.reason),
+                    safeWarningPath(tag),
+                    null,
+                    "Marshal data file rejected: ${failure.reason}",
+                ),
+            )
+            return false
+        }
+        if (scan.ambiguousEncoding) {
+            collector.warnings.add(
+                FormatWarning(
+                    "rgss.data_encoding",
+                    safeWarningPath(tag),
+                    null,
+                    "Marshal data encoding cannot be proven",
+                ),
+            )
+            return false
+        }
+        for (string in scan.strings) {
+            if (collector.limited) return true
+            collector.add(tag, string.source, dataLocator(string))
+        }
+        return true
+    }
+
+    private fun dataWarningCode(reason: RgssDataException.Reason): String = when (reason) {
+        RgssDataException.Reason.ENCODING -> "rgss.data_encoding"
+        RgssDataException.Reason.LIMIT -> "rgss.data_limit"
+        else -> "rgss.data_unsupported"
+    }
+
     private fun applyEdits(
         archive: RgssScriptsArchive,
         units: List<FormatUnit>,
@@ -209,13 +285,77 @@ class RgssFormatAdapter : BinaryFormatAdapter {
         return RgssScriptsArchive(scripts)
     }
 
+    /**
+     * Applies one data file's units with [RgssDataCodec]. Every edit is validated against a fresh
+     * parse of [data]; any mismatch throws before the caller adds the entry, so no partial archive
+     * (and no partially rewritten Marshal file) can be produced.
+     */
+    private fun applyDataEdits(
+        data: ByteArray,
+        tag: String,
+        units: List<FormatUnit>,
+        options: FormatWriteOptions,
+    ): ByteArray {
+        val edits = ArrayList<RgssDataEdit>()
+        for (unit in units) {
+            val target = effectiveTarget(unit, options) ?: continue
+            if (unit.tag != tag) {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "unit tag")
+            }
+            val extra = readExtra(unit)
+            if ((extra["kind"] as? JsonPrimitive)?.contentOrNull != "marshal") {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "kind")
+            }
+            val node = (extra["node"] as? JsonPrimitive)?.intOrNull
+                ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "node")
+            val parent = (extra["parent"] as? JsonPrimitive)?.contentOrNull
+                ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "parent")
+            if (parent.length > 4_096) {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "parent")
+            }
+            val encoding = (extra["encoding"] as? JsonPrimitive)?.contentOrNull
+                ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "encoding")
+            if (encoding != RGSS_DATA_ENCODING_UTF8 && encoding != RGSS_DATA_ENCODING_SHIFT_JIS) {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "encoding")
+            }
+            val digest = (extra["digest"] as? JsonPrimitive)?.contentOrNull
+                ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "digest")
+            if (digest.length != 64 || digest.any { it !in "0123456789abcdef" }) {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "digest")
+            }
+            val replacement = if (options.bilingual) unit.source + "\n" + target else target
+            try {
+                edits.add(
+                    RgssDataEdit(
+                        node,
+                        parent,
+                        unit.source,
+                        digest,
+                        encoding,
+                        replacement,
+                    ),
+                )
+            } catch (_: IllegalArgumentException) {
+                throw RgssFormatException(RgssFormatException.Reason.BINDING, "data locator")
+            }
+        }
+        if (edits.isEmpty()) return data
+        return try {
+            RgssDataCodec.rewrite(data, tag, edits, checkActive = checkActive)
+        } catch (failure: RgssDataException) {
+            throw RgssFormatException(failure.reason.toFormatReason(), failure.reason.name)
+        }
+    }
+
+    private fun readExtra(unit: FormatUnit): JsonObject = try {
+        Json.parseToJsonElement(unit.extraField) as? JsonObject
+    } catch (_: Exception) {
+        null
+    } ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "extra")
+
     private fun parseEdit(unit: FormatUnit, options: FormatWriteOptions): Pair<Int, RubyReplacement>? {
         val target = effectiveTarget(unit, options) ?: return null
-        val extra = try {
-            Json.parseToJsonElement(unit.extraField) as? JsonObject
-        } catch (_: Exception) {
-            null
-        } ?: throw RgssFormatException(RgssFormatException.Reason.BINDING, "extra")
+        val extra = readExtra(unit)
         if ((extra["kind"] as? JsonPrimitive)?.contentOrNull != "ruby") {
             throw RgssFormatException(RgssFormatException.Reason.BINDING, "kind")
         }
@@ -271,6 +411,16 @@ class RgssFormatAdapter : BinaryFormatAdapter {
             put("digest", RgssRubyStrings.sha256Hex(literal.raw))
         }.toString()
 
+    private fun dataLocator(value: RgssDataString): String =
+        buildJsonObject {
+            put("v", 1)
+            put("kind", "marshal")
+            put("node", value.node)
+            put("parent", value.path)
+            put("encoding", value.encoding)
+            put("digest", value.digest)
+        }.toString()
+
     private fun isRgssArchive(bytes: ByteArray): Boolean =
         bytes.size >= 8 && bytes[0].toInt() == 0x52 && bytes[1].toInt() == 0x47 &&
             bytes[2].toInt() == 0x53 && bytes[3].toInt() == 0x53 && bytes[4].toInt() == 0x41 &&
@@ -298,7 +448,7 @@ class RgssFormatAdapter : BinaryFormatAdapter {
                 if (!warned) {
                     warned = true
                     warnings.add(
-                        FormatWarning("rgss.unit_too_large", safeWarningPath(tag), null, "A Ruby literal exceeds the unit bound"),
+                        FormatWarning("rgss.unit_too_large", safeWarningPath(tag), null, "A string exceeds the unit bound"),
                     )
                 }
                 return
@@ -320,4 +470,11 @@ class RgssFormatAdapter : BinaryFormatAdapter {
         }
     }
 
+}
+
+private fun RgssDataException.Reason.toFormatReason(): RgssFormatException.Reason = when (this) {
+    RgssDataException.Reason.MARSHAL, RgssDataException.Reason.STRUCTURE -> RgssFormatException.Reason.DATA
+    RgssDataException.Reason.ENCODING -> RgssFormatException.Reason.ENCODING
+    RgssDataException.Reason.LIMIT -> RgssFormatException.Reason.LIMIT
+    RgssDataException.Reason.BINDING -> RgssFormatException.Reason.BINDING
 }

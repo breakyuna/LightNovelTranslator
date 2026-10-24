@@ -34,17 +34,47 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     cancel: () -> Unit = {}, inspect: (String) -> Unit = {}, closeDetail: () -> Unit = {},
     stream: StateFlow<AgentStreamPreviewState>? = null,
     configureProfile: ((String, String, NativeModelProtocol, List<String>?, () -> Unit) -> Unit)? = null,
-    fetchProfile: ((String, String, ModelConfigurationRef?, NativeModelProtocol, (List<String>) -> Unit) -> Unit)? = null) {
+    fetchProfile: ((String, String, ModelConfigurationRef?, NativeModelProtocol, (List<String>) -> Unit) -> Unit)? = null,
+    queueInput: () -> Unit = {}, useQueued: (CommandId) -> Unit = {},
+    deleteQueued: (CommandId) -> Unit = {}, toggleQueue: () -> Unit = {}, sendQueued: () -> Unit = {}, steer: () -> Unit = {},
+    loadSteerHistory: (suspend (LocalProjectRef, ChatId, AgentSteerRunCursor?) -> AgentSteerRunPage)? = null,
+    loadSteerDetail: (suspend (LocalProjectRef, ChatId, RunIdentity) -> StoredAgentSteerLedger?)? = null,
+    restoreSteer: (LocalProjectRef, RunIdentity, CommandId) -> Unit = { _, _, _ -> },
+    prepareContext: (suspend (LocalProjectRef, ChatId) -> AgentContextPreview)? = null,
+    saveContext: (suspend (AgentContextPreview, String) -> Unit)? = null,
+    loadHistory: (suspend (LocalProjectRef, ChatId, AgentMessageCursor?) -> AgentMessagePage)? = null,
+    historyDetail: (suspend (LocalProjectRef, ChatId, String) -> AgentMessageDetail)? = null,
+    prepareBranch: (suspend (LocalProjectRef, ChatId, MessageId) -> AgentBranchPreview)? = null,
+    createBranch: (suspend (AgentBranchPreview, CommandId, String?) -> Unit)? = null) {
     val ref = state.project!!.ref
     val ready = !state.busy && !state.agentLoadIncomplete && !state.runLoadIncomplete
     var showModel by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
     var showChats by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
+    var showHistory by remember(ref, state.agentChatId) { mutableStateOf(false) }
+    var showContext by remember(ref, state.agentChatId) { mutableStateOf(false) }
+    var showSteerHistory by remember(ref, state.agentChatId) { mutableStateOf(false) }
+    var showQueue by rememberSaveable(ref.instanceId.value, ref.generation.value, state.agentChatId?.value) { mutableStateOf(false) }
     var tools by rememberSaveable(ref.instanceId.value, ref.generation.value, state.agentChatId?.value) { mutableStateOf(false) }
     var runs by rememberSaveable(ref.instanceId.value, ref.generation.value) { mutableStateOf(false) }
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
     LaunchedEffect(interrupted) { if (interrupted) runs = true }
     if (showModel) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
         { showModel = false }, configure, fetchModels, cancel, configureProfile, fetchProfile)
+    if (showQueue) state.agentQueue?.let {
+        NativeAgentQueueDialog(it, state.busy, { showQueue = false }, useQueued, deleteQueued, toggleQueue) {
+            showQueue = false
+            sendQueued()
+        }
+    }
+    if (showSteerHistory && loadSteerHistory != null && loadSteerDetail != null) state.agentChatId?.let { chat ->
+        NativeSteerHistoryDialog(ref, chat, loadSteerHistory, loadSteerDetail, restoreSteer, { showSteerHistory = false })
+    }
+    if (showContext && prepareContext != null && saveContext != null) state.agentChatId?.let { chat ->
+        NativeAgentContextDialog(ref, chat, prepareContext, saveContext, { showContext = false })
+    }
+    if (showHistory && loadHistory != null && historyDetail != null) state.agentChatId?.let { chat ->
+        NativeAgentHistoryDialog(ref, chat, loadHistory, historyDetail, { showHistory = false }, prepareBranch, createBranch)
+    }
     state.agentMessageDetail?.let { NativeAgentMessageDialog(it, closeDetail) }
     val timeline = rememberLazyListState()
     val committedIds = remember(state.agentMessages) { state.agentMessages.map { it.id }.toSet() }
@@ -130,6 +160,12 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
             }
             item(key = "local-tools") {
                 Column {
+                    if (loadHistory != null) TextButton(onClick = { showHistory = true }, enabled = !state.busy) {
+                        Text(stringResource(R.string.native_agent_full_history))
+                    }
+                    if (prepareContext != null) TextButton(onClick = { showContext = true }, enabled = ready && state.approval == null) {
+                        Text(stringResource(R.string.native_context_title))
+                    }
                     TextButton(onClick = { tools = !tools }, enabled = !state.busy) { Text(stringResource(R.string.native_agent_local_tools)) }
                     if (tools) NativeLocalAgentTools(state, query, prepare)
                 }
@@ -140,9 +176,26 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 if (state.modelSettings == null) TextButton(onClick = { showModel = true }, enabled = !state.busy) { Text(stringResource(R.string.native_model_missing)) }
                 else Text(stringResource(R.string.native_model_remote_notice), style = MaterialTheme.typography.labelSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
                 if (state.approval != null) Text(stringResource(R.string.native_agent_waiting_hint), style = MaterialTheme.typography.bodySmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (loadSteerHistory != null) TextButton(onClick = { showSteerHistory = true }, enabled = !state.busy) {
+                        Text(stringResource(R.string.native_steer_history))
+                    }
+                    TextButton(onClick = { showQueue = true }, enabled = !state.busy,
+                        modifier = Modifier.testTag("native-agent-queue-open")) {
+                        Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0))
+                    }
+                    TextButton(onClick = queueInput, enabled = ready && state.approval == null && state.agentInput.isNotBlank(),
+                        modifier = Modifier.testTag("native-agent-queue-add")) {
+                        Text(stringResource(R.string.native_agent_queue_add))
+                    }
+                }
+                if (state.foregroundAgentActive) TextButton(onClick = steer,
+                    enabled = state.agentInput.isNotBlank() && state.approval == null) {
+                    Text(stringResource(R.string.native_agent_steer))
+                }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(state.agentInput, input, modifier = Modifier.weight(1f), minLines = 2, maxLines = 5,
-                        enabled = ready && state.approval == null, label = { Text(stringResource(R.string.native_agent_message)) })
+                        enabled = (ready || state.foregroundAgentActive) && state.approval == null, label = { Text(stringResource(R.string.native_agent_message)) })
                     if (state.busy) Button(onClick = cancel) { Text(stringResource(R.string.native_agent_stop)) }
                     else Button(onClick = send, enabled = ready && state.approval == null && state.modelSettings != null && state.agentInput.isNotBlank()) {
                         Text(stringResource(R.string.native_agent_send))
@@ -162,7 +215,7 @@ private fun roleLabel(role: String): String = stringResource(when (role) {
 })
 
 @Composable
-private fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (String) -> Unit) {
+internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (String) -> Unit) {
     val user = line.role == "USER"
     Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
         Card(Modifier.widthIn(max = 720.dp).fillMaxWidth(if (user) .92f else 1f), colors = CardDefaults.cardColors(
@@ -226,7 +279,7 @@ private fun NativeApprovalCard(approval: TextApproval, enabled: Boolean, allow: 
 }
 
 @Composable
-private fun NativeAgentMessageDialog(detail: AgentMessageDetail, dismiss: () -> Unit) {
+internal fun NativeAgentMessageDialog(detail: AgentMessageDetail, dismiss: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember(detail.id) { mutableStateOf(false) }
     AlertDialog(onDismissRequest = dismiss, title = { Text(roleLabel(detail.role)) }, text = {

@@ -122,10 +122,24 @@ class MarshalFloat private constructor(val text: String, val value: Double) : Ma
     }
 }
 
-/** Raw Ruby String bytes. Marshal strings are byte strings first; [utf8] is a convenience view. */
+/**
+ * Raw Ruby String bytes. Marshal strings are byte strings first; [utf8] is a convenience view.
+ * [bodyRange] and [lengthRange] are set by the reader to the byte spans of the body and of the
+ * encoded Marshal length in the parsed input, so callers can replace one string (including its
+ * length prefix) without re-serializing the rest of the Marshal graph.
+ */
 class MarshalString private constructor(bytes: ByteArray) : MarshalValue() {
     val bytes: ByteArray = bytes.copyOf()
     val utf8: String? get() = decodeUtf8OrNull(this.bytes)
+
+    /** Inclusive range of the original body bytes in the parsed stream, or null for a built node. */
+    internal var bodyRange: IntRange? = null
+
+    /** Inclusive range of the encoded length prefix immediately before [bodyRange]. */
+    internal var lengthRange: IntRange? = null
+
+    /** Exact bytes of the encoded length prefix, retained for range validation on write. */
+    internal var lengthBytes: ByteArray? = null
 
     init {
         if (this.bytes.size > DEFAULT_MAX_STRING_BYTES) {
@@ -194,12 +208,30 @@ class MarshalObject(val className: String) : MarshalValue() {
 }
 
 /**
+ * Opaque Ruby user-defined object (`u`), for example RGSS `Table`. The `_dump` payload is retained
+ * verbatim: it is never interpreted, but the node can be traversed/linked and sibling Marshal values
+ * remain readable. Write-back of data files splices around it, so its bytes do not change.
+ */
+class MarshalUserData(val className: String, bytes: ByteArray) : MarshalValue() {
+    val bytes: ByteArray = bytes.copyOf()
+
+    init {
+        if (className.isEmpty() || className.length > 4_096) {
+            throw MarshalException(MarshalException.Reason.VALUE, "class name")
+        }
+    }
+
+    override fun toString(): String = "MarshalUserData(className=$className,size=${bytes.size})"
+}
+
+/**
  * Marshal 4.8 parser/writer.
  *
  * Supported: nil/true/false, Fixnum, Bignum, Float, String, Symbol, Array, Hash (including a
- * default), plain `o` objects with ivars, the `I` ivar wrapper, symbol links (`;`) and object links
- * (`@`). User-defined `u`, user-marshal `U`, extended/subclass/struct/class/module/data/regexp
- * markers are rejected explicitly because their payload rules are not implemented.
+ * default), plain `o` objects with ivars, opaque user-defined `u` payloads (for example RGSS
+ * `Table`), the `I` ivar wrapper, symbol links (`;`) and object links (`@`). User-marshal `U`,
+ * extended/subclass/struct/class/module/data/regexp markers are rejected explicitly because their
+ * payload rules are not implemented; a `u` payload is kept verbatim and never interpreted.
  */
 object RubyMarshal {
     fun parse(bytes: ByteArray, limits: MarshalLimits = MarshalLimits()): MarshalValue {
@@ -246,6 +278,7 @@ object RubyMarshal {
                 0x7D -> readHash(depth, true)
                 0x66 -> readFloat()
                 0x6F -> readObject(depth)
+                0x75 -> readUserData(depth)
                 0x49 -> readIvarWrapper(depth)
                 0x40 -> readObjectLink()
                 else -> throw MarshalException(
@@ -257,8 +290,13 @@ object RubyMarshal {
         }
 
         private fun readString(): MarshalValue {
+            val prefixStart = position
             val length = readLength(limits.maxStringBytes)
+            val bodyStart = position
             val value = MarshalString.ofBytes(readBytesExact(length))
+            value.lengthRange = prefixStart until bodyStart
+            value.lengthBytes = bytes.copyOfRange(prefixStart, bodyStart)
+            value.bodyRange = bodyStart until bodyStart + length
             registerObject(value)
             return value
         }
@@ -303,6 +341,14 @@ object RubyMarshal {
                 if (name.isEmpty()) throw MarshalException(MarshalException.Reason.SYMBOL, "empty ivar")
                 value.ivars.add(MarshalIvar(name, readValue(depth + 1)))
             }
+            return value
+        }
+
+        private fun readUserData(depth: Int): MarshalValue {
+            val className = readSymbolNode(depth + 1).name
+            val length = readLength(limits.maxStringBytes)
+            val value = MarshalUserData(className, readBytesExact(length))
+            registerObject(value)
             return value
         }
 
@@ -567,6 +613,11 @@ object RubyMarshal {
                         writeValue(ivar.value, depth + 1)
                     }
                 }
+                is MarshalUserData -> {
+                    writeByte(0x75)
+                    writeSymbol(MarshalSymbol.of(value.className), depth + 1)
+                    writeBytes(value.bytes)
+                }
                 else -> throw MarshalException(MarshalException.Reason.VALUE, "body")
             }
         }
@@ -671,7 +722,6 @@ object RubyMarshal {
 }
 
 private val UNSUPPORTED_MARSHAL_TYPES = setOf(
-    0x75, // u: user-defined _dump
     0x55, // U: user-marshal
     0x65, // e: extended object
     0x43, // C: subclass of a built-in
@@ -682,6 +732,29 @@ private val UNSUPPORTED_MARSHAL_TYPES = setOf(
     0x2F, // /: Regexp
     0x4D, // M: old module
 )
+
+/**
+ * Encodes a non-negative Marshal length using the same compact Fixnum representation as
+ * [RubyMarshal]'s writer, so a string body can be replaced together with its length prefix.
+ */
+internal fun encodeMarshalLength(value: Int): ByteArray {
+    if (value < 0) throw MarshalException(MarshalException.Reason.VALUE, "negative length")
+    if (value == 0) return byteArrayOf(0)
+    if (value <= 122) return byteArrayOf((value + 5).toByte())
+    var current = value
+    val buffer = ByteArray(4)
+    for (length in 1..4) {
+        buffer[length - 1] = (current and 0xFF).toByte()
+        current = current shr 8
+        if (current == 0) {
+            val output = ByteArray(length + 1)
+            output[0] = length.toByte()
+            System.arraycopy(buffer, 0, output, 1, length)
+            return output
+        }
+    }
+    throw MarshalException(MarshalException.Reason.VALUE, "length range")
+}
 
 internal fun decodeUtf8OrNull(bytes: ByteArray): String? = try {
     Charsets.UTF_8.newDecoder()

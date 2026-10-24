@@ -40,6 +40,190 @@ class NativeAgentStoreTest {
         agent = NativeAgentStore(context, projects, runtime)
     }
     @After fun cleanup() = runBlocking { agent.close(); projects.close(); runtime.close() }
+    @Test fun manualSummaryChangesOnlyModelContextAndRejectsStalePreview() = runBlocking {
+        val ref = project().ref
+        repeat(3) { index ->
+            agent.appendMessage(ref, chat, AgentMessage.User(MessageId("user-$index"), listOf(UserPart.Text("request $index"))))
+            agent.appendMessage(ref, chat, AgentMessage.Assistant(MessageId("assistant-$index"), listOf(AssistantPart.Text("reply $index"))))
+        }
+        val history = agent.history(ref, chat)
+        val preview = agent.prepareContext(ref, chat)
+        assertEquals(2, preview.archivedMessages)
+        assertEquals(4, preview.retainedMessages)
+        agent.compactContext(preview, "First request completed; preserve project facts.")
+        val model = agent.modelHistory(ref, chat)
+        assertEquals(5, model.size)
+        assertTrue(model.first() is AgentMessage.System)
+        assertEquals(history.drop(2).map { it.id }, model.drop(1).map { it.id })
+        assertEquals(history.map { it.id }, agent.history(ref, chat).map { it.id })
+        try { agent.compactContext(preview, "stale"); fail("Accepted stale context preview") }
+        catch (_: IllegalArgumentException) { }
+        agent.close(); agent = NativeAgentStore(context, projects, runtime)
+        assertEquals(model.map { it.id }, agent.modelHistory(ref, chat).map { it.id })
+        assertEquals(history.size, agent.history(ref, chat).size)
+    }
+
+    @Test fun contextPreviewRejectsANewMessageAfterPreparation() = runBlocking {
+        val ref = project().ref
+        repeat(3) { index ->
+            agent.appendMessage(ref, chat, AgentMessage.User(MessageId("u-$index"), listOf(UserPart.Text("request"))))
+            agent.appendMessage(ref, chat, AgentMessage.Assistant(MessageId("a-$index"), listOf(AssistantPart.Text("reply"))))
+        }
+        val preview = agent.prepareContext(ref, chat)
+        agent.appendMessage(ref, chat, AgentMessage.User(MessageId("new-user"), listOf(UserPart.Text("new request"))))
+        try { agent.compactContext(preview, "outdated"); fail("Saved a summary over a changed conversation") }
+        catch (_: IllegalArgumentException) { }
+        assertFalse(agent.modelHistory(ref, chat).any { it is AgentMessage.System })
+    }
+
+    @Test fun compactedConversationCanGrowPastTheOriginalContextLimitWithoutDeletingHistory() = runBlocking {
+        val ref = project().ref
+        repeat(140) { index ->
+            agent.appendMessage(ref, chat, AgentMessage.User(MessageId("long-u-$index"), listOf(UserPart.Text("request $index"))))
+            agent.appendMessage(ref, chat, AgentMessage.Assistant(MessageId("long-a-$index"), listOf(AssistantPart.Text("answer $index"))))
+            if (index >= 9 && index % 10 == 9) agent.compactContext(agent.prepareContext(ref, chat), "Summary through turn $index")
+        }
+        assertEquals(5, agent.modelHistory(ref, chat).size)
+        val db = NativeAppDatabase.open(context)
+        try { withContext(Dispatchers.IO) { assertEquals(280, db.agent().historyCount(ref.instanceId.value, ref.generation.value, chat.value)) } }
+        finally { db.close() }
+    }
+
+    @Test fun completeHistoryUsesScopedStableCursorAndLoadsFullBodiesOnlyOnDetail() = runBlocking {
+        val ref = project().ref
+        val db = NativeAppDatabase.open(context)
+        try {
+            withContext(Dispatchers.IO) {
+                repeat(65) { index ->
+                    db.agent().insertMessage(NativeAgentMessageRow("history-" + index.toString().padStart(3, '0'),
+                        ref.instanceId.value, ref.generation.value, chat.value, "USER", "x".repeat(5000), 100L))
+                }
+            }
+            val first = agent.messagePage(ref, chat)
+            assertEquals(30, first.lines.size)
+            assertTrue(first.lines.all { it.text.length == 2000 })
+            withContext(Dispatchers.IO) {
+                db.agent().insertMessage(NativeAgentMessageRow("new-message", ref.instanceId.value,
+                    ref.generation.value, chat.value, "USER", "new", 101L))
+            }
+            val second = agent.messagePage(ref, chat, first.next)
+            val third = agent.messagePage(ref, chat, second.next)
+            assertEquals(30, second.lines.size); assertEquals(5, third.lines.size); assertNull(third.next)
+            assertEquals(65, (first.lines + second.lines + third.lines).map { it.id }.distinct().size)
+            assertEquals(5000, agent.messageDetail(ref, chat, third.lines.first().id).text.length)
+            try { agent.messagePage(ref, ChatId("other"), first.next); fail("Accepted foreign cursor") }
+            catch (_: IllegalArgumentException) { }
+            assertEquals("new-message", agent.messagePage(ref, chat).lines.last().id)
+        } finally { db.close() }
+    }
+
+    @Test fun editedHistoryBranchKeepsOriginalAndIsIdempotentWithoutApprovals() = runBlocking {
+        val ref = project().ref
+        val source = agent.currentChat(ref)
+        agent.appendMessage(ref, source, AgentMessage.User(MessageId("branch-user"), listOf(UserPart.Text("original"))))
+        agent.appendMessage(ref, source, AgentMessage.Assistant(MessageId("branch-assistant"), listOf(AssistantPart.Text("reply"))))
+        val preview = agent.prepareBranch(ref, source, MessageId("branch-user"))
+        assertTrue(preview.editable)
+        val target = agent.createBranch(preview, CommandId("branch-command"), "edited")
+        assertNotEquals(source, target)
+        assertEquals(target, agent.currentChat(ref))
+        assertEquals(target, agent.createBranch(preview, CommandId("branch-command"), "edited"))
+        assertEquals(2, agent.chats(ref).size)
+        assertEquals("original", ((agent.history(ref, source).first() as AgentMessage.User).parts.single() as UserPart.Text).text)
+        val copied = agent.history(ref, target)
+        assertEquals(1, copied.size)
+        assertEquals("edited", ((copied.single() as AgentMessage.User).parts.single() as UserPart.Text).text)
+        assertNotEquals("branch-user", copied.single().id.value)
+        assertNull(agent.pending(ref, target))
+        assertEquals(0L, projects.open(ref).revision)
+        try { agent.createBranch(preview, CommandId("branch-command"), "different"); fail("Changed branch command") }
+        catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun incompleteToolPrefixCannotBecomeABranchAndStalePreviewIsRejected() = runBlocking {
+        val ref = project().ref
+        val source = agent.currentChat(ref)
+        agent.appendMessage(ref, source, AgentMessage.User(MessageId("tool-user"), listOf(UserPart.Text("query"))))
+        val call = AgentToolCall(ToolCallId("tool-call"), "query_project", JsonObjectValue.parse("{}", JsonInputLimits(1024, 4)))
+        agent.appendMessage(ref, source, AgentMessage.Assistant(MessageId("tool-assistant"), listOf(AssistantPart.ToolCall(call))))
+        try { agent.prepareBranch(ref, source, MessageId("tool-assistant")); fail("Copied an unresolved call") }
+        catch (_: InvalidAgentHistory) { }
+        agent.appendMessage(ref, source, AgentMessage.ToolResult(MessageId("tool-result"), call.id, call.name,
+            JsonObjectValue.parse("{}", JsonInputLimits(1024, 4)), false))
+        val preview = agent.prepareBranch(ref, source, MessageId("tool-result"))
+        assertFalse(preview.editable)
+        agent.appendMessage(ref, source, AgentMessage.Assistant(MessageId("later"), listOf(AssistantPart.Text("done"))))
+        try { agent.createBranch(preview, CommandId("stale-branch"), null); fail("Branched stale history") }
+        catch (_: IllegalArgumentException) { }
+        assertEquals(1, agent.chats(ref).size)
+    }
+
+    @Test fun longBranchCopiesArchivedMessagesAndRemapsInheritedSummaryBoundary() = runBlocking {
+        val ref = project().ref
+        val source = agent.currentChat(ref)
+        repeat(140) { index ->
+            agent.appendMessage(ref, source, AgentMessage.User(MessageId("archive-u-$index"), listOf(UserPart.Text("question $index"))))
+            agent.appendMessage(ref, source, AgentMessage.Assistant(MessageId("archive-a-$index"), listOf(AssistantPart.Text("answer $index"))))
+            if (index >= 9 && index % 10 == 9) agent.compactContext(agent.prepareContext(ref, source), "Summary $index")
+        }
+        val preview = agent.prepareBranch(ref, source, MessageId("archive-a-139"))
+        assertEquals(280, preview.messages)
+        val target = agent.createBranch(preview, CommandId("long-branch"), "new final answer")
+        val model = agent.modelHistory(ref, target)
+        assertEquals(5, model.size)
+        assertTrue((model.first() as AgentMessage.System).text.contains("Summary 139"))
+        assertEquals("new final answer", ((model.last() as AgentMessage.Assistant).parts.single() as AssistantPart.Text).text)
+        val db = NativeAppDatabase.open(context)
+        try { withContext(Dispatchers.IO) {
+            assertEquals(280, db.agent().historyCount(ref.instanceId.value, ref.generation.value, source.value))
+            assertEquals(280, db.agent().historyCount(ref.instanceId.value, ref.generation.value, target.value))
+            val old = db.agent().context(ref.instanceId.value, ref.generation.value, source.value)!!
+            val inherited = db.agent().context(ref.instanceId.value, ref.generation.value, target.value)!!
+            assertNotEquals(old.boundaryId, inherited.boundaryId)
+            assertEquals(target.value, db.agent().message(inherited.boundaryId)!!.chatId)
+        } } finally { db.close() }
+        // Editing inside the archived prefix must not inherit a summary of the old message.
+        val earlier = agent.prepareBranch(ref, source, MessageId("archive-a-0"))
+        val earlyChat = agent.createBranch(earlier, CommandId("early-branch"), "edited old reply")
+        val earlyHistory = agent.modelHistory(ref, earlyChat)
+        assertEquals(2, earlyHistory.size)
+        assertFalse(earlyHistory.any { it is AgentMessage.System })
+    }
+
+    @Test fun automaticContextRetainsThePolicyWindowAndRejectsAStalePreview() = runBlocking {
+        val ref = project().ref
+        repeat(4) { index ->
+            agent.appendMessage(ref, chat, AgentMessage.User(MessageId("auto-u-$index"), listOf(UserPart.Text("request $index"))))
+            agent.appendMessage(ref, chat, AgentMessage.Assistant(MessageId("auto-a-$index"), listOf(AssistantPart.Text("reply $index"))))
+        }
+        val preview = agent.prepareAutoContext(ref, chat, 2)
+        assertEquals(4, preview.context.archivedMessages)
+        assertEquals(4, preview.context.retainedMessages)
+        assertEquals(0L, preview.revision)
+        val singleTurn = agent.prepareAutoContext(ref, chat, 1)
+        assertEquals(6, singleTurn.context.archivedMessages)
+        assertEquals(2, singleTurn.context.retainedMessages)
+        agent.saveAutoContext(preview, "Automatic summary through turn 1")
+        val model = agent.modelHistory(ref, chat)
+        assertEquals(5, model.size)
+        assertTrue((model.first() as AgentMessage.System).text.contains("Automatic summary through turn 1"))
+        assertEquals(8, agent.history(ref, chat).size)
+
+        repeat(2) { index ->
+            val turn = index + 4
+            agent.appendMessage(ref, chat, AgentMessage.User(MessageId("auto-u-$turn"), listOf(UserPart.Text("request $turn"))))
+            agent.appendMessage(ref, chat, AgentMessage.Assistant(MessageId("auto-a-$turn"), listOf(AssistantPart.Text("reply $turn"))))
+        }
+        val next = agent.prepareAutoContext(ref, chat, 2)
+        assertEquals(1L, next.revision)
+        assertEquals("Automatic summary through turn 1", next.context.previousSummary)
+        agent.appendMessage(ref, chat, AgentMessage.User(MessageId("auto-stale"), listOf(UserPart.Text("new request"))))
+        try { agent.saveAutoContext(next, "Stale summary"); fail("Saved an automatic summary over a changed conversation") }
+        catch (_: IllegalArgumentException) { }
+        assertEquals("Automatic summary through turn 1",
+            (agent.modelHistory(ref, chat).first() as AgentMessage.System).text.substringAfter('\n'))
+    }
+
     private suspend fun project() = projects.createTxt(CommandId("create"), "test", RelativePath("test.txt"), "source".toByteArray())
     private fun begin(ref: LocalProjectRef, run: RunId = RunId("run"), command: CommandId = CommandId("start")): RunLease {
         runtime.selectChat(ChatIdentity(ref.projectId, chat))

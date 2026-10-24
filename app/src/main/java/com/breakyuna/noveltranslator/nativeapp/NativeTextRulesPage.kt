@@ -1,6 +1,8 @@
 package com.breakyuna.noveltranslator.nativeapp
 
 import androidx.compose.foundation.layout.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +15,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -22,6 +25,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
+import com.breakyuna.noveltranslator.nativecore.formats.LgRuleXlsxCodec
 import java.util.UUID
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -44,6 +48,41 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
     var exchangeError by remember(ref) { mutableStateOf(false) }
     var invalidEntry by remember(ref) { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    val exchangeScope = rememberCoroutineScope()
+    var pendingLgExport by rememberSaveable(ref) { mutableStateOf<String?>(null) }
+    var pendingExportKind by rememberSaveable(ref) { mutableStateOf(TextRuleKind.TERM.name) }
+    var pendingExportFormat by rememberSaveable(ref) { mutableStateOf("json") }
+    var exporting by remember(ref) { mutableStateOf(false) }
+    val finishExport: (android.net.Uri?) -> Unit = { uri ->
+        val text = pendingLgExport
+        val frozenKind = TextRuleKind.valueOf(pendingExportKind)
+        val frozenFormat = pendingExportFormat
+        pendingLgExport = null
+        if (uri != null && text != null) {
+            exporting = true
+            exchangeScope.launch {
+                try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val bytes = when (frozenFormat) {
+                            "csv" -> TextProjectFingerprint.utf8(RuleCsvCodec.encode(LgRuleJsonCodec.decode(text, frozenKind).policy(), frozenKind))
+                            "xlsx" -> LgRuleXlsxCodec.encode(LgRuleJsonCodec.decode(text, frozenKind).policy(), frozenKind)
+                            else -> TextProjectFingerprint.utf8(text)
+                        }
+                        context.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                            output.write(bytes); output.flush()
+                        } ?: throw java.io.IOException("Rule destination unavailable")
+                    }
+                    exchangeError = false
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { exchangeError = true }
+                finally { exporting = false }
+            }
+        }
+    }
+    val exportLgFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json"), finishExport)
+    val exportCsvFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv"), finishExport)
+    val exportXlsxFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), finishExport)
     val writable = !state.busy && !state.policyLoadIncomplete && draft != null && !draft.conflict
     if (reloading) AlertDialog(onDismissRequest = { reloading = false },
         title = { Text(stringResource(R.string.native_policy_reload)) },
@@ -71,8 +110,8 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
             try { ProjectTextPolicyCodec.encode(policy); change(policy); editing = null; invalidEntry = false }
             catch (_: IllegalArgumentException) { invalidEntry = true }
         } }
-        if (exchange) key(ref, draft.command) {
-            NativePolicyImportDialog(ref, draft.policy, close = { exchange = false }) { expected, policy ->
+        if (exchange) key(ref, draft.command, draft.policy.fingerprint()) {
+            NativePolicyImportDialog(ref, draft.policy, kind, close = { exchange = false }) { expected, policy ->
                 if (writable && draft.policy.fingerprint() == expected) { change(policy); exchange = false }
             }
         }
@@ -144,6 +183,7 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
             item(key = "exchange") {
                 Column {
                     Text(stringResource(R.string.native_policy_exchange_notice), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.native_policy_lg_json_notice, stringResource(kind.label())), style = MaterialTheme.typography.bodySmall)
                     if (presets != null) TextButton(onClick = { library = true }, enabled = writable) {
                         Text(stringResource(R.string.native_preset_library))
                     }
@@ -152,6 +192,35 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
                         TextButton(onClick = { clipboard.setText(AnnotatedString(ProjectTextPolicyCodec.encode(draft.policy))) }, enabled = !state.busy) { Text(stringResource(R.string.native_policy_export)) }
                     }
                     if (exchangeError) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+                    Row {
+                        TextButton(onClick = {
+                            runCatching { LgRuleJsonCodec.encode(draft.policy, kind) }
+                                .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
+                                .onFailure { exchangeError = true }
+                        }, enabled = !state.busy) { Text(stringResource(R.string.native_policy_export_lg_json)) }
+                    }
+                    TextButton(onClick = {
+                        runCatching { LgRuleJsonCodec.encode(draft.policy, kind) }
+                            .onSuccess {
+                                pendingLgExport = it
+                                pendingExportKind = kind.name; pendingExportFormat = "json"
+                                try { exportLgFile.launch("rules-${kind.name.lowercase(java.util.Locale.ROOT)}.json") }
+                                catch (_: Exception) { pendingLgExport = null; exchangeError = true }
+                            }.onFailure { exchangeError = true }
+                    }, enabled = !state.busy && !exporting && pendingLgExport == null) {
+                        Text(stringResource(R.string.native_policy_save_lg_json))
+                    }
+                    for (format in listOf("csv", "xlsx")) TextButton(onClick = {
+                        runCatching { LgRuleJsonCodec.encode(draft.policy, kind) }.onSuccess {
+                            pendingLgExport = it; pendingExportKind = kind.name; pendingExportFormat = format
+                            try {
+                                val name = "rules-${kind.name.lowercase(java.util.Locale.ROOT)}.$format"
+                                if (format == "csv") exportCsvFile.launch(name) else exportXlsxFile.launch(name)
+                            } catch (_: Exception) { pendingLgExport = null; exchangeError = true }
+                        }.onFailure { exchangeError = true }
+                    }, enabled = !state.busy && !exporting && pendingLgExport == null) {
+                        Text(stringResource(if (format == "csv") R.string.native_policy_save_csv else R.string.native_policy_save_xlsx))
+                    }
                     Row {
                         TextButton(onClick = {
                             runCatching { RuleExchangeCodec.encodePolicy(draft.policy) }
@@ -201,10 +270,10 @@ private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: Pro
     }
 }
 
-private enum class NativeRuleImportKind { POLICY, EXCHANGE, PRESET }
+private enum class NativeRuleImportKind { POLICY, EXCHANGE, PRESET, LG_JSON, CSV, LG_XLSX }
 
 @Composable
-private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectTextPolicy, close: () -> Unit,
+private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectTextPolicy, ruleKind: TextRuleKind, close: () -> Unit,
     apply: (ObjectFingerprint, ProjectTextPolicy) -> Unit) {
     var text by rememberSaveable(ref) { mutableStateOf("") }
     var modeName by rememberSaveable(ref) { mutableStateOf(NativeRuleImportKind.POLICY.name) }
@@ -216,7 +285,41 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
     val scope = rememberCoroutineScope()
     var reading by remember(ref) { mutableStateOf(false) }
     val mode = NativeRuleImportKind.valueOf(modeName)
+    val external = mode in setOf(NativeRuleImportKind.LG_JSON, NativeRuleImportKind.CSV, NativeRuleImportKind.LG_XLSX)
     fun invalidate() { preview = null; counts = null; invalid = false }
+    val context = LocalContext.current
+    val importFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            reading = true; invalidate()
+            scope.launch {
+                try {
+                    text = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            val bytes = java.io.ByteArrayOutputStream()
+                            val buffer = ByteArray(4096)
+                            while (true) {
+                                ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                val limit = if (mode == NativeRuleImportKind.LG_XLSX) LgRuleXlsxCodec.MAX_BYTES.toLong() else RulePresetCodec.MAX_CHARS.toLong() * 4
+                                require(bytes.size().toLong() + count <= limit)
+                                bytes.write(buffer, 0, count)
+                            }
+                            if (mode == NativeRuleImportKind.LG_XLSX) return@use LgRuleXlsxCodec.toJson(bytes.toByteArray())
+                            val decoded = Charsets.UTF_8.newDecoder()
+                                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                                .decode(java.nio.ByteBuffer.wrap(bytes.toByteArray())).toString().removePrefix("\uFEFF")
+                            require(decoded.length <= RulePresetCodec.MAX_CHARS)
+                            decoded
+                        } ?: throw java.io.IOException("Rule source unavailable")
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { invalid = true }
+                finally { reading = false }
+            }
+        }
+    }
     NativePolicyForm(close, stringResource(R.string.native_policy_import), "native-policy-import-dialog", preview != null && !reading,
         { preview?.let { apply(baseline.fingerprint(), it) } }) {
         Text(stringResource(R.string.native_policy_exchange_notice))
@@ -225,8 +328,14 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
                 NativeRuleImportKind.POLICY -> R.string.native_policy_import_policy
                 NativeRuleImportKind.EXCHANGE -> R.string.native_policy_import_exchange
                 NativeRuleImportKind.PRESET -> R.string.native_policy_import_preset
+                NativeRuleImportKind.LG_JSON -> R.string.native_policy_import_lg_json
+                NativeRuleImportKind.CSV -> R.string.native_policy_import_csv
+                NativeRuleImportKind.LG_XLSX -> R.string.native_policy_import_xlsx
             }
-            TextButton(onClick = { modeName = kind.name; invalidate() }, enabled = !reading) {
+            TextButton(onClick = {
+                if (mode != kind && (mode == NativeRuleImportKind.LG_XLSX || kind == NativeRuleImportKind.LG_XLSX)) text = ""
+                modeName = kind.name; invalidate()
+            }, enabled = !reading) {
                 RadioButton(mode == kind, onClick = null); Text(stringResource(label))
             }
         }
@@ -234,12 +343,23 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
             Checkbox(overwrite, { overwrite = it; invalidate() }, enabled = !reading)
             Text(stringResource(if (mode == NativeRuleImportKind.PRESET) R.string.native_policy_preset_replace else R.string.native_policy_exchange_overwrite), Modifier.weight(1f))
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (external) {
+            Text(stringResource(R.string.native_policy_lg_json_notice, stringResource(ruleKind.label())))
+        }
+        if (!external) Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(includePrompt, { includePrompt = it; invalidate() }, enabled = !reading)
             Text(stringResource(R.string.native_policy_include_prompt), Modifier.weight(1f))
         }
-        OutlinedTextField(text, { if (it.length <= RulePresetCodec.MAX_CHARS) { text = it; invalidate() } },
-            minLines = 4, maxLines = 8, enabled = !reading, label = { Text(stringResource(R.string.native_policy_json)) }, modifier = Modifier.fillMaxWidth())
+        if (mode != NativeRuleImportKind.LG_XLSX) OutlinedTextField(text, { if (it.length <= RulePresetCodec.MAX_CHARS) { text = it; invalidate() } },
+            minLines = 4, maxLines = 8, enabled = !reading, label = { Text(stringResource(if (mode == NativeRuleImportKind.CSV) R.string.native_policy_csv else R.string.native_policy_json)) }, modifier = Modifier.fillMaxWidth().testTag("native-policy-import-text"))
+        TextButton(onClick = {
+            try { importFile.launch(when (mode) {
+                NativeRuleImportKind.LG_XLSX -> arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/octet-stream")
+                NativeRuleImportKind.CSV -> arrayOf("text/csv", "text/plain", "application/octet-stream")
+                else -> arrayOf("application/json", "text/plain", "application/octet-stream")
+            }) }
+            catch (_: Exception) { invalid = true }
+        }, enabled = !reading) { Text(stringResource(R.string.native_policy_open_rule_file)) }
         TextButton(onClick = {
             reading = true
             scope.launch {
@@ -252,11 +372,15 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
                                 TextRuleValidation.validate(policy) { ensureActive() }
                                 policy to listOf(0, 0, 0, 0)
                             }
-                            NativeRuleImportKind.EXCHANGE -> {
+                            NativeRuleImportKind.EXCHANGE, NativeRuleImportKind.LG_JSON, NativeRuleImportKind.CSV, NativeRuleImportKind.LG_XLSX -> {
                                 val result = com.breakyuna.noveltranslator.nativecore.engine.RulePreviewService().preview(
-                                    baseline, RuleExchangeCodec.decode(text),
+                                    baseline, when (mode) {
+                                        NativeRuleImportKind.CSV -> RuleCsvCodec.decode(text, ruleKind, baseline)
+                                        NativeRuleImportKind.LG_JSON, NativeRuleImportKind.LG_XLSX -> LgRuleJsonCodec.decode(text, ruleKind, baseline)
+                                        else -> RuleExchangeCodec.decode(text)
+                                    },
                                     if (overwrite) RuleExchangeDuplicatePolicy.OVERWRITE else RuleExchangeDuplicatePolicy.SKIP,
-                                    includePrompt) { ensureActive() }
+                                    includePrompt && !external) { ensureActive() }
                                 (if (result.clean) result.preview.policy else null) to
                                     listOf(result.added.size, result.updated.size, result.unchanged.size, result.conflicting.size)
                             }

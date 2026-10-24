@@ -96,6 +96,9 @@ object NativeFormatAdapters {
         XlsxFormatAdapter(),
         RpgMakerMvMzAdapter(),
         com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssFormatAdapter(),
+        // PDF needs PdfBoxRuntime.initialize(applicationContext) before the first import/write;
+        // a missing initialization is a typed failure rather than a silent lossy writer.
+        PdfFormatAdapter(),
     )
 
     fun install(): Set<ProjectAssetFormat> {

@@ -53,10 +53,13 @@ enum class ProjectAssetFormat {
                 "trans" -> TRANS
                 "pdf" -> PDF
                 "rgssad", "rgss2a", "rgss3a" -> RPGMAKER_RGSS
-                // Only the canonical script data files are RGSS; other .rxdata/.rvdata2 files
-                // are generic RPG Maker data and must not be claimed by this adapter.
-                "rxdata", "rvdata", "rvdata2" ->
-                    if (name in setOf("scripts.rxdata", "scripts.rvdata", "scripts.rvdata2")) RPGMAKER_RGSS else BINARY
+                // Canonical script data and Data/* Marshal data files are handled by RGSS.
+                // Other .rxdata/.rvdata2 files are generic RPG Maker data and stay BINARY.
+                "rxdata", "rvdata", "rvdata2" -> {
+                    val parent = path.replace('\\', '/').substringBeforeLast('/', "").lowercase()
+                    if (name in setOf("scripts.rxdata", "scripts.rvdata", "scripts.rvdata2") ||
+                        parent == "data" || parent.endsWith("/data")) RPGMAKER_RGSS else BINARY
+                }
                 "json" -> if (name.contains("message")) MESSAGEJSON else KVJSON
                 else -> BINARY
             }

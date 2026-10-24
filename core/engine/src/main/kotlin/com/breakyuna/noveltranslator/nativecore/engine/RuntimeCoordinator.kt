@@ -138,6 +138,14 @@ class RuntimeCoordinator : RuntimePort {
         }
     }
 
+    override fun beginRunMetadataWrite(run: RunLease): ProjectWriteLease = mutate {
+        ensureOpen()
+        if (projectWrite != null) unavailable(Reason.BUSY)
+        val current = currentRun(run)
+        if (current.owner != RuntimeOwner.AGENT) unavailable(Reason.BUSY)
+        Write(current).also { projectWrite = it; advanceLocked() }
+    }
+
     override fun beginProjectWrite(run: RunLease?): ProjectWriteLease = mutate {
         ensureOpen()
         if (projectWrite != null) unavailable(Reason.BUSY)

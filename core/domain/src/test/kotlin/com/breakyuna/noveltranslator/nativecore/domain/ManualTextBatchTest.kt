@@ -36,4 +36,20 @@ class ManualTextBatchTest {
         }
         assertThrows(IllegalArgumentException::class.java) { batch(revision = -1) }
     }
+
+    @Test fun replacementRequiresExplicitParametersAndBindsEachParameterToTheCommand() {
+        fun replacement(options: TextReplacementOptions) = ManualTextBatch(CommandId("command"), ref, 0,
+            TextBatchChange.REPLACE_TRANSLATION, listOf(target), options)
+        val original = replacement(TextReplacementOptions("needle", "new"))
+        assertNotEquals(original.digest(), replacement(TextReplacementOptions("needle", "new", regex = true)).digest())
+        for (changed in listOf(TextReplacementOptions("other", "new"), TextReplacementOptions("needle", "other"),
+            TextReplacementOptions("needle", "new", false))) {
+            assertNotEquals(original.digest(), replacement(changed).digest())
+            assertNotEquals(original.itemCommand(0), replacement(changed).itemCommand(0))
+        }
+        assertThrows(IllegalArgumentException::class.java) { batch(change = TextBatchChange.REPLACE_TRANSLATION) }
+        assertThrows(IllegalArgumentException::class.java) {
+            ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.EXCLUDE, listOf(target), TextReplacementOptions("a", "b"))
+        }
+    }
 }

@@ -16,7 +16,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 internal fun NativeUsageEntriesDialog(query: UsageLedgerQuery,
-    load: suspend (UsageLedgerQuery, UsageLedgerCursor?) -> UsageLedgerPage, dismiss: () -> Unit) {
+    load: suspend (UsageLedgerQuery, UsageLedgerCursor?) -> UsageLedgerPage, dismiss: () -> Unit, prices: PriceTable? = null) {
     var refresh by remember(query) { mutableIntStateOf(0) }
     var entries by remember(query, refresh) { mutableStateOf<List<UsageLedgerEntry>>(emptyList()) }
     var cursor by remember(query, refresh) { mutableStateOf<UsageLedgerCursor?>(null) }
@@ -53,6 +53,18 @@ internal fun NativeUsageEntriesDialog(query: UsageLedgerQuery,
                         }))
                         if (entry.failure != null) Text(stringResource(R.string.native_ledger_response_failed))
                         entry.usage?.let { usage ->
+                            val quote = remember(prices, entry.id, usage) { prices?.let {
+                                com.breakyuna.noveltranslator.nativecore.engine.UsageCostCalculator(it).quote(entry.model, usage)
+                            } }
+                            when (quote) {
+                                is CostQuote.Priced -> {
+                                    Text(stringResource(R.string.native_prices_quote, quote.priceTable.currency.code,
+                                        quote.actual.knownTotal.toPlainString(), quote.estimated.knownTotal.toPlainString(),
+                                        quote.priceTable.version))
+                                    if (quote.hasUnknownUsage) Text(stringResource(R.string.native_prices_incomplete))
+                                }
+                                else -> Text(stringResource(R.string.native_prices_missing))
+                            }
                             val totals = RequestUsageTotals().add(usage)
                             for ((label, quantity) in listOf(R.string.native_usage_input to totals.input,
                                 R.string.native_usage_cache_read to totals.cacheRead, R.string.native_usage_cache_write to totals.cacheWrite,

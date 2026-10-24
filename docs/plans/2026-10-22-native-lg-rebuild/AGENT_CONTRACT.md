@@ -1,6 +1,6 @@
 # Agent 原生消息与单次请求边界
 
-本文 §1 核对当前端口与消费者；§2—5 保留首轮原型的约束、限制及当时验证记录，不作为当前接线清单。当前 Koog 对话、请求持久化、远程传输、SSE 与单条审批已有指定提交 CI；§74 新增只读工具仍未构建。唯一实施进度与验证边界见 [HANDOFF §3、§49、§74](HANDOFF.md)，完整 SDK 检查点和产品验收仍未完成。
+本文 §1 核对当前端口与消费者；§2—5 保留首轮原型的约束、限制及当时验证记录，不作为当前接线清单。当前 Koog 对话、请求持久化、远程传输、SSE、单条审批及 §74 列表/字面搜索/统计只读工具源码已由 #158 覆盖；§102—107 工作区增量不在其中。唯一实施进度与验证边界见 [HANDOFF §3](HANDOFF.md)，完整 SDK 检查点和产品验收仍未完成。
 
 ## 1. 实际代码与消费者
 
@@ -13,7 +13,7 @@
 | domain/AgentRequestFingerprint.kt | 版本化 SHA-256 请求内容指纹 | NativeAgentStore 与测试存储共用；不输出正文 |
 | domain/AgentToolPort.kt | 标量参数定义同源生成 Schema 和校验器 | AgentToolRegistry |
 | agent/AgentRequestBoundary.kt | 单次模型调用、回执重放、不确定拒绝、停止再校验、已知响应保留 | NativeKoogConversation / NativeKoogWorkspace 已构造边界，供 Koog 请求执行使用；另有端口组合测试 |
-| agent/AgentToolRegistry.kt | 只读工具分发、参数校验、真实运行 lease 核对、错误脱敏 | NativeProjectTools 注册工程摘要/条目读取/差异准备工具；§74 新增列表、字面搜索和统计（未构建） |
+| agent/AgentToolRegistry.kt | 只读工具分发、参数校验、真实运行 lease 核对、错误脱敏 | NativeProjectTools 注册工程摘要/条目读取/差异准备工具；§74 新增列表、字面搜索和统计（源码由 #158 覆盖） |
 
 所有路径相对 `core/<module>/src/main/kotlin/com/breakyuna/noveltranslator/nativecore/`。
 Agent 主源码依赖 domain、Koog、协程与 JSON 树 API；engine 仅作为测试装配依赖，生产源码不跨模块调用 engine。

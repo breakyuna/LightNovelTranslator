@@ -249,6 +249,8 @@ class WorkspaceRuntime(
             engine.execute(scriptRequest)
         } catch (failure: CancellationException) {
             return WorkspaceRunOutcome.Cancelled(request.runId, WorkspaceRunStage.SCRIPT)
+        } catch (failure: WorkspaceScriptTimeoutException) {
+            return WorkspaceRunOutcome.TimedOut(request.runId, WorkspaceRunStage.SCRIPT)
         } catch (failure: Exception) {
             return WorkspaceRunOutcome.EngineFailed(request.runId)
         }

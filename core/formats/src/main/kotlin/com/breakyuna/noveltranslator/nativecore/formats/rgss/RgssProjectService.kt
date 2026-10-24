@@ -67,9 +67,31 @@ class RgssProject(val version: Int, files: List<RgssProjectFile>) {
 }
 
 /**
+ * Scan result for one non-script project file. Exactly one of [scan] and [failure] is non-null;
+ * a corrupt/unsupported data file never hides the other project files or the script path. A
+ * successful [scan] may still report `ambiguousEncoding` with an empty string list.
+ */
+class RgssProjectData(
+    val path: String,
+    val scan: RgssDataScan?,
+    val failure: RgssDataException.Reason?,
+) {
+    init {
+        require((scan == null) != (failure == null))
+    }
+
+    override fun toString(): String =
+        "RgssProjectData(path=$path,failure=$failure,strings=${scan?.strings?.size ?: 0})"
+}
+
+/**
  * Directory/archive service entry for RGSS. Import is bounded and rejects paths that canonicalize
  * outside the chosen root; export writes only validated relative paths and re-checks the parent
  * after creating directories. It does not open the project database or any Android API.
+ *
+ * `scanData` / `replaceData` apply the same non-script Marshal whitelist to directory imports as
+ * `RgssFormatAdapter` does for archive members. A failed data file is reported per file instead of
+ * aborting the entire directory import.
  */
 object RgssProjectService {
     fun importArchive(bytes: ByteArray): RgssProject {
@@ -152,6 +174,56 @@ object RgssProjectService {
     fun readScripts(project: RgssProject): List<Pair<String, RgssScriptsArchive>> =
         project.files.filter { isScriptFile(it.path) }.map { it.path to RgssScriptsCodec.read(it.bytes) }
 
+    fun scanData(
+        project: RgssProject,
+        checkActive: () -> Unit = {},
+    ): List<RgssProjectData> =
+        project.files
+            .filter { isDataFile(it.path) && !isScriptFile(it.path) }
+            .sortedBy { it.path }
+            .map { file ->
+                checkActive()
+                try {
+                    RgssProjectData(
+                        file.path,
+                        RgssDataCodec.scan(file.bytes, file.path, checkActive = checkActive),
+                        null,
+                    )
+                } catch (failure: RgssDataException) {
+                    RgssProjectData(file.path, null, failure.reason)
+                }
+            }
+
+    /**
+     * Replaces one data file with validated edits. As with [replaceScripts], an unknown path or any
+     * locator mismatch throws instead of returning a partially updated project.
+     */
+    fun replaceData(
+        project: RgssProject,
+        path: String,
+        edits: List<RgssDataEdit>,
+        checkActive: () -> Unit = {},
+    ): RgssProject {
+        val canonical = canonicalRgssPath(path)
+        if (!isDataFile(canonical) || isScriptFile(canonical)) {
+            throw RgssFormatException(RgssFormatException.Reason.BINDING, "data path")
+        }
+        checkActive()
+        var found = false
+        val files = project.files.map { file ->
+            if (file.path == canonical) {
+                found = true
+                file.withBytes(RgssDataCodec.rewrite(file.bytes, file.path, edits, checkActive = checkActive))
+            } else {
+                file
+            }
+        }
+        if (!found) {
+            throw RgssFormatException(RgssFormatException.Reason.BINDING, "data path")
+        }
+        return RgssProject(project.version, files)
+    }
+
     fun replaceScripts(project: RgssProject, path: String, archive: RgssScriptsArchive): RgssProject {
         val canonical = canonicalRgssPath(path)
         var found = false
@@ -171,6 +243,11 @@ object RgssProjectService {
 
     private fun isScriptFile(path: String): Boolean =
         path.substringAfterLast('/').lowercase() in SCRIPT_NAMES
+
+    private fun isDataFile(path: String): Boolean {
+        val name = path.substringAfterLast('/').lowercase()
+        return name.endsWith(".rxdata") || name.endsWith(".rvdata") || name.endsWith(".rvdata2")
+    }
 
     private fun canonicalDirectory(root: File, create: Boolean = false): File {
         val canonical = try {

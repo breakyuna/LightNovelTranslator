@@ -1,6 +1,6 @@
 # 首轮实施静态审查与构建交接
 
-本文件保留首轮源码边界和核对依据，不是进度表。后续已接入 MainActivity、迁移 Koog 并取得 CI/部分设备证据，不能将下文早期“尚未接入/尚待验证”当作当前事实；实际状态与当前证据只见 [HANDOFF §3、§49](HANDOFF.md)。
+本文件保留首轮源码边界和核对依据，不是进度表。后续已接入 MainActivity、迁移 Koog 并取得 CI/部分设备证据，不能将下文早期“尚未接入/尚待验证”当作当前事实；实际状态与当前证据见 [HANDOFF §3](HANDOFF.md)（当前基线 `77daf74` / #158）。
 
 ## 1. 新模块和执行原型
 
@@ -11,9 +11,9 @@
 - agent/storage/formats/workspace 使用 Android Library 与 AGP 9 内置 Kotlin。agent 已补模型请求/只读工具边界原型，见 [AGENT_CONTRACT](AGENT_CONTRACT.md)；engine 增加审批与变更批次协调原型，见 [APPROVAL_CONTRACT](APPROVAL_CONTRACT.md)；storage 的原生 TXT 适配边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)；formats/workspace 仍只有构建声明和 Manifest。
 - 除 domain 自身外，各模块对 `:core:domain` 统一使用 `api`：公开签名直接出现 `RunIdentity`、`AgentMessage`、`RunLease`、`PreparedChangeSet` 等类型，若用 `implementation` 会把这些类型从消费者编译类路径隐藏。`tools/rebuild/check_structure.py` 已把该边写入静态检查。
 - 静态检查同时为每个模块建立顶层声明索引：`nativecore.<module>.<Name>` 形式的导入若在该模块不存在即失败。CI run 39764281126 的 `test` 正是被这类错误导入（`domain.ApprovalGrantRejected`）拦下，现在本机静态检查即可发现。
-- app 声明上述模块依赖，SDK 版本统一来自 catalog；应用 ID、签名、升级版本与旧库保留；MainActivity 已在本轮源码改接 nativeapp 工程入口，尚待 CI/设备验证。
+- app 声明上述模块依赖，SDK 版本统一来自 catalog；应用 ID、签名、升级版本与旧库保留；MainActivity 已改接 nativeapp 工程入口，源码已由 #158 覆盖；设备验证仍待。
 - 新 Kotlin 包为 `com.breakyuna.noveltranslator.nativecore`，用于隔离旧 `app/.../core` 迁移来源，避免误将旧类引入新模块。
-- 旧 Koog 仍在旧 app 链路，尚未迁移，也未把旧 Jackson 排除复制到新模块。R02 在外部最小编译后再验证检查点依赖。
+- 新 `:core:agent` 已直接依赖 `koog-agents` 并实现 `NativeKoogConversation` / `NativeKoogWorkspace` 的 PromptExecutor、functional strategy 与 typed tools；旧 app 链路的 Koog 适配仍保留，最终退役待 R38。新模块没有复制旧 Jackson 排除；R02 的检查点依赖与设备证据仍按 HANDOFF 核对。
 
 `RuntimeCoordinator` 通过同一锁检查选定工程/会话和运行身份，先返回不透明 lease 再允许启动协程。
 Stop 改变实际运行阶段，不先清空运行；请求、脚本、宿主与写入的所有权未释放前保持占用。

@@ -9,6 +9,9 @@ class TranslatorApplication : Application() {
     val nativeGraph: NativeAppGraph by lazy { NativeAppGraph(this) }
     override fun onCreate() {
         super.onCreate()
+        // PDFBox-Android reads its CMap/font metadata from assets and must be initialized once
+        // before the first PDF import; the binary adapter itself has no Context parameter.
+        com.breakyuna.noveltranslator.nativecore.formats.PdfBoxRuntime.initialize(this)
         // Order matters: the logger must be initialized first so a crash record can include
         // the recent in-memory entries, and CrashReporter chains itself in front of the
         // system default handler instead of replacing it.

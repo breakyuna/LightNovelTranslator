@@ -23,7 +23,7 @@ internal typealias NativeRemoteTranslationAction = (LocalProjectRef, Long, Model
 /** A separate explicit paid-call confirmation. Merely editing this form never starts a request. */
 @Composable
 internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismiss: () -> Unit,
-    start: NativeRemoteTranslationAction) {
+    start: NativeRemoteTranslationAction, queue: NativeRemoteTranslationAction? = null) {
     val project = remember { requireNotNull(state.project) }
     val model = remember { requireNotNull(state.modelSettings) }
     var target by rememberSaveable(project.ref) { mutableStateOf(project.settings?.targetLanguage.orEmpty()) }
@@ -120,6 +120,13 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
                             onDismiss()
                         }, enabled = eligible && options != null, modifier = Modifier.testTag("native-remote-start")) {
                             Text(stringResource(R.string.native_remote_start))
+                        }
+                        if (queue != null) TextButton(onClick = {
+                            val fixed = options ?: return@TextButton
+                            queue(project.ref, project.revision, model.reference, fixed, whole)
+                            onDismiss()
+                        }, enabled = eligible && options != null, modifier = Modifier.testTag("native-remote-queue")) {
+                            Text(stringResource(R.string.native_remote_queue))
                         }
                     }
                 }

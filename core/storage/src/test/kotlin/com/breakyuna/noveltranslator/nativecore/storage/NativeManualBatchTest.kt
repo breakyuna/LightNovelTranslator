@@ -151,4 +151,111 @@ class NativeManualBatchTest {
     private suspend fun expectConflict(block: suspend () -> Any?) {
         try { block(); fail() } catch (error: TextProjectException) { assertEquals(TextProjectException.Reason.COMMAND_CONFLICT, error.reason) }
     }
+
+    @Test fun queryReplacementCoversMoreThanOnePagePreservesStatusesAndReplaysWithoutReapplying() = runBlocking {
+        val project = store.createTxt(CommandId("large-create"), "large", RelativePath("source.txt"),
+            (1..105).joinToString("\n") { "source $it" }.toByteArray())
+        for (id in 1L..105L) {
+            val item = store.item(project.ref, ItemId(id))!!
+            store.edit(ManualTextEdit(CommandId("seed-$id"), project.ref, ItemId(id), item.revision, item.item.fingerprint,
+                "old-$id", if (id % 2 == 0L) TextItemStatus.EXCLUDED else TextItemStatus.ERROR))
+        }
+        val options = TextReplacementOptions("old", "\$1\\1")
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("replace-all"), project.ref, 105, TextItemQuery(), options))
+        assertEquals(105, batch.targets.size); assertEquals(105L, store.open(project.ref).revision)
+        val receipt = store.editBatch(batch)
+        assertEquals(105, receipt.affectedItems); assertEquals(210L, receipt.revision)
+        for (id in listOf(1L, 100L, 105L)) {
+            val item = store.item(project.ref, ItemId(id))!!.item
+            assertEquals("\$1\\1-$id", item.translation); assertEquals("source $id", item.source)
+            assertEquals(if (id % 2 == 0L) TextItemStatus.EXCLUDED else TextItemStatus.ERROR, item.status)
+        }
+        edit(project.ref, 105, CommandId("later-edit"))
+        assertEquals(receipt, store.editBatch(batch))
+        assertEquals("saved-105", store.item(project.ref, ItemId(105))!!.item.translation)
+    }
+
+    @Test fun queryReplacementHonorsStatusAndSearchAndBindsReplacementParametersToReceipts() = runBlocking {
+        val project = create()
+        for (id in 1L..3L) {
+            val item = store.item(project.ref, ItemId(id))!!
+            store.edit(ManualTextEdit(CommandId("seed-$id"), project.ref, ItemId(id), item.revision, item.item.fingerprint,
+                if (id == 3L) "unrelated" else "needle $id", if (id == 1L) TextItemStatus.PROCESSED else TextItemStatus.EXCLUDED))
+        }
+        val query = TextItemQuery(status = TextItemStatus.EXCLUDED, text = "needle", field = TextSearchField.TRANSLATION)
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("filtered"), project.ref, 3, query,
+            TextReplacementOptions("needle", "changed")))
+        assertEquals(listOf(ItemId(2)), batch.targets.map { it.id })
+        store.editBatch(batch)
+        assertEquals("needle 1", store.item(project.ref, ItemId(1))!!.item.translation)
+        assertEquals("changed 2", store.item(project.ref, ItemId(2))!!.item.translation)
+        assertEquals(TextItemStatus.EXCLUDED, store.item(project.ref, ItemId(2))!!.item.status)
+        val altered = ManualTextBatch(batch.commandId, batch.ref, batch.expectedRevision, batch.change, batch.targets,
+            TextReplacementOptions("needle", "different"))
+        expectConflict { store.editBatch(altered) }
+        assertNull(store.prepareReplacementBatch(CommandId("no-op"), project.ref, 4, TextItemQuery(), TextReplacementOptions("changed", "changed")))
+    }
+
+    @Test fun replacementCancellationAfterFirstItemRollsBackEveryRevisionAndReceipt() = runBlocking {
+        val project = create(); edit(project.ref, 1); edit(project.ref, 2)
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("cancel-replacement"), project.ref, 2,
+            TextItemQuery(), TextReplacementOptions("saved", "replacement")))
+        val write = runtime.beginProjectWrite()
+        try {
+            NativeProjectDatabase.open(File(context.filesDir, "native_projects/${project.ref.instanceId.value}/project.lnt"), true).use { db ->
+                try {
+                    ProjectWriteStore.editBatch(db, batch) {
+                        if (NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton=1") > 2L)
+                            throw CancellationException("Interrupted after first replacement")
+                    }
+                    fail("Ignored interruption")
+                } catch (_: CancellationException) { }
+            }
+        } finally { runtime.endProjectWrite(write) }
+        assertEquals(2L, store.open(project.ref).revision)
+        assertEquals("saved-1", store.item(project.ref, ItemId(1))!!.item.translation)
+        assertEquals("saved-2", store.item(project.ref, ItemId(2))!!.item.translation)
+        batch.targets.indices.forEach { assertNull(store.receipt(project.ref, batch.itemCommand(it))) }
+        assertEquals(2, store.editBatch(batch).affectedItems)
+    }
+
+    @Test fun qualityReplacementUsesOnlyTheFixedWarningMembersAndRejectsAnOutdatedIndex() = runBlocking {
+        val project = create()
+        val policy = store.textPolicy(project.ref)
+        store.editTextPolicy(ProjectPolicyEdit(CommandId("glossary"), project.ref, policy.revision, policy.fingerprint,
+            ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "one", "expected")))))
+        edit(project.ref, 1); edit(project.ref, 2)
+        val revision = store.open(project.ref).revision
+        val scanner = com.breakyuna.noveltranslator.nativecore.engine.ProjectQualityScanner(store, store)
+        val index = scanner.scan(project.ref, revision, TextItemQuery(), TextProofreadingOptions())
+        val quality = index.select(TextQualityFilter(TextQualityOutcome.ANY_WARNING, TextWarningCode.GLOSSARY))
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("quality-replace"), project.ref, revision,
+            TextItemQuery(), TextReplacementOptions("saved", "fixed"), quality))
+        assertEquals(listOf(ItemId(1)), batch.targets.map { it.id })
+        store.editBatch(batch)
+        assertEquals("fixed-1", store.item(project.ref, ItemId(1))!!.item.translation)
+        assertEquals("saved-2", store.item(project.ref, ItemId(2))!!.item.translation)
+        try {
+            store.prepareReplacementBatch(CommandId("stale-quality"), project.ref, revision + 1, TextItemQuery(),
+                TextReplacementOptions("saved", "wrong"), quality)
+            fail("Accepted an outdated quality index")
+        } catch (failure: TextProjectException) { assertEquals(TextProjectException.Reason.STALE_PAGE, failure.reason) }
+    }
+
+    @Test fun regexQueryReplacementCommitsCaptureResultsAndRejectsLiteralReinterpretation() = runBlocking {
+        val project = create(); edit(project.ref, 1); edit(project.ref, 2)
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("regex-batch"), project.ref, 2,
+            TextItemQuery(), TextReplacementOptions("saved-(\\d)", "item-\$1", regex = true)))
+        assertEquals(2, batch.targets.size)
+        val receipt = store.editBatch(batch)
+        assertEquals("item-1", store.item(project.ref, ItemId(1))!!.item.translation)
+        assertEquals("item-2", store.item(project.ref, ItemId(2))!!.item.translation)
+        assertEquals(receipt, store.editBatch(batch))
+        val literal = ManualTextBatch(batch.commandId, batch.ref, batch.expectedRevision, batch.change, batch.targets,
+            requireNotNull(batch.replacement).copy(regex = false))
+        expectConflict { store.editBatch(literal) }
+        val output = ByteArrayOutputStream(); store.saveProject(project.ref) { output }
+        val imported = store.importProject(CommandId("import-regex")) { ByteArrayInputStream(output.toByteArray()) }
+        assertEquals("item-2", store.item(imported.ref, ItemId(2))!!.item.translation)
+    }
 }

@@ -97,6 +97,7 @@ object AgentMessageCodec {
 }
 
 interface AgentConversationPort {
+    suspend fun modelHistory(ref: LocalProjectRef, chat: ChatId): List<AgentMessage> = history(ref, chat)
     suspend fun history(ref: LocalProjectRef, chat: ChatId): List<AgentMessage>
     suspend fun appendMessage(ref: LocalProjectRef, chat: ChatId, message: AgentMessage)
 }

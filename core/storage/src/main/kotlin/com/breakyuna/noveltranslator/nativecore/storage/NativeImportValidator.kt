@@ -26,6 +26,15 @@ internal object NativeImportValidator {
                     "name_source" to 32 * 4096, "name_translation" to 32 * 4096))
                     requireTextBudget(db, "archived_items", column, max)
             }
+            if (version >= 5) {
+                db.rawQuery("SELECT 1 FROM item_revisions WHERE " +
+                    "(name_source IS NOT NULL AND typeof(name_source) != 'text') OR " +
+                    "(name_translation IS NOT NULL AND typeof(name_translation) != 'text') LIMIT 1", null).use {
+                    if (it.moveToFirst()) corrupt()
+                }
+                requireTextBudget(db, "item_revisions", "name_source", 32 * 4096)
+                requireTextBudget(db, "item_revisions", "name_translation", 32 * 4096)
+            }
             for ((table, columns) in listOf(
                 "project" to listOf("singleton", "revision", "fingerprint_version"),
                 "assets" to listOf("id", "original_size"),
@@ -178,13 +187,15 @@ internal object NativeImportValidator {
         project: Pair<ProjectId, Long>, chains: HashMap<Long, ObjectFingerprint>, revised: MutableSet<Long>,
         charge: (Long) -> Unit, checkActive: () -> Unit) {
         val items = if (version >= 4) "(SELECT * FROM items UNION ALL SELECT * FROM archived_items)" else "items"
+        val nameColumns = if (version >= 5) ", r.name_source, r.name_translation" else ""
         val sql = if (version >= 3) {
             """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
                 r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
                 i.row_index, i.source, i.asset_id, i.slot, i.tag, i.name_source, i.name_translation,
                 i.extra_field, i.skip_internal_filter,
                 (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
-                    AND w.command_id = r.command_id) FROM item_revisions r JOIN $items i ON i.id = r.item_id ORDER BY r.revision"""
+                    AND w.command_id = r.command_id)$nameColumns FROM item_revisions r JOIN $items i ON i.id = r.item_id
+                ORDER BY r.revision"""
         } else {
             """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
                 r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
@@ -208,11 +219,24 @@ internal object NativeImportValidator {
                 if (itemId in revised && previous.sha256 != cursor.getString(2)) corrupt()
                 val status = try { TextItemStatus.valueOf(cursor.getString(5)) }
                 catch (_: IllegalArgumentException) { corrupt() }
+                // A row written by v5 always stores the names effective after it. Legacy rows
+                // (v3/v4, or a v5 row missing the optional snapshot) fall back to the item's
+                // current metadata, matching the pre-v5 reconstruction rule.
+                val snapshotSourceText = if (version >= 5) cursor.getString(20) else null
+                val snapshotTranslationText = if (version >= 5) cursor.getString(21) else null
+                if (snapshotSourceText != null) charge(snapshotSourceText.length.toLong())
+                if (snapshotTranslationText != null) charge(snapshotTranslationText.length.toLong())
+                val snapshotSource = snapshotSourceText?.let { NativeProjectDatabase.decodeNameSnapshot(it) }
+                val snapshotTranslation = snapshotTranslationText?.let { NativeProjectDatabase.decodeNameSnapshot(it) }
                 val expected = if (version >= 3) {
-                    val metadata = TextItemMetadata(cursor.getString(14),
-                        NativeProjectDatabase.decodeNames(cursor.getString(15)),
-                        NativeProjectDatabase.decodeNames(cursor.getString(16)), cursor.getString(17),
-                        cursor.getInt(18) != 0)
+                    val metadata = try {
+                        TextItemMetadata(cursor.getString(14),
+                            if (snapshotSourceText != null) snapshotSource
+                            else NativeProjectDatabase.decodeNames(cursor.getString(15)),
+                            if (snapshotTranslationText != null) snapshotTranslation
+                            else NativeProjectDatabase.decodeNames(cursor.getString(16)),
+                            cursor.getString(17), cursor.getInt(18) != 0)
+                    } catch (_: IllegalArgumentException) { corrupt() }
                     TextProjectFingerprint.item(ItemId(cursor.getLong(1)), cursor.getInt(10),
                         cursor.getString(11), cursor.getString(4), status, metadata, cursor.getLong(12), cursor.getInt(13))
                 } else {
@@ -224,14 +248,38 @@ internal object NativeImportValidator {
                 revised.add(itemId)
                 boundedIdentity(cursor.getString(6)); boundedIdentity(cursor.getString(8))
                 if (cursor.isNull(19)) corrupt()
-                val intent = ManualTextEdit(CommandId(cursor.getString(8)),
-                    LocalProjectRef(project.first, ProjectInstanceId(cursor.getString(6)), RecoveryGeneration(cursor.getLong(7))),
+                val ref = LocalProjectRef(project.first, ProjectInstanceId(cursor.getString(6)),
+                    RecoveryGeneration(cursor.getLong(7)))
+                val intent = ManualTextEdit(CommandId(cursor.getString(8)), ref,
                     ItemId(cursor.getLong(1)), revision - 1, ObjectFingerprint(cursor.getString(2)),
                     cursor.getString(4), status)
-                if (TextProjectFingerprint.command(intent) != cursor.getString(19)) corrupt()
+                if (TextProjectFingerprint.command(intent) != cursor.getString(19) &&
+                    !matchesNameIntent(cursor.getString(19), cursor.getString(8), ref, cursor.getLong(1), revision - 1,
+                        ObjectFingerprint(cursor.getString(2)), snapshotTranslation, snapshotSource, version)) corrupt()
             }
         }
     }
+
+    /**
+     * A name edit leaves translation and status unchanged, so its receipt can only be identified
+     * by the name command digest. The original command may have preserved or replaced source
+     * names; either explicit or preserving encoding is accepted when it reproduces the receipt.
+     */
+    private fun matchesNameIntent(digest: String, commandId: String, ref: LocalProjectRef, itemId: Long,
+        revision: Long, previous: ObjectFingerprint, translation: List<String>?, source: List<String>?,
+        version: Int): Boolean {
+        if (version < 5 || translation == null) return false
+        if (matchesNameCommand(digest, commandId, ref, itemId, revision, previous, translation, source)) return true
+        return source != null &&
+            matchesNameCommand(digest, commandId, ref, itemId, revision, previous, translation, null)
+    }
+
+    private fun matchesNameCommand(digest: String, commandId: String, ref: LocalProjectRef, itemId: Long,
+        revision: Long, previous: ObjectFingerprint, translation: List<String>, source: List<String>?): Boolean =
+        try {
+            TextProjectFingerprint.nameCommand(ManualNameEdit(CommandId(commandId), ref, ItemId(itemId),
+                revision, previous, translation, source)) == digest
+        } catch (_: IllegalArgumentException) { false } catch (_: TextProjectException) { false }
 
     private fun validateAssets(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
                                checkActive: () -> Unit): Set<Long> {

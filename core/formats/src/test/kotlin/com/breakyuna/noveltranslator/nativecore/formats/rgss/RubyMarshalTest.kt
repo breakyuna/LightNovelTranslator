@@ -133,11 +133,17 @@ class RubyMarshalTest {
         assertSame(roundTrip.entries[0].value, roundTrip.entries[1].value)
     }
 
-    @Test fun unsupportedAndUnknownTypesFailExplicitly() {
-        assertEquals(
-            MarshalException.Reason.UNSUPPORTED,
-            failure { RubyMarshal.parse(bytes(4, 8, 0x75)) }.reason,
+    @Test fun userDefinedPayloadsStayOpaqueAndRoundTrip() {
+        val fixture = bytes(
+            4, 8, 0x75, 0x3A, 10, 0x54, 0x61, 0x62, 0x6C, 0x65, 8, 1, 2, 3,
         )
+        val value = RubyMarshal.parse(fixture) as MarshalUserData
+        assertEquals("Table", value.className)
+        assertArrayEquals(bytes(1, 2, 3), value.bytes)
+        assertArrayEquals(fixture, RubyMarshal.serialize(value))
+    }
+
+    @Test fun unsupportedAndUnknownTypesFailExplicitly() {
         assertEquals(
             MarshalException.Reason.UNSUPPORTED,
             failure { RubyMarshal.parse(bytes(4, 8, 0x55)) }.reason,
@@ -145,6 +151,10 @@ class RubyMarshalTest {
         assertEquals(
             MarshalException.Reason.TYPE,
             failure { RubyMarshal.parse(bytes(4, 8, 0x5A)) }.reason,
+        )
+        assertEquals(
+            MarshalException.Reason.LENGTH,
+            failure { RubyMarshal.parse(bytes(4, 8, 0x75)) }.reason,
         )
     }
 

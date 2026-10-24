@@ -1,8 +1,8 @@
 # 审批与工程变更契约
 
-当前证据见 [HANDOFF §3、§41](HANDOFF.md)：单条 TXT 持久审批已有指定提交 CI；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
+当前证据见 [HANDOFF §3](HANDOFF.md)：单条 TXT 持久审批已由 #158 覆盖；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
 
-当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。单条切片已有指定提交 CI，尚未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度及当前 CI 只见 HANDOFF §3、§49（原开发轮见 §24）。
+当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。单条切片已由 #158 覆盖，尚未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度及当前 CI 见 HANDOFF §3（原开发轮见 §24）。
 
 本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义完整接线必须满足的恢复协议，不能视为现有端口的全部能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。单条 TXT 的审批 UI、持久存储和受控工程写入已有切片；完整多对象审批及 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约的全范围验收。
 
@@ -98,14 +98,14 @@ UI 差异与执行器读取同一 payload，不从可变 `changes` 文件重新�
 
 ## 6. 尚未完成
 
-1. **生产存储适配器**：Room `AppStore` 的原子 insert/settle/consume、单 Chat 唯一 pending、崩溃恢复与审计字段。当前只有测试内存实现。
-2. **真正写入口**：`ProjectWritePort` 已有类型与恢复判定，但没有实现：工程事务、回执持久化、按命令查询、部分冲突接受仍是 R08。
+1. **生产存储适配器**：完整多对象 `ApprovalPersistencePort` 的 Room 原子 insert/settle/consume、单 Chat 唯一 pending、崩溃恢复与审计字段仍未实现；单条 TXT 现走 NativeAgentStore 的持久审批表。不可把单条切片当作完整实现。
+2. **真正写入口**：通用多对象 `ProjectWritePort` 已有类型与恢复判定；单条/批量文本写入由 ProjectWriteStore 实现，完整审批消费、部分冲突接受与跨对象恢复仍是 R08。
 3. **工具接线**：`AgentToolRegistry` 继续拒绝 `PROJECT_WRITE`；审批可用后必须由真实执行层接入，不能靠模型文案或假端口放行。
-4. **UI**：U02 的差异摘要、允许一次/拒绝、超时与恢复、自动偏好入口尚未实现。
+4. **UI**：U02 的完整差异编辑器、超时与恢复、自动偏好入口尚未实现；单条 TXT 已有允许一次/拒绝与结算结果界面（#158 覆盖），不能代替完整审批台。
 5. **恢复语义**：§5 的消费/命令原子绑定、回执查询、Stop 后未提交终态、进程恢复与竞争测试；现有端口尚未提供完整能力。
 6. **差异生成**：当前只保存摘要与指纹，没有把正文差异绑定到展示；需实现 payload 存储、冲突策略与引用寿命。
 
 ## 7. 验证边界
 
-现有原型用例的 CI 记录见 [HANDOFF](HANDOFF.md) §11—13，不在本文重复维护通过数量。§5 是本轮新增的目标契约，尚未实现或取得运行证据；旧原型测试不覆盖它。
+现有原型用例的 CI 记录见 [HANDOFF](HANDOFF.md) §3 与历史 §11—13，不在本文重复维护通过数量。#158 覆盖单条 TXT 审批及回执核对源码；§5 的完整多对象契约仍未实现或取得运行证据，旧原型测试不覆盖它。
 本机只做静态审查，未实际构建、运行测试/Lint 或设备验证。真实审批必须由 PC/CI 与后续设备流程证明，本文不登记任何功能 ID 为完成。

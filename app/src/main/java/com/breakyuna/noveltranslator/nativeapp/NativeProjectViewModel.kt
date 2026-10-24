@@ -39,7 +39,10 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class NativePage { AGENT, WORKBENCH, PROOFREADING, RULES }
+enum class NativePage { AGENT, WORKBENCH, PROOFREADING, MORE, RULES }
+
+/** RULES remains a routed page but is reached from More; the bottom bar stays at four items. */
+internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.MORE)
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 class ItemPreview(val id: ItemId, val row: Int, val source: String, val translation: String,
@@ -66,6 +69,17 @@ class NativeEditorReplacement(val ref: LocalProjectRef, val command: CommandId, 
     override fun toString(): String = "NativeEditorReplacement(redacted)"
 }
 
+/**
+ * Name editing is an explicit, separate command so it can preserve the body/status draft and
+ * still use the immutable name command payload. The command burns one project revision.
+ */
+class NativeNameEditDraft(
+    val ref: LocalProjectRef, val itemId: ItemId, val revision: Long,
+    val fingerprint: ObjectFingerprint, val sourceText: String, val translationText: String,
+) {
+    override fun toString(): String = "NativeNameEditDraft(redacted)"
+}
+
 data class NativeProjectUiState(
     val projects: List<RegisteredProject> = emptyList(),
     val project: TextProjectSummary? = null,
@@ -88,6 +102,7 @@ data class NativeProjectUiState(
     val editor: NativeEditDraft? = null,
     val editorQuality: TextProofreadingResult? = null,
     val editorReplacement: NativeEditorReplacement? = null,
+    val nameEdit: NativeNameEditDraft? = null,
     val busy: Boolean = false,
     val foregroundTranslationActive: Boolean = false,
     val foregroundTranslationCanPause: Boolean = false,
@@ -106,6 +121,9 @@ data class NativeProjectUiState(
     val agentChats: List<ChatId> = emptyList(),
     val modelSettings: NativeModelSettings? = null,
     val agentInput: String = "",
+    val agentQueue: AgentInputQueue? = null,
+    val agentQueueRevision: Long = 0,
+    val agentQueueIncomplete: Boolean = false,
     val agentLoadIncomplete: Boolean = false,
     val recentRuns: List<StoredRun> = emptyList(),
     val runLoadIncomplete: Boolean = false,
@@ -115,6 +133,9 @@ data class NativeProjectUiState(
     val policyDraft: NativePolicyDraft? = null,
     val policyLoadIncomplete: Boolean = false,
     val policyInvalidRuleId: String? = null,
+    val storageBytes: Long? = null,
+    val themeMode: NativeThemeMode = NativeThemeMode.SYSTEM,
+    val supportedFormats: Set<ProjectAssetFormat> = emptySet(),
 ) {
     val foregroundExecutionActive: Boolean get() = foregroundTranslationActive || foregroundAgentActive
     val qualityCurrent: Boolean get() {
@@ -135,24 +156,43 @@ class NativeProjectViewModel internal constructor(
         (application as TranslatorApplication).nativeGraph.projects, application.nativeGraph.backgroundTranslations)
 
     private val graph = (application as TranslatorApplication).nativeGraph
+    private val appSettings = NativeAppSettingsStore(application)
+    private val nameProjects = projects as? ProjectNamePort
+    val nameEditingAvailable: Boolean get() = nameProjects != null
     internal val rulePresetActions = NativeRulePresetActions(graph.rulePresets::list, graph.rulePresets::load,
         { preset, expected -> graph.rulePresets.save(preset, expected) }, graph.rulePresets::remove)
     internal val promptTemplateActions = NativePromptTemplateActions(graph.promptTemplates::read, graph.promptTemplates::replace)
+    internal val skillActions = NativeSkillActions(
+        list = { withContext(Dispatchers.IO) { graph.workspaceSkills.list() } },
+        read = { id -> withContext(Dispatchers.IO) { graph.workspaceSkills.readContent(id) } },
+        create = { draft -> withContext(Dispatchers.IO) { graph.workspaceSkills.create(draft) } },
+        update = { id, draft, expected -> withContext(Dispatchers.IO) { graph.workspaceSkills.update(id, draft, expected) } },
+        delete = { id, expected -> withContext(Dispatchers.IO) { graph.workspaceSkills.delete(id, expected) } },
+        setEnabled = { id, enabled, expected -> withContext(Dispatchers.IO) { graph.workspaceSkills.setEnabled(id, enabled, expected) } },
+        setOrder = { id, order, expected -> withContext(Dispatchers.IO) { graph.workspaceSkills.setOrder(id, order, expected) } },
+    )
     private val resolver = application.contentResolver
     private val manualBatchFiles = NativeManualBatchFiles(application)
     private val mutable = MutableStateFlow(NativeProjectUiState(recoveryProblems = saved["native_recovery_problems"] ?: 0, encoding =
-        runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8)))
+        runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8),
+        supportedFormats = graph.formatAdapters))
     val state = mutable.asStateFlow()
     private val agentPreviews = graph.agentPreviews
     val agentStream = agentPreviews.state
     private var job: Job? = null
     private var agentLease: RunLease? = null
     private var agentChat = ChatId("native-agent-main")
+    private var agentQueueStored: StoredAgentInputQueue? = null
     private val cursors = mutableListOf(0L)
     private var actionId = 0L
     private var observedSimulation: ForegroundTranslationHandle? = null
 
-    init { action {
+    init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val mode = appSettings.themeMode()
+            mutable.value = mutable.value.copy(themeMode = mode)
+        }
+        action {
         // Attach the application-owned Agent before any fallible project IO or recovery.
         val agentSnapshot = graph.backgroundAgents.state.value
         val agentAttachment = agentSnapshot?.takeIf { it.phase.active ||
@@ -165,7 +205,13 @@ class NativeProjectViewModel internal constructor(
                 initializeProjects(application, recover = agentSnapshot?.phase?.active != true)
                 openInternal(agentAttachment.request.ref)
             }
-            awaitAgent(agentAttachment)
+            val pending = mutable.value.agentQueue?.pendingAppend?.takeIf {
+                it.run == agentAttachment.request.identity &&
+                    it.draft.text == agentAttachment.request.input &&
+                    mutable.value.project?.ref == agentAttachment.request.ref
+            }
+            if (pending != null) awaitQueuedAgent(agentAttachment, pending)
+            else awaitAgent(agentAttachment)
             return@action
         }
         saved.remove<String>("native_agent_token")
@@ -205,6 +251,9 @@ class NativeProjectViewModel internal constructor(
         val registered = projects.registeredProjects()
         val legacy = withContext(Dispatchers.IO) { application.getDatabasePath("light_novel_translation_platform.db").exists() }
         mutable.value = mutable.value.copy(projects = registered, legacyData = legacy)
+        runCatching { graph.diagnostics.append(
+            com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.INFO,
+            "projects", "Loaded ${registered.size} project record(s)") }
     }
 
     private suspend fun recoverDirectory() {
@@ -214,8 +263,40 @@ class NativeProjectViewModel internal constructor(
         mutable.value = mutable.value.copy(recoveryProblems = recovery.problems.size)
     }
 
+    internal suspend fun reviewTranslationTask(ref: LocalProjectRef, run: RunIdentity): TranslationTaskReview {
+        val current = mutable.value
+        if (current.busy || current.project?.ref != ref) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        return graph.translationTasks.review(ref, run)
+    }
+    internal suspend fun terminateTranslationTask(review: TranslationTaskReview, command: CommandId) {
+        val current = mutable.value
+        if (current.busy || current.project?.ref != review.ref) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        graph.translationTasks.terminate(review, command)
+    }
+
+    internal suspend fun translationTaskMembers(ref: LocalProjectRef, run: RunIdentity, after: Long): TranslationTaskMemberPage {
+        if (mutable.value.busy || mutable.value.project?.ref != ref) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        return graph.translationTasks.members(ref, run, after)
+    }
+    internal suspend fun keepTaskErrors(review: TranslationTaskReview, revision: Long,
+        members: List<TranslationTaskMemberReview>, command: CommandId) {
+        if (mutable.value.busy || mutable.value.project?.ref != review.ref) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        graph.translationTasks.keepErrors(review, revision, members, command)
+    }
+
+    internal suspend fun prepareTaskRetry(review: TranslationTaskReview, revision: Long,
+        members: List<TranslationTaskMemberReview>, command: CommandId): NativeTranslationResumePreview {
+        val current = mutable.value
+        if (current.busy || current.project?.ref != review.ref || current.editor != null || current.manualBatch != null ||
+            current.policyDraft?.dirty == true) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        val spec = graph.translationTasks.retryErrors(review, revision, members, command)
+        return NativeTranslationResumePreview(spec, graph.modelSettings.resolve(spec.configuration).model)
+    }
+
     internal suspend fun translationTaskPage(ref: LocalProjectRef, before: Long?): TranslationTaskPage = graph.translationTasks.page(ref, before)
     internal suspend fun translationTaskSummaries(ref: LocalProjectRef): List<TranslationTaskSummary> = graph.translationTasks.recent(ref)
+    internal suspend fun translationQueueSnapshot(ref: LocalProjectRef): TranslationQueueSnapshot =
+        graph.translationQueue.snapshot(ref)
     internal suspend fun inspectTranslationResume(ref: LocalProjectRef, run: RunIdentity): NativeTranslationResumePreview {
         val current = mutable.value
         if (current.busy || current.project?.ref != ref || current.editor != null || current.manualBatch != null || current.policyDraft?.dirty == true)
@@ -274,6 +355,10 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    internal suspend fun loadPrices(): PriceTable = graph.priceTables.load()
+    internal suspend fun savePrice(expected: String, currency: CurrencyCode, pricing: ModelPricing): PriceTable =
+        graph.priceTables.save(expected, currency, pricing)
+
     internal suspend fun usageEntries(query: UsageLedgerQuery, cursor: UsageLedgerCursor?): UsageLedgerPage = graph.usageLedger.entries(query, cursor)
     internal suspend fun usageSummary(query: UsageLedgerQuery): DurableUsageSummary = graph.usageLedger.summary(query)
 
@@ -305,7 +390,48 @@ class NativeProjectViewModel internal constructor(
     fun cleanupOutputs() = action {
         projects.cleanupTemporaryOutputs()
         manualBatchFiles.cleanupExcept(saved.get<String>("manual_batch_disk"))
-        mutable.value = mutable.value.copy(notice = R.string.native_cleaned)
+        mutable.value = mutable.value.copy(notice = R.string.native_cleaned, storageBytes = privateStorageBytes())
+    }
+
+    internal suspend fun diagnosticPage(cursor: com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticCursor?) =
+        graph.diagnostics.query(50, cursor)
+
+    internal suspend fun diagnosticDetail(id: String) = graph.diagnostics.read(id)
+
+    fun completeDiagnosticsExport(uri: Uri?) = action {
+        if (uri == null) return@action
+        val stream = resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException("Diagnostics destination unavailable")
+        stream.use { graph.diagnostics.export(it) }
+        mutable.value = mutable.value.copy(notice = R.string.native_logs_exported)
+    }
+
+    fun clearDiagnostics() = action {
+        graph.diagnostics.clear()
+        mutable.value = mutable.value.copy(notice = R.string.native_logs_cleared)
+    }
+
+    fun completeApplicationBackupExport(uri: Uri?) = action {
+        if (uri == null) return@action
+        graph.applicationBackups.export {
+            resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException("Backup destination unavailable")
+        }
+        mutable.value = mutable.value.copy(notice = R.string.native_app_backup_exported)
+    }
+
+    fun importApplicationBackup(uri: Uri?) = action {
+        if (uri == null) return@action
+        graph.applicationBackups.restore {
+            resolver.openInputStream(uri) ?: throw java.io.IOException("Backup source unavailable")
+        }
+        mutable.value = mutable.value.copy(notice = R.string.native_app_backup_restored)
+    }
+    /** Private app/project footprint. Manual and lazy; never walks the tree on the main thread. */
+    fun refreshStorageUsage() = action {
+        mutable.value = mutable.value.copy(storageBytes = privateStorageBytes())
+    }
+    private suspend fun privateStorageBytes(): Long = withContext(Dispatchers.IO) {
+        val app = getApplication<Application>()
+        listOf(app.filesDir, app.cacheDir).sumOf { root -> root.walkTopDown().filter { it.isFile }.sumOf { it.length() } }
     }
     fun refresh() = action {
         recoverDirectory()
@@ -397,12 +523,300 @@ class NativeProjectViewModel internal constructor(
         }
     }
     fun agentInput(text: String) {
-        if (mutable.value.busy || text.length > 8000) return
+        if ((mutable.value.busy && !mutable.value.foregroundAgentActive) || text.length > 8000) return
         mutable.value.project?.let {
             saved["agent_input_ref"] = encodeRef(it.ref); saved["agent_input_chat"] = agentChat.value
             saved["agent_input_text"] = text
             mutable.value = mutable.value.copy(agentInput = text)
         }
+    }
+
+    internal suspend fun prepareAgentBranch(ref: LocalProjectRef, chat: ChatId, id: MessageId): AgentBranchPreview {
+        require(!mutable.value.busy && mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+        return graph.agentStore.prepareBranch(ref, chat, id)
+    }
+    internal suspend fun createAgentBranch(preview: AgentBranchPreview, command: CommandId, replacement: String?) {
+        val current = mutable.value
+        require(!current.busy && current.project?.ref == preview.ref && current.agentChatId == preview.chat &&
+            current.agentInput.isBlank() && current.approval == null)
+        graph.agentStore.createBranch(preview, command, replacement)
+        loadAgent(preview.ref)
+    }
+
+    internal suspend fun agentHistoryPage(ref: LocalProjectRef, chat: ChatId, cursor: AgentMessageCursor?): AgentMessagePage =
+        graph.agentStore.messagePage(ref, chat, cursor)
+    internal suspend fun agentHistoryDetail(ref: LocalProjectRef, chat: ChatId, id: String): AgentMessageDetail =
+        graph.agentStore.messageDetail(ref, chat, id)
+
+    internal suspend fun prepareAgentContext(ref: LocalProjectRef, chat: ChatId): AgentContextPreview {
+        require(!mutable.value.busy && mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+        return graph.agentStore.prepareContext(ref, chat)
+    }
+    internal suspend fun saveAgentContext(preview: AgentContextPreview, summary: String) {
+        require(!mutable.value.busy && mutable.value.project?.ref == preview.ref && mutable.value.agentChatId == preview.chat)
+        graph.agentStore.compactContext(preview, summary)
+    }
+
+    internal suspend fun steerHistory(ref: LocalProjectRef, chat: ChatId, cursor: AgentSteerRunCursor?): AgentSteerRunPage =
+        graph.agentInputs.steerRunPage(ref, chat, cursor)
+    internal suspend fun steerDetail(ref: LocalProjectRef, chat: ChatId, run: RunIdentity): StoredAgentSteerLedger? =
+        graph.agentInputs.loadSteerLedger(ref, chat, run)
+    fun restoreSteerInput(ref: LocalProjectRef, run: RunIdentity, id: CommandId) = action {
+        val current = mutable.value
+        require(current.project?.ref == ref && current.agentChatId == run.chatId && current.agentInput.isBlank())
+        require(graph.runtime.snapshot().activeRun?.identity != run)
+        val ledger = graph.agentInputs.loadSteerLedger(ref, requireNotNull(run.chatId), run)
+            ?: throw IllegalStateException("Missing steer ledger")
+        val attempt = ledger.state.attempts.single { it.id == id }
+        require(attempt.status == AgentSteerStatus.ACCEPTED || attempt.status == AgentSteerStatus.CANCELLED)
+        // Recheck after IO so a late response cannot overwrite a newly edited draft or another Chat.
+        require(mutable.value.project?.ref == ref && mutable.value.agentChatId == run.chatId && mutable.value.agentInput.isBlank())
+        saved["agent_input_ref"] = encodeRef(ref); saved["agent_input_chat"] = requireNotNull(run.chatId).value
+        saved["agent_input_text"] = attempt.text
+        mutable.value = mutable.value.copy(agentInput = attempt.text)
+    }
+
+    private var steerSubmitting = false
+    fun steerAgentInput() {
+        if (steerSubmitting) return
+        val state = mutable.value
+        val ref = state.project?.ref ?: return
+        val text = state.agentInput
+        val execution = graph.backgroundAgents.state.value ?: return
+        if (!state.foregroundAgentActive || !execution.phase.active || execution.request.ref != ref ||
+            execution.request.identity.chatId != state.agentChatId || text.isBlank()) return
+        val command = AgentSteerCommand(commandId(), execution.request.identity,
+            ChatIdentity(ref.projectId, requireNotNull(state.agentChatId)), text)
+        steerSubmitting = true
+        viewModelScope.launch {
+            try {
+                when (graph.steering.submit(ref, command)) {
+                    is AgentSteerSubmitResult.Accepted, is AgentSteerSubmitResult.Duplicate -> {
+                        if (mutable.value.project?.ref == ref && mutable.value.agentChatId == command.chat.chatId &&
+                            mutable.value.agentInput == text) {
+                            saved["agent_input_text"] = ""
+                            mutable.value = mutable.value.copy(agentInput = "", notice = R.string.native_agent_steer_accepted)
+                        }
+                    }
+                    is AgentSteerSubmitResult.Rejected -> throw IllegalStateException("Steer rejected")
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (mutable.value.project?.ref == ref) mutable.value = mutable.value.copy(error = R.string.native_agent_steer_failed)
+            } finally { steerSubmitting = false }
+        }
+    }
+
+    fun queueAgentInput() = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        val text = mutable.value.agentInput
+        if (text.isBlank()) return@action
+        val queue = mutable.value.agentQueue ?: AgentInputQueue.empty(ChatIdentity(ref.projectId, agentChat))
+        val draft = AgentInputDraft.create(commandId(), queue.chat, text)
+        val updated = when (val result = queue.enqueue(draft)) {
+            is AgentInputQueueUpdate.Applied -> result.queue
+            is AgentInputQueueUpdate.Rejected -> throw TextProjectException(TextProjectException.Reason.INVALID_TEXT)
+        }
+        persistAgentQueue(updated)
+        saved.remove<String>("agent_input_text")
+        mutable.value = mutable.value.copy(agentInput = "")
+    }
+
+    fun useAgentDraft(id: CommandId) = action {
+        val queue = mutable.value.agentQueue ?: return@action
+        val draft = queue.drafts.firstOrNull { it.id == id } ?: return@action
+        if (draft.text.length > 8000) return@action
+        val updated = when (val result = queue.delete(id)) {
+            is AgentInputQueueUpdate.Applied -> result.queue
+            is AgentInputQueueUpdate.Rejected -> return@action
+        }
+        persistAgentQueue(updated)
+        mutable.value.project?.let { ref ->
+            saved["agent_input_ref"] = encodeRef(ref.ref); saved["agent_input_chat"] = agentChat.value
+            saved["agent_input_text"] = draft.text
+        }
+        mutable.value = mutable.value.copy(agentInput = draft.text)
+    }
+
+    fun deleteAgentDraft(id: CommandId) = action {
+        val queue = mutable.value.agentQueue ?: return@action
+        val updated = when (val result = queue.delete(id)) {
+            is AgentInputQueueUpdate.Applied -> result.queue
+            is AgentInputQueueUpdate.Rejected -> return@action
+        }
+        persistAgentQueue(updated)
+    }
+
+    fun toggleAgentQueuePaused() = action {
+        val queue = mutable.value.agentQueue ?: return@action
+        val updated = when (val result = if (queue.paused) queue.resume() else queue.pause()) {
+            is AgentInputQueueUpdate.Applied -> result.queue
+            is AgentInputQueueUpdate.Rejected -> return@action
+        }
+        persistAgentQueue(updated)
+    }
+
+    /**
+     * Sends exactly the persisted queue head. The append is reserved and persisted before the
+     * foreground service starts; only the accepted user-message receipt removes the draft.
+     */
+    fun sendQueuedAgentMessage() = action {
+        val state = mutable.value
+        if (state.agentLoadIncomplete || state.runLoadIncomplete || state.approval != null) return@action
+        val ref = state.project?.ref ?: return@action
+        val configuration = state.modelSettings?.reference ?: return@action
+        val queue = state.agentQueue ?: return@action
+        if (queue.paused || queue.pendingAppend != null) return@action
+        val draft = queue.head ?: return@action
+        if (draft.text.length > 8000) return@action
+        val request = ForegroundAgentRequest(ref,
+            RunIdentity(ref.projectId, agentChat, RunId(UUID.randomUUID().toString()), commandId()),
+            configuration, draft.text)
+        val started = when (val result = queue.beginAppend(request.identity,
+            RequestAttemptId(UUID.randomUUID().toString()))) {
+            is AgentInputAppendStartResult.Started -> result
+            is AgentInputAppendStartResult.Rejected -> return@action
+        }
+        persistAgentQueue(started.queue)
+        val handle = try { graph.backgroundAgents.prepare(request) }
+        catch (error: Exception) {
+            val released = started.queue.releaseAppend(started.append.attemptId)
+            if (released is AgentInputQueueUpdate.Applied) {
+                try {
+                    persistAgentQueue(released.queue,
+                        AgentInputAppendSettlement.Released(started.append.draft.id, started.append.attemptId))
+                } catch (_: Exception) { mutable.value = mutable.value.copy(agentQueueIncomplete = true) }
+            }
+            throw error
+        }
+        saved["native_agent_token"] = handle.token
+        mutable.value = mutable.value.copy(foregroundAgentActive = true)
+        try { NativeAgentService.start(getApplication<Application>(), handle.token) }
+        catch (_: Exception) { graph.backgroundAgents.startFailed(handle.token) }
+        awaitQueuedAgent(handle, started.append)
+    }
+
+    private suspend fun settleQueuedAppend(append: AgentInputAppend, messageId: MessageId): Boolean {
+        val current = mutable.value.agentQueue ?: return false
+        val receipt = AgentInputAppendReceipt(append.draft.id, append.draft.chat,
+            append.run, append.attemptId, append.revision, messageId)
+        return when (val result = current.acknowledgeAppended(receipt)) {
+            is AgentInputAppendResult.Consumed -> try {
+                persistAgentQueue(result.queue, AgentInputAppendSettlement.Confirmed(receipt))
+                true
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                mutable.value = mutable.value.copy(agentQueueIncomplete = true)
+                false
+            }
+            is AgentInputAppendResult.Ignored -> {
+                mutable.value = mutable.value.copy(agentQueueIncomplete = true)
+                false
+            }
+        }
+    }
+
+    private suspend fun awaitQueuedAgent(handle: ForegroundAgentHandle, append: AgentInputAppend) = coroutineScope {
+        val ref = handle.request.ref
+        val chat = requireNotNull(handle.request.identity.chatId)
+        var accepted = false
+        var settled = false
+        var success = false
+        val observer = launch {
+            var timelineRevision = -1L
+            graph.backgroundAgents.state.collect { snapshot ->
+                if (snapshot?.token != handle.token) return@collect
+                mutable.value = mutable.value.copy(foregroundAgentActive = snapshot.phase.active)
+                val progress = snapshot.progress
+                if (progress?.accepted == true) accepted = true
+                val messageId = progress?.userMessageId
+                if (!settled && accepted && messageId != null) {
+                    settled = settleQueuedAppend(append, messageId)
+                }
+                val next = progress?.timelineRevision ?: 0L
+                if (timelineRevision != next) {
+                    timelineRevision = next
+                    refreshSimulationView(running = snapshot.phase.active) { refreshAgentTimeline(ref, chat) }
+                }
+            }
+        }
+        try { handle.await(); success = true } finally {
+            observer.cancel()
+            withContext(NonCancellable) {
+                observer.join()
+                // Cancellation detaches the UI; only a terminal runner may release pending.
+                val terminal = graph.backgroundAgents.state.value?.let {
+                    it.token == handle.token && !it.phase.active
+                } == true
+                if (!terminal) return@withContext
+                if (!settled) {
+                    val finalProgress = graph.backgroundAgents.state.value
+                        ?.takeIf { it.token == handle.token }?.progress
+                    if (finalProgress?.accepted == true) {
+                        accepted = true
+                        finalProgress.userMessageId?.let { messageId ->
+                            settled = settleQueuedAppend(append, messageId)
+                        }
+                    }
+                }
+                if (!settled && !accepted) {
+                    val current = mutable.value.agentQueue
+                    val pending = current?.pendingAppend
+                    if (current != null && pending?.attemptId == append.attemptId) {
+                        when (val released = current.releaseAppend(append.attemptId)) {
+                            is AgentInputQueueUpdate.Applied -> try {
+                                persistAgentQueue(released.queue,
+                                    AgentInputAppendSettlement.Released(append.draft.id, append.attemptId))
+                            } catch (cancelled: CancellationException) { throw cancelled }
+                            catch (_: Exception) {
+                                mutable.value = mutable.value.copy(agentQueueIncomplete = true)
+                            }
+                            is AgentInputQueueUpdate.Rejected ->
+                                mutable.value = mutable.value.copy(agentQueueIncomplete = true)
+                        }
+                    }
+                }
+                mutable.value = mutable.value.copy(foregroundAgentActive = false)
+                if (saved.get<String>("native_agent_token") == handle.token) saved.remove<String>("native_agent_token")
+                if (saved.get<Boolean>("native_recovery_pending") == true) refreshSimulationView(running = false) {
+                    recoverDirectory()
+                    mutable.value = mutable.value.copy(projects = projects.registeredProjects())
+                }
+                if (mutable.value.project?.ref == ref) {
+                    refreshSimulationView(running = false) { loadPage(ref, cursors.last()) }
+                    loadAgent(ref)
+                }
+            }
+        }
+        if (success) maybeSendNextQueued(ref, chat)
+    }
+
+    private fun maybeSendNextQueued(ref: LocalProjectRef, chat: ChatId) {
+        viewModelScope.launch {
+            state.first { !it.busy }
+            val current = mutable.value
+            val queue = current.agentQueue ?: return@launch
+            if (current.project?.ref != ref || current.agentChatId != chat ||
+                current.foregroundAgentActive || current.agentQueueIncomplete ||
+                current.approval != null || queue.paused || queue.pendingAppend != null || queue.head == null) return@launch
+            sendQueuedAgentMessage()
+        }
+    }
+
+    private suspend fun persistAgentQueue(
+        queue: AgentInputQueue,
+        settlement: AgentInputAppendSettlement? = null,
+    ) {
+        val ref = mutable.value.project?.ref ?: throw TextProjectException(TextProjectException.Reason.UNKNOWN_PROJECT)
+        val current = agentQueueStored?.takeIf { it.queue.chat == queue.chat }
+            ?: StoredAgentInputQueue.initial(ref, queue)
+        val lease = graph.runtime.beginProjectWrite()
+        try {
+            val stored = graph.agentInputs.replaceInputQueue(lease, current.withQueue(queue), settlement)
+            agentQueueStored = stored
+            mutable.value = mutable.value.copy(agentQueue = stored.queue, agentQueueRevision = stored.revision,
+                agentQueueIncomplete = false)
+        } finally { graph.runtime.endProjectWrite(lease) }
     }
     fun selectAgentChat(chat: ChatId) = action {
         val ref = mutable.value.project?.ref ?: return@action
@@ -548,11 +962,18 @@ class NativeProjectViewModel internal constructor(
             loadOr(emptyList<AgentApprovalResult>()) { graph.agentStore.results(ref, selectedChat) }
         val settings = loadOr<NativeModelSettings?>(mutable.value.modelSettings) { graph.modelSettings.current() }
         val chats = loadOr(selectedChat?.let { listOf(it) } ?: emptyList()) { graph.agentStore.chats(ref) }
+        val storedQueue = if (selectedChat == null) null else
+            loadOr<StoredAgentInputQueue?>(null) { graph.agentInputs.loadInputQueue(ref, selectedChat) }
+        agentQueueStored = storedQueue
+        val queue = storedQueue?.queue ?: selectedChat?.let {
+            AgentInputQueue.empty(ChatIdentity(ref.projectId, it))
+        }
         val draft = if (saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
             saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") ?: "" else ""
         mutable.value = mutable.value.copy(agentMessages = messages, approval = approval, agentResults = results,
             agentChatId = selectedChat, agentChats = chats, modelSettings = settings, agentInput = draft,
-            agentLoadIncomplete = incomplete, agentMessageDetail = null)
+            agentQueue = queue, agentQueueRevision = storedQueue?.revision ?: 0,
+            agentQueueIncomplete = incomplete, agentLoadIncomplete = incomplete, agentMessageDetail = null)
         loadRuns(ref)
     }
 
@@ -678,6 +1099,154 @@ class NativeProjectViewModel internal constructor(
         options: RemoteTranslationOptions, wholeProject: Boolean) = startTranslation(
         if (wholeProject) com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT
         else com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PAGE, ref, revision, configuration, options)
+
+    /**
+     * Admits the same frozen paid spec to the durable queue, then runs queued work for this project.
+     * The direct start path above remains available for a single explicit task.
+     */
+    fun enqueueRemoteTranslation(ref: LocalProjectRef, revision: Long, configuration: ModelConfigurationRef,
+        options: RemoteTranslationOptions, wholeProject: Boolean) = action {
+        val current = mutable.value
+        val project = current.project ?: return@action
+        if (current.runLoadIncomplete || current.policyLoadIncomplete || current.policyDraft?.dirty == true ||
+            current.editor != null || current.proofreadingQuery.active || current.qualityView != null ||
+            current.manualBatch != null || current.selectingItems) return@action
+        if (ref != project.ref || revision != project.revision)
+            throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        graph.modelSettings.resolve(configuration)
+        val after = if (wholeProject) 0L else cursors.last()
+        val identity = RunIdentity(ref.projectId, null, RunId(UUID.randomUUID().toString()), commandId())
+        val spec = TranslationTaskSpec(ref, identity, configuration, project.revision, after, PAGE_SIZE, wholeProject, options)
+        val queued = graph.translationQueue.enqueue(spec, identity.commandId)
+        if (queued is TranslationQueueResult.Rejected)
+            throw com.breakyuna.noveltranslator.nativecore.engine.TranslationQueueRefused(queued.reason)
+        drainTranslationQueue(ref)
+    }
+
+    private suspend fun drainTranslationQueue(ref: LocalProjectRef) {
+        while (mutable.value.project?.ref == ref) {
+            val dispatch = graph.translationQueue.nextRunnable(ref) ?: return
+            val spec = dispatch.spec
+            if (mutable.value.project?.ref != spec.ref) {
+                graph.translationQueue.markFailed(dispatch.identity)
+                return
+            }
+            val phase = startQueuedSpec(spec, queueContinuation(dispatch.task)) {
+                runCatching { graph.translationQueue.markFailed(dispatch.identity) }
+            }
+            recordTranslationQueueOutcome(dispatch.spec, dispatch.identity, phase)
+        }
+    }
+
+    private fun queueContinuation(task: TranslationQueuedTask): Boolean =
+        task.commands.any {
+            it.action == TranslationTaskCommandAction.PAUSE || it.action == TranslationTaskCommandAction.RESUME
+        }
+
+    /** Starts one already-claimed queue spec; [onPrepareFailure] must settle its queue state. */
+    private suspend fun startQueuedSpec(
+        spec: TranslationTaskSpec,
+        continuation: Boolean,
+        onPrepareFailure: suspend () -> Unit,
+    ): ForegroundTranslationPhase? {
+        try {
+            graph.modelSettings.resolve(spec.configuration)
+        } catch (failure: Exception) {
+            onPrepareFailure()
+            throw failure
+        }
+        val handle = try {
+            backgroundTranslations.prepare(ForegroundTranslationRequest(
+                spec.ref, spec.run, spec.configuration, spec.revision, spec.afterId, spec.pageSize,
+                if (spec.wholeProject) com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT
+                else com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PAGE,
+                spec.options, continuation = continuation))
+        } catch (failure: Exception) {
+            onPrepareFailure()
+            throw failure
+        }
+        saved["native_simulation_token"] = handle.token
+        saved["native_recovery_pending"] = true
+        if (spec.wholeProject) { cursors.clear(); cursors.add(0L) }
+        saved["native_simulation_cursors"] = ArrayList(cursors)
+        mutable.value = mutable.value.copy(foregroundTranslationActive = true)
+        try {
+            NativeTranslationService.start(getApplication<Application>(), handle.token)
+        } catch (_: Exception) {
+            backgroundTranslations.startFailed(handle.token)
+        }
+        return try {
+            refreshSimulationView(running = true) { restoreSimulationPage(handle) }
+            awaitSimulation(handle)
+            backgroundTranslations.state.value?.phase
+        } catch (cancelled: CancellationException) {
+            onPrepareFailure()
+            throw cancelled
+        }
+    }
+
+    fun pauseQueuedTranslation(identity: TranslationTaskQueueIdentity) = action {
+        graph.translationQueue.markPaused(identity, commandId())
+    }
+
+    fun cancelQueuedTranslation(identity: TranslationTaskQueueIdentity) = action {
+        graph.translationQueue.markCancelled(identity, commandId())
+    }
+
+    fun resumeQueuedTranslation(identity: TranslationTaskQueueIdentity) = action {
+        val result = graph.translationQueue.resumeQueue(identity.ref, commandId())
+        if (result !is TranslationQueueResult.Applied) return@action
+        if (result.task.state == TranslationTaskQueueState.RUNNING) {
+            val snapshot = graph.translationQueue.snapshot(identity.ref)
+            val entry = snapshot.entry(identity) ?: return@action
+            val phase = startQueuedSpec(entry.spec, continuation = true) {
+                runCatching { graph.translationQueue.markFailed(identity) }
+            }
+            recordTranslationQueueOutcome(entry.spec, entry.task.identity, phase)
+        }
+        drainTranslationQueue(identity.ref)
+    }
+
+    private suspend fun recordTranslationQueueOutcome(
+        spec: TranslationTaskSpec,
+        identity: TranslationTaskQueueIdentity,
+        measuredPhase: ForegroundTranslationPhase?,
+    ) {
+        val phase = backgroundTranslations.state.value?.phase ?: measuredPhase
+        if (phase == ForegroundTranslationPhase.PAUSED || phase == ForegroundTranslationPhase.PAUSING) {
+            runCatching { graph.translationQueue.markPaused(identity, commandId()) }
+            return
+        }
+        if (phase == ForegroundTranslationPhase.CANCELLED) {
+            runCatching { graph.translationQueue.markCancelled(identity, commandId()) }
+            return
+        }
+        val review = runCatching { graph.translationTasks.review(spec.ref, spec.run) }.getOrNull()
+        if (review == null) {
+            runCatching { graph.translationQueue.markFailed(identity) }
+            return
+        }
+        when (review.stage) {
+            "COMPLETE" -> {
+                val target = review.committed + review.remaining
+                val facts = TranslationTaskCompletionFacts(
+                    committedItems = review.committed,
+                    skippedItems = 0,
+                    receiptedItems = review.committed,
+                    targetItems = target,
+                    unreceiptedDispatches = review.unresolvedRequests,
+                    usage = if (review.unresolvedRequests == 0) UsageSource.ACTUAL else UsageSource.UNKNOWN,
+                )
+                val completed = runCatching { graph.translationQueue.markCompleted(identity, facts) }.getOrNull()
+                if (completed !is TranslationQueueResult.Applied)
+                    runCatching { graph.translationQueue.markNeedsReview(identity) }
+            }
+            "FAILED" -> runCatching { graph.translationQueue.markFailed(identity) }
+            "NEEDS_REVIEW" -> runCatching { graph.translationQueue.markNeedsReview(identity) }
+            "CANCELLED" -> runCatching { graph.translationQueue.markCancelled(identity, commandId()) }
+            else -> runCatching { graph.translationQueue.markFailed(identity) }
+        }
+    }
 
     private fun simulate(scope: com.breakyuna.noveltranslator.nativecore.engine.TranslationScope) =
         startTranslation(scope)
@@ -987,6 +1556,11 @@ class NativeProjectViewModel internal constructor(
         saved["native_page"] = page.name
     }
 
+    fun setThemeMode(mode: NativeThemeMode) {
+        mutable.value = mutable.value.copy(themeMode = mode)
+        viewModelScope.launch(Dispatchers.IO) { runCatching { appSettings.saveThemeMode(mode) } }
+    }
+
     fun discardPolicyAndHome() {
         if (mutable.value.busy) return
         saved.remove<ArrayList<String>>("native_policy_draft")
@@ -1126,6 +1700,24 @@ class NativeProjectViewModel internal constructor(
         if (disk != null) viewModelScope.launch { manualBatchFiles.remove(disk) }
         mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false, manualBatchQuery = false)
     }
+    fun prepareQueryReplacement(options: TextReplacementOptions, expected: NativeQueryReplacementScope) = action {
+        val current = mutable.value
+        val project = current.project ?: return@action
+        if (project.ref != expected.ref || project.revision != expected.revision || current.proofreadingQuery != expected.query ||
+            current.qualityView !== expected.quality) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        if (current.editor != null || current.manualBatch != null || current.selectingItems ||
+            current.policyDraft?.dirty == true || current.policyLoadIncomplete || current.runLoadIncomplete) return@action
+        val quality = current.qualityView
+        if (quality != null && !current.qualityCurrent) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        val port = projects as? QueryManualBatchPort ?: return@action
+        val batch = port.prepareReplacementBatch(commandId(), project.ref, project.revision,
+            current.proofreadingQuery, options, quality)
+        if (batch == null) { mutable.value = mutable.value.copy(notice = R.string.native_batch_no_changes); return@action }
+        val digest = manualBatchFiles.save(batch)
+        saved.remove<ArrayList<String>>("manual_batch")
+        saved["manual_batch_disk"] = digest; saved["manual_batch_conflict"] = false
+        mutable.value = mutable.value.copy(manualBatch = batch, manualBatchConflict = false, manualBatchQuery = true)
+    }
     fun confirmManualBatch(expected: ManualTextBatch) = action {
         val batch = mutable.value.manualBatch ?: return@action
         if (batch.commandId != expected.commandId || batch.digest() != expected.digest()) return@action
@@ -1142,11 +1734,11 @@ class NativeProjectViewModel internal constructor(
         val qualityWasActive = mutable.value.qualityView != null
         val applyPreview = (mutable.value.project?.revision ?: Long.MAX_VALUE) <= receipt.revision
         val previews = mutable.value.items.map { item ->
-            if (applyPreview && item.id in affectedIds) ItemPreview(item.id, item.row, item.source,
+            if (batch.replacement == null && applyPreview && item.id in affectedIds) ItemPreview(item.id, item.row, item.source,
                 if (batch.change.clearsTranslation) "" else item.translation, batch.change.status, item.hasTranslatableSource, item.assetId) else item
         }
         mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false, manualBatchQuery = false,
-            selectingItems = false, selectedItems = emptySet(), items = previews,
+            selectingItems = false, selectedItems = emptySet(), items = if (batch.replacement == null) previews else emptyList(),
             project = mutable.value.project?.let { it.copy(revision = maxOf(it.revision, receipt.revision)) },
             itemStatistics = null, matchingItems = null, matchingStatistics = null,
             qualityInvalidated = qualityWasActive || mutable.value.qualityInvalidated, notice = R.string.native_batch_done)
@@ -1263,7 +1855,70 @@ class NativeProjectViewModel internal constructor(
     fun editStatus(status: TextItemStatus) {
         if (!mutable.value.busy) mutable.value.editor?.let { setDraft(it.changed(status = status)) }
     }
-    fun closeEditor() { if (!mutable.value.busy) { clearDraft(); mutable.value = mutable.value.copy(editor = null) } }
+
+    fun beginNameEdit() {
+        val state = mutable.value
+        val draft = state.editor ?: return
+        if (state.busy || state.nameEdit != null || nameProjects == null || draft.conflict ||
+            state.project?.ref != draft.ref) return
+        val names = draft.item.metadata
+        mutable.value = state.copy(nameEdit = NativeNameEditDraft(
+            draft.ref, draft.item.id, draft.revision, draft.fingerprint,
+            names.nameSource.orEmpty().joinToString("\n"),
+            names.nameTranslation.orEmpty().joinToString("\n"),
+        ))
+    }
+
+    fun dismissNameEdit() {
+        if (!mutable.value.busy) mutable.value = mutable.value.copy(nameEdit = null)
+    }
+
+    fun saveNameEdit(sourceText: String, translationText: String) = action {
+        val names = nameProjects ?: return@action
+        val draft = mutable.value.nameEdit ?: return@action
+        val editor = mutable.value.editor ?: return@action
+        if (editor.ref != draft.ref || editor.item.id != draft.itemId) return@action
+        val source = if (sourceText == draft.sourceText) null else parseNameLines(sourceText)
+        val translation = parseNameLines(translationText)
+        if (source == null && translation == parseNameLines(draft.translationText)) {
+            mutable.value = mutable.value.copy(nameEdit = null)
+            return@action
+        }
+        try {
+            validateNames(source, translation)
+        } catch (_: TextProjectException) {
+            mutable.value = mutable.value.copy(error = R.string.native_names_invalid)
+            return@action
+        }
+        val receipt = names.editName(ManualNameEdit(commandId(), draft.ref, draft.itemId,
+            draft.revision, draft.fingerprint, translation, source))
+        if (receipt.status != ManualEditStatus.COMMITTED) {
+            mutable.value = mutable.value.copy(nameEdit = null, error = R.string.native_conflict)
+            return@action
+        }
+        val details = projects.item(draft.ref, draft.itemId)
+            ?: throw TextProjectException(TextProjectException.Reason.UNKNOWN_PROJECT)
+        val current = mutable.value.editor
+        if (current != null && current.ref == editor.ref && current.item.id == editor.item.id) {
+            setDraft(NativeEditDraft(draft.ref, details.item, details.revision, details.item.fingerprint,
+                current.text, current.status, commandId()))
+        }
+        mutable.value = mutable.value.copy(nameEdit = null, notice = R.string.native_names_saved)
+    }
+
+    private fun parseNameLines(text: String): List<String> =
+        text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+
+    private fun validateNames(source: List<String>?, translation: List<String>) {
+        val all = (source ?: emptyList()) + translation
+        if (translation.size > ManualNameEdit.MAX_NAMES || (source?.size ?: 0) > ManualNameEdit.MAX_NAMES ||
+            all.sumOf { it.length.toLong() } > ManualNameEdit.MAX_TOTAL_NAME_CHARS ||
+            all.any { it.length > ManualNameEdit.MAX_NAME_CHARS || '\u0000' in it }) {
+            throw TextProjectException(TextProjectException.Reason.INVALID_TEXT)
+        }
+    }
+
+    fun closeEditor() { if (!mutable.value.busy) { clearDraft(); mutable.value = mutable.value.copy(editor = null, nameEdit = null) } }
 
     fun reloadEditor() = action {
         val previous = mutable.value.editor ?: return@action
@@ -1378,6 +2033,47 @@ class NativeProjectViewModel internal constructor(
             mutable.value = mutable.value.copy(projects = projects.registeredProjects())
             openInternal(restored.ref)
             mutable.value = mutable.value.copy(notice = R.string.native_backup_restored)
+        }
+    }
+
+    fun prepareProjectSetExport(): String? {
+        val state = mutable.value
+        if (state.busy || state.editor != null || state.manualBatch != null || state.selectingItems ||
+            state.runLoadIncomplete || state.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return null
+        saved["native_project_set_export"] = arrayListOf(commandId().value)
+        return "projects-backup.zip"
+    }
+
+    fun completeProjectSetExport(uri: Uri?) {
+        saved.remove<ArrayList<String>>("native_project_set_export") ?: return
+        if (uri == null) return
+        queuedAction {
+            val summary = graph.projectSetBackups.export {
+                resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException()
+            }
+            mutable.value = mutable.value.copy(notice = R.string.native_project_set_backup_exported)
+            require(summary.projectCount > 0)
+        }
+    }
+
+    fun prepareProjectSetImport(): Boolean {
+        val state = mutable.value
+        if (state.busy || state.editor != null || state.manualBatch != null || state.selectingItems ||
+            state.runLoadIncomplete || state.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return false
+        saved["native_project_set_import"] = arrayListOf(commandId().value)
+        return true
+    }
+
+    fun importProjectSet(uri: Uri?) {
+        val intent = saved.remove<ArrayList<String>>("native_project_set_import")?.toList()
+        if (uri == null || intent == null || intent.size != 1) return
+        queuedAction {
+            val result = graph.projectSetBackups.restore(CommandId(intent.single())) {
+                resolver.openInputStream(uri) ?: throw java.io.IOException()
+            }
+            mutable.value = mutable.value.copy(projects = projects.registeredProjects(),
+                notice = R.string.native_project_set_backup_restored)
+            require(result.importedCount > 0)
         }
     }
 
@@ -1506,7 +2202,11 @@ class NativeProjectViewModel internal constructor(
         job = viewModelScope.launch {
             try { block() }
             catch (error: CancellationException) { mutable.value = mutable.value.copy(notice = R.string.native_cancelled); throw error }
-            catch (error: Exception) { mutable.value = mutable.value.copy(
+            catch (error: Exception) {
+                runCatching { graph.diagnostics.append(
+                    com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.ERROR,
+                    "action", error.javaClass.simpleName) }
+                mutable.value = mutable.value.copy(
                 qualityInvalidated = mutable.value.qualityInvalidated || mutable.value.qualityView != null &&
                     error is TextProjectException && error.reason == TextProjectException.Reason.STALE_PAGE,
                 policyInvalidRuleId = (error as? InvalidTextRule)?.ruleId ?: mutable.value.policyInvalidRuleId, error = when (error) {

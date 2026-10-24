@@ -10,7 +10,12 @@ import kotlinx.serialization.json.put
 /** Standalone native project format. External LG project conversion is outside the product scope. */
 object NativeProjectFormat {
     const val EXTENSION = "lnt"
-    const val SCHEMA_VERSION = 4
+
+    /**
+     * v5 adds per-revision source/translated-name snapshots to item_revisions. The item table
+     * shape and the v4 archived_items layout are unchanged.
+     */
+    const val SCHEMA_VERSION = 5
     const val APPLICATION_ID = 0x4c4e5431 // LNT1, independent of the filename.
 }
 
@@ -196,6 +201,25 @@ object TextProjectFingerprint {
         put("status", edit.status.name)
     }.toString())
 
+    /**
+     * A separate v1 encoding for name-only edits. [command] keeps its original bytes; callers
+     * must never reinterpret a stored text-edit digest as a name edit or vice versa.
+     */
+    fun nameCommand(edit: ManualNameEdit): String = hash(buildJsonObject {
+        put("format", "name-edit-v1")
+        put("command", edit.commandId.value)
+        put("project", edit.ref.projectId.value)
+        put("instance", edit.ref.instanceId.value)
+        put("generation", edit.ref.generation.value)
+        put("item", edit.itemId.value)
+        put("revision", edit.expectedRevision)
+        put("base", edit.baseFingerprint.sha256)
+        edit.nameSource?.let { names ->
+            put("name_source", kotlinx.serialization.json.JsonArray(names.map { JsonPrimitive(it) }))
+        }
+        put("name_translation", kotlinx.serialization.json.JsonArray(edit.nameTranslation.map { JsonPrimitive(it) }))
+    }.toString())
+
     /** Strict encoding rejects isolated surrogates rather than silently hashing replacement bytes. */
     fun utf8(value: String): ByteArray = try {
         val buffer = Charsets.UTF_8.newEncoder()
@@ -221,6 +245,7 @@ interface TextProjectPort {
      * per-entry tolerant: an unreadable instance is returned with [RegisteredProject.failure]
      * instead of failing the whole list.
      */
+    /** Supports limits 1..101; the extra record detects overflow for whole-set backups. */
     suspend fun registeredProjects(limit: Int = 100): List<RegisteredProject>
 
     suspend fun createTxt(

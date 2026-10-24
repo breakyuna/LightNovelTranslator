@@ -21,7 +21,12 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     load: suspend (LocalProjectRef) -> List<TranslationTaskSummary>,
     inspect: suspend (LocalProjectRef, RunIdentity) -> NativeTranslationResumePreview,
     dismiss: () -> Unit, resume: (TranslationTaskSpec) -> Unit,
-    loadPage: (suspend (LocalProjectRef, Long?) -> TranslationTaskPage)? = null) {
+    loadPage: (suspend (LocalProjectRef, Long?) -> TranslationTaskPage)? = null,
+    inspectReview: (suspend (LocalProjectRef, RunIdentity) -> TranslationTaskReview)? = null,
+    terminate: (suspend (TranslationTaskReview, CommandId) -> Unit)? = null,
+    loadMembers: (suspend (LocalProjectRef, RunIdentity, Long) -> TranslationTaskMemberPage)? = null,
+    prepareRetry: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> NativeTranslationResumePreview)? = null,
+    keepErrors: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> Unit)? = null) {
     var tasks by remember(ref) { mutableStateOf<List<TranslationTaskSummary>?>(null) }
     var cursor by remember(ref) { mutableStateOf<Long?>(null) }
     var loading by remember(ref) { mutableStateOf(false) }
@@ -29,6 +34,11 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     var checking by remember(ref) { mutableStateOf(false) }
     var review by remember(ref) { mutableStateOf(false) }
     var confirmation by remember(ref) { mutableStateOf<NativeTranslationResumePreview?>(null) }
+    var decision by remember(ref) { mutableStateOf<TranslationTaskReview?>(null) }
+    var retryReview by remember(ref) { mutableStateOf<TranslationTaskReview?>(null) }
+    var decisionCommand by remember(ref) { mutableStateOf<CommandId?>(null) }
+    var deciding by remember(ref) { mutableStateOf(false) }
+    var decisionFailed by remember(ref) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     suspend fun fetch(append: Boolean) {
         if (loading) return
@@ -45,6 +55,43 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
         finally { loading = false }
     }
     LaunchedEffect(ref) { fetch(false) }
+    retryReview?.let { snapshot ->
+        if (loadMembers != null && prepareRetry != null) {
+            NativeTaskRetryDialog(snapshot, loadMembers, prepareRetry, { retryReview = null }, { preview ->
+                retryReview = null; decision = null; confirmation = preview
+            }, keep = keepErrors)
+            return
+        }
+    }
+    decision?.let { snapshot ->
+        AlertDialog(onDismissRequest = { if (!deciding) decision = null },
+            title = { Text(stringResource(R.string.native_tasks_review_title)) },
+            text = { Column {
+                Text(stringResource(R.string.native_tasks_progress, snapshot.committed, snapshot.remaining, snapshot.requests))
+                Text(stringResource(R.string.native_tasks_unresolved, snapshot.unresolvedRequests))
+                Text(stringResource(R.string.native_tasks_terminate_notice))
+                if (loadMembers != null && prepareRetry != null && snapshot.stage in setOf("FAILED", "NEEDS_REVIEW", "CANCELLED")) TextButton(enabled = !deciding, onClick = {
+                    retryReview = snapshot
+                }) { Text(stringResource(R.string.native_tasks_retry_selected)) }
+                if (decisionFailed) Text(stringResource(R.string.native_tasks_decision_error))
+            } },
+            confirmButton = { TextButton(enabled = !deciding && terminate != null && snapshot.stage !in setOf("COMPLETE", "CANCELLED"), onClick = {
+                scope.launch {
+                    deciding = true; decisionFailed = false
+                    try {
+                        terminate?.invoke(snapshot, requireNotNull(decisionCommand))
+                        decision = null
+                        fetch(false)
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { decisionFailed = true }
+                    finally { deciding = false }
+                }
+            }) { Text(stringResource(R.string.native_tasks_terminate)) } },
+            dismissButton = { TextButton(onClick = { decision = null }, enabled = !deciding) {
+                Text(stringResource(R.string.native_cancel))
+            } })
+        return
+    }
     confirmation?.let { preview ->
         val spec = preview.spec
         AlertDialog(onDismissRequest = { confirmation = null }, title = { Text(stringResource(R.string.native_tasks_resume)) },
@@ -67,7 +114,21 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
                             Modifier.testTag("native-task-failed-${task.run.commandId.value}"))
                         if (task.stage == "NEEDS_REVIEW") Text(stringResource(R.string.native_tasks_review),
                             Modifier.testTag("native-task-uncertain-${task.run.commandId.value}"))
-                        if (task.stage !in setOf("COMPLETE", "FAILED", "NEEDS_REVIEW")) TextButton(onClick = {
+                        if (task.stage == "CANCELLED") Text(stringResource(R.string.native_tasks_terminated))
+                        if (task.stage != "COMPLETE" && inspectReview != null && terminate != null)
+                            TextButton(enabled = !checking && !task.active, onClick = {
+                                checking = true; review = false
+                                scope.launch {
+                                    try {
+                                        decision = inspectReview(ref, task.run)
+                                        decisionCommand = CommandId(java.util.UUID.randomUUID().toString())
+                                        decisionFailed = false
+                                    } catch (cancelled: CancellationException) { throw cancelled }
+                                    catch (_: Exception) { review = true }
+                                    finally { checking = false }
+                                }
+                            }) { Text(stringResource(R.string.native_tasks_review_title)) }
+                        if (task.stage !in setOf("COMPLETE", "CANCELLED", "FAILED", "NEEDS_REVIEW")) TextButton(onClick = {
                             checking = true; review = false
                             scope.launch {
                                 try { confirmation = inspect(ref, task.run) }

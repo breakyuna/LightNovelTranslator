@@ -28,6 +28,8 @@ interface RuntimePort {
     fun requestStop(run: RunLease): Boolean
     /** Optionally clear only this selection, atomically when this lease is actually released. */
     fun finishRun(run: RunLease, clearSelectedChat: ChatIdentity? = null)
+    /** Execution-metadata finalization may persist cancellation while the real run is stopping. */
+    fun beginRunMetadataWrite(run: RunLease): ProjectWriteLease = beginProjectWrite(run)
     fun beginProjectWrite(run: RunLease? = null): ProjectWriteLease
     fun endProjectWrite(write: ProjectWriteLease)
     fun beginSkillWrite(): SkillWriteLease

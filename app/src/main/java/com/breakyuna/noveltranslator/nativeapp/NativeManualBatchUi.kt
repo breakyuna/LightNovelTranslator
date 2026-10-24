@@ -5,6 +5,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -16,7 +17,11 @@ internal class NativeBatchActions(
     val selecting: (Boolean) -> Unit, val toggle: (ItemId) -> Unit, val all: () -> Unit,
     val prepare: (TextBatchChange) -> Unit, val confirm: (ManualTextBatch) -> Unit, val dismiss: (ManualTextBatch) -> Unit,
     val prepareQuery: ((TextBatchChange) -> Unit)? = null,
+    val prepareReplacement: ((TextReplacementOptions, NativeQueryReplacementScope) -> Unit)? = null,
 )
+
+internal data class NativeQueryReplacementScope(val ref: LocalProjectRef, val revision: Long,
+    val query: TextItemQuery, val quality: TextQualitySelection?)
 
 @Composable
 internal fun NativeBatchToolbar(state: NativeProjectUiState, actions: NativeBatchActions) {
@@ -28,7 +33,7 @@ internal fun NativeBatchToolbar(state: NativeProjectUiState, actions: NativeBatc
             TextButton(onClick = { menu = true }, enabled = !state.busy && state.selectedItems.isNotEmpty(),
                 modifier = Modifier.testTag("native-batch-actions")) { Text(stringResource(R.string.native_batch_actions)) }
             DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                TextBatchChange.entries.forEach { change ->
+                TextBatchChange.entries.filter { it != TextBatchChange.REPLACE_TRANSLATION }.forEach { change ->
                     DropdownMenuItem(text = { Text(stringResource(change.label())) }, onClick = { menu = false; actions.prepare(change) })
                 }
             }
@@ -40,15 +45,26 @@ internal fun NativeBatchToolbar(state: NativeProjectUiState, actions: NativeBatc
 internal fun NativeQueryBatchButton(state: NativeProjectUiState, actions: NativeBatchActions) {
     val prepare = actions.prepareQuery ?: return
     var menu by remember(state.project?.ref, state.proofreadingQuery) { mutableStateOf(false) }
+    var replacing by remember(state.project?.ref) { mutableStateOf<NativeQueryReplacementScope?>(null) }
+    replacing?.let { scope ->
+        NativeQueryReplacementDialog(scope, !state.busy, { replacing = null }) { options ->
+            replacing = null; actions.prepareReplacement?.invoke(options, scope)
+        }
+    }
     Box(Modifier.fillMaxWidth()) {
         TextButton(onClick = { menu = true }, enabled = !state.busy && state.editor == null &&
             state.manualBatch == null && (state.qualityView == null || state.qualityCurrent) && state.policyDraft?.dirty != true &&
             !state.policyLoadIncomplete && !state.runLoadIncomplete && (state.matchingItems ?: 0) > 0,
             modifier = Modifier.testTag("native-query-batch-actions")) { Text(stringResource(if (state.qualityView == null) R.string.native_batch_all_query else R.string.native_batch_quality_selection)) }
         DropdownMenu(menu, onDismissRequest = { menu = false }) {
-            TextBatchChange.entries.forEach { change ->
+            TextBatchChange.entries.filter { it != TextBatchChange.REPLACE_TRANSLATION }.forEach { change ->
                 DropdownMenuItem(text = { Text(stringResource(change.label())) }, onClick = { menu = false; prepare(change) })
             }
+            if (actions.prepareReplacement != null) DropdownMenuItem(text = { Text(stringResource(R.string.native_batch_replace)) },
+                onClick = {
+                    menu = false
+                    state.project?.let { replacing = NativeQueryReplacementScope(it.ref, it.revision, state.proofreadingQuery, state.qualityView) }
+                })
         }
     }
 }
@@ -65,6 +81,19 @@ internal fun NativeManualBatchDialog(state: NativeProjectUiState, actions: Nativ
                 Text(stringResource(R.string.native_batch_preview, batch.targets.size, stringResource(batch.change.label())))
                 Text(stringResource(R.string.native_batch_rows, batch.targets.take(10).joinToString(", ") { (it.row.toLong() + 1).toString() }))
                 if (batch.change.clearsTranslation) Text(stringResource(R.string.native_batch_clear_warning), color = MaterialTheme.colorScheme.error)
+                batch.replacement?.let {
+                    Text(stringResource(R.string.native_query_replace_preview, it.find, it.replacement))
+                    Row {
+                        Checkbox(it.caseSensitive, onCheckedChange = null, enabled = false)
+                        Text(stringResource(R.string.native_policy_case))
+                    }
+                    Row {
+                        Checkbox(it.regex, onCheckedChange = null, enabled = false)
+                        Text(stringResource(R.string.native_policy_regex))
+                    }
+                    if (it.regex) Text(stringResource(R.string.native_regex_replace_hint))
+                    Text(stringResource(R.string.native_query_replace_notice))
+                }
                 Text(stringResource(R.string.native_batch_retry), style = MaterialTheme.typography.bodySmall)
                 if (state.manualBatchConflict) Text(stringResource(R.string.native_batch_conflict), color = MaterialTheme.colorScheme.error)
             }
@@ -80,4 +109,33 @@ internal fun TextBatchChange.label(): Int = when (this) {
     TextBatchChange.MARK_PROCESSED -> R.string.native_batch_mark_processed
     TextBatchChange.EXCLUDE -> R.string.native_batch_exclude
     TextBatchChange.CLEAR_AND_RESET -> R.string.native_batch_clear
+    TextBatchChange.REPLACE_TRANSLATION -> R.string.native_batch_replace
+}
+
+@Composable
+private fun NativeQueryReplacementDialog(scope: NativeQueryReplacementScope, enabled: Boolean, close: () -> Unit,
+    prepare: (TextReplacementOptions) -> Unit) {
+    var find by rememberSaveable(scope.ref, scope.revision, scope.query) { mutableStateOf("") }
+    var replacement by rememberSaveable(scope.ref, scope.revision, scope.query) { mutableStateOf("") }
+    var sensitive by rememberSaveable(scope.ref, scope.revision, scope.query) { mutableStateOf(true) }
+    var regex by rememberSaveable(scope.ref, scope.revision, scope.query) { mutableStateOf(false) }
+    val options = remember(find, replacement, sensitive, regex) { runCatching { TextReplacementOptions(find, replacement, sensitive, regex) }.getOrNull() }
+    NativePolicyForm(close, stringResource(R.string.native_batch_replace), "native-query-replacement-dialog",
+        enabled && options != null, { options?.let(prepare) }, applyLabel = stringResource(R.string.native_policy_preview)) {
+        Text(stringResource(R.string.native_query_replace_notice))
+        OutlinedTextField(find, { if (it.length <= 256) find = it }, enabled = enabled,
+            label = { Text(stringResource(R.string.native_replace_find)) }, modifier = Modifier.fillMaxWidth().testTag("native-query-replace-find"))
+        OutlinedTextField(replacement, { if (it.length <= 4096) replacement = it }, enabled = enabled,
+            label = { Text(stringResource(R.string.native_replace_with)) }, modifier = Modifier.fillMaxWidth().testTag("native-query-replace-target"))
+        Row {
+            Checkbox(sensitive, { sensitive = it }, enabled = enabled)
+            Text(stringResource(R.string.native_policy_case))
+        }
+        Row {
+            Checkbox(regex, { regex = it }, enabled = enabled, modifier = Modifier.testTag("native-query-replace-regex"))
+            Text(stringResource(R.string.native_policy_regex))
+        }
+        if (regex) Text(stringResource(R.string.native_regex_replace_hint))
+        if (find.isNotEmpty() && options == null) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+    }
 }

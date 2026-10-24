@@ -19,9 +19,23 @@ import kotlinx.coroutines.CancellationException
 internal fun NativeUsageLedgerDialog(ref: LocalProjectRef?, chat: ChatId?,
     load: suspend (UsageLedgerQuery) -> DurableUsageSummary, dismiss: () -> Unit,
     loadEntries: (suspend (UsageLedgerQuery, UsageLedgerCursor?) -> UsageLedgerPage)? = null,
-    export: ((UsageLedgerQuery) -> Unit)? = null) {
+    export: ((UsageLedgerQuery) -> Unit)? = null,
+    loadPrices: (suspend () -> PriceTable)? = null,
+    savePrice: (suspend (String, CurrencyCode, ModelPricing) -> PriceTable)? = null) {
     var scope by rememberSaveable(ref, chat) { mutableIntStateOf(if (ref == null) 0 else 1) }
     var refresh by remember { mutableIntStateOf(0) }
+    var prices by remember { mutableStateOf<PriceTable?>(null) }
+    var pricesFailed by remember { mutableStateOf(false) }
+    var pricingVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(pricingVisible) {
+        try { prices = loadPrices?.invoke(); pricesFailed = false }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { pricesFailed = true }
+    }
+    if (pricingVisible && prices != null && savePrice != null) {
+        NativePricingDialog(prices!!, savePrice, { pricingVisible = false })
+        return
+    }
     var details by remember(ref, chat) { mutableStateOf(false) }
     val query = when (scope) {
         2 -> UsageLedgerQuery(ref, chat)
@@ -37,7 +51,7 @@ internal fun NativeUsageLedgerDialog(ref: LocalProjectRef?, chat: ChatId?,
         catch (_: Exception) { failed = true }
     }
     if (details && loadEntries != null) {
-        NativeUsageEntriesDialog(query, loadEntries, { details = false })
+        NativeUsageEntriesDialog(query, loadEntries, { details = false }, prices)
         return
     }
     AlertDialog(onDismissRequest = dismiss,
@@ -67,6 +81,9 @@ internal fun NativeUsageLedgerDialog(ref: LocalProjectRef?, chat: ChatId?,
                     }
                 }
             }
+            if (loadPrices != null && savePrice != null) TextButton(onClick = { pricingVisible = true },
+                enabled = prices != null && !pricesFailed) { Text(stringResource(R.string.native_prices_title)) }
+            if (pricesFailed) Text(stringResource(R.string.native_prices_error))
             Text(stringResource(R.string.native_ledger_notice), style = MaterialTheme.typography.bodySmall)
             TextButton(onClick = { export?.invoke(query) }, enabled = export != null,
                 modifier = Modifier.testTag("native-ledger-export")) { Text(stringResource(R.string.native_ledger_export)) }

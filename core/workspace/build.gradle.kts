@@ -35,5 +35,6 @@ kotlin {
 
 dependencies {
   api(project(":core:domain"))
+  implementation(libs.quickjs.android)
   testImplementation(libs.junit)
 }

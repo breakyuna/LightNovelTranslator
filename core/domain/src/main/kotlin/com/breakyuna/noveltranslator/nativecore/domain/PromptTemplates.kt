@@ -64,6 +64,10 @@ class PromptTemplate(
     fun appliesTo(language: PromptLanguageTag): Boolean =
         languages.isEmpty() || language in languages
 
+    /** Reordering preserves the complete template payload and stable identity. */
+    fun withOrder(order: Int): PromptTemplate =
+        PromptTemplate(id, name, description, enabled, languages, order, body)
+
     /**
      * Substitutes all placeholders. Every placeholder must have a value; extra provided
      * variables are ignored but still bounded and validated. [checkActive] is invoked during
@@ -148,6 +152,14 @@ class PromptTemplateSet(templates: List<PromptTemplate>) {
 
     fun enabledFor(language: PromptLanguageTag): List<PromptTemplate> =
         ordered().filter { it.enabled && it.appliesTo(language) }
+
+    /** Exact permutation only: partial/stale lists cannot silently remove or duplicate templates. */
+    fun reordered(ids: List<String>): PromptTemplateSet {
+        require(ids.size == templates.size && ids.distinct().size == ids.size)
+        val existing = templates.associateBy { it.id }
+        require(ids.toSet() == existing.keys)
+        return PromptTemplateSet(ids.mapIndexed { index, id -> existing.getValue(id).withOrder(index) })
+    }
 
     override fun toString(): String = "PromptTemplateSet(size=${templates.size})"
 

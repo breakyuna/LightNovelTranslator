@@ -63,4 +63,44 @@ class NativeTextRulesPageTest {
         assertNull(decodePolicyDraft(encodePolicyDraft(draft).apply { this[7] = "{}" }))
         assertNull(decodePolicyDraft(encodePolicyDraft(draft).apply { this[6] = "yes" }))
     }
+
+    @Test fun lgJsonPreviewAppliesOnlyToDraftAndKeepsPrompt() {
+        var changed: ProjectTextPolicy? = null
+        val original = ProjectTextPolicy(prompt = "retain prompt", promptEnabled = true)
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeTextRulesPage(state(original), { changed = it }, { fail("Implicit save") }, {})
+        } } }
+        compose.onNodeWithText(context.getString(R.string.native_policy_import)).performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_policy_import_lg_json)).performScrollTo().performClick()
+        compose.onNodeWithTag("native-policy-import-text").performScrollTo()
+            .performTextInput("""[{"src":"Alice","dst":"アリス"}]""")
+        compose.onNodeWithText(context.getString(R.string.native_policy_preview)).performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasTestTag("native-policy-apply") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        assertNull(changed)
+        compose.onNodeWithTag("native-policy-apply").performClick()
+        assertEquals("retain prompt", changed!!.prompt)
+        assertTrue(changed!!.promptEnabled)
+        assertEquals(TextRuleKind.TERM, changed!!.rules.single().kind)
+        assertEquals("アリス", changed!!.rules.single().target)
+    }
+
+    @Test fun csvImportRetainsQuotedCommaAndDoesNotSaveImplicitly() {
+        var changed: ProjectTextPolicy? = null
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeTextRulesPage(state(), { changed = it }, { fail("Implicit save") }, {})
+        } } }
+        compose.onNodeWithText(context.getString(R.string.native_policy_import)).performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_policy_import_csv)).performScrollTo().performClick()
+        compose.onNodeWithTag("native-policy-import-text").performScrollTo().performTextInput(
+            "src,dst,info,regex,case_sensitive\r\n\"Alice, Jr\",アリス,,false,true\r\n")
+        compose.onNodeWithText(context.getString(R.string.native_policy_preview)).performScrollTo().performClick()
+        compose.waitUntil(10_000) {
+            compose.onAllNodes(hasTestTag("native-policy-apply") and isEnabled()).fetchSemanticsNodes().isNotEmpty()
+        }
+        assertNull(changed)
+        compose.onNodeWithTag("native-policy-apply").performClick()
+        assertEquals("Alice, Jr", changed!!.rules.single().source)
+    }
 }

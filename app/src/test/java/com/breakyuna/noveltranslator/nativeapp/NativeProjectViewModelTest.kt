@@ -50,7 +50,7 @@ class NativeProjectViewModelTest {
         try {
             stores.forEach { it.clear() }
             owner.cancelAndJoin()
-            graph.agentStore.close(); graph.modelSettings.close(); graph.translationAudit.close(); graph.runStore.close(); graph.projects.close()
+            graph.agentStore.close(); graph.agentInputs.close(); graph.modelSettings.close(); graph.translationAudit.close(); graph.runStore.close(); graph.projects.close()
             graph.runtime.close()
         } finally { Dispatchers.resetMain() }
     }

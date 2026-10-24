@@ -1,10 +1,10 @@
 # S2 原生 Agent 单条 TXT 审批切片
 
-后续源码边界：持久执行记录/中断核对与应用 Room v3 已提交并有指定提交 CI 证据，见 [HANDOFF §3、§41](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
+后续源码边界：持久执行记录/中断核对及 Room v9 源码已由 #158 覆盖，见 [HANDOFF §3](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
 
-当前验证边界：单条审批/Koog 切片已有指定提交的 CI 证据；完整 S2 仍未验收，详见 [HANDOFF §3、§41](HANDOFF.md)。§24 原始开发轮的未执行说明是历史记录。
+当前验证边界：单条审批/Koog 切片已由 #158 覆盖；完整 S2 仍未验收，详见 [HANDOFF §3](HANDOFF.md)。§24 原始开发轮的未执行说明是历史记录。
 
-本文记录 §24 单条审批基线；§25 已进一步新增结构化对话、完整 assistant 回执、模型配置及远程传输源码，替代本文“仅纯文本/无远程入口”等当轮限制，详见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。新切片已有 CI，真实供应商尚未联调，完整 S2 验收保持开放。
+本文记录 §24 单条审批基线；§25 已进一步新增结构化对话、完整 assistant 回执、模型配置及远程传输源码，替代本文“仅纯文本/无远程入口”等当轮限制，详见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。相关源码已由 #158 覆盖，真实供应商尚未联调，完整 S2 验收保持开放。
 
 本文件描述当前源码的有限接线，唯一进度和验证记录见 [HANDOFF](HANDOFF.md) §24。用户要求暂不验证、继续推进 Agent；本轮不运行构建/测试、不触发或监控 CI，不把源码接线登记为 S2 验收完成。
 
@@ -28,7 +28,7 @@ NativeAppDatabase 从 v1 升至 v2，保留 project_instances，新增：
 | native_agent_requests | attempt、完整请求指纹、请求身份、PREPARED/DISPATCHED/COMPLETED、纯文本回执及 usage |
 | native_agent_approvals | 不可变单条 payload、实例/代际/Project/Chat/Run/命令、摘要、修订/对象指纹和裁决结果 |
 
-MIGRATION_1_2 只新增表/索引，不清库，不访问旧阅读 Room v6。原生 `.lnt` 仍为 schema v1。已提交 Room 1.json 保留；**2.json 必须由后续获授权 PC/CI 的 KSP 生成和审阅，本机未生成、不手写，不声称迁移已验证。**
+MIGRATION_1_2 只新增表/索引，不清库，不访问旧阅读 Room v6。该切片当时原生 `.lnt` 仍为 schema v1，当前工程已升至 v5。已提交 Room 1.json 保留；**2—9.json 必须由后续获授权 PC/CI 的 KSP 生成和审阅，本机未生成、不手写，不声称迁移已验证。**
 
 请求准备比较 AgentRequestFingerprint；DISPATCHED 只允许一个 CAS 获胜者，重启看到未结算请求返回 Uncertain，不自动重发。纯文本响应与完整五类 usage 在同一 Room 更新中保存。本切片显式拒绝工具调用、思考或 provider continuation 响应，避免默默丢弃字段；后续完整 codec 仍待实现。模拟用量为 UNKNOWN，不报告伪造的零 Token/费用。
 
@@ -52,6 +52,6 @@ MIGRATION_1_2 只新增表/索引，不清库，不访问旧阅读 Room v6。原
 
 ## 5. 未完成与验证边界
 
-已写真实 Room/SQLite 的持久差异、幂等同意、拒绝、冲突、跨库故障窗口、payload 篡改、实例隔离、v1→v2 迁移、请求不确定状态，以及 Koog 查询/准备链路的测试；另有 UI 允许一次回调用例。指定提交已由 CI 执行，实际范围见 HANDOFF §26；不据此宣称完整 S2 验收。
+已写真实 Room/SQLite 的持久差异、幂等同意、拒绝、冲突、跨库故障窗口、payload 篡改、实例隔离、v1→v2 迁移、请求不确定状态，以及 Koog 查询/准备链路的测试；另有 UI 允许一次回调用例。相关源码已由 #158 覆盖，实际范围见 HANDOFF §3；不据此宣称完整 S2 验收。
 
 本地表单不是完整聊天编辑器；自由文本输入、多 Chat/分支、附件、真实模型配置/凭据/统一付费网关、模型生成差异、完整 native tool/continuation codec、完整审批/批次写工具、Run/后台 Service 与所有故障竞争验收仍待后续实现。本轮只有静态审查，未实际构建，不继承 S1 手工版的 CI/真机结论。

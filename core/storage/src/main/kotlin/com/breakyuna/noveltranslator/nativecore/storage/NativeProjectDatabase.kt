@@ -12,7 +12,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** Native SQLite schema v3 with multi-asset, v1/v2 rule migration and per-item format metadata. */
+/** Native SQLite schema v5 with multi-asset, archived history and per-revision name snapshots. */
 internal object NativeProjectDatabase {
     private val v1Schema = listOf(
         """CREATE TABLE project (
@@ -125,6 +125,19 @@ internal object NativeProjectDatabase {
         if (sql.startsWith("CREATE TABLE item_revisions (")) sql.replace(" REFERENCES items(id)", "") else sql
     } + archivedItemSchema
 
+    // v5 adds the name values effective after this revision. The v5 writer stores the JSON
+    // literal "null" for an item without names; SQL NULL is reserved for legacy rows that
+    // predate the snapshot and therefore need the compatibility fallback.
+    private val v5ItemRevisionsSchema = """CREATE TABLE item_revisions (
+            revision INTEGER PRIMARY KEY, item_id INTEGER NOT NULL,
+            previous_fingerprint TEXT NOT NULL, fingerprint TEXT NOT NULL, translation TEXT NOT NULL,
+            status TEXT NOT NULL, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            command_id TEXT NOT NULL, committed_at INTEGER NOT NULL,
+            name_source TEXT, name_translation TEXT)"""
+    private val v5Schema = v4Schema.map { sql ->
+        if (sql.startsWith("CREATE TABLE item_revisions (")) v5ItemRevisionsSchema else sql
+    }
+
     fun ensureV4(db: SQLiteDatabase) {
         if (db.version >= 4) return
         ensureV3(db)
@@ -143,11 +156,45 @@ internal object NativeProjectDatabase {
         validateSchema(db)
     }
 
+    /**
+     * v4 -> v5 migration. Existing revisions predate any name-edit command, so their effective
+     * names are exactly the current names of the active or archived item. Backfilling that
+     * snapshot keeps historical fingerprint reconstruction valid after later name edits.
+     */
+    fun ensureV5(db: SQLiteDatabase) {
+        if (db.version >= 5) return
+        if (db.version !in 1..4) fail(TextProjectException.Reason.UNSUPPORTED_VERSION)
+        ensureV4(db)
+        db.setForeignKeyConstraintsEnabled(false)
+        try {
+            transaction(db) {
+                validateSchema(db)
+                db.execSQL("ALTER TABLE item_revisions RENAME TO old_item_revisions")
+                db.execSQL(v5ItemRevisionsSchema)
+                db.execSQL("""INSERT INTO item_revisions(revision,item_id,previous_fingerprint,fingerprint,
+                    translation,status,instance_id,generation,command_id,committed_at)
+                    SELECT revision,item_id,previous_fingerprint,fingerprint,translation,status,
+                    instance_id,generation,command_id,committed_at FROM old_item_revisions""")
+                db.execSQL("DROP TABLE old_item_revisions")
+                db.execSQL("""UPDATE item_revisions SET
+                    name_source = COALESCE(
+                        (SELECT COALESCE(name_source, 'null') FROM items WHERE items.id = item_revisions.item_id),
+                        (SELECT COALESCE(name_source, 'null') FROM archived_items WHERE archived_items.id = item_revisions.item_id)),
+                    name_translation = COALESCE(
+                        (SELECT COALESCE(name_translation, 'null') FROM items WHERE items.id = item_revisions.item_id),
+                        (SELECT COALESCE(name_translation, 'null') FROM archived_items WHERE archived_items.id = item_revisions.item_id))""")
+                db.version = 5
+            }
+        } finally { db.setForeignKeyConstraintsEnabled(true) }
+        validateSchema(db)
+    }
+
     private fun schema(version: Int): List<String> = when (version) {
         1 -> v1Schema
         2 -> v1Schema + policySchema
         3 -> v3Schema
-        else -> v4Schema
+        4 -> v4Schema
+        else -> v5Schema
     }
 
     private fun initialPolicy(db: SQLiteDatabase) {
@@ -378,13 +425,17 @@ internal object NativeProjectDatabase {
         }
     }
 
-    private fun tables(version: Int): List<String> = (when (version) {
-        1 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions")
-        2 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
-            "text_policy", "policy_revisions", "policy_receipts")
-        else -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
-            "text_policy", "policy_revisions", "policy_receipts", "project_settings", "asset_receipts", "asset_revisions")
-    }) + if (version >= 4) listOf("archived_items") else emptyList()
+    private fun tables(version: Int): List<String> {
+        val base = when (version) {
+            1 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions")
+            2 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
+                "text_policy", "policy_revisions", "policy_receipts")
+            else -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
+                "text_policy", "policy_revisions", "policy_receipts", "project_settings", "asset_receipts", "asset_revisions")
+        }
+        // v5 adds columns to item_revisions only; the table list intentionally stays unchanged.
+        return base + if (version >= 4) listOf("archived_items") else emptyList()
+    }
 
     private fun hasSequenceTable(db: SQLiteDatabase, schema: String): Boolean = db.rawQuery(
         "SELECT 1 FROM $schema.sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'", null,
@@ -469,6 +520,16 @@ internal object NativeProjectDatabase {
     }
 
     fun encodeNames(names: List<String>?): String? = names?.let { JsonArray(it.map(::JsonPrimitive)).toString() }
+
+    /**
+     * Revision snapshots need to distinguish "the item had no names at this revision" from
+     * "this legacy row has no snapshot". The former is the JSON literal `null`, the latter is
+     * SQL NULL (only possible for a v5 row not produced by the v5 writer).
+     */
+    fun encodeNameSnapshot(names: List<String>?): String = names?.let { encodeNames(it) } ?: "null"
+
+    fun decodeNameSnapshot(value: String): List<String>? =
+        if (value == "null") null else decodeNames(value)
 
     fun decodeNames(value: String?): List<String>? {
         if (value == null) return null

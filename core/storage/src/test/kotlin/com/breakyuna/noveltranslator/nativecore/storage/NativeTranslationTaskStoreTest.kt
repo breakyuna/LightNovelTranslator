@@ -41,6 +41,157 @@ class NativeTranslationTaskStoreTest {
     private fun begin(spec: TranslationTaskSpec) = runtime.beginRunSelectingChat(spec.run, RuntimeOwner.TRANSLATION,
         ChatIdentity(spec.ref.projectId, ChatId("translation-workspace")))
 
+    @Test fun explicitTerminationRetainsUnknownRequestAndDecisionAcrossReopen() = runBlocking {
+        val original = spec()
+        val audit = NativeTranslationAuditStore(context, runtime, projects)
+        try {
+            val lease = begin(original); tasks.open(lease, original)
+            val item = projects.items(original.ref, 0, 0, 40).items.first()
+            val attempt = RequestAttemptId("termination-uncertain")
+            tasks.requesting(lease, 0, attempt, listOf(item.id), 1)
+            audit.dispatched(lease, TranslationModelRequest(original.ref, original.run, attempt, original.configuration,
+                listOf(TranslationInput(item.id, item.source, item.fingerprint)), original.options), "b".repeat(64))
+            tasks.failed(lease)
+            runtime.finishRun(lease)
+            val review = tasks.review(original.ref, original.run)
+            assertEquals(1, review.unresolvedRequests)
+            tasks.terminate(review, CommandId("terminate"))
+            tasks.close()
+            tasks = NativeTranslationTaskStore(context, projects, runtime, DefaultTranslationRetryRecoveryPolicy)
+            tasks.terminate(review, CommandId("terminate")) // lost-response replay returns its durable receipt
+            val after = tasks.review(original.ref, original.run)
+            assertEquals("CANCELLED", after.stage)
+            assertEquals(review.remaining, after.remaining)
+            assertEquals(1, after.unresolvedRequests)
+            assertEquals(item.fingerprint, projects.item(original.ref, item.id)!!.item.fingerprint)
+            try { tasks.resume(original.ref, original.run); fail("Resumed terminated task") }
+            catch (_: IllegalArgumentException) { }
+            val db = NativeAppDatabase.open(context)
+            try { withContext(Dispatchers.IO) {
+                assertEquals("DISPATCHED", db.translationRequests().find(attempt.value)!!.state)
+                val receipt = db.translationTaskDecisions().find("terminate")!!
+                assertEquals("NEEDS_REVIEW", receipt.previousStage)
+                assertEquals(review.fingerprint.sha256, receipt.fingerprint)
+            } } finally { db.close() }
+        } finally { audit.close() }
+    }
+
+    @Test fun staleOrForgedReviewCannotTerminateAndActiveTaskRejectsReview() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        try { tasks.review(original.ref, original.run); fail("Reviewed active execution") }
+        catch (_: RuntimeUnavailable) { }
+        runtime.finishRun(lease)
+        val review = tasks.review(original.ref, original.run)
+        try { tasks.terminate(review.copy(requests = review.requests + 1), CommandId("forged")); fail("Accepted changed evidence") }
+        catch (_: IllegalArgumentException) { }
+        tasks.terminate(review, CommandId("first"))
+        try { tasks.terminate(review, CommandId("stale")); fail("Accepted stale review") }
+        catch (_: IllegalArgumentException) { }
+        val db = NativeAppDatabase.open(context)
+        try { withContext(Dispatchers.IO) {
+            assertNull(db.translationTaskDecisions().find("forged"))
+            assertNull(db.translationTaskDecisions().find("stale"))
+        } } finally { db.close() }
+    }
+
+    @Test fun explicitErrorRetryFreezesOnlyChosenMembersAndKeepsOriginalFailure() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        val first = projects.items(original.ref, 0, 0, 40).items.first()
+        val edit = ManualTextEdit(CommandId("mark-error"), original.ref, first.id, 0,
+            first.fingerprint, "", TextItemStatus.ERROR)
+        tasks.committing(lease, 0, listOf(edit), failures = true)
+        val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, listOf(edit)))
+        tasks.committed(lease, revision, 0)
+        tasks.failed(lease)
+        runtime.finishRun(lease)
+        val review = tasks.review(original.ref, original.run)
+        val page = tasks.members(original.ref, original.run)
+        val chosen = page.members.filter { it.status == TextItemStatus.ERROR }
+        assertEquals(listOf(first.id), chosen.map { it.id })
+        val next = tasks.retryErrors(review, page.revision, chosen, CommandId("retry-selected"))
+        assertNotEquals(original.run, next.run)
+        assertEquals(TranslationStartMode.RESET, next.options.startMode)
+        assertEquals(next, tasks.retryErrors(review, page.revision, chosen, CommandId("retry-selected")))
+        assertEquals("FAILED", tasks.review(original.ref, original.run).stage)
+        try {
+            tasks.retryErrors(review, page.revision, page.members.filter { it.status != TextItemStatus.ERROR }, CommandId("wrong-members"))
+            fail("Accepted non-error targets")
+        } catch (_: IllegalArgumentException) { }
+        val nextLease = begin(next)
+        try {
+            val progress = tasks.open(nextLease, next, resuming = true)
+            assertEquals(0, progress.requests)
+            val items = projects.items(next.ref, next.revision, 0, 40).items
+            assertEquals(setOf(first.id), tasks.remaining(nextLease, next.ref, items))
+        } finally { runtime.finishRun(nextLease) }
+    }
+
+    @Test fun unreceiptedTaskCannotCreateAnErrorRetry() = runBlocking {
+        val original = spec()
+        val audit = NativeTranslationAuditStore(context, runtime, projects)
+        try {
+            val lease = begin(original); tasks.open(lease, original)
+            val item = projects.items(original.ref, 0, 0, 40).items.first()
+            val edit = ManualTextEdit(CommandId("uncertain-error"), original.ref, item.id, 0,
+                item.fingerprint, "", TextItemStatus.ERROR)
+            // The item can be an error while another request remains uncertain; that is not retry authorization.
+            val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, listOf(edit)))
+            val attempt = RequestAttemptId("retry-unresolved")
+            audit.dispatched(lease, TranslationModelRequest(original.ref, original.run, attempt, original.configuration,
+                listOf(TranslationInput(item.id, item.source, item.fingerprint)), original.options), "c".repeat(64))
+            tasks.failed(lease); runtime.finishRun(lease)
+            val review = tasks.review(original.ref, original.run)
+            val page = tasks.members(original.ref, original.run)
+            try {
+                tasks.retryErrors(review, revision, page.members.filter { it.status == TextItemStatus.ERROR }, CommandId("unsafe-retry"))
+                fail("Retried unreceipted dispatch")
+            } catch (_: IllegalArgumentException) { }
+            assertEquals(1, tasks.recent(original.ref).size)
+            assertEquals(1, tasks.review(original.ref, original.run).unresolvedRequests)
+        } finally { audit.close() }
+    }
+
+    @Test fun keptErrorsAreDurableAndCannotBecomeANewRetryDecision() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        val item = projects.items(original.ref, 0, 0, 40).items.first()
+        val edit = ManualTextEdit(CommandId("keep-marker"), original.ref, item.id, 0,
+            item.fingerprint, "", TextItemStatus.ERROR)
+        tasks.committing(lease, 0, listOf(edit), failures = true)
+        val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, listOf(edit)))
+        tasks.committed(lease, revision, 0); tasks.failed(lease); runtime.finishRun(lease)
+        val review = tasks.review(original.ref, original.run)
+        val members = tasks.members(original.ref, original.run).members.filter { it.status == TextItemStatus.ERROR }
+        tasks.keepErrors(review, revision, members, CommandId("keep-errors"))
+        tasks.close(); tasks = NativeTranslationTaskStore(context, projects, runtime, DefaultTranslationRetryRecoveryPolicy)
+        tasks.keepErrors(review, revision, members, CommandId("keep-errors"))
+        val after = tasks.members(original.ref, original.run)
+        assertEquals("KEEP_ERROR", after.members.first { it.id == item.id }.decision)
+        assertEquals("FAILED", tasks.review(original.ref, original.run).stage)
+        assertEquals(revision, projects.open(original.ref).revision)
+        try { tasks.retryErrors(review, revision, members, CommandId("reopen-kept")); fail("Reopened final decision") }
+        catch (_: IllegalArgumentException) { }
+        assertEquals(1, tasks.recent(original.ref).size)
+    }
+
+    @Test fun terminatedTaskWithStagedOutputCannotBypassResumeThroughOpen() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        val item = projects.items(original.ref, 0, 0, 40).items.first()
+        tasks.stage(lease, listOf(TranslationTaskOutput(item.id, item.fingerprint, "saved output")))
+        runtime.finishRun(lease)
+        val review = tasks.review(original.ref, original.run)
+        tasks.terminate(review, CommandId("terminate-staged"))
+        val nextLease = begin(original)
+        try {
+            try { tasks.open(nextLease, original, resuming = true); fail("Reopened terminal task through recoverable output") }
+            catch (_: IllegalArgumentException) { }
+        } finally { runtime.finishRun(nextLease) }
+        assertEquals("CANCELLED", tasks.review(original.ref, original.run).stage)
+    }
+
     @Test fun terminalRunWithAnUnresolvedDispatchRetainsReviewStateAndOriginalAudit() = runBlocking {
         val original = spec(); val audit = NativeTranslationAuditStore(context, runtime, projects)
         try {

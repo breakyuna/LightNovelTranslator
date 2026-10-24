@@ -35,6 +35,8 @@ internal interface NativeTranslationTaskDao {
     fun selected(task: String, ids: List<Long>): List<NativeTranslationTargetRow>
     @Query("UPDATE native_translation_targets SET done=1 WHERE task=:task AND itemId IN (:ids)")
     fun done(task: String, ids: List<Long>): Int
+    @Query("SELECT * FROM native_translation_targets WHERE task=:task AND itemId>:after ORDER BY itemId LIMIT 21")
+    fun targetPage(task: String, after: Long): List<NativeTranslationTargetRow>
     @Query("SELECT COUNT(*) FROM native_translation_targets WHERE task=:task") fun count(task: String): Int
     @Query("SELECT COUNT(*) FROM native_translation_targets WHERE task=:task AND done=0") fun remaining(task: String): Int
 }
@@ -42,7 +44,7 @@ internal interface NativeTranslationTaskDao {
 /** Fixed membership and payload, with project receipts as the authority after a crash. */
 class NativeTranslationTaskStore(context: Context, private val projects: TextProjectPort,
     private val runtime: RuntimePort,
-    private val retryRecovery: TranslationRetryRecoveryPolicy? = null) : TranslationTaskPort {
+    private val retryRecovery: TranslationRetryRecoveryPolicy? = null) : TranslationTaskPort, TranslationTaskReviewPort, TranslationTaskRetryPort {
     private val db = NativeAppDatabase.open(context)
     private val retryCheckpoints = NativeTranslationRetryCheckpointStore(context, runtime)
     private fun key(run: RunIdentity) = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(
@@ -63,6 +65,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             val old = db.translationTasks().find(id)
             if (old != null) {
                 require(resuming) { "Existing task requires explicit continuation" }
+                require(old.stage !in setOf("COMPLETE", "CANCELLED")) { "Task is terminal" }
                 require(decode(old.specification).copy(revision = spec.revision) == spec)
                 require(old.revision == spec.revision && (old.stage == "READY" || recoverable(old)))
                 require(projects.open(spec.ref).revision == old.revision)
@@ -230,7 +233,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         try {
             val row = requireNotNull(db.translationTasks().find(key(run)))
             val spec = decode(row.specification); require(spec.ref == ref && spec.run == run)
-            require(row.stage != "COMPLETE")
+            require(row.stage !in setOf("COMPLETE", "CANCELLED"))
             if (row.stage in setOf("FAILED", "NEEDS_REVIEW")) throw TranslationTaskNeedsReview()
             reconcileRecordedFailure(row, spec)
             reconcileUnsentRetry(requireNotNull(db.translationTasks().find(row.id)), spec)
@@ -250,6 +253,170 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             spec.copy(revision = settled.revision)
         } finally { runtime.endProjectWrite(write) }
     }
+    override suspend fun review(ref: LocalProjectRef, run: RunIdentity): TranslationTaskReview = withContext(Dispatchers.IO) {
+        val write = runtime.beginProjectWrite()
+        try {
+            projects.open(ref)
+            transaction { reviewRow(ref, run) }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    private fun reviewRow(ref: LocalProjectRef, run: RunIdentity): TranslationTaskReview {
+        val row = requireNotNull(db.translationTasks().find(key(run)))
+        val spec = decode(row.specification)
+        require(spec.ref == ref && spec.run == run)
+        val remaining = db.translationTasks().remaining(row.id)
+        val unresolved = db.translationRequests().unresolved(ref.instanceId.value, ref.generation.value,
+            ref.projectId.value, run.runId.value, run.commandId.value)
+        // No body escapes to UI. Every mutable recovery field is part of the preview binding.
+        val evidence = JsonArray(listOf(row.id, row.specification, row.revision.toString(), row.committed.toString(),
+            row.requests.toString(), row.stage, row.pendingAttempt.orEmpty(), row.pendingCommands,
+            row.pendingItems, row.responseRemaining, remaining.toString(), unresolved.toString()).map(::JsonPrimitive)).toString()
+        return TranslationTaskReview(ref, run, row.stage, row.revision, row.committed, remaining,
+            row.requests, unresolved, ObjectFingerprint(TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(evidence))))
+    }
+
+    override suspend fun terminate(review: TranslationTaskReview, command: CommandId): Unit = withContext(Dispatchers.IO) {
+        val write = runtime.beginProjectWrite()
+        try {
+            projects.open(review.ref)
+            transaction {
+                val id = key(review.run)
+                val existing = db.translationTaskDecisions().find(command.value)
+                if (existing != null) {
+                    require(existing.task == id && existing.action == "TERMINATE_TASK" &&
+                        existing.fingerprint == review.fingerprint.sha256) { "Decision command conflict" }
+                    return@transaction
+                }
+                val current = reviewRow(review.ref, review.run)
+                require(current == review) { "Task review changed" }
+                require(current.stage !in setOf("COMPLETE", "CANCELLED")) { "Task already terminal" }
+                val row = requireNotNull(db.translationTasks().find(id))
+                db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(command.value, id,
+                    "TERMINATE_TASK", review.fingerprint.sha256, review.stage, review.revision, review.committed,
+                    review.remaining, review.requests, review.unresolvedRequests))
+                // Do not erase pending attempts, staged responses, targets, or unknown usage.
+                check(db.translationTasks().update(row.copy(stage = "CANCELLED")) == 1)
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun members(ref: LocalProjectRef, run: RunIdentity, after: Long): TranslationTaskMemberPage =
+        withContext(Dispatchers.IO) {
+            require(after >= 0)
+            val write = runtime.beginProjectWrite()
+            try {
+                val revision = projects.open(ref).revision
+                val row = requireNotNull(db.translationTasks().find(key(run)))
+                val spec = decode(row.specification)
+                require(spec.ref == ref && spec.run == run)
+                val targets = db.translationTasks().targetPage(row.id, after)
+                val decisions = db.translationTaskDecisions().selected(row.id, targets.take(20).map { it.itemId }).associateBy { it.itemId }
+                val members = targets.take(20).map { target ->
+                    val item = projects.item(ref, ItemId(target.itemId))?.item
+                        ?: throw TranslationTaskNeedsReview()
+                    TranslationTaskMemberReview(item.id, item.fingerprint, item.status, decisions[target.itemId]?.action)
+                }
+                TranslationTaskMemberPage(revision, members, targets.takeIf { it.size > 20 }?.get(19)?.itemId)
+            } finally { runtime.endProjectWrite(write) }
+        }
+
+    override suspend fun retryErrors(review: TranslationTaskReview, revision: Long,
+        members: List<TranslationTaskMemberReview>, command: CommandId): TranslationTaskSpec = withContext(Dispatchers.IO) {
+        require(members.size in 1..20 && members.map { it.id }.distinct().size == members.size)
+        require(members.all { it.status == TextItemStatus.ERROR && it.decision == null })
+        val ordered = members.sortedBy { it.id.value }
+        val digest = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(JsonArray(
+            listOf(JsonPrimitive(review.fingerprint.sha256), JsonPrimitive(revision)) + ordered.map {
+                JsonArray(listOf(JsonPrimitive(it.id.value), JsonPrimitive(it.fingerprint.sha256)))
+            }).toString()))
+        val write = runtime.beginProjectWrite()
+        try {
+            val project = projects.open(review.ref)
+            val original = requireNotNull(db.translationTasks().find(key(review.run)))
+            val oldSpec = decode(original.specification)
+            require(oldSpec.ref == review.ref && oldSpec.run == review.run)
+            val run = RunIdentity(review.ref.projectId, null, RunId("retry-$digest"), command)
+            val id = key(run)
+            val action = "RETRY_ERRORS:$id"
+            db.translationTaskDecisions().find(command.value)?.let { existing ->
+                require(existing.task == original.id && existing.action == action && existing.fingerprint == digest)
+                return@withContext decode(requireNotNull(db.translationTasks().find(id)).specification)
+            }
+            require(project.revision == revision && reviewRow(review.ref, review.run) == review)
+            require(review.stage in setOf("FAILED", "CANCELLED") && review.unresolvedRequests == 0)
+            val selected = db.translationTasks().selected(original.id, ordered.map { it.id.value })
+            require(selected.size == ordered.size)
+            require(db.translationTaskDecisions().selected(original.id, ordered.map { it.id.value }).isEmpty()) {
+                "Member already decided"
+            }
+            val enabled = (projects as? ProjectAssetPort)?.assets(review.ref)?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
+            ordered.forEach { evidence ->
+                val current = projects.item(review.ref, evidence.id)?.item ?: throw TranslationTaskNeedsReview()
+                require(current.status == TextItemStatus.ERROR && current.fingerprint == evidence.fingerprint &&
+                    current.source.isNotBlank() && (enabled == null || current.assetId in enabled))
+            }
+            // A new explicit paid authorization gets its own immutable target set and retry budget.
+            // The original checkpoint and all failure/usage facts stay untouched.
+            val next = oldSpec.copy(run = run, revision = revision,
+                options = oldSpec.options.copy(startMode = TranslationStartMode.RESET))
+            transaction {
+                require(reviewRow(review.ref, review.run) == review)
+                db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(command.value, original.id,
+                    action, digest, review.stage, review.revision, review.committed, review.remaining,
+                    review.requests, review.unresolvedRequests))
+                db.translationTasks().insert(NativeTranslationTaskRow(id, next.ref.instanceId.value, next.ref.generation.value,
+                    next.ref.projectId.value, run.runId.value, run.commandId.value, next.configuration.id,
+                    next.configuration.revision, next.options.targetLanguage, encode(next), revision,
+                    0, 0, "READY", null, "[]", "[]", "[]"))
+                db.translationTasks().targets(ordered.map { NativeTranslationTargetRow(id, it.id.value, it.fingerprint.sha256, false) })
+                db.translationTaskDecisions().members(ordered.map { NativeTranslationMemberDecisionRow(original.id,
+                    it.id.value, command.value, "RETRY_ERRORS", it.fingerprint.sha256, revision) })
+            }
+            next
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun keepErrors(review: TranslationTaskReview, revision: Long,
+        members: List<TranslationTaskMemberReview>, command: CommandId): Unit = withContext(Dispatchers.IO) {
+        require(members.size in 1..20 && members.map { it.id }.distinct().size == members.size)
+        require(members.all { it.status == TextItemStatus.ERROR && it.decision == null })
+        val ordered = members.sortedBy { it.id.value }
+        val digest = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(JsonArray(
+            listOf(JsonPrimitive("KEEP_ERROR"), JsonPrimitive(review.fingerprint.sha256), JsonPrimitive(revision)) +
+                ordered.map { JsonArray(listOf(JsonPrimitive(it.id.value), JsonPrimitive(it.fingerprint.sha256))) }).toString()))
+        val write = runtime.beginProjectWrite()
+        try {
+            val project = projects.open(review.ref)
+            db.translationTaskDecisions().find(command.value)?.let { existing ->
+                require(existing.task == key(review.run) && existing.action == "KEEP_ERROR" && existing.fingerprint == digest)
+                return@withContext
+            }
+            // Load current item evidence under the same exclusive reservation before Room transaction.
+            val currentMembers = ordered.map { evidence ->
+                val item = projects.item(review.ref, evidence.id)?.item ?: throw TranslationTaskNeedsReview()
+                TranslationTaskMemberReview(item.id, item.fingerprint, item.status)
+            }
+            transaction {
+                val id = key(review.run)
+                db.translationTaskDecisions().find(command.value)?.let { existing ->
+                    require(existing.task == id && existing.action == "KEEP_ERROR" && existing.fingerprint == digest)
+                    return@transaction
+                }
+                require(project.revision == revision && reviewRow(review.ref, review.run) == review)
+                require(currentMembers == ordered)
+                require(review.stage in setOf("FAILED", "NEEDS_REVIEW", "CANCELLED"))
+                val selected = db.translationTasks().selected(id, ordered.map { it.id.value })
+                require(selected.size == ordered.size)
+                require(db.translationTaskDecisions().selected(id, ordered.map { it.id.value }).isEmpty())
+                db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(command.value, id, "KEEP_ERROR",
+                    digest, review.stage, review.revision, review.committed, review.remaining, review.requests, review.unresolvedRequests))
+                db.translationTaskDecisions().members(ordered.map { NativeTranslationMemberDecisionRow(id,
+                    it.id.value, command.value, "KEEP_ERROR", it.fingerprint.sha256, revision) })
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
     override suspend fun recent(ref: LocalProjectRef): List<TranslationTaskSummary> = page(ref).tasks
     override suspend fun page(ref: LocalProjectRef, before: Long?): TranslationTaskPage = withContext(Dispatchers.IO) {
         require(before == null || before > 0)

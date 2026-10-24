@@ -1,8 +1,8 @@
 # TXT 人工批量选择与原子写入
 
-当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
 
-本切片对应 R15/R32 的当前页批选、状态修改和清空译文；实施与证据只记入 [HANDOFF §38、§41](HANDOFF.md)。它不授予 Agent 写权限，也不实现全部筛选结果、跨页批选或完整查找替换。查询窗口见 [PROOFREADING_QUERY](PROOFREADING_QUERY.md)。
+本切片对应 R15/R32 的当前页批选、状态修改和清空译文；实施与证据只记入 [HANDOFF §38](HANDOFF.md)。它不授予 Agent 写权限；§62/§63 已扩展全查询/质量筛选集合批写，§106/§107 工作区增量补查找替换。查询窗口见 [PROOFREADING_QUERY](PROOFREADING_QUERY.md)。
 
 ## 固定选择与确认
 
@@ -16,7 +16,7 @@ ManualTextBatch 固定逻辑 commandId、完整 LocalProjectRef、预期修订�
 
 调用链：`NativeProjectViewModel.confirmManualBatch → NativeTextProjectStore.editBatch → ProjectWriteStore.editBatch`。先取得既有人工 Runtime 写租约，再在同一外层 SQLite 事务内核对全批修订/成员/指纹，之后逐条走既有编辑、对象指纹、item_revisions 和 write_receipts。每个实际修改增加一个修订；冲突拒绝整批，取消/异常回滚全部，不能部分成功。模型/Agent 运行时不能取得人工写租约。
 
-不修改 `.lnt` v1 schema 或导入校验。每条成功回执仍保存普通 ManualTextEdit 的标准 64 位摘要，与历史内容一致。批次全量 payload 摘要绑定在生成的子命令 ID：`manual-batch-v1:<logicalCommandHash>:<payloadHash>:<index>`。哈希由 UTF-8 SHA-256 生成，原始命令不拼入 SQL 模式；按实例/代际及生成前缀核对已有组回执。
+不修改工程 schema（当前 `.lnt` v5）或导入校验。每条成功回执仍保存普通 ManualTextEdit 的标准 64 位摘要，与历史内容一致。批次全量 payload 摘要绑定在生成的子命令 ID：`manual-batch-v1:<logicalCommandHash>:<payloadHash>:<index>`。哈希由 UTF-8 SHA-256 生成，原始命令不拼入 SQL 模式；按实例/代际及生成前缀核对已有组回执。
 
 同一逻辑命令只对应一套 payload。已有回执必须数量完整、子命令匹配、条目/状态/修订序列一致；操作、目标或基线变化不能复用旧命令。部分或碰撞回执直接拒绝，不补写余项；单条和批量逻辑命令不能互相复用。
 
@@ -30,14 +30,14 @@ ManualTextBatch 固定逻辑 commandId、完整 LocalProjectRef、预期修订�
 
 ## 验证与未完成
 
-§38 新增 20 个回归用例：domain 2、真实 SQLite/Room storage 8、SavedState 纯函数 2、ViewModel 5、组件 3。覆盖 payload/选择边界、空操作、保留译文/清空、原子冲突/回滚、终局重放、命令复用/部分回执、运行占用/代际、成功与拒绝回执的保存重导入、丢失确认后的重建核对、刷新失败、显式确认及忙碌/冲突禁用、旧预览迟到回调隔离。组件有小横屏夹具和 `native-proofreading-batch.png` 捕获入口，用例已纳入 §41 的 CI 全绿基线，但截图尚未录制或查看。
+§38 新增 20 个回归用例：domain 2、真实 SQLite/Room storage 8、SavedState 纯函数 2、ViewModel 5、组件 3。覆盖 payload/选择边界、空操作、保留译文/清空、原子冲突/回滚、终局重放、命令复用/部分回执、运行占用/代际、成功与拒绝回执的保存重导入、丢失确认后的重建核对、刷新失败、显式确认及忙碌/冲突禁用、旧预览迟到回调隔离。组件有小横屏夹具和 `native-proofreading-batch.png` 捕获入口，相关源码已由 #158 覆盖，但截图尚未录制或查看。
 
-本机只做静态审查。指定提交的全量与新增测试/Lint/构建已通过，见 HANDOFF §41；仍须在 PC/获授权 CI 录制并实际查看截图；设备须检查触屏/无障碍、横屏、取消、系统重建及文件保存重导入。跨页/全部筛选结果、查找替换、六类告警、全格式和 Agent 全对象审批仍待实现，不关闭完整 R15/R32/S1/S2。
+本机只做静态审查。#158 的全量与新增测试/Lint/构建已通过，见 HANDOFF §3；仍须在 PC/获授权 CI 录制并实际查看截图；设备须检查触屏/无障碍、横屏、取消、系统重建及文件保存重导入。跨页/全部筛选结果、查找替换、六类告警、全格式和 Agent 全对象审批仍待实现，不关闭完整 R15/R32/S1/S2。
 
-## 全查询增量（未构建）
+## 全查询增量（#158 覆盖）
 
-HANDOFF §62 新增按完整 SQL 查询准备固定目标集，最多工程 100,000 条；原本页接口仍最多 100 条。大预览只含 ID/行号/指纹，在应用私有文件恢复，SavedState 仅存摘要。确认/重放不重新查询，修订或指纹冲突全批拒绝，写入仍为同一原子事务；预检不加载整工程正文。当前不适用于质量二级筛选或查找替换。大规模耗时、UI 与恢复用例尚待 CI/设备验证。
+HANDOFF §62 新增按完整 SQL 查询准备固定目标集，最多工程 100,000 条；原本页接口仍最多 100 条。大预览只含 ID/行号/指纹，在应用私有文件恢复，SavedState 仅存摘要。确认/重放不重新查询，修订或指纹冲突全批拒绝，写入仍为同一原子事务；预检不加载整工程正文。质量二级筛选见 §63，查找替换见 §106/§107 工作区增量。大规模耗时、UI 与恢复用例仍需设备验证。
 
-## 质量选择批写增量（未构建）
+## 质量选择批写增量（#158 覆盖）
 
-§63 将全量批写扩展至当前有效 TextQualitySelection；准备时逐项核对索引修订、原查询、筛选事实和当前指纹，空选择不扩大范围。确认沿用固定预览与原子事务，成功后质量索引失效。恢复可确认原固定集合，不自动扫描或执行。本增量无 CI/设备证据。
+§63 将全量批写扩展至当前有效 TextQualitySelection；准备时逐项核对索引修订、原查询、筛选事实和当前指纹，空选择不扩大范围。确认沿用固定预览与原子事务，成功后质量索引失效。恢复可确认原固定集合，不自动扫描或执行。本增量已由 #158 覆盖；设备证据仍缺。

@@ -72,4 +72,53 @@ class NativeManualBatchUiTest {
         compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
         assertEquals(0, confirmed); assertEquals(1, dismissed)
     }
+
+    @Test fun queryReplacementEntryOnlyPreparesTheCapturedScopeAndNeverConfirmsAWrite() {
+        var prepared: Pair<TextReplacementOptions, NativeQueryReplacementScope>? = null
+        var confirmed = 0
+        val query = TextItemQuery(TextItemStatus.PROCESSED, "source")
+        val state = NativeProjectUiState(project = summary, proofreadingQuery = query, matchingItems = 2)
+        val actions = NativeBatchActions({}, {}, {}, {}, { confirmed++ }, {}, prepareQuery = {},
+            prepareReplacement = { options, scope -> prepared = options to scope })
+        compose.setContent { NativeTheme { NativeQueryBatchButton(state, actions) } }
+        compose.onNodeWithTag("native-query-batch-actions").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_batch_replace)).performClick()
+        compose.onNodeWithTag("native-query-replace-find").performScrollTo().performTextInput("old")
+        compose.onNodeWithTag("native-query-replace-target").performScrollTo().performTextInput("\$1\\1")
+        compose.onNodeWithTag("native-policy-apply").performClick()
+        assertEquals(TextReplacementOptions("old", "\$1\\1"), prepared!!.first)
+        assertEquals(ref, prepared!!.second.ref); assertEquals(0L, prepared!!.second.revision)
+        assertEquals(query, prepared!!.second.query); assertEquals(0, confirmed)
+    }
+
+    @Test fun replacementBatchShowsTheActualParametersAndRequiresItsOwnConfirmation() {
+        val replacement = ManualTextBatch(CommandId("replace"), ref, 0, TextBatchChange.REPLACE_TRANSLATION,
+            batch.targets, TextReplacementOptions("old", "new", false))
+        var confirmed = 0
+        val actions = NativeBatchActions({}, {}, {}, {}, { confirmed++ }, {})
+        compose.setContent { NativeTheme {
+            NativeManualBatchDialog(NativeProjectUiState(project = summary, manualBatch = replacement, manualBatchQuery = true), actions)
+        } }
+        compose.onNodeWithText(context.getString(R.string.native_query_replace_preview, "old", "new"))
+            .performScrollTo().assertIsDisplayed()
+        assertEquals(0, confirmed)
+        compose.onNodeWithTag("native-batch-confirm").performClick()
+        assertEquals(1, confirmed)
+    }
+
+    @Test fun regexToggleIsPartOfThePreparedReplacementAndInvalidPatternsCannotProceed() {
+        var prepared: TextReplacementOptions? = null
+        val actions = NativeBatchActions({}, {}, {}, {}, { fail("Implicit confirmation") }, {}, prepareQuery = {},
+            prepareReplacement = { options, _ -> prepared = options })
+        compose.setContent { NativeTheme { NativeQueryBatchButton(NativeProjectUiState(project = summary, matchingItems = 2), actions) } }
+        compose.onNodeWithTag("native-query-batch-actions").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_batch_replace)).performClick()
+        compose.onNodeWithTag("native-query-replace-regex").performScrollTo().performClick()
+        compose.onNodeWithTag("native-query-replace-find").performScrollTo().performTextInput("[")
+        compose.onNodeWithTag("native-policy-apply").assertIsNotEnabled()
+        compose.onNodeWithTag("native-query-replace-find").performTextReplacement("(old)")
+        compose.onNodeWithTag("native-query-replace-target").performScrollTo().performTextInput("\$1")
+        compose.onNodeWithTag("native-policy-apply").performClick()
+        assertEquals(TextReplacementOptions("(old)", "\$1", regex = true), prepared)
+    }
 }

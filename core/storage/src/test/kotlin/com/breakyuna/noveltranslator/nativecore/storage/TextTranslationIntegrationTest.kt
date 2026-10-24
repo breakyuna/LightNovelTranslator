@@ -187,13 +187,17 @@ class TextTranslationIntegrationTest {
             db.setForeignKeyConstraintsEnabled(false)
             try {
                 NativeProjectDatabase.transaction(db) {
-                    val sql = db.rawQuery("SELECT sql FROM sqlite_master WHERE name='item_revisions'", null).use {
-                        check(it.moveToFirst()); it.getString(0)
-                    }
-                    db.execSQL("ALTER TABLE item_revisions RENAME TO revisions_v4")
-                    db.execSQL(sql.replace("item_id INTEGER NOT NULL,", "item_id INTEGER NOT NULL REFERENCES items(id),"))
-                    db.execSQL("INSERT INTO item_revisions SELECT * FROM revisions_v4")
-                    db.execSQL("DROP TABLE revisions_v4")
+                    db.execSQL("ALTER TABLE item_revisions RENAME TO revisions_v5")
+                    db.execSQL("""CREATE TABLE item_revisions (
+                        revision INTEGER PRIMARY KEY, item_id INTEGER NOT NULL REFERENCES items(id),
+                        previous_fingerprint TEXT NOT NULL, fingerprint TEXT NOT NULL, translation TEXT NOT NULL,
+                        status TEXT NOT NULL, instance_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                        command_id TEXT NOT NULL, committed_at INTEGER NOT NULL)""")
+                    db.execSQL("""INSERT INTO item_revisions(revision,item_id,previous_fingerprint,fingerprint,
+                        translation,status,instance_id,generation,command_id,committed_at)
+                        SELECT revision,item_id,previous_fingerprint,fingerprint,translation,status,
+                        instance_id,generation,command_id,committed_at FROM revisions_v5""")
+                    db.execSQL("DROP TABLE revisions_v5")
                     db.execSQL("DROP TABLE archived_items")
                     db.version = 3
                 }

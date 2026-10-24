@@ -23,7 +23,8 @@ internal fun NativeEditorReplacementDialog(draft: NativeEditDraft, busy: Boolean
     var find by rememberSaveable(draft.ref, draft.item.id.value) { mutableStateOf("") }
     var replacement by rememberSaveable(draft.ref, draft.item.id.value) { mutableStateOf("") }
     var sensitive by rememberSaveable(draft.ref, draft.item.id.value) { mutableStateOf(true) }
-    val options = remember(find, replacement, sensitive) { runCatching { TextReplacementOptions(find, replacement, sensitive) }.getOrNull() }
+    var regex by rememberSaveable(draft.ref, draft.item.id.value) { mutableStateOf(false) }
+    val options = remember(find, replacement, sensitive, regex) { runCatching { TextReplacementOptions(find, replacement, sensitive, regex) }.getOrNull() }
     val current = prepared?.takeIf { it.ref == draft.ref && it.command == draft.command && it.preview.options == options }
     Dialog(onDismissRequest = { if (!busy) dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {
@@ -42,6 +43,12 @@ internal fun NativeEditorReplacementDialog(draft: NativeEditDraft, busy: Boolean
                             Checkbox(sensitive, { sensitive = it }, enabled = !busy)
                             Text(stringResource(R.string.native_policy_case))
                         }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(regex, { regex = it }, enabled = !busy, modifier = Modifier.testTag("native-replace-regex"))
+                            Text(stringResource(R.string.native_policy_regex))
+                        }
+                        if (regex) Text(stringResource(R.string.native_regex_replace_hint))
+                        if (find.isNotEmpty() && options == null) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
                         OutlinedButton(onClick = { options?.let(prepare) }, enabled = !busy && options != null,
                             modifier = Modifier.testTag("native-replace-preview")) { Text(stringResource(R.string.native_replace_preview)) }
                         if (busy) {

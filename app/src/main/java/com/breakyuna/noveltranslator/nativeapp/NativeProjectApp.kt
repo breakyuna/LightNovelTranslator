@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.core.content.ContextCompat
@@ -37,14 +38,39 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 fun NativeProjectApp(model: NativeProjectViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
     var tasksVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    var queueVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    if (queueVisible && state.project != null) NativeTranslationQueueDialog(
+        load = model::translationQueueSnapshot, ref = state.project!!.ref,
+        resume = model::resumeQueuedTranslation, cancel = model::cancelQueuedTranslation,
+        dismiss = { queueVisible = false })
     if (tasksVisible && state.project != null) NativeTranslationTasksDialog(state.project!!.ref,
         model::translationTaskSummaries, model::inspectTranslationResume,
         { tasksVisible = false }, { spec -> tasksVisible = false; model.resumeTranslationTask(spec) },
-        loadPage = model::translationTaskPage)
+        loadPage = model::translationTaskPage,
+        inspectReview = model::reviewTranslationTask, terminate = model::terminateTranslationTask,
+        loadMembers = model::translationTaskMembers, prepareRetry = model::prepareTaskRetry, keepErrors = model::keepTaskErrors)
     var usageVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    var modelsVisible by rememberSaveable { mutableStateOf(false) }
+    var settingsVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    var appearanceVisible by rememberSaveable { mutableStateOf(false) }
+    var logsVisible by rememberSaveable { mutableStateOf(false) }
+    var skillsVisible by rememberSaveable { mutableStateOf(false) }
+    val saveLogs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson"), model::completeDiagnosticsExport)
+    val saveAppBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeApplicationBackupExport)
+    val openAppBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importApplicationBackup(it) }
+    if (appearanceVisible) NativeThemeDialog(state.themeMode, { appearanceVisible = false }, model::setThemeMode)
+    if (logsVisible) NativeLogsDialog(model::diagnosticPage, model::diagnosticDetail,
+        export = { saveLogs.launch("lnt-diagnostics.jsonl") }, clear = model::clearDiagnostics,
+        dismiss = { logsVisible = false })
+    if (skillsVisible) NativeSkillsDialog(model.skillActions) { skillsVisible = false }
+    if (modelsVisible) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
+        { modelsVisible = false }, model::saveAgentModel, model::fetchAgentModels, model::cancelAction,
+        model::saveAgentModelProfile, model::fetchAgentModelsProfile)
+    if (settingsVisible && state.project != null) NativeProjectSettingsDialog(state, { settingsVisible = false }, model::saveProjectSettings)
     val saveUsage = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson"), model::completeUsageExport)
     if (usageVisible) NativeUsageLedgerDialog(state.project?.ref, state.agentChatId,
         model::usageSummary, { usageVisible = false }, model::usageEntries,
+        loadPrices = model::loadPrices, savePrice = model::savePrice,
         export = if (state.busy) null else { query ->
             val filename = model.prepareUsageExport(query)
             if (filename != null) saveUsage.launch(filename)
@@ -63,6 +89,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val saveText = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), model::completeExport)
     val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeBackupExport)
     val openBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importBackup(it) }
+    val saveProjectSet = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeProjectSetExport)
+    val openProjectSet = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importProjectSet(it) }
     val message = state.error ?: state.notice
     val text = message?.let { stringResource(it) }
     LaunchedEffect(text) { if (text != null) { snackbar.showSnackbar(text); model.dismissMessage() } }
@@ -75,12 +103,13 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         when {
             state.busy && !state.foregroundExecutionActive -> Unit
             state.editor != null -> if (state.editor!!.dirty) discard = true else model.closeEditor()
+            state.project != null && state.page == NativePage.RULES -> model.selectPage(NativePage.MORE)
             state.project != null && state.page != NativePage.AGENT -> model.selectPage(NativePage.AGENT)
             state.project != null && !state.busy -> home()
         }
     }
     BackHandler(enabled = state.busy || state.project != null || state.editor != null) { back() }
-    NativeTheme {
+    NativeTheme(state.themeMode) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val rail = maxWidth >= 600.dp && state.project != null
             Scaffold(
@@ -94,8 +123,14 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                         Icon(Icons.Default.Home, stringResource(R.string.native_projects))
                     } },
                     actions = {
+                        if (state.project == null) IconButton(onClick = { modelsVisible = true }, enabled = !state.busy) {
+                            Icon(Icons.Default.Key, stringResource(R.string.native_more_models))
+                        }
                         if (state.project != null) TextButton(onClick = { tasksVisible = true }, enabled = !state.busy) {
                             Text(stringResource(R.string.native_tasks_title))
+                        }
+                        if (state.project != null) TextButton(onClick = { queueVisible = true }, enabled = !state.busy) {
+                            Text(stringResource(R.string.native_queue_title))
                         }
                         TextButton(onClick = { usageVisible = true }) { Text(stringResource(R.string.native_ledger_title)) }
                         IconButton(onClick = model::refresh, enabled = !state.busy && state.editor == null) {
@@ -103,15 +138,15 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                     } },
                 ) },
                 bottomBar = { if (state.project != null && !rail) NavigationBar {
-                    NativePage.entries.forEach { page -> NavigationBarItem(
-                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
+                    NativeNavigationPages.forEach { page -> NavigationBarItem(
+                        selected = state.page == page || (page == NativePage.MORE && state.page == NativePage.RULES), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
                         icon = { Icon(page.icon(), contentDescription = null) }, label = { Text(stringResource(page.label())) },
                     ) }
                 } },
             ) { padding ->
                 Row(Modifier.padding(padding).fillMaxSize()) {
-                    if (rail) NavigationRail { NativePage.entries.forEach { page -> NavigationRailItem(
-                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
+                    if (rail) NavigationRail { NativeNavigationPages.forEach { page -> NavigationRailItem(
+                        selected = state.page == page || (page == NativePage.MORE && state.page == NativePage.RULES), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
                         icon = { Icon(page.icon(), null) }, label = { Text(stringResource(page.label())) },
                     ) } }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -135,7 +170,13 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model::allowAgentEdit, model::rejectAgentEdit, model::selectPage, model::agentInput,
                                     model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat,
                                     model::fetchAgentModels, model::cancelAction, model::inspectAgentMessage, model::closeAgentMessage,
-                                    model.agentStream, model::saveAgentModelProfile, model::fetchAgentModelsProfile)
+                                    model.agentStream, model::saveAgentModelProfile, model::fetchAgentModelsProfile,
+                                    model::queueAgentInput, model::useAgentDraft, model::deleteAgentDraft, model::toggleAgentQueuePaused,
+                                    model::sendQueuedAgentMessage, model::steerAgentInput,
+                                    model::steerHistory, model::steerDetail, model::restoreSteerInput,
+                                    model::prepareAgentContext, model::saveAgentContext,
+                                    model::agentHistoryPage, model::agentHistoryDetail,
+                                    model::prepareAgentBranch, model::createAgentBranch)
                                 NativePage.WORKBENCH -> Workbench(
                                     state = state,
                                     cleanup = model::cleanupOutputs,
@@ -157,14 +198,36 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     },
                                     exportBackup = { model.prepareBackupExport()?.let { saveBackup.launch(it) } },
                                     importBackup = { if (model.prepareBackupImport()) openBackup.launch(arrayOf("application/zip", "application/octet-stream")) },
+                                    exportAllBackups = { model.prepareProjectSetExport()?.let { saveProjectSet.launch(it) } },
+                                    importAllBackups = { if (model.prepareProjectSetImport()) openProjectSet.launch(arrayOf("application/zip", "application/octet-stream")) },
+                                )
+                                NativePage.MORE -> NativeMorePage(
+                                    state = state,
+                                    onRules = { model.selectPage(NativePage.RULES) },
+                                    onModels = { modelsVisible = true },
+                                    onSettings = { settingsVisible = true },
+                                    onAppearance = { appearanceVisible = true },
+                                    onLogs = { logsVisible = true },
+                                    onSkills = { skillsVisible = true },
+                                    onBackupExport = { saveAppBackup.launch("lnt-app-backup.zip") },
+                                    onBackupImport = { openAppBackup.launch(arrayOf("application/zip", "application/octet-stream")) },
+                                    notificationsGranted = notificationsGranted,
+                                    requestNotifications = {
+                                        if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                    },
+                                    cleanup = model::cleanupOutputs,
+                                    refresh = model::refresh,
+                                    refreshStorage = model::refreshStorageUsage,
                                 )
                                 NativePage.RULES -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy,
                                     model.rulePresetActions, model.promptTemplateActions)
                                 NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage,
                                     model::simulatePage, notificationsGranted, model::queryProofreading,
                                     NativeBatchActions(model::selectItems, model::toggleItem, model::selectPageItems,
-                                        model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch, model::prepareQueryBatch),
+                                        model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch, model::prepareQueryBatch,
+                                        model::prepareQueryReplacement),
                                     model::simulateProject, model::translateRemote,
+                                    model::enqueueRemoteTranslation,
                                     qualityActions = NativeQualityActions(model::scanQuality, model::filterQuality, model::clearQuality)) {
                                     if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                                 }
@@ -185,7 +248,11 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                 quality = state.editorQuality, editorError = state.error, editorNotice = state.notice,
                 onNavigate = model::navigateEditor, navigationEnabled = state.qualityView == null || state.qualityCurrent, qualityEnabled = !state.policyLoadIncomplete && state.policyDraft?.dirty != true,
                 onInspect = model::inspectEditor, replacement = state.editorReplacement,
-                onPrepareReplacement = model::prepareEditorReplacement, onApplyReplacement = model::applyEditorReplacement)
+                onPrepareReplacement = model::prepareEditorReplacement, onApplyReplacement = model::applyEditorReplacement,
+                onEditNames = if (model.nameEditingAvailable) model::beginNameEdit else null)
+        }
+        state.nameEdit?.let { names ->
+            NativeNameEditDialog(names, state.busy, model::dismissNameEdit, model::saveNameEdit)
         }
         if (discard) AlertDialog(onDismissRequest = { discard = false },
             title = { Text(stringResource(R.string.native_discard_title)) },
@@ -248,7 +315,8 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
     mutateAsset: ((NativeAssetMutation) -> Unit)? = null,
     editSettings: ((NativeProjectSettingsChange) -> Unit)? = null,
     exportAssetBilingual: ((Long) -> Unit)? = null,
-    exportBackup: (() -> Unit)? = null, importBackup: (() -> Unit)? = null) {
+    exportBackup: (() -> Unit)? = null, importBackup: (() -> Unit)? = null,
+    exportAllBackups: (() -> Unit)? = null, importAllBackups: (() -> Unit)? = null) {
     val project = requireNotNull(state.project)
     var settingsOpen by remember(project.ref) { mutableStateOf(false) }
     if (settingsOpen && editSettings != null) NativeProjectSettingsDialog(state, { settingsOpen = false }, editSettings)
@@ -282,6 +350,16 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
                 }
                 if (importBackup != null) OutlinedButton(onClick = importBackup, enabled = canManage) {
                     Text(stringResource(R.string.native_backup_import))
+                }
+            }
+        }
+        if (exportAllBackups != null || importAllBackups != null) item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (exportAllBackups != null) OutlinedButton(onClick = exportAllBackups, enabled = canManage) {
+                    Text(stringResource(R.string.native_project_set_export))
+                }
+                if (importAllBackups != null) OutlinedButton(onClick = importAllBackups, enabled = canManage) {
+                    Text(stringResource(R.string.native_project_set_import))
                 }
             }
         }
@@ -358,6 +436,7 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
                           query: (TextItemQuery) -> Unit = {}, batchActions: NativeBatchActions? = null,
                           simulateProject: (() -> Unit)? = null,
                           remoteTranslation: NativeRemoteTranslationAction? = null,
+                          queueTranslation: NativeRemoteTranslationAction? = null,
                           qualityActions: NativeQualityActions? = null, requestNotifications: () -> Unit = {}) {
     if (state.manualBatch != null && batchActions != null) NativeManualBatchDialog(state, batchActions)
     var filtering by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
@@ -375,7 +454,7 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
     val pendingProject = simulateProject != null && (state.itemStatistics?.translatableUnprocessed ?: 0) > 0
     var remote by rememberSaveable(state.project?.ref, state.items.firstOrNull()?.id?.value) { mutableStateOf(false) }
     if (remote && remoteTranslation != null && state.modelSettings != null)
-        NativeRemoteTranslationDialog(state, onDismiss = { remote = false }, start = remoteTranslation)
+        NativeRemoteTranslationDialog(state, onDismiss = { remote = false }, start = remoteTranslation, queue = queueTranslation)
     if (confirm) AlertDialog(onDismissRequest = { confirm = false },
         title = { Text(stringResource(R.string.native_simulation)) },
         text = {
@@ -500,7 +579,8 @@ internal fun Editor(draft: NativeEditDraft, busy: Boolean, onDismiss: () -> Unit
                    onInspect: (TextProofreadingOptions) -> Unit = {}, editorNotice: Int? = null,
                    navigationEnabled: Boolean = true, onNavigate: ((TextItemDirection, Boolean) -> Unit)? = null,
                    replacement: NativeEditorReplacement? = null, onPrepareReplacement: ((TextReplacementOptions) -> Unit)? = null,
-                   onApplyReplacement: ((NativeEditorReplacement) -> Unit)? = null) {
+                   onApplyReplacement: ((NativeEditorReplacement) -> Unit)? = null,
+                   onEditNames: (() -> Unit)? = null) {
     var replacing by rememberSaveable(draft.ref.projectId.value, draft.ref.instanceId.value,
         draft.ref.generation.value, draft.item.id.value) { mutableStateOf(false) }
     var pendingMove by rememberSaveable(draft.ref.projectId.value, draft.ref.instanceId.value,
@@ -531,6 +611,10 @@ internal fun Editor(draft: NativeEditDraft, busy: Boolean, onDismiss: () -> Unit
                     }
                     if (onPrepareReplacement != null) OutlinedButton(onClick = { replacing = true }, enabled = !busy) {
                         Text(stringResource(R.string.native_replace_title))
+                    }
+                    if (onEditNames != null) OutlinedButton(onClick = onEditNames, enabled = !busy && !draft.conflict,
+                        modifier = Modifier.testTag("native-edit-names")) {
+                        Text(stringResource(R.string.native_names_edit))
                     }
                     Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleSmall)
                     Text(draft.item.source.ifEmpty { stringResource(R.string.native_blank_line) })
@@ -564,12 +648,14 @@ private fun NativePage.label(): Int = when (this) {
     NativePage.AGENT -> R.string.native_agent
     NativePage.WORKBENCH -> R.string.native_workbench
     NativePage.PROOFREADING -> R.string.native_proofreading
+    NativePage.MORE -> R.string.native_more
     NativePage.RULES -> R.string.native_policy_title
 }
 private fun NativePage.icon(): ImageVector = when (this) {
     NativePage.AGENT -> Icons.Default.SmartToy
     NativePage.WORKBENCH -> Icons.Default.TableRows
     NativePage.PROOFREADING -> Icons.Default.Edit
+    NativePage.MORE -> Icons.Default.MoreVert
     NativePage.RULES -> Icons.Default.Settings
 }
 internal fun TextItemStatus.label(): Int = when (this) {

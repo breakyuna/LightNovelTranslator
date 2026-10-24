@@ -5,9 +5,9 @@ import android.database.sqlite.SQLiteDatabase
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /**
- * Transaction owner for manual TXT and trusted translation writes, always under a runtime write lease.
- * Does not implement ProjectWritePort or accept Agent approvals: that requires R19's durable
- * consumption binding. No caller can edit rows through the public repository except here.
+ * Transaction owner for manual TXT, name and trusted translation writes, always under a runtime
+ * write lease. Does not implement ProjectWritePort or accept Agent approvals: that requires R19's
+ * durable consumption binding. No caller can edit rows through the public repository except here.
  */
 internal object ProjectWriteStore {
     fun edit(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit): ManualEditReceipt {
@@ -57,6 +57,11 @@ internal object ProjectWriteStore {
                     put("translation", command.translation); put("status", command.status.name)
                     put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
                     put("command_id", command.commandId.value); put("committed_at", now)
+                    if (db.version >= 5) {
+                        // A text edit keeps the item's names; the revision still snapshots them.
+                        put("name_source", NativeProjectDatabase.encodeNameSnapshot(item.metadata.nameSource))
+                        put("name_translation", NativeProjectDatabase.encodeNameSnapshot(item.metadata.nameTranslation))
+                    }
                 })
             }
             db.insertOrThrow("write_receipts", null, ContentValues().apply {
@@ -69,7 +74,76 @@ internal object ProjectWriteStore {
             ManualEditReceipt(command.commandId, command.ref, command.itemId, status, nextRevision, now)
         }
 
-    fun editBatch(db: SQLiteDatabase, command: ManualTextBatch, beforeCommit: () -> Unit): ManualBatchReceipt =
+    /**
+     * Name-only edit. Runs in the same global revision timeline and write_receipts namespace as
+     * [edit]. A v4 project is upgraded to v5 first while its current names are still the names
+     * that all earlier revisions used. The item row, revision, receipt and project revision are
+     * one transaction; cancellation after a completed format upgrade leaves only that upgrade.
+     */
+    fun editName(db: SQLiteDatabase, command: ManualNameEdit, beforeCommit: () -> Unit): ManualEditReceipt {
+        rejectPolicyCommand(db, command.ref, command.commandId)
+        if (batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        NativeProjectDatabase.ensureV5(db)
+        return NativeProjectDatabase.transaction(db) {
+            rejectPolicyCommand(db, command.ref, command.commandId)
+            val digest = command.digest()
+            val previous = find(db, command.ref, command.commandId)
+            if (previous != null) {
+                if (previous.first != digest) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction previous.second
+            }
+            val revision = NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton = 1")
+            val item = db.rawQuery(
+                "SELECT ${NativeProjectDatabase.ITEM_COLUMNS} FROM items WHERE id = ?",
+                arrayOf(command.itemId.value.toString()),
+            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it, db.version) else null }
+            val status = when {
+                command.expectedRevision != revision -> ManualEditStatus.STALE_REVISION
+                item == null -> ManualEditStatus.UNKNOWN_ITEM
+                command.baseFingerprint != item.fingerprint -> ManualEditStatus.STALE_FINGERPRINT
+                else -> ManualEditStatus.COMMITTED
+            }
+            val now = System.currentTimeMillis().coerceAtLeast(0)
+            val nextRevision = if (status == ManualEditStatus.COMMITTED) Math.addExact(revision, 1) else revision
+            if (status == ManualEditStatus.COMMITTED) {
+                checkNotNull(item)
+                val metadata = TextItemMetadata(
+                    item.metadata.tag,
+                    command.nameSource ?: item.metadata.nameSource,
+                    command.nameTranslation,
+                    item.metadata.extraField,
+                    item.metadata.skipInternalFilter,
+                )
+                val fingerprint = TextProjectFingerprint.item(item.id, item.row, item.source,
+                    item.translation, item.status, metadata, item.assetId, item.slot)
+                check(db.update("items", ContentValues().apply {
+                    put("name_source", NativeProjectDatabase.encodeNames(metadata.nameSource))
+                    put("name_translation", NativeProjectDatabase.encodeNames(metadata.nameTranslation))
+                    put("fingerprint", fingerprint.sha256)
+                }, "id = ?", arrayOf(item.id.value.toString())) == 1)
+                db.execSQL("UPDATE project SET revision = ? WHERE singleton = 1", arrayOf(nextRevision))
+                db.insertOrThrow("item_revisions", null, ContentValues().apply {
+                    put("revision", nextRevision); put("item_id", item.id.value)
+                    put("previous_fingerprint", item.fingerprint.sha256); put("fingerprint", fingerprint.sha256)
+                    put("translation", item.translation); put("status", item.status.name)
+                    put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                    put("command_id", command.commandId.value); put("committed_at", now)
+                    put("name_source", NativeProjectDatabase.encodeNameSnapshot(metadata.nameSource))
+                    put("name_translation", NativeProjectDatabase.encodeNameSnapshot(metadata.nameTranslation))
+                })
+            }
+            db.insertOrThrow("write_receipts", null, ContentValues().apply {
+                put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                put("command_id", command.commandId.value); put("digest", digest); put("item_id", command.itemId.value)
+                put("outcome", status.name); put("revision", nextRevision); put("committed_at", now)
+            })
+            beforeCommit()
+            ManualEditReceipt(command.commandId, command.ref, command.itemId, status, nextRevision, now)
+        }
+    }
+
+    fun editBatch(db: SQLiteDatabase, command: ManualTextBatch, maxItemChars: Int = 65_536, beforeCommit: () -> Unit): ManualBatchReceipt =
         NativeProjectDatabase.transaction(db) {
             rejectPolicyCommand(db, command.ref, command.commandId)
             if (find(db, command.ref, command.commandId) != null)
@@ -124,12 +198,18 @@ internal object ProjectWriteStore {
             }
             command.targets.forEachIndexed { index, target ->
                 beforeCommit()
-                val translation = db.rawQuery("SELECT translation FROM items WHERE id=?", arrayOf(target.id.value.toString())).use {
-                    check(it.moveToFirst()); it.getString(0)
+                val original = db.rawQuery("SELECT translation,status FROM items WHERE id=?", arrayOf(target.id.value.toString())).use {
+                    check(it.moveToFirst()); it.getString(0) to TextItemStatus.valueOf(it.getString(1))
                 }
+                val replaced = command.replacement?.let { LiteralTextReplacement.preview(original.first, it, beforeCommit).also {
+                    require(it.changed) { "Replacement target has no changes" }
+                }.text }
+                if (replaced != null && replaced.length > maxItemChars)
+                    throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
                 val edit = ManualTextEdit(command.itemCommand(index), command.ref, target.id,
                     Math.addExact(revision, index.toLong()), target.fingerprint,
-                    if (command.change.clearsTranslation) "" else translation, command.change.status)
+                    replaced ?: if (command.change.clearsTranslation) "" else original.first,
+                    if (command.replacement != null) original.second else command.change.status)
                 check(editBound(db, edit, beforeCommit).status == ManualEditStatus.COMMITTED)
             }
             beforeCommit()
@@ -146,6 +226,17 @@ internal object ProjectWriteStore {
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         val previous = find(db, command.ref, command.commandId) ?: return null
         if (previous.first != TextProjectFingerprint.command(command)) {
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        }
+        return previous.second
+    }
+
+    fun checkedNameReceipt(db: SQLiteDatabase, command: ManualNameEdit): ManualEditReceipt? {
+        rejectPolicyCommand(db, command.ref, command.commandId)
+        if (batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        val previous = find(db, command.ref, command.commandId) ?: return null
+        if (previous.first != command.digest()) {
             throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
         }
         return previous.second

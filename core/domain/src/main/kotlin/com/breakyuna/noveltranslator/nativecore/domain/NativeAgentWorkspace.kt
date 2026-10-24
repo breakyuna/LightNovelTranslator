@@ -29,3 +29,11 @@ interface NativeAgentWorkspacePort {
 }
 
 class AgentApprovalUnavailable : IllegalStateException("Approval could not be verified")
+
+/** Body-free query cursor, bound to the exact local instance and Chat. */
+data class AgentMessageCursor(val ref: LocalProjectRef, val chat: ChatId, val beforeTime: Long, val beforeId: MessageId) {
+    init { require(beforeTime >= 0) }
+}
+class AgentMessagePage(lines: List<AgentChatLine>, val next: AgentMessageCursor?) {
+    val lines = frozenList(lines)
+}

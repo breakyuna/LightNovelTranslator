@@ -34,19 +34,58 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v8. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class], version = 8, exportSchema = true)
+/** Independent app store v13. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class, NativeAgentInputQueueRow::class, NativeAgentInputDraftRow::class, NativeAgentSteerRunRow::class, NativeAgentSteerAttemptRow::class, NativeTranslationTaskDecisionRow::class, NativeTranslationMemberDecisionRow::class, NativeAgentContextRow::class, NativeAgentBranchRow::class], version = 13, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
     abstract fun agent(): NativeAgentDao
+    abstract fun agentInput(): NativeAgentInputDao
     abstract fun models(): NativeModelSettingsDao
     abstract fun runs(): NativeRunDao
     abstract fun translationRequests(): NativeTranslationRequestDao
     abstract fun usage(): NativeUsageReceiptDao
+    abstract fun translationTaskDecisions(): NativeTranslationTaskDecisionDao
     abstract fun translationTasks(): NativeTranslationTaskDao
     abstract fun translationResponses(): NativeTranslationResponseDao
 
     companion object {
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_branches (command TEXT NOT NULL PRIMARY KEY, sourceChat TEXT NOT NULL, targetChat TEXT NOT NULL, message TEXT NOT NULL, digest TEXT NOT NULL)")
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_contexts (instanceId TEXT NOT NULL, generation INTEGER NOT NULL, chatId TEXT NOT NULL, boundaryId TEXT NOT NULL, boundaryTime INTEGER NOT NULL, summary TEXT NOT NULL, fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(instanceId,generation,chatId))")
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_member_decisions (task TEXT NOT NULL, itemId INTEGER NOT NULL, command TEXT NOT NULL, action TEXT NOT NULL, fingerprint TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(task,itemId))")
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_task_decisions (command TEXT NOT NULL PRIMARY KEY, task TEXT NOT NULL, action TEXT NOT NULL, fingerprint TEXT NOT NULL, previousStage TEXT NOT NULL, revision INTEGER NOT NULL, committed INTEGER NOT NULL, remaining INTEGER NOT NULL, requests INTEGER NOT NULL, unresolvedRequests INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_translation_task_decisions_task ON native_translation_task_decisions(task)")
+            }
+        }
+
+        /** Adds the durable Agent input queue and steer ledger; existing v8 rows are untouched. */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_input_queues (instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, paused INTEGER NOT NULL, runId TEXT, runCommandId TEXT, maxDrafts INTEGER NOT NULL, maxDraftChars INTEGER NOT NULL, maxTotalChars INTEGER NOT NULL, revision INTEGER NOT NULL, pendingDraftId TEXT, pendingDraftRevision INTEGER, pendingAttemptId TEXT, pendingMessageId TEXT, lastReceiptRunId TEXT, lastReceiptRunCommandId TEXT, lastReceiptDraftId TEXT, lastReceiptDraftRevision INTEGER, lastReceiptAttemptId TEXT, lastReceiptMessageId TEXT, updatedAt INTEGER NOT NULL, PRIMARY KEY(instanceId,generation,projectId,chatId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_input_drafts (instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, draftId TEXT NOT NULL, position INTEGER NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, runId TEXT, runCommandId TEXT, state TEXT NOT NULL, PRIMARY KEY(instanceId,generation,projectId,chatId,draftId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_agent_input_drafts_instanceId_generation_projectId_chatId_position ON native_agent_input_drafts(instanceId,generation,projectId,chatId,position)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_steer_runs (instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, runCommandId TEXT NOT NULL, stage TEXT NOT NULL, revision INTEGER NOT NULL, updatedAt INTEGER NOT NULL, PRIMARY KEY(instanceId,generation,projectId,chatId,runId,runCommandId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_steer_attempts (instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, runCommandId TEXT NOT NULL, steerId TEXT NOT NULL, position INTEGER NOT NULL, text TEXT NOT NULL, submittedDuring TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, injectedDuring TEXT, PRIMARY KEY(instanceId,generation,projectId,chatId,runId,runCommandId,steerId))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_agent_steer_attempts_instanceId_generation_projectId_chatId_runId_runCommandId_position ON native_agent_steer_attempts(instanceId,generation,projectId,chatId,runId,runCommandId,position)")
+            }
+        }
+
         val MIGRATION_7_8 = object : Migration(7, 8) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_request_inputs (attemptId TEXT NOT NULL, itemId INTEGER NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(attemptId,itemId))")
@@ -114,6 +153,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).build()
     }
 }

@@ -1,8 +1,8 @@
 # TXT 编辑定位与草稿查找替换
 
-当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
 
-当前源码进度见 [HANDOFF §46—47](HANDOFF.md)，算法与列表范围见 [TEXT_QUALITY](TEXT_QUALITY.md) / [QUALITY_SCAN](QUALITY_SCAN.md)。相关用例已由 Actions #146 覆盖；本机未构建、测试或 Lint，新增设备验收仍缺。
+当前源码进度见 [HANDOFF §46—47、§106—107](HANDOFF.md)，算法与列表范围见 [TEXT_QUALITY](TEXT_QUALITY.md) / [QUALITY_SCAN](QUALITY_SCAN.md)。§46—47 用例已由 #158 覆盖；§106—107 的全查询与正则/JS 替换仅在工作区，未提交、未构建。新增设备验收仍缺。
 
 ## 上一条与下一条
 
@@ -16,10 +16,14 @@
 
 `Editor → NativeEditorReplacementDialog → prepareEditorReplacement → TextLiteralReplacer.preview → applyEditorReplacement → NativeEditDraft.changed`；最终保存仍走既有 `saveEditor → TextProjectPort.edit → ProjectWriteStore`。
 
-只操作当前打开条目的完整译文草稿。用户输入查找/替换文本及大小写策略，显式预览后查看全部匹配次数和结果开头最多 240 字符；完整结果没有截断。匹配不重叠，不解释正则、美元捕获或反斜线替换。支持空替换与空白/换行查找，拒绝空查找。
+只操作当前打开条目的完整译文草稿。用户输入查找/替换文本、大小写策略与字面/正则模式，显式预览后查看全部匹配次数和结果开头最多 240 字符；完整结果没有截断。默认字面模式不展开美元或反斜线；正则模式经 RE2/J 编译，替换字符串按 JavaScript replacement string 展开 `$$`、`$&`、`$1`—`$99`、`$<name>`，未参与捕获为空；不支持 lookaround、模式内反向引用等完整 JavaScript 正则。支持空替换与空白/换行查找，拒绝空查找。
 
 预览计算在 Default 执行，可取消；用 RE2/J 字面匹配和可计数输入，查找最多 256、替换最多 4,096、输入/结果每侧最多 65,536 UTF-16 单元，NUL/损坏 Unicode、预算和结果膨胀失败不发布截断结果。预览绑定 Project/Instance/Generation 与不可变草稿命令，记录原文字指纹；改变查找参数后隐藏不匹配预览，修改草稿文字或状态后清除预览。只有当前仍持有的同一预览对象、相同身份/命令且确有变化才可应用。
 
 应用只更新草稿与其保存命令，标记已处理并清除旧质量结果；预览/应用均不改数据库、不推进工程修订、不调用模型。用户确认后还须点击编辑器“保存”，执行层仍核对修订/条目指纹及持久终局回执。取消、无匹配或相同内容替换不会隐式保存。预览全文不进入 SavedStateHandle；应用后的普通编辑草稿继续沿用既有恢复机制。
 
-这不是“当前选择/全部筛选结果”的工程级查找替换，没有跨条目原子差异审批、撤销或批量修复。完整范围保留在 UI_SPEC / FEATURE_MATRIX，不以当前单条切片代替。
+§106 已把同一替换核心扩展到普通查询与固定质量筛选集合的全量批写，§107 补正则/JavaScript 替换及 v3 摘要/恢复编码；这些工作区源码尚未提交、未构建。姓名译文替换仍未接入，跨条目撤销、批量自动修复与完整 LG 语义仍开放；不以当前切片代替 UI_SPEC / FEATURE_MATRIX 的完整校对台。
+
+## 独立姓名编辑（§110，未构建）
+
+编辑器新增“编辑姓名”对话框，按行读写原文/译文姓名；保存使用独立 `ManualNameEdit`/`ProjectNamePort` 命令，在同一修订时间线内更新 `items.name_*`、重算完整 metadata 指纹并写入逐修订姓名快照。姓名命令不覆盖正文/状态草稿，正文保存仍需单独提交。姓名批量编辑和“译文/姓名/两者”查找替换目标尚未接入；姓名命令同样未编译/测试。

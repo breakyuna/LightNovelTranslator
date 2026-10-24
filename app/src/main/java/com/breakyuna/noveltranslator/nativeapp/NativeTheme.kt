@@ -8,8 +8,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 @Composable
-fun NativeTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun NativeTheme(mode: NativeThemeMode = NativeThemeMode.SYSTEM, content: @Composable () -> Unit) {
+    val dark = when (mode) {
+        NativeThemeMode.SYSTEM -> isSystemInDarkTheme()
+        NativeThemeMode.LIGHT -> false
+        NativeThemeMode.DARK -> true
+    }
     MaterialTheme(colorScheme = if (dark) darkColorScheme(
         primary = Color(0xfff49a51), onPrimary = Color(0xff25160a),
         background = Color(0xff111318), surface = Color(0xff171a20),

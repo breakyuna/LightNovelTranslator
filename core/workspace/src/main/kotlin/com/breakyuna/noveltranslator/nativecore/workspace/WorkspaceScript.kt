@@ -72,6 +72,21 @@ sealed interface WorkspaceHostRequest {
     class Print(val documentPath: WorkspacePath) : WorkspaceHostRequest {
         override val requiredCapability: WorkspaceCapability get() = WorkspaceCapability.PRINT
     }
+
+    /** Reads one material by identity; the descriptor grant still limits which ids are legal. */
+    class ReadMaterial(val materialId: WorkspaceMaterialId) : WorkspaceHostRequest {
+        override val requiredCapability: WorkspaceCapability get() = WorkspaceCapability.READ_MATERIALS
+    }
+
+    /** Proposes one file mutation; the body is validated before the request is constructed. */
+    class EmitChange(val path: WorkspacePath) : WorkspaceHostRequest {
+        override val requiredCapability: WorkspaceCapability get() = WorkspaceCapability.PROPOSE_CHANGES
+    }
+
+    /** Publishes one new file; the sink still verifies the approved path and digest. */
+    class EmitArtifact(val path: WorkspacePath) : WorkspaceHostRequest {
+        override val requiredCapability: WorkspaceCapability get() = WorkspaceCapability.EMIT_ARTIFACTS
+    }
 }
 
 object WorkspaceHostPolicy {

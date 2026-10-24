@@ -1,10 +1,10 @@
 # 原生 LG 目标架构
 
-当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
 
-当前实现的构建/测试证据见 [HANDOFF §3、§41](HANDOFF.md)。新 Agent/模拟切片已通过指定提交 CI；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
+当前实现的构建/测试证据见 [HANDOFF §3](HANDOFF.md)。新 Agent/模拟切片已通过 Actions #158；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
 
-当前接线边界：MainActivity → NativeProjectApp → NativeProjectViewModel → NativeAppGraph 装配的工程存储、运行协调器、统一模型网关及 Koog 对话。工程修改经 ProjectWriteStore；本地模拟与远程 TXT 批翻经 NativeModelGateway → TextTranslationService → TranslationCommitPort；Agent 对话经 NativeKoogConversation → AgentRequestBoundary → 共享网关，并由 NativeAgentStore 保存请求/响应与审批记录。多资产导入导出、规则与校对、远程翻译、Koog 对话/SSE/单条审批已有指定提交 CI；当前新增 `.lnt` v4、Room v5、全查询批写、预设/模板库、协议/多密钥、备份、RGSS 与工作区核心仍未构建，详见 [HANDOFF §3、§49、§51—74](HANDOFF.md)。完整 Agent 应用级执行、跨进程接续、工作区生产接线和全格式仍未完成；真实供应商与新增设备/视觉验收仍缺，TXT 手工实机确认仅限 §22。旧 AppViewModel、旧 Koog 适配和旧翻译引擎不在新启动链上；下文完整服务模型属于目标设计，应按 HANDOFF 核对实际实现。
+当前接线边界：MainActivity → NativeProjectApp → NativeProjectViewModel → NativeAppGraph 装配的工程存储、运行协调器、统一模型网关及 Koog 对话。工程修改经 ProjectWriteStore；本地模拟与远程 TXT 批翻经 NativeModelGateway → TextTranslationService → TranslationCommitPort；翻译任务队列经私有 AtomicFile 与 TranslationQueueCoordinator 冻结 spec 后复用前台执行器；Agent 对话经 NativeKoogConversation → AgentRequestBoundary → 共享网关，并由 NativeAgentStore 保存请求/响应与审批记录，回合前按阈值执行一次受审计的自动摘要压缩。多资产导入导出、规则与校对、远程翻译、Koog 对话/SSE/单条审批已有 #158 CI；当前 `.lnt` v5、Room v13、全查询批写、预设/模板库、协议/多密钥、备份、RGSS、PDF 与工作区核心为工作区增量，详见 [HANDOFF §3](HANDOFF.md)。完整 Agent 应用级执行、跨进程接续、工作区生产接线和全格式仍未完成；真实供应商与新增设备/视觉验收仍缺，TXT 手工实机确认仅限 §22。旧 AppViewModel、旧 Koog 适配和旧翻译引擎不在新启动链上；下文完整服务模型属于目标设计，应按 HANDOFF 核对实际实现。
 
 这是拟实施设计，现状与授权见 [总入口](README.md)。功能验收以 [功能矩阵](FEATURE_MATRIX.md) 为准，实施依赖见 [任务计划](IMPLEMENTATION_PLAN.md)。
 
@@ -136,14 +136,15 @@ AppStore 关联、缓存、草稿、工作区与可执行命令必须能定位�
 
 私有副本不会因外部文件变化自动更新。重选/重新导入或导出覆盖前比较来源摘要；无法读取来源时保留私有工程并要求重新授权/另存，不依赖路径或修改时间作为唯一证据。覆盖导出发生冲突时不静默替换外部新内容。
 
-### 3.5 工程交换与完整备份（待实现契约）
+### 3.5 工程交换、单工程备份与完整备份
 
 | 交付类型 | 必须包含 | 恢复/继续边界 |
 |---|---|---|
 | 原生 `.lnt` 工程 | LNT 工程事实、原稿、修订、产品对话历史与必要工程附件 | 使用一致快照；外部导入后新建本地实例/代际，不携带可执行授权；不替代完整备份 |
-| 完整恢复备份 | 一致 `.lnt` 快照、相关 AppStore 记录、不可变变更正文、历史附件和不可再生工作区材料；版本化 manifest、逐文件摘要、实例/代际与切点 | 可重建事实和核对不确定操作；导入后新建实例/代际，旧审批只作审计，继续操作重新取得授权 |
+| 单工程 ZIP 备份（§70 已实现） | `manifest.json` + `project.lnt`；版本、名称、来源身份、修订、字节数、SHA-256 与时间 | 恢复只接受精确条目并校验摘要，创建新实例；不覆盖现有工程，不恢复执行授权；不含凭据、Agent 会话、模型设置或模板库 |
+| 完整恢复备份（R35 目标） | 一致 `.lnt` 快照、相关 AppStore 记录、不可变变更正文、历史附件和不可再生工作区材料；版本化 manifest、逐文件摘要、实例/代际与切点 | 可重建事实和核对不确定操作；导入后新建实例/代际，旧审批只作审计，继续操作重新取得授权 |
 
-完整备份由 R35 编排，R07/R08 提供一致切点：暂阻新写入（包括 Chat/队列/审批/用量记录及工作区材料），等待实际写入者收尾，核对跨库未决提交；对不确定模型请求只记录状态，不重发。记录同一快照 ID 与工程/应用修订，固定附件引用集合并保护材料不被 GC，再生成数据库一致副本与文件清单。可变 work/uploads 必须在此期间固化为快照文件，仅持引用租约不能阻止内容被改写。若不能取得一致切点，返回可重试失败，不把时间上相邻的两份数据库复制品当作一致备份。
+完整备份由 R35 编排，R07/R08 提供一致切点：暂阻新写入（包括 Chat/队列/审批/用量记录及工作区材料），等待实际写入者收尾，核对跨库未决提交；对不确定模型请求只记录状态，不重发。记录同一快照 ID 与工程/应用修订，固定附件引用集合并保护材料不被 GC，再生成数据库一致副本与文件清单。可变 work/uploads 必须在此期间固化为快照文件，仅持引用租约不能阻止内容被改写。若不能取得一致切点，返回可重试失败，不把时间上相邻的两份数据库复制品当作一致备份。§70 只实现单工程 ZIP，不满足本节完整应用级备份目标。
 
 快照取得后可释放业务门禁，复制期间保留文件引用租约；缺失文件导致完整备份失败，缓存可按清单标为可再生并排除。保存到 SAF 失败保留本地已校验产物；发布后才标记交付成功。恢复验证 manifest、版本、摘要、路径与预算，staging 全部通过后发布，失败不改当前实例。
 
@@ -241,7 +242,7 @@ R03 从 LG `package.json.workspacePackages`、实际部署目录和全部内置�
 
 每项附版本、来源快照、调用者、样例、目标实现、预算和证据。QuickJS 的 JS 中断不等于宿主取消：必须分别验证 JS 停止、异步请求取消、文件流关闭和 native 工作退出。未确认真实执行者退出时保留占用；跨进程强制结束也须核对宿主回执和迟到回调。此清单和能力声明由 R03/R20/R21 共用，不维护三份互相矛盾的支持列表。
 
-§70 未构建源码已落地 `core/workspace` 的路径/预算/材料/changes/审批/脚本端口/技能/联网契约与编排核心，以及合成引擎/端口测试；但真实脚本引擎、隔离 Service、生产 apply/审批/材料适配器、技能资源和搜索/Fetch/MCP 实现仍缺失。该核心只证明边界与失败语义，不构成 G2 通过或工作区可用。
+§70/§73 源码已由 #158 覆盖，落地 `core/workspace` 的路径/预算/材料/changes/审批/脚本端口/技能/联网契约与编排核心，以及合成引擎/端口测试；但真实脚本引擎、隔离 Service、生产 apply/审批/材料适配器、技能资源和搜索/Fetch/MCP 实现仍缺失。该核心只证明边界与失败语义，不构成 G2 通过或工作区可用。
 
 ### 7.3 文件、技能与资源寿命
 
@@ -334,18 +335,18 @@ R06 记录服务类型、启动来源、等待阈值、通知拒绝、超时与 
 上述资料于 2026-10-22 查询。没有由此推断新增依赖已经编译、真机可用或格式输出已经一致。
 
 
-当前 S2 单条切片：nativeapp → nativecore.agent.NativeKoogWorkspace → AgentRequestBoundary/AgentToolRegistry → NativeAgentStore（独立应用 Room v3，审批表在 v2 引入）→ ProjectWriteStore。查询/准备操作使用本地固定后端，真正项目写入只由界面显式允许一次后走存储内部授权路径；不开放通用 PROJECT_WRITE。正文/消费绑定和跨库回执核对见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，结构化工具循环的后续实现见 §25，完整 Run/恢复仍待实现，指定提交 CI 证据见 HANDOFF §26。
+当前 S2 单条切片：nativeapp → nativecore.agent.NativeKoogWorkspace → AgentRequestBoundary/AgentToolRegistry → NativeAgentStore（独立应用 Room v13，审批表在 v2 引入）→ ProjectWriteStore。查询/准备操作使用本地固定后端，真正项目写入只由界面显式允许一次后走存储内部授权路径；不开放通用 PROJECT_WRITE。正文/消费绑定和跨库回执核对见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，结构化工具循环的后续实现见 §25，完整 Run/恢复仍待实现。
 
 
-§25 对话源码接线扩展为 NativeKoogConversation → AgentRequestBoundary → 共享 NativeModelGateway → core/engine CompatibleAgentModel；NativeModelSettingsStore 拥有独立 Keystore 密文和配置修订，NativeAgentStore 拥有结构化历史、选中会话与请求回执。原生 Room v2 运行迁移已有 CI 用例证据，2.json 仍未导出，真实供应商尚未联调；完整执行、恢复和计量目标未因此关闭，见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。
+§25 对话源码接线扩展为 NativeKoogConversation → AgentRequestBoundary → 共享 NativeModelGateway → core/engine CompatibleAgentModel；NativeModelSettingsStore 拥有独立 Keystore 密文和配置修订，NativeAgentStore 拥有结构化历史、选中会话与请求回执。Room v1→v8 迁移源码已由 #158 覆盖，v9—v13 与 2—13.json 仍为工作区待验证，真实供应商尚未联调；完整执行、恢复和计量目标未因此关闭，见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)。
 
 
 ### 持久执行记录切片接线
 
-`nativeapp → DurableRunExecutor → RunJournalPort → NativeRunStore` 为 §28 的运行记录接线，应用 Room 当时升至 v3；当前 v4 保留 v1→v2→v3→v4 显式迁移，新增远程翻译请求元数据。它保存执行与请求/提交边界，重启只核对现有回执，不恢复执行权或自动重放。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，当前 CI 与未验证范围见 HANDOFF §3、§49（原开发轮见 §28）；§34—40 增加当前页/整工程模拟前台 Service 与共享固定调度，契约见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)，已由 §41 CI 覆盖；设备验收、Agent 应用级执行、完整调度及原 Run 的执行接续仍是本章目标。
+`nativeapp → DurableRunExecutor → RunJournalPort → NativeRunStore` 为 §28 的运行记录接线，应用 Room 当时升至 v3；当前 v9 保留 v1→v9 显式迁移，后续增加远程请求元数据、协议/多密钥、用量账本、固定翻译任务和响应/提交暂存。它保存执行与请求/提交边界，重启只核对现有回执，不恢复执行权或自动重放。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)，当前 CI 与未验证范围见 HANDOFF §3（原开发轮见 §28）；§34—40 增加当前页/整工程模拟前台 Service 与共享固定调度，契约见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)，已由 #158 覆盖；设备验收、Agent 应用级执行、完整调度及原 Run 的执行接续仍是本章目标。
 
 ## 共享调度与格式核心的装配边界
 
 `NativeModelGateway` 的 Agent / 翻译入口共用进程内调度器，具体固定限额、FIFO、取消、跨配置修订时钟及运行期用量投影见 [MODEL_SCHEDULING](MODEL_SCHEDULING.md)。整工程模拟沿用原有唯一 Runtime/写入链路，不调用旧翻译引擎。
 
-`:core:formats` 增加独立的字幕解码文本核心，见 [SUBTITLE_CODECS](SUBTITLE_CODECS.md)。字幕核心身份只绑定当前解析文本；§49 已通过 SubtitleFormatAdapter 和 ProjectFormatService 接入 `.lnt` v3 资产格式/槽位存储及工作台。禁止 formats 直接打开工程数据库或把非 TXT 文件登记为 TXT 来绕过存储约束。开发记录见 HANDOFF §39—40，当前 CI 与验证状态只见 HANDOFF §3、§49。
+`:core:formats` 增加独立的字幕解码文本核心，见 [SUBTITLE_CODECS](SUBTITLE_CODECS.md)。字幕核心身份只绑定当前解析文本；§49 已通过 SubtitleFormatAdapter 和 ProjectFormatService 接入 `.lnt` v5 资产格式/槽位存储及工作台。禁止 formats 直接打开工程数据库或把非 TXT 文件登记为 TXT 来绕过存储约束。开发记录见 HANDOFF §39—40，当前 CI 与验证状态见 HANDOFF §3。

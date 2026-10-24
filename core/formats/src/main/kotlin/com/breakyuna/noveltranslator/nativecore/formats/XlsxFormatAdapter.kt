@@ -283,7 +283,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
         return ZipContainer.write(output)
     }
 
-    private fun readWorkbookPackage(archive: Map<String, ZipMember>): WorkbookPackage {
+    internal fun readWorkbookPackage(archive: Map<String, ZipMember>): WorkbookPackage {
         val workbookPath = findWorkbookPath(archive)
         val workbookMember = archive[workbookPath] ?: throw FormatContainerException(
             FormatContainerException.Reason.STRUCTURE)
@@ -388,7 +388,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
     }
 
     /** Shared strings and inline strings share the same visible-text shape: direct t or r/t runs. */
-    private fun sharedText(element: Element): String {
+    internal fun sharedText(element: Element): String {
         val output = StringBuilder()
         for (child in childElements(element)) {
             when (localName(child)) {
@@ -448,8 +448,8 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
     private fun safePath(value: String): String =
         if (value.length <= 4_096 && value.none(Char::isISOControl)) value else ""
 
-    private class SheetReference(val name: String, val path: String)
-    private class WorkbookPackage(val sheets: List<SheetReference>, val sharedStringsPath: String?)
+    internal class SheetReference(val name: String, val path: String)
+    internal class WorkbookPackage(val sheets: List<SheetReference>, val sharedStringsPath: String?)
     private class Relationship(val target: String, val type: String, val external: Boolean)
 
     private companion object {
