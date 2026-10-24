@@ -1700,7 +1700,7 @@ class NativeProjectViewModel internal constructor(
         if (disk != null) viewModelScope.launch { manualBatchFiles.remove(disk) }
         mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false, manualBatchQuery = false)
     }
-    fun prepareQueryReplacement(options: TextReplacementOptions, expected: NativeQueryReplacementScope) = action {
+    internal fun prepareQueryReplacement(options: TextReplacementOptions, expected: NativeQueryReplacementScope) = action {
         val current = mutable.value
         val project = current.project ?: return@action
         if (project.ref != expected.ref || project.revision != expected.revision || current.proofreadingQuery != expected.query ||

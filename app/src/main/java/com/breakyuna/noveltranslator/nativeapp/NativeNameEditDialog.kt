@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
@@ -22,6 +23,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.ManualNameEdit
  * separate immutable command. Names are one-per-line; blank lines are ignored. Clearing both
  * fields is an explicit "no names" value, not an accidental preserve.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NativeNameEditDialog(draft: NativeNameEditDraft, busy: Boolean,
                                   onDismiss: () -> Unit, onSave: (String, String) -> Unit) {

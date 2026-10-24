@@ -13,7 +13,7 @@ class PdfPageDecisionTest {
     private val validDigest = "0123456789abcdef".repeat(4)
 
     @Test fun encodedDecisionRoundTripsWithPageIdentity() {
-        val unit = unit(page = 3, decision = JsonPrimitive("translate"), tag = "page:3")
+        val unit = unit(page = JsonPrimitive(3), decision = JsonPrimitive("translate"), tag = "page:3")
         val binding = PdfPageCodec.decode(unit, 7)
         assertEquals(3, binding.page)
         assertEquals(PdfPageDecision.TRANSLATE, binding.decision)
@@ -53,10 +53,10 @@ class PdfPageDecisionTest {
 
     @Test fun pageZeroAndPageBeyondDocumentAreRejected() {
         assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(page = 0, tag = "page:0"), 4)
+            PdfPageCodec.decode(unit(page = JsonPrimitive(0), tag = "page:0"), 4)
         }
         assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(page = 5, tag = "page:5"), 4)
+            PdfPageCodec.decode(unit(page = JsonPrimitive(5), tag = "page:5"), 4)
         }
     }
 
@@ -80,7 +80,7 @@ class PdfPageDecisionTest {
 
     @Test fun tagMustMatchThePageNumber() {
         assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(page = 1, tag = "page:2"), 4)
+            PdfPageCodec.decode(unit(page = JsonPrimitive(1), tag = "page:2"), 4)
         }
     }
 

@@ -158,7 +158,7 @@ internal class NativeWorkspaceFetchAdapter(
                             ?: return@outer HopResult.Done(WorkspaceFetchOutcome.Failed(
                                 WorkspaceNetworkError(WorkspaceNetworkFailure.HTTP_STATUS, response.code),
                             ))
-                        val resolved = runCatching { URI(uri.resolve(location)).toString() }.getOrNull()
+                        val resolved = runCatching { uri.resolve(location).toString() }.getOrNull()
                             ?: return@outer HopResult.Done(WorkspaceFetchOutcome.Failed(
                                 WorkspaceNetworkError(WorkspaceNetworkFailure.POLICY_REJECTED),
                             ))
