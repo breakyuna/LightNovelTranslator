@@ -21,6 +21,7 @@ internal fun NativeRunHistory(state: NativeProjectUiState) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(stringResource(if (run.owner == RuntimeOwner.TRANSLATION) R.string.native_runs_translation else R.string.native_agent) +
                         " · " + stringResource(when (run.state) {
+                            StoredRunState.PAUSED -> R.string.native_runs_paused
                             StoredRunState.RUNNING -> R.string.native_runs_running
                             StoredRunState.WAITING_APPROVAL -> R.string.native_runs_waiting
                             StoredRunState.SUCCEEDED -> R.string.native_runs_succeeded

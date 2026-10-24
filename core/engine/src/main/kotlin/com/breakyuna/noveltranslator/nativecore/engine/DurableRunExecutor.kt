@@ -56,8 +56,13 @@ class DurableRunExecutor(private val runtime: RuntimePort, private val journal: 
             return result
         } catch (error: Throwable) {
             failure = error
-            terminal = if (error is CancellationException || runtime.snapshot().activeRun?.phase == RuntimePhase.STOPPING)
-                StoredRunState.CANCELLED else StoredRunState.FAILED
+            val phase = runtime.snapshot().activeRun?.phase
+            terminal = when {
+                phase == RuntimePhase.PAUSING && (error is CancellationException ||
+                    error is RuntimeUnavailable && error.reason == RuntimeUnavailable.Reason.STOPPING) -> StoredRunState.PAUSED
+                error is CancellationException || phase == RuntimePhase.STOPPING -> StoredRunState.CANCELLED
+                else -> StoredRunState.FAILED
+            }
             throw error
         } finally {
             try {
@@ -66,7 +71,7 @@ class DurableRunExecutor(private val runtime: RuntimePort, private val journal: 
                     catch (cleanup: Exception) {
                         // Preserve cancellation/failure. A failed journal finalization remains RUNNING
                         // and is conservatively interrupted on the next process start.
-                        if (failure == null) throw cleanup
+                        if (failure == null || terminal == StoredRunState.PAUSED) throw cleanup
                     }
                 }
             } finally { runtime.finishRun(lease, clearSelectedChat) }

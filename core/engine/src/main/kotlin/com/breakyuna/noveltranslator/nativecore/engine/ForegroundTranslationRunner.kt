@@ -13,19 +13,21 @@ data class ForegroundTranslationRequest(
     val expectedRevision: Long, val afterId: Long, val pageSize: Int = 40,
     val scope: TranslationScope = TranslationScope.PAGE,
     val options: RemoteTranslationOptions? = null,
+    val continuation: Boolean = false,
 ) {
     init {
         require(identity.projectId == ref.projectId && identity.chatId == null)
         require(expectedRevision >= 0 && afterId >= 0 && pageSize in 1..100)
         require(scope != TranslationScope.PROJECT || afterId == 0L)
+        require(!continuation || options != null)
     }
 }
 
 enum class TranslationScope { PAGE, PROJECT }
 
 enum class ForegroundTranslationPhase {
-    WAITING_FOR_SERVICE, RUNNING, STOPPING, SUCCEEDED, CANCELLED, FAILED;
-    val active get() = this == WAITING_FOR_SERVICE || this == RUNNING || this == STOPPING
+    WAITING_FOR_SERVICE, RUNNING, PAUSING, STOPPING, PAUSED, SUCCEEDED, CANCELLED, FAILED;
+    val active get() = this == WAITING_FOR_SERVICE || this == RUNNING || this == PAUSING || this == STOPPING
 }
 
 data class ForegroundTranslationSnapshot(
@@ -33,6 +35,7 @@ data class ForegroundTranslationSnapshot(
     val phase: ForegroundTranslationPhase, val progress: TranslationProgress? = null,
 )
 
+class ForegroundTranslationPaused : CancellationException("Translation paused")
 class ForegroundTranslationStartFailed : IllegalStateException("Foreground execution could not start")
 class ForegroundTranslationConflict : IllegalArgumentException("Foreground command payload changed")
 
@@ -57,9 +60,9 @@ class ForegroundTranslationRunner(
         this(runtime, runs, scope, { request, lease, recorder, progress ->
             when (request.scope) {
                 TranslationScope.PAGE -> translations.translateReservedPage(request.ref, lease, recorder, request.configuration,
-                    request.expectedRevision, request.afterId, request.pageSize, progress, request.options)
+                    request.expectedRevision, request.afterId, request.pageSize, progress, request.options, request.continuation)
                 TranslationScope.PROJECT -> translations.translateReservedProject(request.ref, lease, recorder, request.configuration,
-                    request.expectedRevision, request.pageSize, progress, request.options)
+                    request.expectedRevision, request.pageSize, progress, request.options, request.continuation)
             }
         })
 
@@ -68,6 +71,7 @@ class ForegroundTranslationRunner(
         val ready = CompletableDeferred<Unit>()
         var job: Job? = null
         var stopRequested = false
+        var pauseRequested = false
         var startFailure: ForegroundTranslationStartFailed? = null
         var finished = false
     }
@@ -92,8 +96,14 @@ class ForegroundTranslationRunner(
         val session = synchronized(monitor) {
             current?.let { existing ->
                 if (existing.handle.request.identity.commandId == request.identity.commandId) {
-                    if (existing.handle.request != request) throw ForegroundTranslationConflict()
-                    return existing.handle
+                    if (existing.handle.request == request && !(existing.finished && request.continuation &&
+                        existing.snapshot.phase in setOf(ForegroundTranslationPhase.PAUSED,
+                            ForegroundTranslationPhase.CANCELLED, ForegroundTranslationPhase.FAILED))) return existing.handle
+                    // Explicit continuation may only advance revision on the exact frozen task payload.
+                    val previous = existing.handle.request
+                    if (!existing.finished || !request.continuation || request.expectedRevision < previous.expectedRevision ||
+                        request.copy(expectedRevision = previous.expectedRevision, continuation = previous.continuation) != previous)
+                        throw ForegroundTranslationConflict()
                 }
                 if (!existing.finished) throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
             }
@@ -109,7 +119,12 @@ class ForegroundTranslationRunner(
         try {
             // ATOMIC transfers the reserved lease into finally even for a cancelled owner scope.
             val worker = scope.launch(start = CoroutineStart.ATOMIC) { execute(session) }
-            synchronized(monitor) { session.job = worker; if (session.stopRequested) worker.cancel() }
+            synchronized(monitor) {
+                session.job = worker
+                if (session.stopRequested) worker.cancel()
+                else if (session.pauseRequested && runtime.snapshot().activeRun?.outstandingModelRequests == 0)
+                    worker.cancel(ForegroundTranslationPaused())
+            }
         } catch (_: Exception) {
             runtime.requestStop(session.lease)
             runtime.finishRun(session.lease, workspace(request))
@@ -143,6 +158,25 @@ class ForegroundTranslationRunner(
         }
         publish(snapshot)
         session.ready.completeExceptionally(requireNotNull(session.startFailure))
+    }
+
+    /** Available after durable task preparation. In-flight model operations are allowed to settle. */
+    fun pause(token: String): Boolean {
+        val (session, snapshot) = synchronized(monitor) {
+            val session = current?.takeIf { it.handle.token == token && !it.finished && !it.stopRequested &&
+                it.startFailure == null && it.handle.request.options != null && it.snapshot.progress != null &&
+                it.snapshot.phase in setOf(ForegroundTranslationPhase.RUNNING, ForegroundTranslationPhase.PAUSING) } ?: return false
+            if (session.pauseRequested) return true
+            if (!runtime.requestPause(session.lease)) return false
+            session.pauseRequested = true
+            session.snapshot = session.snapshot.copy(revision = ++revision, phase = ForegroundTranslationPhase.PAUSING)
+            session to session.snapshot
+        }
+        publish(snapshot)
+        // The pause barrier already prevents new model leases. Wake a queued/RPM waiter promptly.
+        if (runtime.snapshot().activeRun?.outstandingModelRequests == 0)
+            synchronized(monitor) { session.job?.cancel(ForegroundTranslationPaused()) }
+        return true
     }
 
     fun stop(token: String): Boolean {
@@ -191,6 +225,8 @@ class ForegroundTranslationRunner(
             session.finished = true
             val phase = when {
                 session.startFailure != null || failure is ForegroundTranslationStartFailed -> ForegroundTranslationPhase.FAILED
+                session.pauseRequested && !session.stopRequested && (failure == null || failure is CancellationException ||
+                    failure is RuntimeUnavailable && failure.reason == RuntimeUnavailable.Reason.STOPPING) -> ForegroundTranslationPhase.PAUSED
                 failure == null -> ForegroundTranslationPhase.SUCCEEDED
                 session.stopRequested || failure is CancellationException -> ForegroundTranslationPhase.CANCELLED
                 else -> ForegroundTranslationPhase.FAILED
@@ -199,7 +235,8 @@ class ForegroundTranslationRunner(
                 .also { session.snapshot = it }
         }
         publish(snapshot)
-        val terminalFailure = session.startFailure ?: failure
+        val terminalFailure = session.startFailure ?: if (snapshot.phase == ForegroundTranslationPhase.PAUSED)
+            ForegroundTranslationPaused() else failure
         if (terminalFailure == null) session.completion.complete(requireNotNull(result))
         else session.completion.completeExceptionally(terminalFailure)
     }

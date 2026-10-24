@@ -23,6 +23,8 @@ interface RuntimePort {
     fun beginRunSelectingChat(identity: RunIdentity, owner: RuntimeOwner, chat: ChatIdentity): RunLease
     fun beginOperation(run: RunLease, kind: OperationKind): OperationLease
     fun endOperation(operation: OperationLease)
+    /** Blocks new model work while existing translation IO can settle. Not cancellation. */
+    fun requestPause(run: RunLease): Boolean = false
     fun requestStop(run: RunLease): Boolean
     /** Optionally clear only this selection, atomically when this lease is actually released. */
     fun finishRun(run: RunLease, clearSelectedChat: ChatIdentity? = null)

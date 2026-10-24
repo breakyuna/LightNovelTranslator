@@ -14,6 +14,9 @@ class TextTranslationService(
     private val runtime: RuntimePort, private val projects: TextProjectPort,
     private val writes: TranslationCommitPort, private val gateway: TranslationModelGateway,
     private val runs: DurableRunExecutor,
+    private val tasks: TranslationTaskPort? = null,
+    private val ledger: UsageLedgerReadPort? = null,
+    private val retryCheckpoints: TranslationRetryCheckpointPort? = null,
 ) {
     private val active = java.util.concurrent.atomic.AtomicReference<RunLease?>(null)
     fun stop(): Boolean = active.get()?.let { runtime.requestStop(it) } ?: false
@@ -42,23 +45,33 @@ class TextTranslationService(
         }
     }
 
+    /** User-confirmed continuation of an existing fixed task, never a re-query or a new logical run. */
+    suspend fun resume(spec: TranslationTaskSpec, progress: (TranslationProgress) -> Unit = {}): TranslationProgress =
+        withContext(Dispatchers.Default) {
+            require(tasks != null)
+            runs.execute(spec.ref, spec.run, RuntimeOwner.TRANSLATION) { lease, recorder ->
+                translateReserved(spec.ref, lease, recorder, spec.configuration, spec.revision, spec.afterId,
+                    spec.pageSize, spec.wholeProject, progress, spec.options, resuming = true)
+            }
+        }
+
     /** Caller already owns the durable execution; this method never reserves a second run. */
     internal suspend fun translateReservedPage(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
-        expectedRevision: Long, afterId: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null,
+        expectedRevision: Long, afterId: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null, resuming: Boolean = false,
     ): TranslationProgress = translateReserved(ref, lease, recorder, configuration, expectedRevision,
-        afterId, pageSize, false, progress, options)
+        afterId, pageSize, false, progress, options, resuming)
 
     internal suspend fun translateReservedProject(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
-        expectedRevision: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null,
+        expectedRevision: Long, pageSize: Int, progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions? = null, resuming: Boolean = false,
     ): TranslationProgress = translateReserved(ref, lease, recorder, configuration, expectedRevision,
-        0, pageSize, true, progress, options)
+        0, pageSize, true, progress, options, resuming)
 
     private suspend fun translateReserved(
         ref: LocalProjectRef, lease: RunLease, recorder: RunProgressRecorder, configuration: ModelConfigurationRef,
         expectedRevision: Long, afterId: Long, pageSize: Int, wholeProject: Boolean,
-        progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions?,
+        progress: (TranslationProgress) -> Unit, options: RemoteTranslationOptions?, resuming: Boolean,
     ): TranslationProgress = withContext(Dispatchers.Default) {
         require(lease.identity.projectId == ref.projectId && lease.identity.chatId == null && pageSize in 1..100)
         val identity = lease.identity
@@ -76,30 +89,53 @@ class TextTranslationService(
             // not enter a paid request simply because their rows occur in this page.
             val enabledAssets = (projects as? ProjectAssetPort)?.assets(ref)
                 ?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
-            var revision = expectedRevision
-            var committed = 0
-            var requests = 0
+            val task = if (options != null && tasks != null) tasks.open(lease,
+                TranslationTaskSpec(ref, identity, configuration, expectedRevision, afterId, pageSize, wholeProject, options), resuming) else null
+            var revision = task?.revision ?: expectedRevision
+            var committed = task?.committed ?: 0
+            var requests = task?.requests ?: 0
+            val initialRevision = task?.initialRevision ?: expectedRevision
+            if (task != null) recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTED, revision, committed, requests))
             var usage = unknownRequestUsage()
-            var totals = RequestUsageTotals()
+            var totals = if (task != null) ledger?.summary(UsageLedgerQuery(ref, run = identity))?.totals ?: RequestUsageTotals()
+                else RequestUsageTotals()
             var cursor = afterId
+            if (task != null) progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
+            fun checkPause() {
+                if (runtime.snapshot().activeRun?.phase == RuntimePhase.PAUSING) throw ForegroundTranslationPaused()
+            }
+            suspend fun applyEdits(edits: List<ManualTextEdit>) {
+                currentCoroutineContext().ensureActive()
+                recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTING, revision, committed, requests, edits.map { it.commandId }))
+                if (task != null) tasks?.committing(lease, revision, edits)
+                revision = writes.commitTranslation(lease, TranslationBatch(ref, revision, edits))
+                committed += edits.size
+                withContext(NonCancellable) {
+                    if (task != null) tasks?.committed(lease, revision, committed)
+                    recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTED, revision, committed, requests))
+                }
+                progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
+            }
+            suspend fun drainStaged() {
+                if (task == null) return
+                while (true) {
+                    val edits = tasks?.staged(lease).orEmpty()
+                    if (edits.isEmpty()) break
+                    applyEdits(edits)
+                }
+            }
             suspend fun commitResults(results: List<Pair<TextProjectItem, String>>) {
-                for (chunk in results.chunked(20)) {
-                    currentCoroutineContext().ensureActive()
-                    val edits = chunk.mapIndexed { offset, (item, text) -> ManualTextEdit(
-                        CommandId(UUID.randomUUID().toString()), ref, item.id, Math.addExact(revision, offset.toLong()),
-                        item.fingerprint, text,
-                    ) }
-                    recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTING, revision, committed, requests, edits.map { it.commandId }))
-                    revision = writes.commitTranslation(lease, TranslationBatch(ref, revision, edits))
-                    committed += edits.size
-                    withContext(NonCancellable) {
-                        recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTED, revision, committed, requests))
-                    }
-                    progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
+                if (task != null) {
+                    tasks?.stage(lease, results.map { (item, text) -> TranslationTaskOutput(item.id, item.fingerprint, text) })
+                    drainStaged()
+                } else for (chunk in results.chunked(20)) {
+                    applyEdits(chunk.mapIndexed { offset, (item, text) -> ManualTextEdit(
+                        CommandId(UUID.randomUUID().toString()), ref, item.id, Math.addExact(revision, offset.toLong()), item.fingerprint, text) })
                 }
             }
             suspend fun terminateItemFailure(failure: AgentModelFailure, targets: List<TextProjectItem>): Nothing {
                 val running = runtime.snapshot().activeRun
+                if (running?.identity == identity && running.phase == RuntimePhase.PAUSING) throw failure
                 if (running == null || running.identity != identity || running.phase != RuntimePhase.RUNNING)
                     throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
                 val itemFailure = failure.kind in setOf(ModelFailureKind.PARSING, ModelFailureKind.TRUNCATED,
@@ -115,22 +151,66 @@ class TextTranslationService(
                             item.fingerprint, item.translation, TextItemStatus.ERROR) }
                         recorder.checkpoint(RunCheckpoint(StoredRunStage.MARKING_FAILURE, revision, committed, requests,
                             edits.map { it.commandId }))
+                        if (task != null) tasks?.committing(lease, revision, edits, failures = true)
                         revision = failureStore.markTranslationFailures(lease, TranslationFailureBatch(ref, revision, edits))
                         withContext(NonCancellable) {
+                            if (task != null) tasks?.committed(lease, revision, committed)
                             recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTED, revision, committed, requests))
                         }
                         progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
                     }
                 }
+                if (task != null) tasks?.failed(lease)
                 throw failure
+            }
+            if (task != null && resuming) {
+                val response = tasks?.response(lease)
+                if (response != null) {
+                    val primary = response.outputs.associate { output ->
+                        output.id to (projects.item(ref, output.id)?.item ?: throw TranslationTaskNeedsReview())
+                    }
+                    val outputs = response.outputs.associateBy { it.id }
+                    val restored = response.targets.map { id ->
+                        currentCoroutineContext().ensureActive()
+                        val item = projects.item(ref, id)?.item ?: throw TranslationTaskNeedsReview()
+                        val output = outputs[id] ?: if (options?.deduplicateSameFile == true && item.metadata.isDefault)
+                            response.outputs.singleOrNull { value ->
+                                val source = primary.getValue(value.id)
+                                source.metadata.isDefault && source.assetId == item.assetId && source.source == item.source
+                            } else null
+                        if (output == null) throw TranslationTaskNeedsReview()
+                        val prepared = processor?.prepare(item.source)
+                        val text = if (prepared != null) requireNotNull(processor).finish(prepared, output.text) else output.text
+                        TranslationTaskOutput(item.id, item.fingerprint, text)
+                    }
+                    tasks?.stage(lease, restored)
+                }
+                drainStaged()
+            }
+            var savedRetry = if (task != null) retryCheckpoints?.read(lease, ref, configuration) else null
+            savedRetry?.let { saved ->
+                require(saved.initialAdditional == options?.additionalRequestsPerBatch)
+                saved.terminalFailure?.let { throw AgentModelFailure(it) }
+                if (saved.active != null) {
+                    val items = saved.active.ids.map { id -> projects.item(ref, id)?.item ?: throw TranslationTaskNeedsReview() }
+                    val pending = tasks?.remaining(lease, ref, items) ?: throw TranslationTaskNeedsReview()
+                    // A canonical task receipt must prove every active primary was committed.
+                    // An unknown/failed/unsent active attempt is not permission to replay it.
+                    if (pending.isNotEmpty()) throw TranslationTaskNeedsReview()
+                    savedRetry = TranslationRetryCheckpoint(saved.targets, saved.initialAdditional,
+                        saved.remainingAdditional, saved.pending, notBeforeMillis = saved.notBeforeMillis)
+                    withContext(NonCancellable) { retryCheckpoints?.write(lease, ref, configuration, requireNotNull(savedRetry)) }
+                }
             }
             do {
                 currentCoroutineContext().ensureActive()
+                checkPause()
                 val page = projects.items(ref, revision, cursor, pageSize)
                 // Check the revision even for an empty/no-op page before reporting success.
                 require(page.revision == revision)
                 val mode = options?.startMode ?: TranslationStartMode.NEW
-                val eligible = page.items.filter { mode.accepts(it.status) && it.source.isNotBlank() &&
+                val remaining = if (task != null) tasks?.remaining(lease, ref, page.items) else null
+                val eligible = page.items.filter { (remaining == null || it.id in remaining) && mode.accepts(it.status) && it.source.isNotBlank() &&
                     (enabledAssets == null || it.assetId in enabledAssets) }
                 val duplicates = if (options?.deduplicateSameFile == true) TranslationDeduplication.coordinate(
                     eligible.filter { it.metadata.isDefault }.map { item -> TranslationItemSnapshot(item.id,
@@ -144,7 +224,7 @@ class TextTranslationService(
                     if (duplicates?.primaryFor(item.id)?.let { it != item.id } == true) continue
                     val existing = if (options?.deduplicateSameFile == true && item.metadata.isDefault) {
                         val reuse = projects as? TranslationReusePort ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
-                        reuse.committedDuplicate(ref, revision, expectedRevision, item.id)
+                        reuse.committedDuplicate(ref, revision, initialRevision, item.id)
                     } else null
                     if (existing == null) pending.add(item) else {
                         require(existing.revision == revision && existing.item.assetId == item.assetId &&
@@ -165,6 +245,7 @@ class TextTranslationService(
                     prepared[item.id] = transformed
                     TranslationItemSnapshot(item.id, item.assetId, item.row, source, item.status, item.fingerprint)
                 }
+                val reservedRetryIds = savedRetry?.takeIf { it.pending.isNotEmpty() }?.targets?.mapTo(HashSet()) { it.id }.orEmpty()
                 val plan = TranslationPlanner(TranslationPlanLimits(
                     maxItemsPerUnit = options?.batchSize ?: 20,
                     maxCharactersPerUnit = options?.batchCharacters ?: 32_768,
@@ -173,26 +254,41 @@ class TextTranslationService(
                     maxLinesPerUnit = 4_096,
                     maxTokensPerUnit = 1_000_000,
                     precedingLines = 0,
-                )).plan(TranslationTargetSnapshot(ref, revision, snapshots),
+                )).plan(TranslationTargetSnapshot(ref, revision, snapshots.filter { it.id !in reservedRetryIds }),
                     TranslationModeCommand(ref, TranslationRunMode.valueOf(mode.name), revision))
                 check(plan.skipped.isEmpty()) { "Prepared input was unexpectedly excluded" }
-                for (unit in plan.units) {
-                    var remainingAdditional = options?.additionalRequestsPerBatch ?: 0
-                    val retryPlanner = TranslationRetryPlanner(TranslationRetryBudget(
-                        maxAttempts = remainingAdditional.coerceAtLeast(1),
-                        maxSplitDepth = remainingAdditional,
-                    ))
-                    val queue = java.util.ArrayDeque<TranslationRetryContext>()
-                    queue.add(TranslationRetryContext(unit.items))
-                    while (queue.isNotEmpty()) {
+                val sessions = ArrayList<Pair<Long, TranslationRetrySession>>()
+                val saved = savedRetry
+                if (saved != null && saved.pending.isNotEmpty()) {
+                    val ids = saved.pending.flatMap { it.ids }
+                    val local = snapshots.filter { it.id in ids }
+                    if (local.isNotEmpty()) {
+                        if (local.size != ids.size || local.map { it.assetId }.distinct().size != 1) throw TranslationTaskNeedsReview()
+                        sessions.add(local.first().assetId to TranslationRetrySession.restore(local, saved))
+                        savedRetry = null
+                    }
+                }
+                plan.units.forEach { unit -> sessions.add(unit.assetId to
+                    TranslationRetrySession.start(unit.items, options?.additionalRequestsPerBatch ?: 0)) }
+                for ((unitAssetId, retries) in sessions) {
+                    if (task != null) retryCheckpoints?.write(lease, ref, configuration, retries.checkpoint)
+                    while (retries.pending) {
                         currentCoroutineContext().ensureActive()
-                        val block = queue.removeFirst()
+                        checkPause()
+                        val due = retries.checkpoint.notBeforeMillis
+                        while (due > System.currentTimeMillis().coerceAtLeast(0)) {
+                            checkPause()
+                            delay((due - System.currentTimeMillis().coerceAtLeast(0)).coerceIn(1, 30_000))
+                        }
+                        currentCoroutineContext().ensureActive()
+                        checkPause()
+                        val block = retries.next()
                         val inputs = block.items.map { byId.getValue(it.id) }
                         val precedings = if (options != null && options.precedingLines > 0) {
                             val contextStore = projects as? TranslationContextPort
                                 ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
                             val earlier = contextStore.precedingTranslationItems(ref, revision, inputs.first().id)
-                            require(earlier.revision == revision && earlier.items.all { it.assetId == unit.assetId })
+                            require(earlier.revision == revision && earlier.items.all { it.assetId == unitAssetId })
                             val contextual = earlier.items.map { item -> TranslationItemSnapshot(item.id, item.assetId,
                                 item.row, item.source, item.status, item.fingerprint) } + block.items
                             val contextPlan = TranslationPlanner(TranslationPlanLimits(
@@ -216,7 +312,11 @@ class TextTranslationService(
                             }, options, policySnapshot?.fingerprint, if (policy.promptEnabled) policy.prompt else "", precedings)
                         val beforeDispatch: suspend () -> Unit = {
                             currentCoroutineContext().ensureActive()
+                            retries.begin(request.attempt)
+                            if (task != null) retryCheckpoints?.write(lease, ref, configuration, retries.checkpoint)
                             requests++
+                            if (task != null) tasks?.requesting(lease, revision, request.attempt,
+                                inputs.flatMap { listOf(it.id) + derived[it.id].orEmpty().map { item -> item.id } }, requests)
                             recorder.checkpoint(RunCheckpoint(StoredRunStage.REQUESTING, revision, committed, requests,
                                 translationAttempt = if (options != null) request.attempt else null))
                             progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
@@ -226,6 +326,8 @@ class TextTranslationService(
                             if (dispatchGateway != null) dispatchGateway.completePrepared(lease, request, beforeDispatch)
                             else { beforeDispatch(); gateway.complete(lease, request) }
                         } catch (failure: AgentModelFailure) {
+                            // A scheduling/configuration rejection did not enter the request checkpoint.
+                            if (retries.checkpoint.active == null) throw failure
                             if (options != null) recorder.checkpoint(RunCheckpoint(StoredRunStage.REQUEST_FAILED,
                                 revision, committed, requests, translationAttempt = request.attempt))
                             val failedTargets = inputs.flatMap { listOf(it) + derived[it.id].orEmpty() }
@@ -234,22 +336,18 @@ class TextTranslationService(
                             totals = totals.add(unknownRequestUsage())
                             usage = addUsage(usage, unknownRequestUsage(), requests == 1)
                             progress(TranslationProgress(committed, requests, revision, usage, totals, identity))
-                            if (remainingAdditional == 0) terminateItemFailure(failure, failedTargets)
-                            val decision = retryPlanner.decide(block, failure.kind)
-                            if (decision.outcome == TranslationRetryOutcome.PERMANENT ||
-                                decision.retryBlocks.isEmpty() || decision.retryBlocks.size > remainingAdditional)
-                                terminateItemFailure(failure, failedTargets)
-                            remainingAdditional -= decision.retryBlocks.size
+                            retries.failed(failure.kind, System.currentTimeMillis().coerceAtLeast(0))
+                            if (task != null) withContext(NonCancellable) {
+                                retryCheckpoints?.write(lease, ref, configuration, retries.checkpoint)
+                            }
+                            if (retries.checkpoint.terminalFailure != null) terminateItemFailure(failure, failedTargets)
                             // Only remote options explicitly confirmed by the user can reach here.
                             // Every replacement request gets its own attempt/audit and shared gate.
                             val running = runtime.snapshot().activeRun
+                            if (running?.identity == identity && running.phase == RuntimePhase.PAUSING) throw failure
                             if (running == null || running.identity != identity || running.phase != RuntimePhase.RUNNING)
                                 throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
-                            if (decision.backoffMillis > 0) delay(decision.backoffMillis)
                             currentCoroutineContext().ensureActive()
-                            decision.retryBlocks.asReversed().forEach {
-                                queue.addFirst(TranslationRetryContext(it.items, it.attempts, it.splitDepth))
-                            }
                             continue
                         }
                         recorder.checkpoint(RunCheckpoint(StoredRunStage.RESPONSE_RECORDED, revision, committed, requests))
@@ -263,6 +361,10 @@ class TextTranslationService(
                             (listOf(item) + derived[item.id].orEmpty()).map { it to text }
                         }
                         commitResults(results)
+                        retries.succeeded()
+                        if (task != null) withContext(NonCancellable) {
+                            retryCheckpoints?.write(lease, ref, configuration, retries.checkpoint)
+                        }
                     }
                 }
                 if (!wholeProject || page.items.isEmpty()) break
@@ -270,6 +372,9 @@ class TextTranslationService(
                 check(nextCursor > cursor) { "Project cursor did not advance" }
                 cursor = nextCursor
             } while (true)
+            checkPause()
+            if (savedRetry?.pending?.isNotEmpty() == true) throw TranslationTaskNeedsReview()
+            if (task != null) tasks?.finished(lease)
             TranslationProgress(committed, requests, revision, usage, totals, identity)
         } finally { active.compareAndSet(lease, null) }
     }

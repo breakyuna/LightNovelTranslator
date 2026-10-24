@@ -21,7 +21,7 @@ internal class NativeTranslationHost(
     private val update: (ForegroundTranslationSnapshot) -> Unit,
     private val dismiss: (Int) -> Unit,
 ) {
-    enum class Command { START, STOP, IGNORE }
+    enum class Command { START, STOP, PAUSE, IGNORE }
 
     private var observer: Job? = null
     private var watching: String? = null
@@ -31,6 +31,11 @@ internal class NativeTranslationHost(
         latestStartId = startId
         val snapshot = runner.state.value?.takeIf { it.token == token && it.phase.active && runner.accepts(it.token) }
         if (snapshot == null || command == Command.IGNORE) {
+            settleIdleHost()
+            return
+        }
+        if (command == Command.PAUSE) {
+            runner.pause(snapshot.token)
             settleIdleHost()
             return
         }

@@ -90,6 +90,29 @@ class NativeTranslationAuditStoreTest {
         assertEquals(StoredRunState.INTERRUPTED, interrupted.state); assertTrue(interrupted.needsReview)
     }
 
+    @Test fun validOutputsSurviveWithTheUsageReceiptAndConflictingReplayIsRejected() = runBlocking {
+        val project = project(); val lease = begin(project.ref); val request = request(project.ref, lease)
+        val handle = audit.dispatched(lease, request, "a".repeat(64))
+        val response = TranslationModelResponse(listOf(TranslationOutput(ItemId(1), "cached result")),
+            unknownRequestUsage(), ModelStopReason.COMPLETE)
+        audit.receivedResponse(handle, response); audit.receivedResponse(handle, response)
+        audit.close(); audit = NativeTranslationAuditStore(context, runtime, projects)
+        withContext(Dispatchers.IO) {
+            val db = NativeAppDatabase.open(context)
+            try {
+                val outputs = db.translationResponses().responses(request.attempt.value)
+                assertEquals(1, outputs.size); assertEquals("cached result", outputs.single().text)
+                assertEquals("RECEIVED", db.translationRequests().find(request.attempt.value)!!.state)
+                assertEquals(1, db.translationResponses().inputs(request.attempt.value).size)
+            } finally { db.close() }
+        }
+        try {
+            audit.receivedResponse(handle, TranslationModelResponse(listOf(TranslationOutput(ItemId(1), "changed")),
+                unknownRequestUsage(), ModelStopReason.COMPLETE)); fail("Changed immutable cached output")
+        } catch (_: IllegalArgumentException) { }
+        runtime.finishRun(lease)
+    }
+
     @Test fun v3MigrationPreservesRegistrationsModelsAndRuns() = runBlocking {
         val project = project()
         val originalModels = NativeModelSettingsStore(context, runtime)
@@ -102,7 +125,19 @@ class NativeTranslationAuditStoreTest {
         withContext(Dispatchers.IO) {
             android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath("lnt_native_app.db").path,
                 null, android.database.sqlite.SQLiteDatabase.OPEN_READWRITE).use { db ->
-                db.execSQL("DROP TABLE native_translation_requests"); db.execSQL("DELETE FROM room_master_table"); db.version = 3
+                db.execSQL("DROP TABLE native_translation_requests")
+                db.execSQL("DROP TABLE native_translation_staged")
+                db.execSQL("DROP TABLE native_translation_responses")
+                db.execSQL("DROP TABLE native_translation_request_inputs")
+                db.execSQL("DROP TABLE native_translation_targets")
+                db.execSQL("DROP TABLE native_translation_tasks")
+                db.execSQL("DROP TABLE native_usage_receipts")
+                // Build a genuine v3 fixture; retaining v5 columns would make 4->5 add them twice.
+                db.execSQL("ALTER TABLE native_model_settings RENAME TO fixture_v5_models")
+                db.execSQL("CREATE TABLE native_model_settings (revision INTEGER NOT NULL PRIMARY KEY, endpoint TEXT NOT NULL, model TEXT NOT NULL, encryptedKey TEXT NOT NULL)")
+                db.execSQL("INSERT INTO native_model_settings(revision,endpoint,model,encryptedKey) SELECT revision,endpoint,model,encryptedKey FROM fixture_v5_models")
+                db.execSQL("DROP TABLE fixture_v5_models")
+                db.execSQL("DELETE FROM room_master_table"); db.version = 3
             }
         }
         projects = NativeTextProjectStore(context, runtime); runs = NativeRunStore(context, projects, runtime)

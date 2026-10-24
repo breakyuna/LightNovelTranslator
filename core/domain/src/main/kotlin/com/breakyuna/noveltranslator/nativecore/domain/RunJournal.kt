@@ -1,7 +1,7 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
 /** Local execution facts, never an authorization to replay a model request or project write. */
-enum class StoredRunState { RUNNING, WAITING_APPROVAL, SUCCEEDED, CANCELLED, FAILED, INTERRUPTED }
+enum class StoredRunState { RUNNING, WAITING_APPROVAL, PAUSED, SUCCEEDED, CANCELLED, FAILED, INTERRUPTED }
 enum class StoredRunStage { ACCEPTED, REQUESTING, REQUEST_FAILED, RESPONSE_RECORDED, COMMITTING, MARKING_FAILURE, COMMITTED }
 
 class RunCheckpoint(

@@ -28,6 +28,11 @@ class CompatibleTranslationModelTest {
     }
     private class Audit : TranslationRequestAuditPort {
         var sent = 0; var received = 0; var usage: RequestUsage? = null; var failure: ModelFailureKind? = null
+        var rejectOutputs = false
+        override suspend fun receivedResponse(handle: TranslationAuditHandle, response: TranslationModelResponse) {
+            if (rejectOutputs) throw java.io.IOException("Synthetic output storage failure")
+            received(handle, response.usage, null)
+        }
         override suspend fun dispatched(lease: RunLease, request: TranslationModelRequest, digest: String): TranslationAuditHandle {
             check(sent++ == 0)
             return TranslationAuditHandle(request.attempt, request.ref, request.run, digest)
@@ -125,4 +130,22 @@ class CompatibleTranslationModelTest {
             assertEquals(0, runtime.snapshot().activeRun!!.outstandingOperations)
         } finally { owner.cancelAndJoin(); runtime.finishRun(lease); runtime.close() }
     }
+    @Test fun validResponseStorageFailureIsNotAContentFailureThatCanTriggerAnotherRequest() = runBlocking {
+        val runtime = RuntimeCoordinator(); val audit = Audit().apply { rejectOutputs = true }; var calls = 0
+        runtime.selectChat(ChatIdentity(ref.projectId, ChatId("workspace")))
+        val lease = runtime.beginRun(identity, RuntimeOwner.TRANSLATION)
+        val transport = CompatibleHttpTransport(OkHttpClient.Builder().addInterceptor { chain ->
+            calls++
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("OK")
+                .body(payload(true).toResponseBody("application/json".toMediaType())).build()
+        }.build())
+        try {
+            val gateway = NativeModelGateway(runtime, LocalSimulationModel(),
+                remoteTranslation = CompatibleTranslationModel(settings, runtime, audit, transport))
+            try { gateway.complete(lease, request()); fail("Returned an unrecorded response") }
+            catch (_: TranslationResponseNotStored) { }
+            assertEquals(1, calls); assertEquals(1, audit.sent)
+        } finally { runtime.finishRun(lease); runtime.close() }
+    }
+
 }

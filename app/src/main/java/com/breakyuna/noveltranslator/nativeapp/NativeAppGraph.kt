@@ -16,7 +16,6 @@ import com.breakyuna.noveltranslator.nativecore.storage.NativeRunStore
 import com.breakyuna.noveltranslator.nativecore.engine.DurableRunExecutor
 import com.breakyuna.noveltranslator.nativecore.engine.CompatibleHttpTransport
 import com.breakyuna.noveltranslator.nativecore.engine.CompatibleModelCatalog
-import com.breakyuna.noveltranslator.nativecore.engine.UsageLedgerRecorder
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelCatalogPort
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRunner
 import com.breakyuna.noveltranslator.nativecore.formats.NativeFormatAdapters
@@ -42,17 +41,23 @@ class NativeAppGraph(context: Context) {
     val modelSettings = NativeModelSettingsStore(context.applicationContext, runtime)
     val translationAudit = com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationAuditStore(context.applicationContext, runtime, projects)
     private val http = CompatibleHttpTransport()
-    val usageLedger = UsageLedgerRecorder()
+    val usageLedger: com.breakyuna.noveltranslator.nativecore.domain.UsageLedgerReadPort =
+        com.breakyuna.noveltranslator.nativecore.storage.NativeUsageLedgerStore(context.applicationContext)
+    private val modelKeys = com.breakyuna.noveltranslator.nativecore.engine.ModelKeyPool(modelSettings,
+        com.breakyuna.noveltranslator.nativecore.storage.NativeModelKeyStateStore(context.applicationContext))
     private val gateway = NativeModelGateway(runtime, simulation,
-        CompatibleAgentModel(modelSettings, runtime, transport = http, usage = usageLedger),
+        CompatibleAgentModel(modelSettings, runtime, transport = http, keys = modelKeys),
         CompatibleModelCatalog(modelSettings, runtime, http),
         remoteTranslation = CompatibleTranslationModel(modelSettings, runtime, translationAudit,
-            transport = http, usage = usageLedger))
+            transport = http, keys = modelKeys))
     val modelCatalog: NativeModelCatalogPort = gateway
     val conversations = NativeKoogConversation(runtime, projects, agentStore, agentStore, agentStore, gateway)
     val formatAdapters = NativeFormatAdapters.install()
     val formatProjects = ProjectFormatService(projects, projects)
-    val translations = TextTranslationService(runtime, projects, projects, gateway, runs)
+    val translationTasks = com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationTaskStore(context.applicationContext, projects, runtime,
+        com.breakyuna.noveltranslator.nativecore.engine.DefaultTranslationRetryRecoveryPolicy)
+    val translations = TextTranslationService(runtime, projects, projects, gateway, runs, translationTasks, usageLedger,
+        com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationRetryCheckpointStore(context.applicationContext, runtime))
     private val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val agentPreviews = com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController()
     val backgroundAgents = com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentRunner(runtime, runs, executionScope,

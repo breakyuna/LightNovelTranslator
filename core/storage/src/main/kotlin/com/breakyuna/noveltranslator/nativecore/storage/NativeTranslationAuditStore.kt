@@ -22,6 +22,8 @@ internal interface NativeTranslationRequestDao {
     @Query("SELECT * FROM native_translation_requests WHERE attemptId=:attempt") fun find(attempt: String): NativeTranslationRequestRow?
     @Query("UPDATE native_translation_requests SET state='RECEIVED',usage=:usage,failure=:failure WHERE attemptId=:attempt AND digest=:digest AND state='DISPATCHED'")
     fun received(attempt: String, digest: String, usage: String, failure: String?): Int
+    @Query("SELECT COUNT(*) FROM native_translation_requests WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND runId=:run AND commandId=:command AND state='DISPATCHED'")
+    fun unresolved(instance: String, generation: Long, project: String, run: String, command: String): Int
     @Query("SELECT * FROM native_translation_requests WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND runId=:run AND commandId=:command AND state='RECEIVED' AND attemptId>:after ORDER BY attemptId LIMIT 100")
     fun page(instance: String, generation: Long, project: String, run: String, command: String, after: String): List<NativeTranslationRequestRow>
 }
@@ -41,22 +43,48 @@ class NativeTranslationAuditStore(context: Context, private val runtime: Runtime
                 projects.open(request.ref)
                 currentCoroutineContext().ensureActive()
                 // INSERT aborts for every duplicate attempt, including same-body duplicates.
-                db.translationRequests().insert(NativeTranslationRequestRow(request.attempt.value,
-                    request.ref.instanceId.value, request.ref.generation.value, request.ref.projectId.value,
-                    request.run.runId.value, request.run.commandId.value, request.configuration.id, request.configuration.revision,
-                    digest, "DISPATCHED", null, null, System.currentTimeMillis().coerceAtLeast(0)))
+                db.runInTransaction(Callable {
+                    db.translationRequests().insert(NativeTranslationRequestRow(request.attempt.value,
+                        request.ref.instanceId.value, request.ref.generation.value, request.ref.projectId.value,
+                        request.run.runId.value, request.run.commandId.value, request.configuration.id, request.configuration.revision,
+                        digest, "DISPATCHED", null, null, System.currentTimeMillis().coerceAtLeast(0)))
+                    NativeUsageLedgerStore.reserveTranslation(db, request)
+                    db.translationResponses().inputs(request.inputs.map {
+                        NativeTranslationRequestInputRow(request.attempt.value, it.id.value, it.fingerprint.sha256)
+                    })
+                })
                 TranslationAuditHandle(request.attempt, request.ref, request.run, digest)
             } finally { runtime.endOperation(operation) }
         }
 
     override suspend fun received(handle: TranslationAuditHandle, usage: RequestUsage, failure: ModelFailureKind?): Unit =
-        withContext(Dispatchers.IO) {
+        receive(handle, usage, failure, null)
+
+    override suspend fun receivedResponse(handle: TranslationAuditHandle, response: TranslationModelResponse): Unit =
+        receive(handle, response.usage, null, response)
+
+    private suspend fun receive(handle: TranslationAuditHandle, usage: RequestUsage, failure: ModelFailureKind?,
+        response: TranslationModelResponse?): Unit = withContext(Dispatchers.IO) {
             val encoded = TranslationUsageCodec.encode(usage)
             db.runInTransaction(Callable {
                 val row = requireNotNull(db.translationRequests().find(handle.attempt.value))
                 require(matches(row, handle.ref, handle.run) && row.digest == handle.digest)
                 if (row.state == "RECEIVED") require(row.usage == encoded && row.failure == failure?.name)
                 else check(db.translationRequests().received(row.attemptId, handle.digest, encoded, failure?.name) == 1)
+                if (response != null) {
+                    require(response.stop == ModelStopReason.COMPLETE)
+                    val inputs = db.translationResponses().inputs(handle.attempt.value).associateBy { it.itemId }
+                    require(inputs.size in 1..20 && response.outputs.size == inputs.size &&
+                        response.outputs.map { it.id.value }.toSet() == inputs.keys)
+                    val rows = response.outputs.map { output ->
+                        require(output.text.length <= 65_536); TextProjectFingerprint.utf8(output.text)
+                        NativeTranslationResponseRow(handle.attempt.value, output.id.value,
+                            inputs.getValue(output.id.value).fingerprint, output.text)
+                    }.sortedBy { it.itemId }
+                    val old = db.translationResponses().responses(handle.attempt.value)
+                    if (old.isEmpty()) db.translationResponses().responses(rows) else require(old == rows)
+                }
+                NativeUsageLedgerStore.received(db, "translation", handle.attempt.value, usage, failure = failure)
             })
             Unit
         }

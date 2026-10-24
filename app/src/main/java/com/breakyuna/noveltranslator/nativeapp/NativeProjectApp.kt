@@ -36,6 +36,20 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 @Composable
 fun NativeProjectApp(model: NativeProjectViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
+    var tasksVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    if (tasksVisible && state.project != null) NativeTranslationTasksDialog(state.project!!.ref,
+        model::translationTaskSummaries, model::inspectTranslationResume,
+        { tasksVisible = false }, { spec -> tasksVisible = false; model.resumeTranslationTask(spec) },
+        loadPage = model::translationTaskPage)
+    var usageVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+    val saveUsage = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson"), model::completeUsageExport)
+    if (usageVisible) NativeUsageLedgerDialog(state.project?.ref, state.agentChatId,
+        model::usageSummary, { usageVisible = false }, model::usageEntries,
+        export = if (state.busy) null else { query ->
+            val filename = model.prepareUsageExport(query)
+            if (filename != null) saveUsage.launch(filename)
+            else usageVisible = false // Reveal the rejection message outside the modal dialog.
+        })
     val context = LocalContext.current
     var notificationsGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) }
@@ -59,7 +73,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     }
     fun back() {
         when {
-            state.busy && !state.foregroundTranslationActive -> Unit
+            state.busy && !state.foregroundExecutionActive -> Unit
             state.editor != null -> if (state.editor!!.dirty) discard = true else model.closeEditor()
             state.project != null && state.page != NativePage.AGENT -> model.selectPage(NativePage.AGENT)
             state.project != null && !state.busy -> home()
@@ -79,27 +93,35 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                     navigationIcon = { if (state.project != null) IconButton(onClick = { home() }, enabled = !state.busy && state.editor == null) {
                         Icon(Icons.Default.Home, stringResource(R.string.native_projects))
                     } },
-                    actions = { IconButton(onClick = model::refresh, enabled = !state.busy && state.editor == null) {
+                    actions = {
+                        if (state.project != null) TextButton(onClick = { tasksVisible = true }, enabled = !state.busy) {
+                            Text(stringResource(R.string.native_tasks_title))
+                        }
+                        TextButton(onClick = { usageVisible = true }) { Text(stringResource(R.string.native_ledger_title)) }
+                        IconButton(onClick = model::refresh, enabled = !state.busy && state.editor == null) {
                         Icon(Icons.Default.Refresh, stringResource(R.string.native_refresh))
                     } },
                 ) },
                 bottomBar = { if (state.project != null && !rail) NavigationBar {
                     NativePage.entries.forEach { page -> NavigationBarItem(
-                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundTranslationActive) && state.editor == null && state.manualBatch == null,
+                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
                         icon = { Icon(page.icon(), contentDescription = null) }, label = { Text(stringResource(page.label())) },
                     ) }
                 } },
             ) { padding ->
                 Row(Modifier.padding(padding).fillMaxSize()) {
                     if (rail) NavigationRail { NativePage.entries.forEach { page -> NavigationRailItem(
-                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundTranslationActive) && state.editor == null && state.manualBatch == null,
+                        selected = state.page == page, onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
                         icon = { Icon(page.icon(), null) }, label = { Text(stringResource(page.label())) },
                     ) } }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
-                        if (state.busy && (state.foregroundTranslationActive || state.project == null || state.page != NativePage.AGENT || state.editor != null)) {
+                        if (state.busy && (state.foregroundExecutionActive || state.project == null || state.page != NativePage.AGENT || state.editor != null)) {
                             LinearProgressIndicator(Modifier.fillMaxWidth())
                             Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text(stringResource(R.string.native_working), Modifier.padding(top = 12.dp))
+                                Text(stringResource(if (state.foregroundTranslationPausing) R.string.native_background_pausing else R.string.native_working), Modifier.weight(1f).padding(top = 12.dp))
+                                if (state.foregroundTranslationCanPause) TextButton(onClick = model::pauseTranslation) {
+                                    Text(stringResource(R.string.native_pause))
+                                }
                                 TextButton(onClick = model::cancelAction) { Text(stringResource(R.string.native_cancel)) }
                             }
                         }

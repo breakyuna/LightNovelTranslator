@@ -9,4 +9,7 @@ interface TranslationRequestAuditPort {
     suspend fun dispatched(lease: RunLease, request: TranslationModelRequest, digest: String): TranslationAuditHandle
     /** A complete HTTP response is a fact even if content parsing, Stop or a later write fails. */
     suspend fun received(handle: TranslationAuditHandle, usage: RequestUsage, failure: ModelFailureKind?)
+    /** Valid normalized outputs and usage must survive together before they return to the engine. */
+    suspend fun receivedResponse(handle: TranslationAuditHandle, response: TranslationModelResponse) =
+        received(handle, response.usage, null)
 }

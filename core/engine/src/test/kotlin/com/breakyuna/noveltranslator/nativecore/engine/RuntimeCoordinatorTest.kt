@@ -27,6 +27,36 @@ class RuntimeCoordinatorTest {
     private val firstChat = ChatIdentity(ProjectId("project-a"), ChatId("chat-a"))
     private val secondChat = ChatIdentity(ProjectId("project-b"), ChatId("chat-b"))
 
+    @Test fun translationPauseBlocksNewModelWorkButAllowsCommitAndCanBeStopped() {
+        val runtime = runtime()
+        val run = runtime.beginRun(identity("pause"), RuntimeOwner.TRANSLATION)
+        val model = runtime.beginOperation(run, OperationKind.MODEL_REQUEST)
+        assertEquals(1, runtime.snapshot().activeRun!!.outstandingModelRequests)
+        assertTrue(runtime.requestPause(run))
+        assertTrue(runtime.requestPause(run))
+        assertEquals(RuntimePhase.PAUSING, runtime.snapshot().activeRun!!.phase)
+        assertReason(RuntimeUnavailable.Reason.STOPPING) { runtime.beginOperation(run, OperationKind.MODEL_REQUEST) }
+        val host = runtime.beginOperation(run, OperationKind.HOST_REQUEST)
+        val write = runtime.beginProjectWrite(run)
+        runtime.endProjectWrite(write)
+        runtime.endOperation(host)
+        runtime.endOperation(model)
+        assertEquals(0, runtime.snapshot().activeRun!!.outstandingModelRequests)
+        assertTrue(runtime.requestStop(run))
+        assertFalse(runtime.requestPause(run))
+        assertReason(RuntimeUnavailable.Reason.STOPPING) { runtime.beginProjectWrite(run) }
+        runtime.finishRun(run)
+        assertFalse(runtime.requestPause(run))
+    }
+
+    @Test fun agentExecutionCannotBePausedByTranslationControls() {
+        val runtime = runtime()
+        val run = runtime.beginRun(identity("agent"), RuntimeOwner.AGENT)
+        assertFalse(runtime.requestPause(run))
+        assertEquals(RuntimePhase.RUNNING, runtime.snapshot().activeRun!!.phase)
+        runtime.finishRun(run)
+    }
+
     @Test fun atomicSelectionDoesNotChangeOnInvalidIdentityOrCompetingRun() {
         val runtime = runtime()
         val before = runtime.snapshot()

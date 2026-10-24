@@ -7,7 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Native project format; LG files require a separate compatibility converter. */
+/** Standalone native project format. External LG project conversion is outside the product scope. */
 object NativeProjectFormat {
     const val EXTENSION = "lnt"
     const val SCHEMA_VERSION = 4

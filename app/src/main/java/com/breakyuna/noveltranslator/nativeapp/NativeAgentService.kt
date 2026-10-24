@@ -84,7 +84,7 @@ class NativeAgentService : Service() {
         val text = when (snapshot.phase) {
             ForegroundAgentPhase.WAITING_FOR_SERVICE -> getString(R.string.native_background_starting)
             ForegroundAgentPhase.STOPPING -> getString(R.string.native_background_stopping)
-            else -> getString(R.string.native_background_running)
+            else -> getString(R.string.native_agent_background_running)
         }
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(getString(R.string.native_agent))

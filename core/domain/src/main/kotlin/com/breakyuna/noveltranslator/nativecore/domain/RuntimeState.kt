@@ -2,13 +2,14 @@ package com.breakyuna.noveltranslator.nativecore.domain
 
 /** Process-local coordination. Persistence/reconciliation belongs to run storage. */
 enum class RuntimeOwner { AGENT, TRANSLATION, MODEL_PROBE }
-enum class RuntimePhase { RUNNING, STOPPING, FINISHING }
+enum class RuntimePhase { RUNNING, PAUSING, STOPPING, FINISHING }
 
 data class ActiveRun(
     val identity: RunIdentity,
     val owner: RuntimeOwner,
     val phase: RuntimePhase,
     val outstandingOperations: Int,
+    val outstandingModelRequests: Int = 0,
 )
 
 data class RuntimeSnapshot(

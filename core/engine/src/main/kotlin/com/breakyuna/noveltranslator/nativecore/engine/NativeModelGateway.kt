@@ -68,6 +68,7 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
                 val result = try { coroutineScope { if (local) backend.complete(request) else requireNotNull(remote).complete(lease, request) } }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (classified: AgentModelFailure) { throw classified }
+                catch (notStored: TranslationResponseNotStored) { throw notStored }
                 catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.UNKNOWN) }
                 currentCoroutineContext().ensureActive()
                 // A stopped run may not accept a late, otherwise valid model response.

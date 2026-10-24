@@ -1,5 +1,9 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
+import com.breakyuna.noveltranslator.nativecore.domain.ModelConfigurationRef
+import com.breakyuna.noveltranslator.nativecore.domain.ModelKeyState
+import com.breakyuna.noveltranslator.nativecore.domain.ModelKeyPoolState
+import com.breakyuna.noveltranslator.nativecore.domain.ModelKeyFailure
 import com.breakyuna.noveltranslator.nativecore.domain.ModelFailureKind
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettingsValidation
 import java.text.ParsePosition
@@ -85,6 +89,21 @@ class KeyPool private constructor(entries: List<KeyEntry>, private val nextIndex
     val size: Int get() = entries.size
 
     val enabledCount: Int get() = entries.count { it.enabled }
+
+    /** Credential-free durable facts; no endpoint or credential value is serialized. */
+    fun state(configuration: ModelConfigurationRef): ModelKeyPoolState = ModelKeyPoolState(configuration, nextIndex,
+        entries.map { ModelKeyState(it.enabled, it.consecutiveFailures, it.cooldownUntilMillis,
+            it.lastFailure?.let { kind -> ModelKeyFailure.valueOf(kind.name) }) })
+
+    /** Credentials remain owned by the current immutable revision; disk stores only ordinal facts. */
+    fun restore(state: ModelKeyPoolState): KeyPool {
+        require(state.keys.size == entries.size)
+        return KeyPool(entries.mapIndexed { index, entry ->
+            val saved = state.keys[index]
+            KeyEntry(entry.id, entry.credential, saved.enabled, saved.failures, saved.cooldownUntilMillis,
+                saved.lastFailure?.let { KeyFailureKind.valueOf(it.name) })
+        }, state.nextIndex)
+    }
 
     /**
      * Returns the next enabled, non-cooling key in round-robin order, or null when

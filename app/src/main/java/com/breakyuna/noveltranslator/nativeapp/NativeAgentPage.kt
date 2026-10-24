@@ -121,7 +121,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 }), style = MaterialTheme.typography.bodySmall)
             }
             if (state.busy) item(key = "working") { Text(stringResource(R.string.native_working), style = MaterialTheme.typography.bodySmall) }
-            item(key = "open-editor") { TextButton(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy || state.foregroundTranslationActive) { Text(stringResource(R.string.native_open_proofreading)) } }
+            item(key = "open-editor") { TextButton(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy || state.foregroundExecutionActive) { Text(stringResource(R.string.native_open_proofreading)) } }
             if (state.recentRuns.isNotEmpty()) item(key = "runs") {
                 Column {
                     TextButton(onClick = { runs = !runs }) { Text(stringResource(R.string.native_runs_title)) }

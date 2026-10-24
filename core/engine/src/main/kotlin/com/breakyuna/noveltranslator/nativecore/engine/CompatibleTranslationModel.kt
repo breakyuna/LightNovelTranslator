@@ -72,7 +72,9 @@ class CompatibleTranslationModel(
             } catch (_: Exception) { unknownRequestUsage() }
             val error = result.exceptionOrNull()
             withContext(NonCancellable) {
-                audit.received(handle, receipt, (error as? AgentModelFailure)?.kind)
+                val response = result.getOrNull()
+                if (response != null) saveResponse(handle, response)
+                else audit.received(handle, receipt, (error as? AgentModelFailure)?.kind)
             }
             currentCoroutineContext().ensureActive()
             val value = result.getOrThrow()
@@ -83,6 +85,7 @@ class CompatibleTranslationModel(
             }
             return value
         } catch (cancelled: CancellationException) { throw cancelled }
+        catch (notStored: TranslationResponseNotStored) { throw notStored }
         catch (classified: AgentModelFailure) {
             reference?.let { keys.failure(it, selection, classified.kind) }
             throw classified
@@ -91,6 +94,12 @@ class CompatibleTranslationModel(
             reference?.let { keys.failure(it, selection, ModelFailureKind.UNKNOWN) }
             throw AgentModelFailure(ModelFailureKind.PARSING)
         }
+    }
+
+    private suspend fun saveResponse(handle: TranslationAuditHandle, response: TranslationModelResponse) {
+        try { audit.receivedResponse(handle, response) }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { throw TranslationResponseNotStored() }
     }
 
     private suspend fun completeProtocol(lease: RunLease, request: TranslationModelRequest,
@@ -137,7 +146,7 @@ class CompatibleTranslationModel(
             withContext(NonCancellable) { audit.received(handle, response.usage, classified.kind) }
             throw classified
         }
-        withContext(NonCancellable) { audit.received(handle, response.usage, null) }
+        withContext(NonCancellable) { saveResponse(handle, result) }
         currentCoroutineContext().ensureActive()
         return result
     }

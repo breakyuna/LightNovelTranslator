@@ -90,7 +90,8 @@ class RuntimeCoordinator : RuntimePort {
     override fun beginOperation(run: RunLease, kind: OperationKind): OperationLease = mutate {
         ensureOpen()
         val current = currentRun(run)
-        ensureRunning(current)
+        if (!(current.owner == RuntimeOwner.TRANSLATION && current.phase == RuntimePhase.PAUSING && kind == OperationKind.HOST_REQUEST))
+            ensureRunning(current)
         Operation(current, kind).also {
             current.operations.add(it)
             advanceLocked()
@@ -105,10 +106,22 @@ class RuntimeCoordinator : RuntimePort {
         }
     }
 
+    override fun requestPause(run: RunLease): Boolean = mutate {
+        if (active !== run) return@mutate false
+        val current = active ?: return@mutate false
+        if (current.owner != RuntimeOwner.TRANSLATION || current.phase !in setOf(RuntimePhase.RUNNING, RuntimePhase.PAUSING))
+            return@mutate false
+        if (current.phase == RuntimePhase.RUNNING) {
+            current.phase = RuntimePhase.PAUSING
+            advanceLocked()
+        }
+        true
+    }
+
     override fun requestStop(run: RunLease): Boolean = mutate {
         if (active !== run) return@mutate false
         val current = active ?: return@mutate false
-        if (current.phase == RuntimePhase.RUNNING) {
+        if (current.phase == RuntimePhase.RUNNING || current.phase == RuntimePhase.PAUSING) {
             current.phase = RuntimePhase.STOPPING
             advanceLocked()
         }
@@ -130,7 +143,7 @@ class RuntimeCoordinator : RuntimePort {
         if (projectWrite != null) unavailable(Reason.BUSY)
         val current = if (run != null) {
             currentRun(run).also {
-                ensureRunning(it)
+                if (!(it.owner == RuntimeOwner.TRANSLATION && it.phase == RuntimePhase.PAUSING)) ensureRunning(it)
                 if (it.owner == RuntimeOwner.MODEL_PROBE) unavailable(Reason.BUSY)
             }
         } else {
@@ -216,7 +229,7 @@ class RuntimeCoordinator : RuntimePort {
     private fun snapshotLocked() = RuntimeSnapshot(
         revision = revision,
         selectedChat = selected,
-        activeRun = active?.let { ActiveRun(it.identity, it.owner, it.phase, it.operations.size) },
+        activeRun = active?.let { ActiveRun(it.identity, it.owner, it.phase, it.operations.size, it.operations.count { op -> op.kind == OperationKind.MODEL_REQUEST }) },
         projectWriteRunning = projectWrite != null,
         skillWriteRunning = skillWrite != null,
         authenticationWriteRunning = authenticationWrite != null,

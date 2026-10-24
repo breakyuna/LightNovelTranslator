@@ -256,6 +256,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             val row = db.agent().request(request.attemptId.value)
             if (row == null) {
                 db.agent().insertRequest(NativeAgentRequestRow(request.attemptId.value, requestKey(request.key()), digest, "PREPARED", null, null, null))
+                NativeUsageLedgerStore.reserveAgent(db, request)
                 RequestReservation.Prepared
             } else if (row.digest != digest || row.requestKey != requestKey(request.key())) RequestReservation.Conflict
             else when (row.state) {
@@ -266,7 +267,11 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         }
     }
     override suspend fun markDispatched(key: AgentRequestKey): Boolean = io {
-        db.agent().dispatch(key.attemptId.value, requestKey(key)) == 1
+        transaction {
+            val dispatched = db.agent().dispatch(key.attemptId.value, requestKey(key)) == 1
+            if (dispatched) NativeUsageLedgerStore.dispatchedAgent(db, key.attemptId.value)
+            dispatched
+        }
     }
     override suspend fun completeRequest(key: AgentRequestKey, response: AgentModelResponse): Unit = io {
         val text = buildJsonObject {
@@ -281,6 +286,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             if (row.state == "COMPLETED") {
                 require(row.responseText == text && row.responseId == response.message.id.value && row.usage == usage)
             } else check(db.agent().complete(key.attemptId.value, requestKey(key), text, response.message.id.value, usage) == 1)
+            NativeUsageLedgerStore.received(db, "agent", key.attemptId.value, response.usage, response.stopReason)
         }
     }
     private fun requestKey(key: AgentRequestKey): String = AgentRequestFingerprint.key(key)

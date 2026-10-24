@@ -42,6 +42,7 @@ class NativeTranslationService : Service() {
         val command = when (intent?.action) {
             START -> NativeTranslationHost.Command.START
             STOP -> NativeTranslationHost.Command.STOP
+            PAUSE -> NativeTranslationHost.Command.PAUSE
             else -> NativeTranslationHost.Command.IGNORE
         }
         host.command(command, intent?.getStringExtra(TOKEN), startId)
@@ -83,20 +84,28 @@ class NativeTranslationService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         val text = when (snapshot.phase) {
             ForegroundTranslationPhase.WAITING_FOR_SERVICE -> getString(R.string.native_background_starting)
+            ForegroundTranslationPhase.PAUSING -> getString(R.string.native_background_pausing)
             ForegroundTranslationPhase.STOPPING -> getString(R.string.native_background_stopping)
             else -> snapshot.progress?.let { getString(R.string.native_simulation_progress, it.committedItems, it.requests) }
                 ?: getString(R.string.native_background_running)
         }
-        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
+        val pause = PendingIntent.getService(this, 1, Intent(this, NativeTranslationService::class.java)
+            .setAction(PAUSE).setData(Uri.parse("lnt-native-pause:${snapshot.token}")).putExtra(TOKEN, snapshot.token),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val builder = NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(getString(if (snapshot.request.options == null) R.string.native_simulation else R.string.native_remote_translate))
             .setContentText(text).setContentIntent(open)
             .setOngoing(true).setOnlyAlertOnce(true).setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .addAction(android.R.drawable.ic_media_pause, getString(R.string.native_agent_stop), stop).build()
+            .addAction(android.R.drawable.ic_media_pause, getString(R.string.native_agent_stop), stop)
+        if (snapshot.request.options != null && snapshot.progress != null && snapshot.phase == ForegroundTranslationPhase.RUNNING)
+            builder.addAction(android.R.drawable.ic_media_pause, getString(R.string.native_pause), pause)
+        return builder.build()
     }
 
     companion object {
         private const val START = "com.breakyuna.noveltranslator.native.SIMULATE"
+        private const val PAUSE = "com.breakyuna.noveltranslator.native.PAUSE_TRANSLATION"
         private const val STOP = "com.breakyuna.noveltranslator.native.STOP_SIMULATION"
         private const val TOKEN = "native_execution_token"
         private const val CHANNEL = "native_translation"

@@ -34,16 +34,43 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v5. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class], version = 5, exportSchema = true)
+/** Independent app store v8. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class], version = 8, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
     abstract fun agent(): NativeAgentDao
     abstract fun models(): NativeModelSettingsDao
     abstract fun runs(): NativeRunDao
     abstract fun translationRequests(): NativeTranslationRequestDao
+    abstract fun usage(): NativeUsageReceiptDao
+    abstract fun translationTasks(): NativeTranslationTaskDao
+    abstract fun translationResponses(): NativeTranslationResponseDao
 
     companion object {
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_request_inputs (attemptId TEXT NOT NULL, itemId INTEGER NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(attemptId,itemId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_responses (attemptId TEXT NOT NULL, itemId INTEGER NOT NULL, fingerprint TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY(attemptId,itemId))")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_staged (task TEXT NOT NULL, itemId INTEGER NOT NULL, fingerprint TEXT NOT NULL, commandId TEXT NOT NULL, text TEXT NOT NULL, PRIMARY KEY(task,itemId))")
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_tasks (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, configurationId TEXT NOT NULL, configurationRevision INTEGER NOT NULL, targetLanguage TEXT NOT NULL, specification TEXT NOT NULL, revision INTEGER NOT NULL, committed INTEGER NOT NULL, requests INTEGER NOT NULL, stage TEXT NOT NULL, pendingAttempt TEXT, pendingCommands TEXT NOT NULL, pendingItems TEXT NOT NULL, responseRemaining TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_translation_tasks_instanceId_generation_projectId ON native_translation_tasks(instanceId,generation,projectId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_targets (task TEXT NOT NULL, itemId INTEGER NOT NULL, fingerprint TEXT NOT NULL, done INTEGER NOT NULL, PRIMARY KEY(task,itemId))")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_usage_receipts (id TEXT NOT NULL PRIMARY KEY, channel TEXT NOT NULL, attemptId TEXT NOT NULL, instanceId TEXT, generation INTEGER, projectId TEXT NOT NULL, chatId TEXT, runId TEXT NOT NULL, commandId TEXT NOT NULL, configurationId TEXT NOT NULL, configurationRevision INTEGER NOT NULL, model TEXT, state TEXT NOT NULL, usage TEXT, stop TEXT, failure TEXT)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_usage_receipts_instanceId_generation_projectId_chatId_runId_commandId ON native_usage_receipts(instanceId,generation,projectId,chatId,runId,commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_usage_receipts_configurationId_configurationRevision ON native_usage_receipts(configurationId,configurationRevision)")
+            }
+        }
+
         /**
          * Adds the explicit wire protocol and ordered credential envelope. The
          * legacy encryptedKey column is kept so a v4 row remains readable and a
@@ -87,6 +114,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8).build()
     }
 }

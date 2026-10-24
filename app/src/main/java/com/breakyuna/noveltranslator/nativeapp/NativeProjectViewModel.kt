@@ -15,6 +15,8 @@ import com.breakyuna.noveltranslator.nativecore.engine.TextProofreadingInspector
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentHandle
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentRequest
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentStartFailed
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationPhase
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationPaused
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationHandle
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRunner
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRequest
@@ -88,6 +90,9 @@ data class NativeProjectUiState(
     val editorReplacement: NativeEditorReplacement? = null,
     val busy: Boolean = false,
     val foregroundTranslationActive: Boolean = false,
+    val foregroundTranslationCanPause: Boolean = false,
+    val foregroundTranslationPausing: Boolean = false,
+    val foregroundAgentActive: Boolean = false,
     val notice: Int? = null,
     val error: Int? = null,
     val recoveryProblems: Int = 0,
@@ -111,6 +116,7 @@ data class NativeProjectUiState(
     val policyLoadIncomplete: Boolean = false,
     val policyInvalidRuleId: String? = null,
 ) {
+    val foregroundExecutionActive: Boolean get() = foregroundTranslationActive || foregroundAgentActive
     val qualityCurrent: Boolean get() {
         val current = project ?: return false
         val index = qualityView?.index ?: return false
@@ -152,6 +158,7 @@ class NativeProjectViewModel internal constructor(
         val agentAttachment = agentSnapshot?.takeIf { it.phase.active ||
             saved.get<String>("native_agent_token") == it.token }?.let { graph.backgroundAgents.attach(it.token) }
         if (agentAttachment != null) {
+            mutable.value = mutable.value.copy(foregroundAgentActive = agentSnapshot?.phase?.active == true)
             if (agentSnapshot?.phase?.active == true) saved["native_recovery_pending"] = true
             saved["native_agent_token"] = agentAttachment.token
             refreshSimulationView(running = true) {
@@ -207,11 +214,79 @@ class NativeProjectViewModel internal constructor(
         mutable.value = mutable.value.copy(recoveryProblems = recovery.problems.size)
     }
 
+    internal suspend fun translationTaskPage(ref: LocalProjectRef, before: Long?): TranslationTaskPage = graph.translationTasks.page(ref, before)
+    internal suspend fun translationTaskSummaries(ref: LocalProjectRef): List<TranslationTaskSummary> = graph.translationTasks.recent(ref)
+    internal suspend fun inspectTranslationResume(ref: LocalProjectRef, run: RunIdentity): NativeTranslationResumePreview {
+        val current = mutable.value
+        if (current.busy || current.project?.ref != ref || current.editor != null || current.manualBatch != null || current.policyDraft?.dirty == true)
+            throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
+        val spec = graph.translationTasks.resume(ref, run)
+        val model = graph.modelSettings.resolve(spec.configuration)
+        return NativeTranslationResumePreview(spec, model.model)
+    }
+    internal fun resumeTranslationTask(spec: TranslationTaskSpec) = action {
+        if (mutable.value.project?.ref != spec.ref || mutable.value.editor != null || mutable.value.manualBatch != null ||
+            mutable.value.policyDraft?.dirty == true) return@action
+        val confirmed = graph.translationTasks.resume(spec.ref, spec.run)
+        if (confirmed != spec) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        graph.modelSettings.resolve(spec.configuration)
+        val handle = backgroundTranslations.prepare(ForegroundTranslationRequest(spec.ref, spec.run, spec.configuration,
+            spec.revision, spec.afterId, spec.pageSize, if (spec.wholeProject)
+                com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT else com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PAGE,
+            spec.options, continuation = true))
+        saved["native_simulation_token"] = handle.token
+        saved["native_recovery_pending"] = true
+        mutable.value = mutable.value.copy(foregroundTranslationActive = true)
+        try { NativeTranslationService.start(getApplication<Application>(), handle.token) }
+        catch (_: Exception) { backgroundTranslations.startFailed(handle.token) }
+        refreshSimulationView(running = true) { restoreSimulationPage(handle) }
+        awaitSimulation(handle)
+    }
+
+    fun prepareUsageExport(query: UsageLedgerQuery): String? {
+        val current = mutable.value
+        if (current.busy) {
+            mutable.value = current.copy(error = R.string.native_busy_error, notice = null)
+            return null
+        }
+        if (query.run != null || query.configuration != null ||
+            query.ref != null && query.ref != current.project?.ref ||
+            query.chat != null && query.chat != current.agentChatId) {
+            mutable.value = current.copy(error = R.string.native_conflict, notice = null)
+            return null
+        }
+        saved["native_usage_export"] = arrayListOf(query.ref?.projectId?.value.orEmpty(),
+            query.ref?.instanceId?.value.orEmpty(), query.ref?.generation?.value?.toString().orEmpty(), query.chat?.value.orEmpty())
+        return "lnt-usage-ledger.jsonl"
+    }
+    fun completeUsageExport(uri: Uri?) {
+        val pending = saved.remove<ArrayList<String>>("native_usage_export")?.toList() ?: return
+        if (uri == null || pending.size != 4) return
+        queuedAction {
+            val ref = if (pending[0].isEmpty()) {
+                require(pending.take(3).all { it.isEmpty() }); null
+            } else decodeRef(pending)
+            if (ref != null && mutable.value.project?.ref != ref)
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            val query = UsageLedgerQuery(ref, pending[3].takeIf { it.isNotEmpty() }?.let(::ChatId))
+            graph.usageLedger.export(query) { resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException() }
+            mutable.value = mutable.value.copy(notice = R.string.native_exported)
+        }
+    }
+
+    internal suspend fun usageEntries(query: UsageLedgerQuery, cursor: UsageLedgerCursor?): UsageLedgerPage = graph.usageLedger.entries(query, cursor)
+    internal suspend fun usageSummary(query: UsageLedgerQuery): DurableUsageSummary = graph.usageLedger.summary(query)
+
     fun changeEncoding(value: TxtEncoding) { if (!mutable.value.busy) {
         saved["native_encoding"] = value.name
         mutable.value = mutable.value.copy(encoding = value)
     } }
     fun dismissMessage() { mutable.value = mutable.value.copy(error = null, notice = null) }
+    fun pauseTranslation() {
+        val running = backgroundTranslations.state.value ?: return
+        if (running.token == observedSimulation?.token || running.request.ref == mutable.value.project?.ref)
+            backgroundTranslations.pause(running.token)
+    }
     fun cancelAction() {
         val running = backgroundTranslations.state.value
         if (running?.phase?.active == true && (running.token == observedSimulation?.token ||
@@ -350,6 +425,7 @@ class NativeProjectViewModel internal constructor(
         val handle = graph.backgroundAgents.prepare(ForegroundAgentRequest(ref,
             RunIdentity(ref.projectId, agentChat, RunId(UUID.randomUUID().toString()), commandId()), configuration, text))
         saved["native_agent_token"] = handle.token
+        mutable.value = mutable.value.copy(foregroundAgentActive = true)
         try { NativeAgentService.start(getApplication<Application>(), handle.token) }
         catch (_: Exception) { graph.backgroundAgents.startFailed(handle.token) }
         awaitAgent(handle)
@@ -362,6 +438,7 @@ class NativeProjectViewModel internal constructor(
             var timelineRevision = -1L
             graph.backgroundAgents.state.collect { snapshot ->
                 if (snapshot?.token != handle.token) return@collect
+                mutable.value = mutable.value.copy(foregroundAgentActive = snapshot.phase.active)
                 if (snapshot.progress?.accepted == true && mutable.value.project?.ref == ref &&
                     mutable.value.agentChatId == chat && mutable.value.agentInput == handle.request.input) {
                     saved.remove<String>("agent_input_text")
@@ -380,6 +457,7 @@ class NativeProjectViewModel internal constructor(
             val settled = graph.backgroundAgents.state.value?.let { it.token == handle.token && !it.phase.active } == true
             // UI cancellation only detaches. It never stops the application runner.
             if (settled) withContext(NonCancellable) {
+                mutable.value = mutable.value.copy(foregroundAgentActive = false)
                 // A fast completion may be conflated before the UI observer sees acceptance.
                 if (graph.backgroundAgents.state.value?.progress?.accepted == true &&
                     saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
@@ -672,19 +750,25 @@ class NativeProjectViewModel internal constructor(
             backgroundTranslations.state.collect { snapshot ->
                 if (snapshot?.token == handle.token)
                     mutable.value = mutable.value.copy(translationProgress = snapshot.progress,
-                        foregroundTranslationActive = snapshot.phase.active)
+                        foregroundTranslationActive = snapshot.phase.active,
+                        foregroundTranslationCanPause = snapshot.phase == ForegroundTranslationPhase.RUNNING &&
+                            snapshot.request.options != null && snapshot.progress != null,
+                        foregroundTranslationPausing = snapshot.phase == ForegroundTranslationPhase.PAUSING)
             }
         }
         try {
             val result = handle.await()
             mutable.value = mutable.value.copy(translationProgress = result,
                 notice = if (handle.request.options == null) R.string.native_simulation_done else R.string.native_remote_done)
+        } catch (_: ForegroundTranslationPaused) {
+            mutable.value = mutable.value.copy(notice = R.string.native_paused)
         } finally {
             observer.cancel()
             // A destroyed UI leaves a live service alone. A settled run re-reads committed facts.
             val snapshot = backgroundTranslations.state.value
             if (snapshot?.token == handle.token && !snapshot.phase.active) {
-                mutable.value = mutable.value.copy(foregroundTranslationActive = false)
+                mutable.value = mutable.value.copy(foregroundTranslationActive = false,
+                    foregroundTranslationCanPause = false, foregroundTranslationPausing = false)
                 withContext(NonCancellable) {
                     if (mutable.value.error == R.string.native_background_refresh_failed)
                         mutable.value = mutable.value.copy(error = null)
@@ -898,7 +982,7 @@ class NativeProjectViewModel internal constructor(
     }
 
     fun selectPage(page: NativePage) {
-        if ((mutable.value.busy && !mutable.value.foregroundTranslationActive) || mutable.value.editor != null || mutable.value.manualBatch != null) return
+        if ((mutable.value.busy && !mutable.value.foregroundExecutionActive) || mutable.value.editor != null || mutable.value.manualBatch != null) return
         mutable.value = mutable.value.copy(page = page)
         saved["native_page"] = page.name
     }
@@ -1439,6 +1523,8 @@ class NativeProjectViewModel internal constructor(
                 is InvalidTextRule -> R.string.native_policy_invalid
                 is InvalidModelSettings -> R.string.native_model_settings_error
                 is AgentApprovalUnavailable -> R.string.native_agent_load_error
+                is TranslationTaskNeedsReview -> R.string.native_tasks_review
+                is TranslationResponseNotStored -> R.string.native_tasks_response_not_saved
                 is InvalidToolArgument -> R.string.native_agent_invalid_item
                 is AgentModelFailure -> when (error.kind) {
                     ModelFailureKind.AUTHENTICATION -> R.string.native_model_auth_error

@@ -17,15 +17,126 @@ class ForegroundTranslationRunnerTest {
         val terminals = mutableListOf<StoredRunState>()
         var finishGate: CompletableDeferred<Unit>? = null
         var beforeFinish: () -> Unit = {}
+        var finishFailure: Exception? = null
         override suspend fun begin(ref: LocalProjectRef, run: RunIdentity, owner: RuntimeOwner): RunJournalHandle {
             began++; return RunJournalHandle("execution-$began", ref, run)
         }
         override suspend fun checkpoint(handle: RunJournalHandle, checkpoint: RunCheckpoint) = Unit
         override suspend fun finish(handle: RunJournalHandle, state: StoredRunState) {
-            beforeFinish(); finishGate?.await(); terminals.add(state)
+            beforeFinish(); finishGate?.await(); finishFailure?.let { throw it }; terminals.add(state)
         }
         override suspend fun recoverInterrupted() = Unit
         override suspend fun recent(ref: LocalProjectRef, limit: Int) = emptyList<StoredRun>()
+    }
+
+    @Test fun forcedStopDuringInflightPauseFinishesCancelled() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, lease, _, emit ->
+                emit(progress())
+                val operation = runtime.beginOperation(lease, OperationKind.MODEL_REQUEST)
+                try { awaitCancellation() } finally { runtime.endOperation(operation) }
+            })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        runner.foregroundStarted(handle.token); runCurrent()
+        assertTrue(runner.pause(handle.token)); assertTrue(runner.stop(handle.token)); runCurrent()
+        try { handle.await(); fail() } catch (_: CancellationException) { }
+        assertEquals(ForegroundTranslationPhase.CANCELLED, runner.state.value!!.phase)
+        assertEquals(listOf(StoredRunState.CANCELLED), journal.terminals)
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun providerFailureDuringPauseIsNotReportedAsPaused() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val response = CompletableDeferred<Unit>()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, lease, _, emit ->
+                emit(progress())
+                val operation = runtime.beginOperation(lease, OperationKind.MODEL_REQUEST)
+                try { response.await(); throw IllegalStateException("provider failed") }
+                finally { runtime.endOperation(operation) }
+            })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        runner.foregroundStarted(handle.token); runCurrent()
+        assertTrue(runner.pause(handle.token))
+        response.complete(Unit); runCurrent()
+        try { handle.await(); fail() } catch (failure: IllegalStateException) {
+            assertEquals("provider failed", failure.message)
+        }
+        assertEquals(ForegroundTranslationPhase.FAILED, runner.state.value!!.phase)
+        assertEquals(listOf(StoredRunState.FAILED), journal.terminals)
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun repeatedExplicitResumeAfterPauseUsesANewTokenEvenWithoutRevisionAdvance() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, _, _, emit -> emit(progress()); awaitCancellation() })
+        val continued = request().copy(options = RemoteTranslationOptions("en"), continuation = true)
+        val first = runner.prepare(continued)
+        runner.foregroundStarted(first.token); runCurrent()
+        assertTrue(runner.pause(first.token)); runCurrent()
+        try { first.await(); fail() } catch (_: ForegroundTranslationPaused) { }
+        val next = runner.prepare(continued)
+        assertNotEquals(first.token, next.token)
+        assertSame(next, runner.prepare(continued))
+        assertFalse(runner.pause(first.token))
+        runner.stop(next.token); runCurrent()
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun failedPauseJournalFinalizationIsAFailureRatherThanADurablePause() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        journal.finishFailure = IllegalStateException("journal unavailable")
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, _, _, emit -> emit(progress()); awaitCancellation() })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        runner.foregroundStarted(handle.token); runCurrent()
+        runner.pause(handle.token); runCurrent()
+        try { handle.await(); fail() } catch (failure: IllegalStateException) {
+            assertEquals("journal unavailable", failure.message)
+        }
+        assertEquals(ForegroundTranslationPhase.FAILED, runner.state.value!!.phase)
+        assertTrue(journal.terminals.isEmpty())
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun pauseWaitsForInflightResponseAndFinishesWithDurablePausedState() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val response = CompletableDeferred<Unit>(); var saved = false
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, lease, _, emit ->
+                emit(progress())
+                val operation = runtime.beginOperation(lease, OperationKind.MODEL_REQUEST)
+                try { response.await(); saved = true } finally { runtime.endOperation(operation) }
+                progress()
+            })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        assertFalse(runner.pause(handle.token))
+        runner.foregroundStarted(handle.token); runCurrent()
+        assertTrue(runner.pause(handle.token)); runCurrent()
+        assertFalse(saved)
+        assertEquals(ForegroundTranslationPhase.PAUSING, runner.state.value!!.phase)
+        assertTrue(journal.terminals.isEmpty())
+        response.complete(Unit); runCurrent()
+        try { handle.await(); fail() } catch (_: ForegroundTranslationPaused) { }
+        assertTrue(saved)
+        assertEquals(listOf(StoredRunState.PAUSED), journal.terminals)
+        assertEquals(ForegroundTranslationPhase.PAUSED, runner.state.value!!.phase)
+        assertNull(runtime.snapshot().activeRun)
+    }
+
+    @Test fun pauseCancelsAWaiterBeforeAnyNewModelOperationStarts() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, _, _, emit -> emit(progress()); awaitCancellation() })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        runner.foregroundStarted(handle.token); runCurrent()
+        assertFalse(runner.pause("stale-token"))
+        assertTrue(runner.pause(handle.token)); runCurrent()
+        try { handle.await(); fail() } catch (_: ForegroundTranslationPaused) { }
+        assertEquals(listOf(StoredRunState.PAUSED), journal.terminals)
+        assertNull(runtime.snapshot().activeRun)
     }
 
     @Test fun reservationAndJournalPrecedeForegroundGateAndNoWorkStartsForAnUnknownToken() = runTest {
@@ -244,4 +355,23 @@ class ForegroundTranslationRunnerTest {
         assertEquals(next.token, runner.state.value!!.token)
         runner.stop(next.token); runCurrent()
     }
+    @Test fun explicitContinuationOnlyAdvancesRevisionAndStartsANewTokenAfterSettlement() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal(); var calls = 0
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, _, _, _ -> calls++; progress() })
+        val initial = request().copy(options = RemoteTranslationOptions("en"))
+        val first = runner.prepare(initial)
+        runner.foregroundStarted(first.token); first.await()
+        val continued = initial.copy(expectedRevision = 2, continuation = true)
+        val second = runner.prepare(continued)
+        assertNotEquals(first.token, second.token)
+        assertSame(second, runner.prepare(continued))
+        runner.foregroundStarted(second.token); second.await()
+        assertEquals(2, calls)
+        assertThrows(ForegroundTranslationConflict::class.java) {
+            runner.prepare(continued.copy(expectedRevision = 3, options = RemoteTranslationOptions("ja")))
+        }
+        assertEquals(2, calls)
+    }
+
 }

@@ -8,6 +8,8 @@
 
 ## 接线
 
+§78 新增源码（未构建）：远程发送改由 NativeAppGraph 的 ForegroundAgentRunner 持有，NativeAgentService 确认前台后执行 NativeKoogConversation；ViewModel 是可取消/重建的观察者，进程内重附着不重发请求。共享流式预览也由应用图持有。短时本地演练/审批仍由页面发起，跨进程接续、队列、分支/压缩尚未实现。当前进度见 [HANDOFF §78](HANDOFF.md)。
+
 原生 Agent 页 → NativeProjectViewModel → NativeKoogConversation（core/agent）→ Koog functionalStrategy/PromptExecutor → AgentRequestBoundary → NativeModelGateway（core/engine）→ CompatibleAgentModel → 用户配置的 HTTP/HTTPS Chat Completions 端点。
 
 同一个 NativeModelGateway 实例同时装配前轮 TXT 本地模拟和远程 Agent 端口。core/agent 只依赖领域模型端口，不导入 HTTP 客户端；网络适配在 core/engine。原有本地 Koog 查询/审批演练仍单独标注为离线操作，不能把本地回答冒充语言模型。
