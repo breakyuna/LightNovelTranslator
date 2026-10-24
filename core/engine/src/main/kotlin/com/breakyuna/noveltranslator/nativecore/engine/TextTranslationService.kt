@@ -95,7 +95,7 @@ class TextTranslationService(
             var committed = task?.committed ?: 0
             var requests = task?.requests ?: 0
             val initialRevision = task?.initialRevision ?: expectedRevision
-            if (task != null) recorder.checkpoint(RunCheckpoint(StoredRunStage.COMMITTED, revision, committed, requests))
+            if (task != null) recorder.checkpoint(RunCheckpoint(StoredRunStage.ACCEPTED, revision, committed, requests))
             var usage = unknownRequestUsage()
             var totals = if (task != null) ledger?.summary(UsageLedgerQuery(ref, run = identity))?.totals ?: RequestUsageTotals()
                 else RequestUsageTotals()

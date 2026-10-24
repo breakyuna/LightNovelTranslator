@@ -100,7 +100,9 @@ class NativeUsageLedgerStoreTest {
             if (index == 105) "RECEIVED" else "DISPATCHED", if (index == 105) TranslationUsageCodec.encode(usage()) else null,
             null, if (index == 105) ModelFailureKind.PARSING.name else null)
         try {
-            db.runInTransaction { for (index in 1..105) db.usage().insert(row(index)) }
+            withContext(Dispatchers.IO) {
+                db.runInTransaction { for (index in 1..105) db.usage().insert(row(index)) }
+            }
             val first = ledger.entries(query)
             assertEquals(50, first.entries.size)
             val received = first.entries.first()
@@ -110,7 +112,7 @@ class NativeUsageLedgerStoreTest {
             assertEquals(10L, received.usage!!.input.tokens)
             assertEquals(UsageSource.ESTIMATED, received.usage!!.cacheRead.source)
             assertEquals(UsageSource.UNKNOWN, received.usage!!.output.source)
-            db.usage().insert(row(106)); db.usage().insert(row(107, 2))
+            withContext(Dispatchers.IO) { db.usage().insert(row(106)); db.usage().insert(row(107, 2)) }
             val second = ledger.entries(query, first.next)
             val third = ledger.entries(query, second.next)
             assertEquals(50, second.entries.size); assertEquals(5, third.entries.size); assertNull(third.next)
@@ -152,7 +154,9 @@ class NativeUsageLedgerStoreTest {
         val ref = project().ref; val chat = agent.currentChat(ref); val request = request(ref, chat)
         agent.reserveRequest(request); agent.markDispatched(request.key()); agent.completeRequest(request.key(), response())
         runtime.selectChat(null)
-        val lease = runtime.beginRun(RunIdentity(ref.projectId, null, RunId("translation"), CommandId("translation")), RuntimeOwner.TRANSLATION)
+        val lease = runtime.beginRunSelectingChat(
+            RunIdentity(ref.projectId, null, RunId("translation"), CommandId("translation")), RuntimeOwner.TRANSLATION,
+            ChatIdentity(ref.projectId, ChatId("translation-workspace")))
         try {
             val input = projects.item(ref, ItemId(1))!!.item
             val translation = TranslationModelRequest(ref, lease.identity, request.attemptId, ModelConfigurationRef("fixture", 1),

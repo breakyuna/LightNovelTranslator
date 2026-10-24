@@ -41,7 +41,9 @@ class NativeProjectBackupServiceTest {
     }
 
     @After fun cleanup() = runBlocking {
-        projects.close(); runtime.close(); temporary.deleteRecursively()
+        projects.close(); runtime.close()
+        temporary.deleteRecursively()
+        Unit
     }
 
     @Test fun roundTripRestoresProjectAsNewIdentityWithTranslatedItems() = runBlocking {

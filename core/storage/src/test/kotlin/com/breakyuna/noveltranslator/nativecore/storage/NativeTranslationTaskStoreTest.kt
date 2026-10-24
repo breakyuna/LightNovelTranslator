@@ -5,7 +5,9 @@ import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.*
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -56,8 +58,11 @@ class NativeTranslationTaskStoreTest {
             try { tasks.resume(original.ref, original.run); fail("Resumed uncertain terminal request") }
             catch (_: TranslationTaskNeedsReview) { }
             val db = NativeAppDatabase.open(context)
-            try { assertEquals("DISPATCHED", db.translationRequests().find(attempt.value)!!.state) }
-            finally { db.close() }
+            try {
+                withContext(Dispatchers.IO) {
+                    assertEquals("DISPATCHED", db.translationRequests().find(attempt.value)!!.state)
+                }
+            } finally { db.close() }
         } finally { audit.close() }
     }
 

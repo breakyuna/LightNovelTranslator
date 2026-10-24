@@ -151,7 +151,20 @@ class NativeRunStoreTest {
         withContext(Dispatchers.IO) {
             android.database.sqlite.SQLiteDatabase.openDatabase(context.getDatabasePath("lnt_native_app.db").path,
                 null, android.database.sqlite.SQLiteDatabase.OPEN_READWRITE).use { db ->
-                db.execSQL("DROP TABLE native_runs"); db.execSQL("DELETE FROM room_master_table"); db.version = 2
+                // Rebuild a genuine v2 app DB: drop every later table and the v5 model columns.
+                db.execSQL("DROP TABLE native_runs")
+                db.execSQL("DROP TABLE native_translation_requests")
+                db.execSQL("DROP TABLE native_translation_staged")
+                db.execSQL("DROP TABLE native_translation_responses")
+                db.execSQL("DROP TABLE native_translation_request_inputs")
+                db.execSQL("DROP TABLE native_translation_targets")
+                db.execSQL("DROP TABLE native_translation_tasks")
+                db.execSQL("DROP TABLE native_usage_receipts")
+                db.execSQL("ALTER TABLE native_model_settings RENAME TO fixture_v5_models")
+                db.execSQL("CREATE TABLE native_model_settings (revision INTEGER NOT NULL PRIMARY KEY, endpoint TEXT NOT NULL, model TEXT NOT NULL, encryptedKey TEXT NOT NULL)")
+                db.execSQL("INSERT INTO native_model_settings(revision,endpoint,model,encryptedKey) SELECT revision,endpoint,model,encryptedKey FROM fixture_v5_models")
+                db.execSQL("DROP TABLE fixture_v5_models")
+                db.execSQL("DELETE FROM room_master_table"); db.version = 2
             }
         }
         projects = NativeTextProjectStore(context, runtime); runs = NativeRunStore(context, projects, runtime)
