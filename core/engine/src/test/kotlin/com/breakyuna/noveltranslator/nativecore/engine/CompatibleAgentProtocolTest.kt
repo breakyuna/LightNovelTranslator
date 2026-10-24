@@ -22,7 +22,10 @@ class CompatibleAgentProtocolTest {
         override suspend fun save(endpoint: String, model: String, key: String?): NativeModelSettings = error("Not used")
     }
     private val request get() = AgentModelRequest(identity, BranchId("main"), RequestAttemptId("attempt"), configuration,
-        listOf(AgentMessage.User(MessageId("user"), listOf(UserPart.Text("fixture")))), emptyList())
+        listOf(
+            AgentMessage.System(MessageId("system"), "fixture system"),
+            AgentMessage.User(MessageId("user"), listOf(UserPart.Text("fixture"))),
+        ), emptyList())
 
     @Test fun unknownCapabilitiesNeverAuthorizeToolsOnANonChatProtocol() = runBlocking {
         val runtime = RuntimeCoordinator().also { it.selectChat(ChatIdentity(identity.projectId, identity.chatId!!)) }
