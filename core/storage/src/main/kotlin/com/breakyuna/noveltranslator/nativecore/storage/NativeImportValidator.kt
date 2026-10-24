@@ -10,6 +10,10 @@ internal object NativeImportValidator {
     fun validate(file: File, limits: TextProjectLimits, budget: NativeImportLimits,
                  checkActive: () -> Unit): ProjectId {
         if (file.length() > budget.maxFileBytes) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        // Check the name-snapshot budget before full schema/fingerprint validation. A tampered
+        // oversized snapshot otherwise fails the earlier integrity pass as CORRUPT_PROJECT and
+        // hides the real resource-limit classification.
+        if (nameSnapshotOverBudget(file, 32 * 4096)) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         NativeProjectDatabase.open(file).use { db ->
             NativeProjectDatabase.validateSchema(db)
             val version = db.version
@@ -477,6 +481,24 @@ internal object NativeImportValidator {
         db.rawQuery("""SELECT 1 FROM policy_receipts p JOIN write_receipts w ON
             p.instance_id=w.instance_id AND p.generation=w.generation AND p.command_id=w.command_id LIMIT 1""", null).use { if (it.moveToFirst()) corrupt() }
         return chars
+    }
+
+    private fun nameSnapshotOverBudget(file: File, limit: Int): Boolean = try {
+        SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            val columns = HashSet<String>()
+            db.rawQuery("PRAGMA table_info(item_revisions)", null).use { cursor ->
+                while (cursor.moveToNext()) columns.add(cursor.getString(1))
+            }
+            (columns.contains("name_source") || columns.contains("name_translation")) &&
+                db.rawQuery(
+                    "SELECT 1 FROM item_revisions WHERE " +
+                        (if (columns.contains("name_source")) "length(name_source) > ? " else "0 ") + " OR " +
+                        (if (columns.contains("name_translation")) "length(name_translation) > ? " else "0 ") + "LIMIT 1",
+                    arrayOf(limit.toString(), limit.toString()),
+                ).use { it.moveToFirst() }
+        }
+    } catch (_: Exception) {
+        false
     }
 
     private fun requireTextBudget(db: SQLiteDatabase, table: String, column: String, limit: Int) {

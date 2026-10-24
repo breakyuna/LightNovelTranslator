@@ -106,10 +106,10 @@ class NativeAgentInputStoreTest {
             draft(chat, "b", "second"),
         )
         queue = (queue.edit(CommandId("b"), "second edited") as AgentInputQueueUpdate.Applied).queue
-        queue = (queue.pause() as AgentInputQueueUpdate.Applied).queue
         val started = queue.beginAppend(run, RequestAttemptId("attempt-1")) as AgentInputAppendStartResult.Started
+        queue = (started.queue.pause() as AgentInputQueueUpdate.Applied).queue
         val saved = save(
-            StoredAgentInputQueue.initial(project.ref, started.queue)
+            StoredAgentInputQueue.initial(project.ref, queue)
                 .withPendingMessage(MessageId("message-a")),
         )
         assertEquals(1L, saved.revision)
