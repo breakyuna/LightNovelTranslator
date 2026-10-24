@@ -36,6 +36,11 @@ class NativePromptTemplateLibraryTest {
         compose.waitUntil(5_000) {
             compose.onAllNodesWithTag("native-template-t1").fetchSemanticsNodes().isNotEmpty()
         }
+        // The list renders from the same effect that clears `busy`; wait for the row's gate
+        // explicitly so a click cannot land on the still-disabled button.
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("native-template-t1").assertIsEnabled(); true }.getOrDefault(false)
+        }
         compose.onNodeWithTag("native-template-t1").performScrollTo().performClick()
         compose.waitUntil(5_000) {
             runCatching { compose.onNodeWithTag("native-policy-apply").assertIsEnabled(); true }.getOrDefault(false)
