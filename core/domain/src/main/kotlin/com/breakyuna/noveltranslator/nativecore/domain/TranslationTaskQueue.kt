@@ -988,7 +988,7 @@ class TranslationTaskQueue private constructor(
             selected.add(member)
         }
 
-        val decisions = current.decisionActions()
+        val decisions = LinkedHashMap(current.decisionActions())
         for (member in selected) {
             decisions[FailureMemberKey(batchId, member.itemId)] = action
         }
