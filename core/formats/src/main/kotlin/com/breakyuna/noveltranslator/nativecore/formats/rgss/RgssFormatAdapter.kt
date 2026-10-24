@@ -179,9 +179,11 @@ class RgssFormatAdapter(
             return if (changed) RgssArchiveCodec.write(RgssArchive(archive.version, entries)) else original
         }
         if (isBareScripts(original)) {
-            if (isDataFile(path.value) && !isScriptPath(path.value)) {
-                return applyDataEdits(original, path.value, units, options)
-            }
+            // The binary adapter API has no path on write; the unit tag carries the original
+            // member path emitted by read(), so data and scripts stay distinguishable.
+            val dataPath = units.map { it.tag }
+                .firstOrNull { isDataFile(it) && !isScriptPath(it) }
+            if (dataPath != null) return applyDataEdits(original, dataPath, units, options)
             val scripts = readScripts(original)
             return RgssScriptsCodec.write(applyEdits(scripts, units, options))
         }

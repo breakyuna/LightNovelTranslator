@@ -96,7 +96,7 @@ class TranslationQueueCoordinator(
             if (result !is TranslationQueueResult.Applied) return@withLock result
             val next = base.updated(result.queue, result.task.identity, nextTimestamp(base), newSpec = spec)
             val committed = store.compareAndSet(spec.ref, stored, next)
-            TranslationQueueResult.Applied(committed.snapshot, committed.snapshot.task(identity)!!)
+            TranslationQueueResult.Applied(committed.snapshot.queue, committed.snapshot.task(identity)!!)
         }
 
     /** Claims the globally next runnable task (all projects) and persists it as RUNNING. */
@@ -254,7 +254,7 @@ class TranslationQueueCoordinator(
             val next = base.updated(result.queue, paused.identity, nextTimestamp(base))
             val committed = store.compareAndSet(ref, stored, next)
             return TranslationQueueResult.Applied(
-                committed.snapshot,
+                committed.snapshot.queue,
                 committed.snapshot.task(paused.identity)!!,
             )
         }
@@ -262,7 +262,7 @@ class TranslationQueueCoordinator(
         val changed = (dispatched as? TranslationQueueResult.Applied)?.task?.identity ?: paused.identity
         val next = base.updated(dispatched.queue, changed, nextTimestamp(base))
         val committed = store.compareAndSet(ref, stored, next)
-        return TranslationQueueResult.Applied(committed.snapshot, committed.snapshot.task(changed)!!)
+        return TranslationQueueResult.Applied(committed.snapshot.queue, committed.snapshot.task(changed)!!)
     }
 
     private suspend fun apply(
@@ -276,7 +276,7 @@ class TranslationQueueCoordinator(
         val next = base.updated(result.queue, result.task.identity, nextTimestamp(base))
         val committed = store.compareAndSet(ref, stored, next)
         return TranslationQueueResult.Applied(
-            committed.snapshot,
+            committed.snapshot.queue,
             committed.snapshot.task(result.task.identity)!!,
         )
     }
