@@ -45,7 +45,7 @@ class NativeApplicationBackupServiceTest {
         assertEquals(1, summary.schemaVersion)
 
         val archive = unzip(exported.toByteArray())
-        val manifest = archive.getValue("manifest.json").toString(Charsets.UTF_8.name())
+        val manifest = archive.getValue("manifest.json").toString(Charsets.UTF_8)
         assertTrue(manifest.contains("\"credentials_excluded\":true"))
         assertTrue(manifest.contains("\"execution_authorization_included\":false"))
         assertTrue(manifest.contains("\"project_instances_included\":false"))
@@ -94,7 +94,7 @@ class NativeApplicationBackupServiceTest {
         val exported = ByteArrayOutputStream()
         service(FakePort(sampleEntries())).export { exported }
         val archive = unzip(exported.toByteArray())
-        val manifest = archive.getValue("manifest.json").toString(Charsets.UTF_8.name())
+        val manifest = archive.getValue("manifest.json").toString(Charsets.UTF_8)
         val modelPath = AppBackupPaths.MODEL_SETTINGS
         val tampered = listOf(
             manifest.replaceFirst(
@@ -212,7 +212,7 @@ class NativeApplicationBackupServiceTest {
         var staged: Map<String, String> = emptyMap()
         var stageCalls = 0
 
-        fun liveText(): Map<String, String> = live.mapValues { (_, value) -> value.toString(Charsets.UTF_8.name()) }
+        fun liveText(): Map<String, String> = live.mapValues { (_, value) -> value.toString(Charsets.UTF_8) }
 
         override suspend fun exportEntries(): List<AppBackupEntry> = entries.map { entry ->
             AppBackupEntry.bytes(entry.path, entry.kind, entry.text.toByteArray(Charsets.UTF_8))
@@ -222,7 +222,7 @@ class NativeApplicationBackupServiceTest {
             stageCalls++
             if (failStage) throw IOException("staging failed")
             val stagedCopy = entries.associate { entry ->
-                entry.path to entry.open().use { input -> input.readText() }
+                entry.path to entry.open().use { input -> input.readBytes().toString(Charsets.UTF_8) }
             }
             staged = stagedCopy
             return object : AppBackupRestoreSession {
@@ -262,5 +262,4 @@ class NativeApplicationBackupServiceTest {
         return output.toByteArray()
     }
 
-    private fun InputStream.readText(): String = readBytes().toString(Charsets.UTF_8.name())
 }

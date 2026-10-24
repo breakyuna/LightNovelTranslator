@@ -279,6 +279,16 @@ class TranslationTaskQueueTest {
         assertEquals(TranslationTaskQueueState.QUEUED, queued.task(identity)!!.state)
     }
 
+    private fun member(id: Long): TranslationFailureMember = TranslationFailureMember(
+        itemId = ItemId(id),
+        fingerprint = ObjectFingerprint("c".repeat(64)),
+        failure = ModelFailureKind.NETWORK,
+        receipt = TranslationFailureReceipt.RECEIVED,
+    )
+
+    private fun batch(id: String, vararg members: TranslationFailureMember): TranslationTaskFailureBatch =
+        TranslationTaskFailureBatch(TranslationTaskFailureBatchId(id), members.toList())
+
     private fun identity(
         ref: LocalProjectRef,
         runId: String,
