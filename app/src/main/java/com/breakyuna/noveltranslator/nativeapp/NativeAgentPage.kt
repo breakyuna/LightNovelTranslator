@@ -32,7 +32,9 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     newChat: () -> Unit = {}, selectChat: (ChatId) -> Unit = {},
     fetchModels: (String, String, ModelConfigurationRef?, (List<String>) -> Unit) -> Unit = { _, _, _, _ -> },
     cancel: () -> Unit = {}, inspect: (String) -> Unit = {}, closeDetail: () -> Unit = {},
-    stream: StateFlow<AgentStreamPreviewState>? = null) {
+    stream: StateFlow<AgentStreamPreviewState>? = null,
+    configureProfile: ((String, String, NativeModelProtocol, List<String>?, () -> Unit) -> Unit)? = null,
+    fetchProfile: ((String, String, ModelConfigurationRef?, NativeModelProtocol, (List<String>) -> Unit) -> Unit)? = null) {
     val ref = state.project!!.ref
     val ready = !state.busy && !state.agentLoadIncomplete && !state.runLoadIncomplete
     var showModel by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
@@ -42,7 +44,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
     LaunchedEffect(interrupted) { if (interrupted) runs = true }
     if (showModel) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
-        { showModel = false }, configure, fetchModels, cancel)
+        { showModel = false }, configure, fetchModels, cancel, configureProfile, fetchProfile)
     state.agentMessageDetail?.let { NativeAgentMessageDialog(it, closeDetail) }
     val timeline = rememberLazyListState()
     val committedIds = remember(state.agentMessages) { state.agentMessages.map { it.id }.toSet() }

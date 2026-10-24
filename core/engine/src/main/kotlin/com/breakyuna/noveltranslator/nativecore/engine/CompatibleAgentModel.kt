@@ -11,12 +11,30 @@ import okhttp3.RequestBody.Companion.toRequestBody
 
 /** Bounded streaming Chat Completions transport; only called through the shared gateway. */
 class CompatibleAgentModel(private val settings: NativeModelSettingsPort, private val runtime: RuntimePort,
-    private val transport: CompatibleHttpTransport = CompatibleHttpTransport()) : AgentModelPort {
+    private val transport: CompatibleHttpTransport = CompatibleHttpTransport(),
+    private val keys: ModelKeyPool = ModelKeyPool(settings),
+    private val usage: UsageLedgerRecorder? = null,
+    /** Exact provider facts; EMPTY intentionally rejects tool-bearing non-chat requests. */
+    private val capabilities: CapabilityCatalog = CapabilityCatalog.EMPTY) : AgentModelPort {
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+        var reference: ModelConfigurationRef? = null
+        var selection: KeySelection? = null
         try {
             currentCoroutineContext().ensureActive()
             val config = settings.resolve(request.configuration)
-            val secret = settings.credential(request.configuration)
+            reference = config.reference
+            selection = keys.select(request.configuration)
+            val protocol = config.protocol.toModelProtocol()
+            if (protocol != ModelProtocol.OPENAI_CHAT_COMPLETIONS) {
+                val result = completeProtocol(request, config, protocol, selection?.credential.orEmpty(), emit)
+                withContext(NonCancellable) {
+                    keys.success(config.reference, selection)
+                    runCatching { usage?.record(UsageRequestRecord(request.run, request.attemptId,
+                        UsageModelRef(config.reference, config.model), result.usage, result.stopReason)) }
+                }
+                return result
+            }
+            val secret = selection?.credential.orEmpty()
             val providerIds = request.history.filterIsInstance<AgentMessage.Assistant>().flatMap { it.parts }
                 .filterIsInstance<AssistantPart.ToolCall>().associate { it.call.id to requireNotNull(it.call.providerCallId) }
             val body = buildJsonObject {
@@ -46,13 +64,96 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                     result
                 }
             } catch (failure: Exception) { received.get() ?: throw failure }
-            return try { parse(payload) }
+            val parsed = try { parse(payload) }
             catch (classified: AgentModelFailure) { throw classified }
             catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.PARSING) }
+            withContext(NonCancellable) {
+                keys.success(config.reference, selection)
+                runCatching { usage?.record(UsageRequestRecord(request.run, request.attemptId,
+                    UsageModelRef(config.reference, config.model), parsed.usage, parsed.stopReason)) }
+            }
+            return parsed
         } catch (cancelled: CancellationException) { throw cancelled }
-        catch (classified: AgentModelFailure) { throw classified }
-        catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.UNKNOWN) }
+        catch (classified: AgentModelFailure) {
+            reference?.let { keys.failure(it, selection, classified.kind) }
+            throw classified
+        }
+        catch (_: Exception) {
+            reference?.let { keys.failure(it, selection, ModelFailureKind.UNKNOWN) }
+            throw AgentModelFailure(ModelFailureKind.UNKNOWN)
+        }
     }
+    /**
+     * Non-chat protocols use the shared protocol transport. The current slice is
+     * non-streaming: the complete receipt is emitted as preview deltas after the
+     * response has passed the same bounded validation, so a partial provider
+     * stream can never become a persisted assistant message.
+     */
+    private suspend fun completeProtocol(request: AgentModelRequest, config: NativeModelSettings,
+        protocol: ModelProtocol, secret: String, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+        val system = request.history.filterIsInstance<AgentMessage.System>()
+            .joinToString("\n") { it.text }.takeIf { it.isNotBlank() }
+        val conversation = request.history.filterNot { it is AgentMessage.System }
+        val providerIds = mutableMapOf<ToolCallId, String>()
+        for (message in conversation) {
+            if (message !is AgentMessage.Assistant) continue
+            if (message.continuation != null ||
+                message.parts.filterIsInstance<AssistantPart.Thinking>().any { it.continuation != null })
+                throw AgentModelFailure(ModelFailureKind.CONTENT)
+            message.parts.filterIsInstance<AssistantPart.ToolCall>().forEach { part ->
+                providerIds[part.call.id] = part.call.providerCallId
+                    ?: throw AgentModelFailure(ModelFailureKind.PARSING)
+            }
+        }
+        val messages = conversation.map { value ->
+            when (value) {
+                is AgentMessage.User -> {
+                    if (value.parts.any { it !is UserPart.Text }) throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    val text = value.parts.joinToString("\n") { (it as UserPart.Text).text }
+                    if (text.isBlank()) throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    ModelProtocolMessage(ModelMessageRole.USER, text)
+                }
+                is AgentMessage.Assistant -> {
+                    val text = value.parts.filterIsInstance<AssistantPart.Text>().joinToString("") { it.text }
+                    val calls = value.parts.filterIsInstance<AssistantPart.ToolCall>().map { part ->
+                        ModelToolCall(part.call.providerCallId ?: throw AgentModelFailure(ModelFailureKind.PARSING),
+                            part.call.name, part.call.arguments.encode())
+                    }
+                    if (text.isEmpty() && calls.isEmpty()) throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    ModelProtocolMessage(ModelMessageRole.ASSISTANT, text, calls)
+                }
+                is AgentMessage.ToolResult -> ModelProtocolMessage(ModelMessageRole.TOOL, value.result.encode(),
+                    toolCallId = providerIds[value.callId] ?: throw AgentModelFailure(ModelFailureKind.PARSING),
+                    toolName = value.toolName)
+                is AgentMessage.System -> throw AgentModelFailure(ModelFailureKind.CONTENT)
+            }
+        }
+        val tools = request.tools.map { ModelToolSpec(it.name, it.description, it.inputSchema.json) }
+        val protocolRequest = try {
+            ModelProtocolRequest(config.model, system, messages, tools)
+        } catch (_: IllegalArgumentException) { throw AgentModelFailure(ModelFailureKind.CONTENT) }
+        val response = try {
+            ModelProtocolTransport(transport, capabilities).complete(protocol, config,
+                secret, protocolRequest, CapabilityRequirement(tools = tools.isNotEmpty()))
+        } catch (failure: UnsupportedModelCapability) {
+            throw AgentModelFailure(ModelFailureKind.CONTENT)
+        }
+        val parts = mutableListOf<AssistantPart>()
+        if (response.thinking.isNotEmpty()) parts.add(AssistantPart.Thinking(response.thinking, null))
+        if (response.text.isNotEmpty()) parts.add(AssistantPart.Text(response.text))
+        response.toolCalls.forEach { call ->
+            parts.add(AssistantPart.ToolCall(AgentToolCall(ToolCallId(UUID.randomUUID().toString()), call.name,
+                try { JsonObjectValue.parse(call.argumentsJson, JsonInputLimits(512 * 1024, 32)) }
+                catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.PARSING) }, call.id)))
+        }
+        val message = AgentMessage.Assistant(MessageId(UUID.randomUUID().toString()), parts)
+        if (AgentMessageCodec.encode(message).length > 512 * 1024) throw AgentModelFailure(ModelFailureKind.CONTENT)
+        if (response.thinking.isNotEmpty()) emit(AgentModelEvent.ThinkingDelta(response.thinking))
+        if (response.text.isNotEmpty()) emit(AgentModelEvent.TextDelta(response.text))
+        response.toolCalls.indices.forEach { emit(AgentModelEvent.ToolCallDelta(it)) }
+        return AgentModelResponse(message, response.usage, response.stopReason)
+    }
+
     private fun message(value: AgentMessage, providerIds: Map<ToolCallId, String>): JsonObject = buildJsonObject {
         when (value) {
             is AgentMessage.System -> { put("role", "system"); put("content", value.text) }

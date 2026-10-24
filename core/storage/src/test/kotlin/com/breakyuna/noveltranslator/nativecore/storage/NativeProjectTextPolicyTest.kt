@@ -42,7 +42,7 @@ class NativeProjectTextPolicyTest {
             try {
                 db.beginTransaction()
                 try {
-                    for (table in listOf("project_settings", "asset_receipts", "asset_revisions",
+                    for (table in listOf("archived_items", "project_settings", "asset_receipts", "asset_revisions",
                         "text_policy", "policy_revisions", "policy_receipts")) db.execSQL("DROP TABLE $table")
                     db.execSQL("""CREATE TABLE assets_v1 (
                         id INTEGER PRIMARY KEY CHECK(id = 1), path TEXT NOT NULL UNIQUE,
@@ -60,6 +60,13 @@ class NativeProjectTextPolicyTest {
                         "SELECT id,asset_id,row_index,source,translation,status,fingerprint FROM items")
                     db.execSQL("DROP TABLE items")
                     db.execSQL("ALTER TABLE items_v1 RENAME TO items")
+                    val revisionsSql = db.rawQuery("SELECT sql FROM sqlite_master WHERE name='item_revisions'", null).use {
+                        check(it.moveToFirst()); it.getString(0)
+                    }
+                    db.execSQL("ALTER TABLE item_revisions RENAME TO revisions_v4")
+                    db.execSQL(revisionsSql.replace("item_id INTEGER NOT NULL,", "item_id INTEGER NOT NULL REFERENCES items(id),"))
+                    db.execSQL("INSERT INTO item_revisions SELECT * FROM revisions_v4")
+                    db.execSQL("DROP TABLE revisions_v4")
                     db.version = 1
                     db.setTransactionSuccessful()
                 } finally { db.endTransaction() }

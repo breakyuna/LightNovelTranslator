@@ -75,8 +75,10 @@ internal object ProjectWriteStore {
             if (find(db, command.ref, command.commandId) != null)
                 throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
             val storedCount = batchReceiptCount(db, command.ref, command.commandId)
-            val previous = command.targets.mapIndexed { index, _ -> find(db, command.ref, command.itemCommand(index)) }
             if (storedCount != 0) {
+                val previous = command.targets.mapIndexed { index, _ ->
+                    beforeCommit(); find(db, command.ref, command.itemCommand(index))
+                }
                 // An atomic batch has every receipt or none. A collision/partial set is never
                 // interpreted as permission to fill in or replace remaining commands.
                 if (storedCount != command.targets.size) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
@@ -96,17 +98,17 @@ internal object ProjectWriteStore {
                     if (status == ManualEditStatus.COMMITTED) receipts.size else 0)
             }
             val revision = NativeProjectDatabase.scalar(db, "SELECT revision FROM project WHERE singleton = 1")
-            val columns = if (db.version >= 3) NativeProjectDatabase.ITEM_COLUMNS
-                else NativeProjectDatabase.ITEM_COLUMNS_V2
-            val items = command.targets.map { target -> db.rawQuery(
-                "SELECT $columns FROM items WHERE id = ?", arrayOf(target.id.value.toString()),
-            ).use { if (it.moveToFirst()) NativeProjectDatabase.item(it, db.version) else null } }
-            val conflict = when {
-                revision != command.expectedRevision -> ManualEditStatus.STALE_REVISION
-                items.any { it == null } -> ManualEditStatus.UNKNOWN_ITEM
-                items.indices.any { index -> items[index]!!.fingerprint != command.targets[index].fingerprint ||
-                    items[index]!!.row != command.targets[index].row } -> ManualEditStatus.STALE_FINGERPRINT
-                else -> null
+            var conflict: ManualEditStatus? = if (revision != command.expectedRevision) ManualEditStatus.STALE_REVISION else null
+            if (conflict == null) {
+                for (target in command.targets) {
+                    beforeCommit()
+                    db.rawQuery("SELECT row_index,fingerprint FROM items WHERE id=?", arrayOf(target.id.value.toString())).use {
+                        if (!it.moveToFirst()) conflict = ManualEditStatus.UNKNOWN_ITEM
+                        else if (it.getInt(0) != target.row || it.getString(1) != target.fingerprint.sha256)
+                            conflict = ManualEditStatus.STALE_FINGERPRINT
+                    }
+                    if (conflict != null) break
+                }
             }
             if (conflict != null) {
                 val now = System.currentTimeMillis().coerceAtLeast(0)
@@ -114,17 +116,20 @@ internal object ProjectWriteStore {
                     db.insertOrThrow("write_receipts", null, ContentValues().apply {
                         put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
                         put("command_id", command.itemCommand(index).value); put("digest", command.digest()); put("item_id", target.id.value)
-                        put("outcome", conflict.name); put("revision", revision); put("committed_at", now)
+                        put("outcome", requireNotNull(conflict).name); put("revision", revision); put("committed_at", now)
                     })
                 }
                 beforeCommit()
-                return@transaction ManualBatchReceipt(command.commandId, command.ref, conflict, revision, 0)
+                return@transaction ManualBatchReceipt(command.commandId, command.ref, requireNotNull(conflict), revision, 0)
             }
             command.targets.forEachIndexed { index, target ->
-                val item = requireNotNull(items[index])
+                beforeCommit()
+                val translation = db.rawQuery("SELECT translation FROM items WHERE id=?", arrayOf(target.id.value.toString())).use {
+                    check(it.moveToFirst()); it.getString(0)
+                }
                 val edit = ManualTextEdit(command.itemCommand(index), command.ref, target.id,
                     Math.addExact(revision, index.toLong()), target.fingerprint,
-                    if (command.change.clearsTranslation) "" else item.translation, command.change.status)
+                    if (command.change.clearsTranslation) "" else translation, command.change.status)
                 check(editBound(db, edit, beforeCommit).status == ManualEditStatus.COMMITTED)
             }
             beforeCommit()

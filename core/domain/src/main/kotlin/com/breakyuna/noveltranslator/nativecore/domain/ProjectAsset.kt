@@ -52,6 +52,11 @@ enum class ProjectAssetFormat {
                 "renpy", "rpy" -> RENPY
                 "trans" -> TRANS
                 "pdf" -> PDF
+                "rgssad", "rgss2a", "rgss3a" -> RPGMAKER_RGSS
+                // Only the canonical script data files are RGSS; other .rxdata/.rvdata2 files
+                // are generic RPG Maker data and must not be claimed by this adapter.
+                "rxdata", "rvdata", "rvdata2" ->
+                    if (name in setOf("scripts.rxdata", "scripts.rvdata", "scripts.rvdata2")) RPGMAKER_RGSS else BINARY
                 "json" -> if (name.contains("message")) MESSAGEJSON else KVJSON
                 else -> BINARY
             }
@@ -153,7 +158,7 @@ class AssetImportPlan(
     }
 }
 
-enum class AssetMutationKind { IMPORT, REMOVE, REORDER, RESET, SETTINGS }
+enum class AssetMutationKind { IMPORT, REMOVE, REORDER, RESET, SETTINGS, ENABLED }
 enum class AssetMutationStatus { COMMITTED, STALE_REVISION, UNKNOWN_ASSET, CONFLICT }
 
 data class AssetMutationReceipt(
@@ -249,6 +254,9 @@ object AssetCommandFingerprint {
     fun reorder(ref: LocalProjectRef, revision: Long, ids: List<Long>, commandId: CommandId): String =
         hash("asset-reorder-v1", ref, revision, commandId.value, ids.joinToString(","))
 
+    fun enabled(ref: LocalProjectRef, revision: Long, assetId: Long, enabled: Boolean, commandId: CommandId): String =
+        hash("asset-enabled-v1", ref, revision, commandId.value, "$assetId:$enabled")
+
     fun reset(ref: LocalProjectRef, revision: Long, assetId: Long, commandId: CommandId): String =
         hash("asset-reset-v1", ref, revision, commandId.value, assetId.toString())
 
@@ -271,6 +279,8 @@ interface ProjectAssetPort {
         assetId: Long): AssetMutationReceipt
     suspend fun reorderAssets(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
         assetIds: List<Long>): AssetMutationReceipt
+    suspend fun setAssetEnabled(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        assetId: Long, enabled: Boolean): AssetMutationReceipt
     suspend fun resetAsset(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
         assetId: Long): AssetMutationReceipt
     suspend fun readAsset(ref: LocalProjectRef, assetId: Long): ByteArray

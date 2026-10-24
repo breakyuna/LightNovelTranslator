@@ -16,7 +16,7 @@ Project（工程）
 
 工程首页、打开工程默认进入 Agent、完整功能范围和 Koog 保留清单，以 [原生 LG 重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md) 为准。旧书架、阅读器、章节/Edition 模型、翻译引擎和 UI 均进入替换范围，不再要求保留旧首页、导航或视觉体系。
 
-当前保留大量旧阅读平台源码作为迁移来源，MainActivity 已在源码中改接 nativeapp 原生工程入口（用户已确认本轮 TXT 手工切片的 CI/设备检查通过，边界见 HANDOFF §22）；`README.md`、2026-08-25 设计及 2026-10-19 计划用于理解现状和数据迁移，不约束新产品定位。`REFACTOR_REPORT.md` 是历史快照。计划编写不自动启动产品重构，按用户当前授权范围执行；旧数据须先保护、迁移和验证，不能因重构直接删除。
+当前保留大量旧阅读平台源码作为迁移来源，MainActivity 已在源码中改接 nativeapp 原生工程入口（用户已确认本轮 TXT 手工切片的 CI/设备检查通过，边界见 HANDOFF §22）；`README.md`、2026-08-25 设计及 2026-10-19 计划用于理解现状和数据迁移，不约束新产品定位。`REFACTOR_REPORT.md` 是历史快照。计划编写不自动启动产品重构，按用户当前授权范围执行；旧数据仍不得因重构直接删除；用户已于 2026-10-24 决定当前开发阶段不需要旧 LNT 数据迁移，R36 移出当前路线图，不得再新增迁移器或把旧库读取作为交付门槛。
 
 ## 2. 构建、测试与验证命令
 
@@ -77,9 +77,9 @@ app/src/main/java/com/breakyuna/noveltranslator/
     └── viewmodel/      # AppViewModel（旧阅读平台 ViewModel）
 ```
 
-实施新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM；其余为 Android Library。engine 已有进程内协调与生命周期原型；agent 已有类型化请求/只读工具边界，固定操作与结构化对话已接共享原生模型网关，完整协议和密钥池/动态调度仍未实现；core/agent 新增 Koog 固定查询/准备差异适配，持久单条审批及结构化对话切片已有 CI 证据（见 HANDOFF §26—27），不代表完整 Agent/审批可用。storage 的独立 Room 索引、原生 `.lnt` TXT 数据库、手工事务与一致快照已有指定提交的 CI 证据；新增外部导入、复制、恢复、双语导出和临时产物清理的实现及验收边界见 HANDOFF §20—22。formats 新增 SRT/LRC/ASS/SSA 纯文本解析/写回核心，17 项核心用例已通过指定提交 CI，但尚未接入工程资产；workspace 完整业务尚未实现。
+新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM，其余为 Android Library。实际进度唯一记录在 HANDOFF §3、§49；代码 `2643b2c` 已通过 Actions #146 test/lint/release。storage 的已验证基线为 `.lnt` v3 多资产，§58 未构建源码升至 v4 并增加资产移除归档；§69 未构建源码把独立应用 Room 升至 v5（模型协议与多密钥列）。已有修订/事务回执和快照；formats 已有 Markdown、VTT、字幕桥接、JSON、TRANS、RenPy、EPUB、XLSX、MV/MZ 及 RGSS 归档/Marshal/Scripts 核心与工程服务，仍有未移植分支，不能据此宣称全格式验收。workspace 已有路径/预算/材料/changes/审批/脚本端口与文件适配器核心，尚未接入真实脚本引擎和生产审批/apply。
 
-新入口位于 `app/.../nativeapp`：`NativeAppGraph` 注入共享运行协调器和存储端口；`NativeProjectViewModel` 管理工程、分页预览、单条草稿与系统文件选择结果；`NativeProjectApp` 提供工程首页、Agent 入口、工作台、人工校对、规则与提示词页和编辑器，文案使用五语 Android 资源。MainActivity 已改接此入口，用户 CI/真机确认和已查看设备截图的范围见 HANDOFF §22；Agent 页已有明确标注的本地 Koog 查询/准备差异和单条审批演练（CI 已覆盖指定版本，设备验收待补），§25 新增自由文本对话、共享远程网关/兼容传输与模型设置实现（已有 CI，真实供应商未联调）；校对页已新增需确认的本页本地模拟流水线（已有 CI，新增设备验收待补），经 NativeModelGateway/翻译运行租约与 ProjectWriteStore 写回，不调用旧引擎。旧源码与用户文件保留，旧库尚未迁移。§28—32 的持久执行记录/中断核对、对话式 Agent 页、HTTP 端点/可选凭据、GET 模型列表、兼容 SSE 流式预览及单窗口设置/模型选择已提交并通过指定提交 CI（见 HANDOFF §33），尚无新增设备/真实供应商验收；元数据获取不发送聊天或测试推理。§34—36 的模拟翻译应用级前台执行器、通知停止、界面重附着及生命周期/恢复修复，§37—38 的 TXT 状态/原译字面查询、快照统计、固定编辑窗口与本页人工批选/原子状态及清空写入，以及 §39—40 的共享 FIFO/固定速率调度、整工程本地模拟、实际/估算/未知分离的本次用量汇总和四种字幕纯文本核心，均已由提交 `8e74fff` 的 Actions #136 覆盖 test/lint/release（见 HANDOFF §41）；新增真机/视觉和真实供应商验收仍缺，字幕尚未接入工程；Agent 对话仍由 ViewModel 持有，完整后台/任务接续未实现。§43 未提交源码另增远程 TXT 批翻、五语付费确认、严格输出绑定、持久请求/Token 元数据与运行中同工程切页，尚未构建；完整 LG 规划/规则/恢复不因远程接线完成。§44 未提交源码另增 `.lnt` v2 工程规则/提示词、v1 首次规则写入的事务升级、混合修订/快照导入、RE2/J 1.8 有界文本流水线与五语管理页，均未构建；v1 读取/编辑仍兼容，完整 LG 规则交换/预设/告警未完成。§45—47 另增完整草稿本地六类检查、已保存 TXT 的有界分页扫描/警告和缺失术语筛选统计、上一条/下一条匹配定位及单条草稿查找替换源码，均未构建；索引只在内存持有，修订变化后失效，不含全查询批量写入或完整 LG 校对。实际进度与验证边界只记入重构 HANDOFF。
+新入口位于 `app/.../nativeapp`：NativeAppGraph 装配共享网关/调度/运行协调器、存储及格式服务；NativeProjectViewModel 管理工程/资产、草稿、分页与系统文件结果；NativeProjectApp 提供工程、Agent、工作台、校对、规则/提示词与模型等原生入口，使用五语 Android 资源。已接线的远程 TXT 批翻、前台执行/通知停止、规则流水线、质量检查/筛选、单条草稿替换、多资产追加和按资产导出均有指定版本 CI。Koog 对话、SSE、单条审批及中断核对已有 CI，但 Agent 仍由 ViewModel 持有，完整任务接续未实现。新增五协议/密钥池/用量账本、翻译规划/去重/重试/检查点及规则交换/预设是已测独立核心，尚未接入完整业务及持久化，不得误报为全流程可用。TXT 手工设备确认仅限 HANDOFF §22；新增真机/视觉/供应商验收仍缺。旧用户文件及旧库未删除；旧 LNT 数据迁移已移出当前范围，旧主链路退役、完整工作区、复杂格式/兼容与全量验收保持开放。
 
 理解旧行为时追踪 UI → AppViewModel → Repository / DAO → Engine / BookFileManager。新链路按 UI → 应用服务 → 业务核心/存储端口组织，Agent 与手动操作共用写入口，不再向旧 `AppViewModel` 继续集中新业务。用 `rg` 定位实际调用链。
 
@@ -87,8 +87,8 @@ app/src/main/java/com/breakyuna/noveltranslator/
 
 - **国际化迁移**：旧 UI 使用 `AppStrings` / `ChineseStrings` / `EnglishStrings`，维护旧链路时保持两种语言完整。新 Compose UI 按 `UI_SPEC.md` 迁至 Android 字符串资源，最终覆盖 LG 的中、英、日、韩、德五种语言；不要同时维护两套新文案权威来源。
 - **导航全面重做**：新工程首页、Agent、工作台、校对和全部管理页面按 `UI_SPEC.md` 实现。手机和平板共用路由定义并保留等价功能，不再冻结书架/历史/任务/设置的旧顺序。
-- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，迁移与 `app/schemas/` 用于旧数据读取/迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；`.lg` 仅用于 LG 兼容导入/导出，不得靠改后缀冒充转换。新应用记录使用独立 Room schema；当前源码 NativeAppDatabase 已升至 v4，保留 v1→v2、v2→v3 并新增 v3→v4 远程翻译请求元数据迁移（§43 新增源码，未构建）；v2 的 Agent 历史/payload、请求/审批、会话和模型配置表已有指定提交 CI 证据，v3 持久执行记录、中断核对及迁移用例已有指定提交 CI 证据（见 HANDOFF §33），2.json/3.json/4.json 导出仍待 PC/CI 的 KSP 生成与审阅（保留既有 1.json，不手写）。改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
-- 旧书籍文件迁移前仍由 `BookFileManager` 定位，禁止绕过它清理源数据；新原稿、工作区和产物按重构计划分配唯一文件拥有者。不得把大段正文或二进制塞进 UI 状态；请求日志列表只查轻量投影，完整正文按 ID 延迟加载。
+- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，`app/schemas/` 仅作历史只读参考；当前不要求旧库迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；用户已取消 `.lg` 工程导入/导出及 Pi 会话历史转换；不新增对应入口、适配器、依赖或验收要求。原生 `.lnt` 版本升级、备份恢复与 Koog 自身历史/恢复仍保留。新应用记录使用独立 Room schema；当前 NativeAppDatabase 源码为 v5，保留 v1→v2→v3→v4→v5 迁移链（v5 增加模型协议与多密钥列，未构建），远程翻译请求元数据及 v1→v4 迁移已有 Actions #146 证据；2.json/3.json/4.json/5.json 权威导出仍待 PC/CI KSP 生成并审阅（保留 1.json，不手写）。改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
+- 若未来处理旧书籍文件，仍由 `BookFileManager` 定位，禁止绕过它清理源数据；当前不要求旧数据迁移。新原稿、工作区和产物按重构计划分配唯一文件拥有者。不得把大段正文或二进制塞进 UI 状态；请求日志列表只查轻量投影，完整正文按 ID 延迟加载。
 - `remember` / `rememberSaveable` 的 key 必须包含实际依赖的 Project / Chat / Asset / Run 身份，维护旧页面时也包含 Book / Edition 身份，防止切换对象复用旧状态。
 - 大列表必须用 `LazyColumn` / `LazyRow` / `LazyVerticalGrid` 并提供稳定唯一 key；不得在 Composable 或主线程做图片解码、整本文件读取、EPUB 解析、数据库循环和网络请求；高频 Flow（进度、任务状态、日志）只在可见时订阅，避免整页无条件重组。页面切换动画保持短促（现有 NavHost 用 90/70ms fade）。
 - 旧书架交互不是新 UI 的保留要求。新工程和技能排序、触屏替代操作、编辑草稿、焦点及返回行为按新 UI 验收；迁移期间不要误报旧页面行为已实现。
@@ -99,16 +99,16 @@ app/src/main/java/com/breakyuna/noveltranslator/
 - 所有模型调用和重试走新统一模型网关与调度器，禁止 UI 或 Koog 适配器另建付费请求旁路。区分网络、超时、限流、服务端、认证、上下文溢出、截断、解析和内容失败；非瞬时错误不得盲目重试。
 - 逐批提交有效译文；后续失败或取消保留已提交事实。Token、缓存、思考、输出与请求次数按实际回执累计，估算与未知值明确区分。
 - 暂停/取消后不得再发起付费请求；恢复从已持久化边界继续。
-- 新响应协议必须保留条目/页面稳定身份、姓名和格式定位，校对规则与失败分类对齐 LG；旧 Chapter/Segment 协议只用于旧数据读取和迁移校验。
+- 新响应协议必须保留条目/页面稳定身份、姓名和格式定位，校对规则与失败分类对齐 LG；旧 Chapter/Segment 协议只作历史参考，不进入新链路。
 - 术语与材料处理覆盖用户选定的完整工程范围，结果绑定正确 Project/Chat；不保留“默认取第一个工程”等歧义行为。
 - Agent 付费/写入参数必须无损验证类型、整数性和范围；审批绑定实际差异与工程身份，模型文案中的确认要求不能代替执行层授权。
-- API Key 经新凭据存储端口读取，旧 `ApiKeyCipher` 仅作为迁移来源；禁止把 Key、Authorization Header、签名密钥写进日志、提示词、异常、Debug 数据、源码、测试或提交信息。对外部文件名、压缩包路径、工作区链接与图片标记做边界校验，防目录穿越。
+- API Key 经新凭据存储端口读取，旧 `ApiKeyCipher` 仅作隔离的历史参考；禁止把 Key、Authorization Header、签名密钥写进日志、提示词、异常、Debug 数据、源码、测试或提交信息。对外部文件名、压缩包路径、工作区链接与图片标记做边界校验，防目录穿越。
 - Debug 默认关闭，只记录开启后的新请求；关闭时仍保留轻量状态、Token、费用、错误分类和失败摘要。Debug 数据可能含小说正文，UI 需提醒谨慎分享。
-- 新修改统一通过 `ProjectWriteStore` 及工程修订/对象指纹检查；保留已提交事实与可审计回执。旧 `SegmentRevision` 作为迁移来源，不成为新工程模型。
+- 新修改统一通过 `ProjectWriteStore` 及工程修订/对象指纹检查；保留已提交事实与可审计回执。旧 `SegmentRevision` 只作历史参考，不成为新工程模型。
 
 ## 6. 工作方式与交付边界
 
-1. 本次全面重构先读 `docs/plans/2026-10-22-native-lg-rebuild/README.md`、对应专题与交接记录，再核对实际实现；维护旧迁移来源时再查旧 README 和设计。
+1. 本次全面重构先读 `docs/plans/2026-10-22-native-lg-rebuild/README.md`、对应专题与交接记录，再核对实际实现；维护旧代码历史参考时再查旧 README 和设计。
 2. `git status --short --branch` 检查工作区；现有修改可能属于用户或其他 Agent，不得覆盖、回退或顺手整理。
 3. 按用户授权的整体重构范围完成必要架构和 UI 替换；不把行数最少当目标，也不做计划外重命名、格式化或旁支改造。只要求计划时不启动产品实现。
 4. 除非用户明确要求，不提交、不推送、不强推、不建 PR、不合并、不触发 Actions。禁止 `git reset --hard`、`git checkout --`、`git clean` 等破坏性命令。用户要求提交时，提交信息说明真实行为和可靠性影响；要求推送时先确认目标分支，不得默认推 `main`。

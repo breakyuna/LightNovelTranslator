@@ -15,6 +15,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 internal class NativeBatchActions(
     val selecting: (Boolean) -> Unit, val toggle: (ItemId) -> Unit, val all: () -> Unit,
     val prepare: (TextBatchChange) -> Unit, val confirm: (ManualTextBatch) -> Unit, val dismiss: (ManualTextBatch) -> Unit,
+    val prepareQuery: ((TextBatchChange) -> Unit)? = null,
 )
 
 @Composable
@@ -36,6 +37,23 @@ internal fun NativeBatchToolbar(state: NativeProjectUiState, actions: NativeBatc
 }
 
 @Composable
+internal fun NativeQueryBatchButton(state: NativeProjectUiState, actions: NativeBatchActions) {
+    val prepare = actions.prepareQuery ?: return
+    var menu by remember(state.project?.ref, state.proofreadingQuery) { mutableStateOf(false) }
+    Box(Modifier.fillMaxWidth()) {
+        TextButton(onClick = { menu = true }, enabled = !state.busy && state.editor == null &&
+            state.manualBatch == null && (state.qualityView == null || state.qualityCurrent) && state.policyDraft?.dirty != true &&
+            !state.policyLoadIncomplete && !state.runLoadIncomplete && (state.matchingItems ?: 0) > 0,
+            modifier = Modifier.testTag("native-query-batch-actions")) { Text(stringResource(if (state.qualityView == null) R.string.native_batch_all_query else R.string.native_batch_quality_selection)) }
+        DropdownMenu(menu, onDismissRequest = { menu = false }) {
+            TextBatchChange.entries.forEach { change ->
+                DropdownMenuItem(text = { Text(stringResource(change.label())) }, onClick = { menu = false; prepare(change) })
+            }
+        }
+    }
+}
+
+@Composable
 internal fun NativeManualBatchDialog(state: NativeProjectUiState, actions: NativeBatchActions) {
     val batch = state.manualBatch ?: return
     AlertDialog(onDismissRequest = { if (!state.busy) actions.dismiss(batch) }, modifier = Modifier.testTag("native-batch-dialog"),
@@ -43,6 +61,7 @@ internal fun NativeManualBatchDialog(state: NativeProjectUiState, actions: Nativ
         text = {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 state.project?.let { Text(it.name, style = MaterialTheme.typography.titleSmall) }
+                if (state.manualBatchQuery) Text(stringResource(R.string.native_batch_query_frozen))
                 Text(stringResource(R.string.native_batch_preview, batch.targets.size, stringResource(batch.change.label())))
                 Text(stringResource(R.string.native_batch_rows, batch.targets.take(10).joinToString(", ") { (it.row.toLong() + 1).toString() }))
                 if (batch.change.clearsTranslation) Text(stringResource(R.string.native_batch_clear_warning), color = MaterialTheme.colorScheme.error)

@@ -57,6 +57,18 @@ class NativeModelSettingsStoreTest {
         assertEquals(first.reference.revision + 1, second.reference.revision)
     }
 
+    @Test fun explicitProtocolAndNoAuthProfileSurviveReopen() = runBlocking {
+        val saved = store.saveProfile("https://example.com/v1", "gemini-model",
+            NativeModelProtocol.GOOGLE_GEMINI, emptyList())
+        assertEquals(NativeModelProtocol.GOOGLE_GEMINI, saved.protocol)
+        assertEquals(0, saved.keyCount); assertFalse(saved.hasCredential)
+        store.close(); store = NativeModelSettingsStore(context, runtime)
+        val restored = requireNotNull(store.current())
+        assertEquals(NativeModelProtocol.GOOGLE_GEMINI, restored.protocol)
+        assertEquals(0, restored.keyCount)
+        assertTrue(store.credentials(restored.reference).isEmpty())
+    }
+
     @Test fun endpointChangeCannotImplicitlyReuseEvenAnEmptyStoredCredential() = runBlocking {
         val first = store.save("http://localhost:1234/v1", "one", "")
         try { store.save("http://192.168.1.2:1234/v1", "two", null); fail() } catch (_: InvalidModelSettings) { }

@@ -116,12 +116,17 @@ def main():
         if feature in NATIVE_ONLY:
             problems.append(f'{feature} is both bound and native_only')
     unbound = [feature for feature, entry in entries.items() if entry['category'] == 'unbound']
+    cancelled = sorted(re.findall(r'^\|\s*([A-Z]{2}\d{2})\s*\|[^\n]*已取消', args.matrix.read_text(), re.M))
+    for feature, entry in entries.items():
+        entry['scope'] = 'cancelled' if feature in cancelled else 'active'
     result = {
         'schema_version': 1,
         'purpose': 'Reviewed static source binding per feature ID; marker presence is not runtime proof. '
                    'Features without a binding may still be covered by the behaviour index; see '
                    'FEATURE_COVERAGE.json for the combined view.',
         'feature_count': len(matrix_ids),
+        'active_feature_count': len(matrix_ids) - len(cancelled),
+        'cancelled_feature_ids': cancelled,
         'bound_count': len(bindings),
         'native_only_count': len(NATIVE_ONLY),
         'without_binding': unbound,

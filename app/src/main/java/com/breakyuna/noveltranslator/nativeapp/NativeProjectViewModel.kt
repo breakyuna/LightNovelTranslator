@@ -39,10 +39,10 @@ enum class NativePage { AGENT, WORKBENCH, PROOFREADING, RULES }
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 class ItemPreview(val id: ItemId, val row: Int, val source: String, val translation: String,
-                  val status: TextItemStatus, val hasTranslatableSource: Boolean = source.isNotBlank()) {
+                  val status: TextItemStatus, val hasTranslatableSource: Boolean = source.isNotBlank(), val assetId: Long = 1) {
     companion object {
         fun of(item: TextProjectItem) = ItemPreview(item.id, item.row, item.source.take(240),
-            item.translation.take(240), item.status, item.source.isNotBlank())
+            item.translation.take(240), item.status, item.source.isNotBlank(), item.assetId)
     }
 }
 
@@ -72,6 +72,7 @@ data class NativeProjectUiState(
     val proofreadingQuery: TextItemQuery = TextItemQuery(),
     val itemStatistics: TextItemStatistics? = null,
     val matchingItems: Int? = null,
+    val matchingStatistics: TextItemStatistics? = null,
     val qualityView: TextQualitySelection? = null,
     val qualityProgress: TextQualityScanProgress? = null,
     val qualityInvalidated: Boolean = false,
@@ -79,6 +80,7 @@ data class NativeProjectUiState(
     val selectedItems: Set<ItemId> = emptySet(),
     val manualBatch: ManualTextBatch? = null,
     val manualBatchConflict: Boolean = false,
+    val manualBatchQuery: Boolean = false,
     val editor: NativeEditDraft? = null,
     val editorQuality: TextProofreadingResult? = null,
     val editorReplacement: NativeEditorReplacement? = null,
@@ -125,7 +127,11 @@ class NativeProjectViewModel internal constructor(
         (application as TranslatorApplication).nativeGraph.projects, application.nativeGraph.backgroundTranslations)
 
     private val graph = (application as TranslatorApplication).nativeGraph
+    internal val rulePresetActions = NativeRulePresetActions(graph.rulePresets::list, graph.rulePresets::load,
+        { preset, expected -> graph.rulePresets.save(preset, expected) }, graph.rulePresets::remove)
+    internal val promptTemplateActions = NativePromptTemplateActions(graph.promptTemplates::read, graph.promptTemplates::replace)
     private val resolver = application.contentResolver
+    private val manualBatchFiles = NativeManualBatchFiles(application)
     private val mutable = MutableStateFlow(NativeProjectUiState(recoveryProblems = saved["native_recovery_problems"] ?: 0, encoding =
         runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8)))
     val state = mutable.asStateFlow()
@@ -200,6 +206,7 @@ class NativeProjectViewModel internal constructor(
     }
     fun cleanupOutputs() = action {
         projects.cleanupTemporaryOutputs()
+        manualBatchFiles.cleanupExcept(saved.get<String>("manual_batch_disk"))
         mutable.value = mutable.value.copy(notice = R.string.native_cleaned)
     }
     fun refresh() = action {
@@ -212,7 +219,7 @@ class NativeProjectViewModel internal constructor(
                 cursors.clear(); cursors.add(0)
                 mutable.value = mutable.value.copy(qualityView = null, qualityInvalidated = false, qualityProgress = null,
                     project = page.summary, items = page.items.take(PAGE_SIZE).map { item -> ItemPreview.of(item) },
-                    itemStatistics = page.statistics, matchingItems = page.matchingItems,
+                    itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics,
                     hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
             } else loadPage(it.ref, cursors.last())
             loadAgent(it.ref)
@@ -238,10 +245,37 @@ class NativeProjectViewModel internal constructor(
             mutable.value = mutable.value.copy(modelSettingsError = if (error is InvalidModelSettings) R.string.native_model_settings_error else R.string.native_io_error)
         }
     }
-    fun fetchAgentModels(endpoint: String, key: String, savedCredential: ModelConfigurationRef?, onLoaded: (List<String>) -> Unit) = action {
+    fun saveAgentModelProfile(endpoint: String, model: String, protocol: NativeModelProtocol,
+        keys: List<String>?, onSaved: () -> Unit) = action {
+        mutable.value = mutable.value.copy(modelSettingsError = null)
+        try {
+            val resolved = keys ?: run {
+                val current = graph.modelSettings.current() ?: throw InvalidModelSettings()
+                if (NativeModelEndpoint.base(current.endpoint) != NativeModelEndpoint.normalize(endpoint))
+                    throw InvalidModelSettings()
+                graph.modelSettings.credentials(current.reference)
+            }
+            val settings = graph.modelSettings.saveProfile(endpoint, model, protocol, resolved)
+            mutable.value = mutable.value.copy(modelSettings = settings, notice = R.string.native_model_saved)
+            onSaved()
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (error: Exception) {
+            mutable.value = mutable.value.copy(modelSettingsError = if (error is InvalidModelSettings) R.string.native_model_settings_error else R.string.native_io_error)
+        }
+    }
+
+    fun fetchAgentModels(endpoint: String, key: String, savedCredential: ModelConfigurationRef?, onLoaded: (List<String>) -> Unit) =
+        fetchAgentModelsInternal(NativeModelProtocol.OPENAI_CHAT_COMPLETIONS, endpoint, key, savedCredential, onLoaded)
+
+    fun fetchAgentModelsProfile(endpoint: String, key: String, savedCredential: ModelConfigurationRef?,
+        protocol: NativeModelProtocol, onLoaded: (List<String>) -> Unit) =
+        fetchAgentModelsInternal(protocol, endpoint, key, savedCredential, onLoaded)
+
+    private fun fetchAgentModelsInternal(protocol: NativeModelProtocol, endpoint: String, key: String,
+        savedCredential: ModelConfigurationRef?, onLoaded: (List<String>) -> Unit) = action {
         mutable.value = mutable.value.copy(modelCatalogLoading = true, modelSettingsError = null)
         try {
-            val models = graph.modelCatalog.models(endpoint, key, savedCredential)
+            val models = graph.modelCatalog.models(endpoint, key, savedCredential, protocol)
             currentCoroutineContext().ensureActive()
             onLoaded(models)
         } catch (cancelled: CancellationException) { throw cancelled }
@@ -529,7 +563,12 @@ class NativeProjectViewModel internal constructor(
         val wholeProject = scope == com.breakyuna.noveltranslator.nativecore.engine.TranslationScope.PROJECT
         if (wholeProject) {
             val page = projects.readPage(ref, 0, 1)
-            if ((page.statistics?.translatableUnprocessed ?: 0) == 0) return@action
+            val statistics = page.statistics ?: return@action
+            val mode = options?.startMode ?: TranslationStartMode.NEW
+            val eligible = statistics.translatableUnprocessed > 0 ||
+                (mode != TranslationStartMode.NEW && statistics.errors > 0) ||
+                (mode == TranslationStartMode.RESET && statistics.processed > 0)
+            if (!eligible) return@action
         }
         val after = if (wholeProject) 0L else cursors.last()
         mutable.value = mutable.value.copy(translationProgress = null)
@@ -655,6 +694,66 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    internal fun saveProjectSettings(intent: NativeProjectSettingsChange) = action {
+        val current = mutable.value
+        val project = current.project ?: return@action
+        if (current.editor != null || current.manualBatch != null || current.selectingItems ||
+            current.policyDraft?.dirty == true || current.policyLoadIncomplete || current.runLoadIncomplete) return@action
+        if (project.ref != intent.ref || project.revision != intent.revision)
+            throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        val assets = projects as? ProjectAssetPort ?: return@action
+        val receipt = assets.editProjectSettings(intent.command, intent.ref, intent.revision, intent.settings)
+        if (receipt.status != AssetMutationStatus.COMMITTED) {
+            mutable.value = mutable.value.copy(error = R.string.native_conflict)
+            return@action
+        }
+        mutable.value = mutable.value.copy(project = project.copy(revision = receipt.revision, settings = intent.settings),
+            qualityView = null, qualityInvalidated = false, qualityProgress = null, notice = R.string.native_saved)
+        cursors.clear(); cursors.add(0L)
+        refreshCleanTextPolicy(intent.ref)
+        loadPage(intent.ref, 0)
+    }
+
+    internal fun mutateAsset(intent: NativeAssetMutation) = action {
+        val current = mutable.value
+        val project = current.project ?: return@action
+        if (current.editor != null || current.manualBatch != null || current.selectingItems ||
+            current.policyDraft?.dirty == true || current.policyLoadIncomplete || current.runLoadIncomplete) return@action
+        if (project.ref != intent.ref || project.revision != intent.revision)
+            throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        val assetStore = projects as? ProjectAssetPort ?: return@action
+        val assets = project.assets
+        val index = assets.indexOfFirst { it.id == intent.assetId }
+        if (index < 0) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+        val receipt = when (intent.change) {
+            NativeAssetChange.REMOVE -> {
+                if (assets.size <= 1) return@action
+                assetStore.removeAsset(intent.command, intent.ref, intent.revision, intent.assetId)
+            }
+            NativeAssetChange.ENABLE, NativeAssetChange.DISABLE -> assetStore.setAssetEnabled(intent.command,
+                intent.ref, intent.revision, intent.assetId, intent.change == NativeAssetChange.ENABLE)
+            NativeAssetChange.RESET -> assetStore.resetAsset(intent.command, intent.ref, intent.revision, intent.assetId)
+            NativeAssetChange.MOVE_UP, NativeAssetChange.MOVE_DOWN -> {
+                val destination = index + if (intent.change == NativeAssetChange.MOVE_UP) -1 else 1
+                if (destination !in assets.indices) return@action
+                val order = assets.map { it.id }.toMutableList()
+                val moved = order[index]; order[index] = order[destination]; order[destination] = moved
+                assetStore.reorderAssets(intent.command, intent.ref, intent.revision, order)
+            }
+        }
+        if (receipt.status != AssetMutationStatus.COMMITTED) {
+            mutable.value = mutable.value.copy(error = R.string.native_conflict)
+            return@action
+        }
+        // Publish the committed revision before any refresh that can fail.
+        mutable.value = mutable.value.copy(project = project.copy(revision = receipt.revision), notice = R.string.native_saved,
+            qualityView = null, qualityInvalidated = false, qualityProgress = null,
+            editorQuality = null, editorReplacement = null)
+        cursors.clear(); cursors.add(0L)
+        refreshCleanTextPolicy(intent.ref)
+        loadPage(intent.ref, 0)
+    }
+
     /** Bind before the picker; an imported format asset always targets this project revision. */
     fun prepareAddAsset(): Boolean {
         val project = mutable.value.project ?: return false
@@ -706,11 +805,15 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
-    fun prepareAssetExport(assetId: Long): String? {
+    fun prepareAssetExport(assetId: Long, bilingual: Boolean = false): String? {
         val project = mutable.value.project ?: return null
         if (mutable.value.busy) return null
         val asset = project.assets.firstOrNull { it.id == assetId } ?: return null
-        saved["native_asset_export"] = arrayListOf(encodeRef(project.ref).joinToString("|"), assetId.toString())
+        val settings = project.settings ?: ProjectSettings()
+        saved["native_asset_export"] = encodeRef(project.ref).apply {
+            add(assetId.toString()); add(project.revision.toString()); add(bilingual.toString())
+            add(settings.bilingualDeduplicateSame.toString()); add(settings.writeTranslatedNames.toString()); add(settings.targetLanguage)
+        }
         val name = asset.path.value.substringAfterLast('/').take(180)
         return name.ifBlank { "asset-${asset.id}" }
     }
@@ -719,11 +822,17 @@ class NativeProjectViewModel internal constructor(
         val pending = saved.get<ArrayList<String>>("native_asset_export")
         if (uri == null) { saved.remove<ArrayList<String>>("native_asset_export"); return }
         if (pending == null) return
-        val ref = decodeRef(pending[0].split("|"))
-        val assetId = pending[1].toLongOrNull() ?: return
+        if (pending.size != 9) { saved.remove<ArrayList<String>>("native_asset_export"); return }
+        val ref = decodeRef(pending.take(3))
+        val assetId = pending[3].toLongOrNull() ?: return
+        val revision = pending[4].toLongOrNull() ?: return
+        val options = FormatWriteOptions(pending[5].toBooleanStrict(), pending[6].toBooleanStrict(),
+            pending[7].toBooleanStrict(), pending[8])
         queuedAction {
             val destination = { resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException() }
-            graph.formatProjects.exportAsset(ref, assetId, FormatWriteOptions(), destination)
+            if (mutable.value.project?.ref != ref || projects.open(ref).revision != revision)
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            graph.formatProjects.exportAsset(ref, assetId, options, destination)
             saved.remove<ArrayList<String>>("native_asset_export")
             mutable.value = mutable.value.copy(notice = R.string.native_exported)
         }
@@ -752,7 +861,7 @@ class NativeProjectViewModel internal constructor(
         clearProofreadingQuery()
         cursors.clear(); cursors.add(0)
         mutable.value = mutable.value.copy(project = null, items = emptyList(), hasNext = false, hasPrevious = false,
-            proofreadingQuery = TextItemQuery(), itemStatistics = null, matchingItems = null, qualityView = null, qualityInvalidated = false, qualityProgress = null,
+            proofreadingQuery = TextItemQuery(), itemStatistics = null, matchingItems = null, matchingStatistics = null, qualityView = null, qualityInvalidated = false, qualityProgress = null,
             selectingItems = false, selectedItems = emptySet(), manualBatch = null, manualBatchConflict = false,
             agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(), runLoadIncomplete = false,
             agentMessageDetail = null, policyDraft = null, policyLoadIncomplete = false, policyInvalidRuleId = null)
@@ -775,7 +884,7 @@ class NativeProjectViewModel internal constructor(
             cursors.clear(); cursors.add(0)
             mutable.value = mutable.value.copy(qualityView = selection, qualityInvalidated = false,
                 project = page.summary, items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) },
-                matchingItems = page.matchingItems, itemStatistics = page.statistics,
+                matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics, itemStatistics = page.statistics,
                 hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
                 selectingItems = false, selectedItems = emptySet())
         } finally { mutable.update { it.copy(qualityProgress = null) } }
@@ -790,7 +899,7 @@ class NativeProjectViewModel internal constructor(
         cursors.clear(); cursors.add(0)
         mutable.value = mutable.value.copy(qualityView = selection, project = page.summary,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, itemStatistics = page.statistics,
-            matchingItems = page.matchingItems, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
+            matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
     }
 
     fun clearQuality() = action {
@@ -801,7 +910,7 @@ class NativeProjectViewModel internal constructor(
         cursors.clear(); cursors.add(0)
         mutable.value = mutable.value.copy(qualityView = null, qualityInvalidated = false, qualityProgress = null,
             project = page.summary, items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) },
-            itemStatistics = page.statistics, matchingItems = page.matchingItems,
+            itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics,
             hasNext = page.items.size > PAGE_SIZE, hasPrevious = false)
     }
 
@@ -815,7 +924,7 @@ class NativeProjectViewModel internal constructor(
         saveProofreadingQuery(ref, query)
         mutable.value = mutable.value.copy(project = page.summary, proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, itemStatistics = page.statistics,
-            matchingItems = page.matchingItems, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
+            matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
             selectingItems = false, selectedItems = emptySet(),
             translationProgress = null)
     }
@@ -845,18 +954,40 @@ class NativeProjectViewModel internal constructor(
         else {
             saved["manual_batch"] = encodeManualBatch(batch)
             saved["manual_batch_conflict"] = false
-            mutable.value = mutable.value.copy(manualBatch = batch, manualBatchConflict = false)
+            mutable.value = mutable.value.copy(manualBatch = batch, manualBatchConflict = false, manualBatchQuery = false)
         }
     }
+    fun prepareQueryBatch(change: TextBatchChange) = action {
+        val current = mutable.value
+        val project = current.project ?: return@action
+        if (current.editor != null || current.manualBatch != null ||
+            current.policyDraft?.dirty == true || current.policyLoadIncomplete || current.runLoadIncomplete) return@action
+        val port = projects as? QueryManualBatchPort ?: return@action
+        val quality = current.qualityView
+        val batch = if (quality != null) {
+            if (!current.qualityCurrent) throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            port.prepareQualityBatch(commandId(), project.ref, project.revision, quality, change)
+        } else port.prepareQueryBatch(commandId(), project.ref, project.revision, current.proofreadingQuery, change)
+        if (batch == null) { mutable.value = mutable.value.copy(notice = R.string.native_batch_no_changes); return@action }
+        val digest = manualBatchFiles.save(batch)
+        saved.remove<ArrayList<String>>("manual_batch")
+        saved["manual_batch_disk"] = digest
+        saved["manual_batch_conflict"] = false
+        mutable.value = mutable.value.copy(manualBatch = batch, manualBatchConflict = false, manualBatchQuery = true)
+    }
+
     fun dismissManualBatch(expected: ManualTextBatch) {
         if (mutable.value.busy || mutable.value.manualBatch?.digest() != expected.digest()) return
         saved.remove<ArrayList<String>>("manual_batch"); saved.remove<Boolean>("manual_batch_conflict")
-        mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false)
+        val disk = saved.remove<String>("manual_batch_disk")
+        if (disk != null) viewModelScope.launch { manualBatchFiles.remove(disk) }
+        mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false, manualBatchQuery = false)
     }
     fun confirmManualBatch(expected: ManualTextBatch) = action {
         val batch = mutable.value.manualBatch ?: return@action
         if (batch.commandId != expected.commandId || batch.digest() != expected.digest()) return@action
         if (mutable.value.manualBatchConflict || mutable.value.project?.ref != batch.ref) return@action
+        val affectedIds = withContext(Dispatchers.Default) { batch.targets.mapTo(HashSet()) { it.id } }
         val receipt = projects.editBatch(batch)
         if (receipt.status != ManualEditStatus.COMMITTED) {
             saved["manual_batch_conflict"] = true
@@ -864,21 +995,24 @@ class NativeProjectViewModel internal constructor(
             return@action
         }
         saved.remove<ArrayList<String>>("manual_batch"); saved.remove<Boolean>("manual_batch_conflict")
+        saved.remove<String>("manual_batch_disk")?.let { digest -> viewModelScope.launch { manualBatchFiles.remove(digest) } }
+        val qualityWasActive = mutable.value.qualityView != null
         val applyPreview = (mutable.value.project?.revision ?: Long.MAX_VALUE) <= receipt.revision
         val previews = mutable.value.items.map { item ->
-            if (applyPreview && batch.targets.any { it.id == item.id }) ItemPreview(item.id, item.row, item.source,
-                if (batch.change.clearsTranslation) "" else item.translation, batch.change.status, item.hasTranslatableSource) else item
+            if (applyPreview && item.id in affectedIds) ItemPreview(item.id, item.row, item.source,
+                if (batch.change.clearsTranslation) "" else item.translation, batch.change.status, item.hasTranslatableSource, item.assetId) else item
         }
-        mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false,
+        mutable.value = mutable.value.copy(manualBatch = null, manualBatchConflict = false, manualBatchQuery = false,
             selectingItems = false, selectedItems = emptySet(), items = previews,
             project = mutable.value.project?.let { it.copy(revision = maxOf(it.revision, receipt.revision)) },
-            itemStatistics = null, matchingItems = null, notice = R.string.native_batch_done)
+            itemStatistics = null, matchingItems = null, matchingStatistics = null,
+            qualityInvalidated = qualityWasActive || mutable.value.qualityInvalidated, notice = R.string.native_batch_done)
         refreshCleanTextPolicy(batch.ref)
         if (previews.isNotEmpty()) {
             try {
                 val page = projects.readItemWindow(batch.ref, mutable.value.proofreadingQuery, TextItemWindow(previews.map { it.id }))
                 mutable.value = mutable.value.copy(project = page.summary, items = page.items.map { ItemPreview.of(it) },
-                    itemStatistics = page.statistics, matchingItems = page.matchingItems)
+                    itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { mutable.value = mutable.value.copy(error = R.string.native_batch_refresh_failed) }
         }
@@ -1003,7 +1137,7 @@ class NativeProjectViewModel internal constructor(
         if (result.status == ManualEditStatus.COMMITTED) {
             clearDraft()
             val rows = mutable.value.items.map { item ->
-                if (item.id == draft.item.id) ItemPreview(item.id, item.row, item.source, draft.text.take(240), draft.status, item.hasTranslatableSource) else item
+                if (item.id == draft.item.id) ItemPreview(item.id, item.row, item.source, draft.text.take(240), draft.status, item.hasTranslatableSource, item.assetId) else item
             }
             mutable.value = mutable.value.copy(editor = null, items = rows,
                 project = mutable.value.project?.copy(revision = result.revision), notice = R.string.native_saved,
@@ -1015,7 +1149,7 @@ class NativeProjectViewModel internal constructor(
                 val page = projects.readItemWindow(draft.ref, mutable.value.proofreadingQuery,
                     TextItemWindow(rows.map { it.id }))
                 mutable.value = mutable.value.copy(project = page.summary,
-                    items = page.items.map { ItemPreview.of(it) }, itemStatistics = page.statistics, matchingItems = page.matchingItems)
+                    items = page.items.map { ItemPreview.of(it) }, itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics)
             }
         } else {
             setDraft(NativeEditDraft(draft.ref, draft.item, draft.revision, draft.fingerprint, draft.text,
@@ -1028,7 +1162,9 @@ class NativeProjectViewModel internal constructor(
     fun prepareExport(kind: NativeExport): String? {
         val project = mutable.value.project ?: return null
         if (mutable.value.busy) return null
-        saved["native_export"] = encodeRef(project.ref).apply { add(kind.name) }
+        saved["native_export"] = encodeRef(project.ref).apply {
+            add(kind.name); add(project.revision.toString()); add((project.settings?.bilingualDeduplicateSame ?: true).toString())
+        }
         val name = project.name.map { if (it == '/' || it == '\\' || it.isISOControl()) '_' else it }.joinToString("").take(100)
         return when (kind) {
             NativeExport.PROJECT -> "$name.lnt"
@@ -1041,16 +1177,64 @@ class NativeProjectViewModel internal constructor(
     fun completeExport(uri: Uri?) {
         if (uri == null) { saved.remove<ArrayList<String>>("native_export"); return }
         val pending = saved.remove<ArrayList<String>>("native_export")?.toList() ?: return
+        if (pending.size != 6) return
         queuedAction {
             val ref = decodeRef(pending)
+            if (mutable.value.project?.ref != ref || projects.open(ref).revision != pending[4].toLong())
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
             val destination = { resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException() }
             when (NativeExport.valueOf(pending[3])) {
                 NativeExport.PROJECT -> projects.saveProject(ref, destination)
                 NativeExport.TRANSLATION -> projects.exportTxt(ref, destination)
-                NativeExport.BILINGUAL -> projects.exportBilingual(ref, true, destination)
+                NativeExport.BILINGUAL -> projects.exportBilingual(ref, pending[5].toBooleanStrict(), destination)
                 NativeExport.ORIGINAL -> projects.exportOriginal(ref, destination)
             }
             mutable.value = mutable.value.copy(notice = R.string.native_exported)
+        }
+    }
+
+    /** Bind before showing the system picker; restore always creates a new project identity. */
+    fun prepareBackupExport(): String? {
+        val project = mutable.value.project ?: return null
+        val state = mutable.value
+        if (state.busy || state.editor != null || state.manualBatch != null || state.selectingItems ||
+            state.runLoadIncomplete || state.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return null
+        saved["native_backup_export"] = encodeRef(project.ref).apply { add(project.revision.toString()) }
+        val name = project.name.map { if (it == '/' || it == '\\' || it.isISOControl()) '_' else it }
+            .joinToString("").take(100).ifBlank { "project" }
+        return "$name.lntbackup.zip"
+    }
+
+    fun completeBackupExport(uri: Uri?) {
+        val pending = saved.remove<ArrayList<String>>("native_backup_export")?.toList()
+        if (uri == null || pending == null || pending.size != 4) return
+        queuedAction {
+            val ref = decodeRef(pending)
+            if (mutable.value.project?.ref != ref || projects.open(ref).revision != pending[3].toLong())
+                throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
+            graph.backups.export(ref) { resolver.openOutputStream(uri, "wt") ?: throw java.io.IOException() }
+            mutable.value = mutable.value.copy(notice = R.string.native_backup_exported)
+        }
+    }
+
+    fun prepareBackupImport(): Boolean {
+        val state = mutable.value
+        if (state.busy || state.editor != null || state.manualBatch != null || state.selectingItems ||
+            state.runLoadIncomplete || state.policyDraft?.dirty == true || graph.runtime.snapshot().activeRun != null) return false
+        saved["native_backup_import"] = arrayListOf(commandId().value)
+        return true
+    }
+
+    fun importBackup(uri: Uri?) {
+        val intent = saved.remove<ArrayList<String>>("native_backup_import")?.toList()
+        if (uri == null || intent == null || intent.size != 1) return
+        queuedAction {
+            val restored = graph.backups.restore(CommandId(intent.single())) {
+                resolver.openInputStream(uri) ?: throw java.io.IOException()
+            }
+            mutable.value = mutable.value.copy(projects = projects.registeredProjects())
+            openInternal(restored.ref)
+            mutable.value = mutable.value.copy(notice = R.string.native_backup_restored)
         }
     }
 
@@ -1069,15 +1253,21 @@ class NativeProjectViewModel internal constructor(
         if (!same) clearDraft()
         saved["native_ref"] = encodeRef(ref)
         saveProofreadingQuery(ref, query)
-        val batch = decodeManualBatch(saved.get<ArrayList<String>>("manual_batch"))?.takeIf {
+        val diskToken = saved.get<String>("manual_batch_disk")
+        val diskBatch = diskToken?.let { manualBatchFiles.load(it) }
+        if (diskToken != null && diskBatch == null) {
+            saved.remove<String>("manual_batch_disk")
+            mutable.value = mutable.value.copy(notice = R.string.native_batch_restore_failed)
+        }
+        val batch = (diskBatch ?: decodeManualBatch(saved.get<ArrayList<String>>("manual_batch")))?.takeIf {
             it.ref == ref && graph.runtime.snapshot().activeRun == null }
         if (batch != null) saved["native_page"] = NativePage.PROOFREADING.name
         mutable.value = mutable.value.copy(project = summary, page = if (batch != null) NativePage.PROOFREADING else selectedPage,
             editor = null, editorQuality = null, editorReplacement = null, translationProgress = null,
             policyDraft = null, policyLoadIncomplete = true, policyInvalidRuleId = null,
-            selectingItems = false, selectedItems = emptySet(), manualBatch = batch,
+            selectingItems = false, selectedItems = emptySet(), manualBatch = batch, manualBatchQuery = diskBatch != null,
             manualBatchConflict = batch != null && saved.get<Boolean>("manual_batch_conflict") == true,
-            proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null, itemStatistics = page.statistics, matchingItems = page.matchingItems,
+            proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null, itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
             agentMessages = emptyList(), approval = null, agentResults = emptyList(), recentRuns = emptyList(),
             runLoadIncomplete = false, agentMessageDetail = null, agentChatId = null, agentInput = "")
@@ -1089,7 +1279,7 @@ class NativeProjectViewModel internal constructor(
         val page = readProofreadingPage(ref, mutable.value.proofreadingQuery, after)
         mutable.value = mutable.value.copy(project = page.summary, items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) },
             selectingItems = false, selectedItems = emptySet(),
-            itemStatistics = page.statistics, matchingItems = page.matchingItems,
+            itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics,
             hasNext = page.items.size > PAGE_SIZE, hasPrevious = cursors.size > 1)
     }
 
@@ -1112,7 +1302,8 @@ class NativeProjectViewModel internal constructor(
         return runCatching {
             TextItemQuery(saved.get<String>("proof_query_status")?.let(TextItemStatus::valueOf),
                 saved.get<String>("proof_query_text") ?: "",
-                saved.get<String>("proof_query_field")?.let(TextSearchField::valueOf) ?: TextSearchField.BOTH)
+                saved.get<String>("proof_query_field")?.let(TextSearchField::valueOf) ?: TextSearchField.BOTH,
+                saved.get<Long>("proof_query_asset"))
         }.getOrDefault(TextItemQuery())
     }
 
@@ -1120,12 +1311,13 @@ class NativeProjectViewModel internal constructor(
         saved["proof_query_ref"] = encodeRef(ref)
         saved["proof_query_text"] = query.text
         saved["proof_query_field"] = query.field.name
+        if (query.assetId == null) saved.remove<Long>("proof_query_asset") else saved["proof_query_asset"] = query.assetId
         val status = query.status
         if (status == null) saved.remove<String>("proof_query_status") else saved["proof_query_status"] = status.name
     }
 
     private fun clearProofreadingQuery() {
-        for (key in listOf("proof_query_ref", "proof_query_text", "proof_query_field", "proof_query_status")) saved.remove<Any>(key)
+        for (key in listOf("proof_query_ref", "proof_query_text", "proof_query_field", "proof_query_status", "proof_query_asset")) saved.remove<Any>(key)
     }
 
     private suspend fun restoreDraft(ref: LocalProjectRef) {

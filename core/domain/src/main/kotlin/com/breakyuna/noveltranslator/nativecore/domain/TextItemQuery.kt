@@ -7,14 +7,16 @@ data class TextItemQuery(
     val status: TextItemStatus? = null,
     val text: String = "",
     val field: TextSearchField = TextSearchField.BOTH,
+    val assetId: Long? = null,
 ) {
     init {
+        require(assetId == null || assetId > 0)
         require(text.length <= MAX_TEXT_LENGTH && '\u0000' !in text)
         TextProjectFingerprint.utf8(text)
     }
 
-    val active: Boolean get() = status != null || text.isNotEmpty()
-    override fun toString(): String = "TextItemQuery(status=$status, field=$field)"
+    val active: Boolean get() = status != null || text.isNotEmpty() || assetId != null
+    override fun toString(): String = "TextItemQuery(status=$status, field=$field, asset=$assetId)"
 
     companion object { const val MAX_TEXT_LENGTH = 256 }
 }
@@ -22,7 +24,7 @@ data class TextItemQuery(
 /** Whole-project status counts, from the same read transaction as the displayed rows. */
 data class TextItemStatistics(
     val unprocessed: Int, val processed: Int, val excluded: Int,
-    /** NONE rows whose source satisfies the translation service's isNotBlank predicate. */
+    /** NONE rows in enabled assets whose source satisfies the service's isNotBlank predicate. */
     val translatableUnprocessed: Int,
     val skipped: Int = 0,
     val errors: Int = 0,

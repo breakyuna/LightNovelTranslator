@@ -1,6 +1,8 @@
 # TXT 编辑定位与草稿查找替换
 
-当前源码进度见 [HANDOFF §46—47](HANDOFF.md)，算法与列表范围见 [TEXT_QUALITY](TEXT_QUALITY.md) / [QUALITY_SCAN](QUALITY_SCAN.md)。所有新增用例留待用户统一运行，本轮未构建、测试、Lint 或验收设备。
+当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+
+当前源码进度见 [HANDOFF §46—47](HANDOFF.md)，算法与列表范围见 [TEXT_QUALITY](TEXT_QUALITY.md) / [QUALITY_SCAN](QUALITY_SCAN.md)。相关用例已由 Actions #146 覆盖；本机未构建、测试或 Lint，新增设备验收仍缺。
 
 ## 上一条与下一条
 

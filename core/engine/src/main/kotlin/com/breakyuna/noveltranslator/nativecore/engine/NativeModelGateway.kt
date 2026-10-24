@@ -11,9 +11,14 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
     private val catalog: NativeModelCatalogPort? = null,
     private val scheduler: ModelRequestScheduler = ModelRequestScheduler(),
     private val remoteTranslation: ConfiguredTranslationBackend? = null) : DispatchAwareTranslationGateway, DispatchAwareAgentModelPort, NativeModelCatalogPort {
-    override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?): List<String> {
+    override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?): List<String> =
+        models(endpoint, key, savedCredential, NativeModelProtocol.OPENAI_CHAT_COMPLETIONS)
+
+    override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?,
+        protocol: NativeModelProtocol): List<String> {
         currentCoroutineContext().ensureActive()
-        return (catalog ?: throw AgentModelFailure(ModelFailureKind.CONTENT)).models(endpoint, key, savedCredential)
+        return (catalog ?: throw AgentModelFailure(ModelFailureKind.CONTENT))
+            .models(endpoint, key, savedCredential, protocol)
     }
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse =
         completePrepared(request, {}, emit)

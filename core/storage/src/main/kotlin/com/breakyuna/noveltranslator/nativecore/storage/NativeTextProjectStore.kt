@@ -39,7 +39,7 @@ class NativeTextProjectStore(
     private val runtime: RuntimePort,
     private val limits: TextProjectLimits = TextProjectLimits(),
     private val importLimits: NativeImportLimits = NativeImportLimits(),
-) : TextProjectPort, TranslationCommitPort, ProjectTextPolicyPort, TextItemNavigationPort, ProjectAssetPort {
+) : TextProjectPort, TranslationCommitPort, ProjectTextPolicyPort, TextItemNavigationPort, ProjectAssetPort, TranslationContextPort, TranslationReusePort, TranslationFailurePort, QueryManualBatchPort {
     private val io = Dispatchers.IO
     private val context = context.applicationContext
     private val app = NativeAppDatabase.open(this.context)
@@ -256,10 +256,8 @@ class NativeTextProjectStore(
         afterId: Long, limit: Int, window: TextItemWindow?): TextProjectPage {
         val summary = NativeProjectDatabase.summary(db, ref)
         val (where, arguments) = queryPredicate(query)
-        val matching = db.rawQuery("SELECT COUNT(*) FROM items WHERE $where", arguments.toTypedArray()).use {
-            if (!it.moveToFirst()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
-            it.getInt(0)
-        }
+        val matchingStatistics = itemStatistics(db, where, arguments)
+        val matching = matchingStatistics.total
         val selection: String
         val selectionArgs: Array<String>
         if (window == null) {
@@ -274,12 +272,13 @@ class NativeTextProjectStore(
             buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor, db.version)) }
         }
         if (window != null && rows.map { it.id } != window.ids) fail(TextProjectException.Reason.STALE_PAGE)
-        return TextProjectPage(summary, rows, itemStatistics(db), matching)
+        return TextProjectPage(summary, rows, itemStatistics(db), matching, matchingStatistics)
     }
 
     private fun queryPredicate(query: TextItemQuery): Pair<String, List<String>> {
         val clauses = mutableListOf("1 = 1")
         val arguments = mutableListOf<String>()
+        query.assetId?.let { clauses.add("asset_id = ?"); arguments.add(it.toString()) }
         query.status?.let { clauses.add("status = ?"); arguments.add(it.name) }
         if (query.text.isNotEmpty()) {
             clauses.add(when (query.field) {
@@ -309,11 +308,66 @@ class NativeTextProjectStore(
         } }
     }
 
-    private fun itemStatistics(db: SQLiteDatabase): TextItemStatistics {
+    override suspend fun committedDuplicate(ref: LocalProjectRef, revision: Long, afterRevision: Long,
+        target: ItemId): TextItemDetails? = operation {
+        require(afterRevision in 0..revision)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val item = db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE id = ?",
+                arrayOf(target.value.toString())).use { cursor ->
+                if (!cursor.moveToFirst()) fail(TextProjectException.Reason.STALE_PAGE)
+                NativeProjectDatabase.item(cursor, db.version)
+            }
+            if (!item.metadata.isDefault) return@transaction null
+            val asset = if (db.version >= 3) "asset_id = ? AND " else ""
+            val args = mutableListOf<String>()
+            if (db.version >= 3) args.add(item.assetId.toString())
+            args.add(item.id.value.toString()); args.add(item.source)
+            args.add(afterRevision.toString())
+            db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE ${asset}id != ? AND source = ? " +
+                "AND status = 'PROCESSED' AND length(translation) > 0 AND EXISTS " +
+                "(SELECT 1 FROM item_revisions r WHERE r.item_id = items.id AND r.revision > ?) ORDER BY id",
+                args.toTypedArray()).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val candidate = NativeProjectDatabase.item(cursor, db.version)
+                    if (candidate.metadata.isDefault && candidate.source == item.source)
+                        return@transaction TextItemDetails(revision, candidate)
+                }
+                null
+            }
+        } }
+    }
+
+    override suspend fun precedingTranslationItems(ref: LocalProjectRef, revision: Long, anchor: ItemId,
+        limit: Int): TextItemPage = operation {
+        require(revision >= 0 && limit in 1..64)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val first = db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE id = ?",
+                arrayOf(anchor.value.toString())).use { cursor ->
+                if (!cursor.moveToFirst()) fail(TextProjectException.Reason.STALE_PAGE)
+                NativeProjectDatabase.item(cursor, db.version)
+            }
+            val selection = if (db.version >= 3) "asset_id = ? AND slot < ?" else "row_index < ?"
+            val arguments = if (db.version >= 3) arrayOf(first.assetId.toString(), first.slot.toString(), limit.toString())
+                else arrayOf(first.row.toString(), limit.toString())
+            val order = if (db.version >= 3) "slot DESC, id DESC" else "row_index DESC, id DESC"
+            val rows = db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE $selection ORDER BY $order LIMIT ?",
+                arguments).use { cursor ->
+                buildList { while (cursor.moveToNext()) add(NativeProjectDatabase.item(cursor, db.version)) }
+            }
+            TextItemPage(revision, rows.reversed())
+        } }
+    }
+
+    private fun itemStatistics(db: SQLiteDatabase, where: String = "1=1", arguments: List<String> = emptyList()): TextItemStatistics {
         val counts = mutableMapOf<TextItemStatus, Int>()
         var translatable = 0
-        db.rawQuery("SELECT status, COUNT(*), SUM(CASE WHEN status = 'NONE' THEN CASE WHEN length(trim(source, ?)) > 0 THEN 1 ELSE 0 END ELSE 0 END) FROM items GROUP BY status",
-            arrayOf(BLANK_SOURCE_CHARACTERS)).use { cursor ->
+        val enabled = if (db.version >= 3) " AND asset_id IN (SELECT id FROM assets WHERE enabled=1)" else ""
+        db.rawQuery("SELECT status, COUNT(*), SUM(CASE WHEN status = 'NONE'$enabled THEN CASE WHEN length(trim(source, ?)) > 0 THEN 1 ELSE 0 END ELSE 0 END) FROM items WHERE $where GROUP BY status",
+            (listOf(BLANK_SOURCE_CHARACTERS) + arguments).toTypedArray()).use { cursor ->
             while (cursor.moveToNext()) {
                 val status = try { TextItemStatus.valueOf(cursor.getString(0)) }
                 catch (_: IllegalArgumentException) { fail(TextProjectException.Reason.CORRUPT_PROJECT) }
@@ -371,8 +425,58 @@ class NativeTextProjectStore(
         } }
     }
 
+    override suspend fun prepareQualityBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        selection: TextQualitySelection, change: TextBatchChange): ManualTextBatch? = operation {
+        if (selection.index.ref != ref || selection.index.revision != revision)
+            fail(TextProjectException.Reason.STALE_PAGE)
+        require(selection.ids.size <= limits.maxItems)
+        val coroutine = currentCoroutineContext()
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            if (NativeProjectDatabase.summary(db, ref).revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val (where, arguments) = queryPredicate(selection.index.query)
+            val targets = buildList {
+                for (id in selection.ids) {
+                    coroutine.ensureActive()
+                    val fact = selection.index.fact(id) ?: fail(TextProjectException.Reason.STALE_PAGE)
+                    if (!selection.filter.matches(fact)) fail(TextProjectException.Reason.STALE_PAGE)
+                    db.rawQuery("SELECT row_index,fingerprint,status,length(translation) FROM items WHERE id=? AND $where",
+                        (listOf(id.value.toString()) + arguments).toTypedArray()).use { cursor ->
+                        if (!cursor.moveToFirst() || cursor.getString(1) != fact.fingerprint.sha256)
+                            fail(TextProjectException.Reason.STALE_PAGE)
+                        if (cursor.getString(2) != change.status.name || (change.clearsTranslation && cursor.getLong(3) > 0))
+                            add(TextBatchTarget(id, cursor.getInt(0), fact.fingerprint))
+                    }
+                }
+            }
+            if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision, change, targets)
+        } }
+    }
+
+    override suspend fun prepareQueryBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, change: TextBatchChange): ManualTextBatch? = operation {
+        require(revision >= 0)
+        val coroutine = currentCoroutineContext()
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val (where, arguments) = queryPredicate(query)
+            val changes = if (change.clearsTranslation) "(status != ? OR translation != '')" else "status != ?"
+            val targets = db.rawQuery("SELECT id,row_index,fingerprint FROM items WHERE $where AND $changes ORDER BY id",
+                (arguments + change.status.name).toTypedArray()).use { cursor ->
+                buildList {
+                    while (cursor.moveToNext()) {
+                        coroutine.ensureActive()
+                        if (size >= limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                        add(TextBatchTarget(ItemId(cursor.getLong(0)), cursor.getInt(1), ObjectFingerprint(cursor.getString(2))))
+                    }
+                }
+            }
+            if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision, change, targets)
+        } }
+    }
+
     override suspend fun editBatch(command: ManualTextBatch): ManualBatchReceipt = operation {
-        require(command.targets.size <= limits.maxPageSize)
+        require(command.targets.size <= limits.maxItems)
         val coroutine = currentCoroutineContext()
         withWriteLease {
             project(command.ref) { db ->
@@ -400,6 +504,38 @@ class NativeTextProjectStore(
             project(command.ref) { db ->
                 NativeProjectDatabase.summary(db, command.ref)
                 ProjectWriteStore.edit(db, command) { coroutine.ensureActive() }
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun markTranslationFailures(lease: RunLease, batch: TranslationFailureBatch): Long = operation {
+        if (lease.identity.projectId != batch.ref.projectId || lease.identity.chatId != null ||
+            runtime.snapshot().activeRun?.owner != RuntimeOwner.TRANSLATION) fail(TextProjectException.Reason.WRONG_IDENTITY)
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(batch.ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                NativeProjectDatabase.transaction(db) {
+                    val summary = NativeProjectDatabase.summary(db, batch.ref)
+                    if (summary.revision != batch.expectedRevision) fail(TextProjectException.Reason.STALE_PAGE)
+                    var revision = summary.revision
+                    for (edit in batch.edits) {
+                        coroutine.ensureActive()
+                        val item = db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE id = ?",
+                            arrayOf(edit.itemId.value.toString())).use { cursor ->
+                            if (!cursor.moveToFirst()) fail(TextProjectException.Reason.STALE_PAGE)
+                            NativeProjectDatabase.item(cursor, db.version)
+                        }
+                        require(item.status == TextItemStatus.NONE || item.status == TextItemStatus.ERROR)
+                        require(item.translation == edit.translation && item.fingerprint == edit.baseFingerprint)
+                        val receipt = ProjectWriteStore.edit(db, edit) { coroutine.ensureActive() }
+                        if (receipt.status != ManualEditStatus.COMMITTED) fail(TextProjectException.Reason.STALE_PAGE)
+                        revision = receipt.revision
+                    }
+                    coroutine.ensureActive()
+                    revision
+                }
             }
         } finally { runtime.endProjectWrite(write) }
     }
@@ -570,7 +706,7 @@ class NativeTextProjectStore(
         withWriteLease {
             project(plan.ref) { db ->
                 NativeProjectDatabase.ensureV3(db)
-                ProjectAssetWriteStore.importAsset(db, plan) { coroutine.ensureActive() }
+                ProjectAssetWriteStore.importAsset(db, plan, limits.maxItems) { coroutine.ensureActive() }
             }
         }
     }
@@ -581,7 +717,7 @@ class NativeTextProjectStore(
         val coroutine = currentCoroutineContext()
         withWriteLease {
             project(ref) { db ->
-                NativeProjectDatabase.ensureV3(db)
+                NativeProjectDatabase.ensureV4(db)
                 ProjectAssetWriteStore.remove(db, commandId, ref, expectedRevision, assetId) {
                     coroutine.ensureActive()
                 }
@@ -597,6 +733,20 @@ class NativeTextProjectStore(
             project(ref) { db ->
                 NativeProjectDatabase.ensureV3(db)
                 ProjectAssetWriteStore.reorder(db, commandId, ref, expectedRevision, assetIds) {
+                    coroutine.ensureActive()
+                }
+            }
+        }
+    }
+
+    override suspend fun setAssetEnabled(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
+        assetId: Long, enabled: Boolean): AssetMutationReceipt = operation {
+        require(expectedRevision >= 0 && assetId > 0)
+        val coroutine = currentCoroutineContext()
+        withWriteLease {
+            project(ref) { db ->
+                NativeProjectDatabase.ensureV3(db)
+                ProjectAssetWriteStore.setEnabled(db, commandId, ref, expectedRevision, assetId, enabled) {
                     coroutine.ensureActive()
                 }
             }

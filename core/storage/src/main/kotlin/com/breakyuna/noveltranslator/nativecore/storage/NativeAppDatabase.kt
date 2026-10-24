@@ -34,8 +34,8 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v4. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class], version = 4, exportSchema = true)
+/** Independent app store v5. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class], version = 5, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
     abstract fun agent(): NativeAgentDao
@@ -44,6 +44,19 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun translationRequests(): NativeTranslationRequestDao
 
     companion object {
+        /**
+         * Adds the explicit wire protocol and ordered credential envelope. The
+         * legacy encryptedKey column is kept so a v4 row remains readable and a
+         * single-key save still uses its original AAD shape.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE native_model_settings ADD COLUMN protocol TEXT NOT NULL DEFAULT 'OPENAI_CHAT_COMPLETIONS'")
+                db.execSQL("ALTER TABLE native_model_settings ADD COLUMN encryptedKeys TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE native_model_settings ADD COLUMN keyCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE native_model_settings SET keyCount = CASE WHEN encryptedKey = '' THEN 0 ELSE 1 END")
+            }
+        }
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_translation_requests (attemptId TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, configurationId TEXT NOT NULL, configurationRevision INTEGER NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, usage TEXT, failure TEXT, createdAt INTEGER NOT NULL)")
@@ -74,6 +87,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build()
     }
 }

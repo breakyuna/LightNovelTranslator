@@ -61,10 +61,15 @@ def main():
 
     uncovered = [feature for feature, entry in entries.items() if entry['category'] == 'uncovered']
     counts = Counter(entry['category'] for entry in entries.values())
+    cancelled = sorted(re.findall(r'^\|\s*([A-Z]{2}\d{2})\s*\|[^\n]*已取消', args.matrix.read_text(), re.M))
+    for feature, entry in entries.items():
+        entry['scope'] = 'cancelled' if feature in cancelled else 'active'
     result = {
         'schema_version': 2,
         'purpose': 'Traceable evidence per feature ID; coverage is not implementation or parity.',
         'feature_count': len(ids),
+        'active_feature_count': len(ids) - len(cancelled),
+        'cancelled_feature_ids': cancelled,
         'covered_count': len(ids) - len(uncovered),
         'categories': dict(sorted(counts.items())),
         'uncovered': uncovered,

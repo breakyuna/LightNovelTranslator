@@ -25,12 +25,14 @@ internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismis
     key(state.project?.ref, applied) {
         var text by rememberSaveable { mutableStateOf(applied.text) }
         var statusName by rememberSaveable { mutableStateOf(applied.status?.name) }
+        var assetId by rememberSaveable { mutableStateOf(applied.assetId) }
+        var assetsOpen by remember { mutableStateOf(false) }
         var fieldName by rememberSaveable { mutableStateOf(applied.field.name) }
         var statuses by remember { mutableStateOf(false) }
         var fields by remember { mutableStateOf(false) }
         val status = statusName?.let(TextItemStatus::valueOf)
         val field = TextSearchField.valueOf(fieldName)
-        val query = runCatching { TextItemQuery(status, text, field) }.getOrNull()
+        val query = runCatching { TextItemQuery(status, text, field, assetId) }.getOrNull()
         Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             // A wrap-content dialog window keeps remeasuring a text field (Compose never reports
             // idle); a full-bleed window with a centered, height-bounded card settles, as in the
@@ -49,6 +51,24 @@ internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismis
                                 Text(stringResource(R.string.native_proof_counts, counts.total, counts.unprocessed, counts.processed, counts.excluded))
                             }
                             state.matchingItems?.let { Text(stringResource(R.string.native_proof_matching, it)) }
+                            state.matchingStatistics?.let { counts ->
+                                Text(stringResource(R.string.native_proof_filtered_counts, counts.total, counts.unprocessed,
+                                    counts.processed, counts.excluded, counts.errors, counts.skipped, counts.duplicated))
+                            }
+                            Box {
+                                OutlinedButton(onClick = { assetsOpen = true }, enabled = !state.busy,
+                                    modifier = Modifier.fillMaxWidth().testTag("native-proof-asset")) {
+                                    Text(state.project?.assets?.firstOrNull { it.id == assetId }?.path?.value
+                                        ?: stringResource(if (assetId == null) R.string.native_proof_all_assets else R.string.native_proof_missing_asset))
+                                }
+                                DropdownMenu(expanded = assetsOpen, onDismissRequest = { assetsOpen = false }) {
+                                    DropdownMenuItem(text = { Text(stringResource(R.string.native_proof_all_assets)) },
+                                        onClick = { assetId = null; assetsOpen = false })
+                                    state.project?.assets.orEmpty().forEach { asset ->
+                                        DropdownMenuItem(text = { Text(asset.path.value) }, onClick = { assetId = asset.id; assetsOpen = false })
+                                    }
+                                }
+                            }
                             Box {
                                 OutlinedButton(onClick = { statuses = true }, enabled = !state.busy,
                                     modifier = Modifier.fillMaxWidth().testTag("native-proof-status")) {

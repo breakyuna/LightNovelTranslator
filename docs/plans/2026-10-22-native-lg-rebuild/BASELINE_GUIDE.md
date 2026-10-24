@@ -1,5 +1,7 @@
 # 实施源码保护与迁移索引
 
+> **2026-10-24 范围更新**：用户决定当前开发阶段不需要旧 LNT 数据迁移，R36 已移出当前路线图，迁移代码/测试已删除。本文中与 R36/旧库字段映射相关的内容仅保留为历史资料，不构成当前交付要求；外部 LG 工程与 Pi 会话兼容也已取消，R04/G3 仅负责原生存储与恢复。
+
 ## 固定输入
 
 2026-10-22 用户已授权开始修改。本轮先保存实施前源码，不修改 LG。
@@ -66,7 +68,7 @@ R36 的早期字段样本见 [旧库字段映射样本](LEGACY_FIELD_SAMPLE.md)�
 | Room v6 与历史 schema | data/db/AppDatabase.kt、app/schemas/ | 一致副本读取；不得清库；逐版本核对 |
 | Book、Edition、章节、段落与人工修订 | data/model/ReaderPlatformEntities.kt、data/db/ReaderPlatformDao.kt | 稳定来源映射；多个 Edition 分开保留 |
 | 原稿、正文、封面、共享图片、工作区、导出 | core/book/BookFileManager.kt | 由唯一文件拥有者定位；先保护 books/book_ID 目录及 exports |
-| 术语、记忆、提示词和运行记录 | ReaderPlatformEntities.kt、ReaderPlatformDao.kt、data/repository/BookPlatformRepository.kt | 工程事实和历史档案分离；完整字段映射待 R36 |
+| 术语、记忆、提示词和运行记录 | ReaderPlatformEntities.kt、ReaderPlatformDao.kt、data/repository/BookPlatformRepository.kt | 仅作历史参考；完整字段映射不适用（R36 已取消） |
 | 保护/替换规则 | data/model/QualityRuleEntities.kt、data/db/QualityRuleDao.kt | 原配置、顺序与启用状态保留 |
 | 旧会话 | data/model/AgentEntities.kt、data/db/AgentDao.kt | 顺序/角色与归属核对；不明确的归属不能默认绑定首工程 |
 | 模型与凭据 | data/model/ApiProviderEntity.kt、data/db/ApiProviderDao.kt、core/security/ApiKeyCipher.kt | 只通过迁移端口解密；失败保留旧密文，不输出 Key |

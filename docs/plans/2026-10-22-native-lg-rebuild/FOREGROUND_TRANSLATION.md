@@ -1,8 +1,8 @@
 # 模拟翻译的前台执行切片
 
-后续未验证增量：§43 新增远程 TXT 批翻、持久请求/Token 元数据、Room v4 迁移及运行中同工程切页，见 [REMOTE_TRANSLATION](REMOTE_TRANSLATION.md) 和 [HANDOFF §43](HANDOFF.md)。该增量未提交、未构建；下文 §41 CI 只覆盖此前版本，历史“仍为本地模拟/仅运行期用量”等限制按原切片理解。
+当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
 
-开发记录见 HANDOFF §34—36，最新证据见 [HANDOFF §41](HANDOFF.md)：提交 `8e74fff` 的 Actions #136 已覆盖构建、测试与 Lint；新增设备验收仍缺。范围扩展契约见 HANDOFF §39：用户显式选择本页或整工程本地模拟；Agent 对话仍由现有 ViewModel 链路执行，真实翻译、队列、暂停和进程重启后的原任务接续尚未实现。
+开发记录见 HANDOFF §34—36，早期证据见 [HANDOFF §41](HANDOFF.md)：提交 `8e74fff` 的 Actions #136 已覆盖构建、测试与 Lint；新增设备验收仍缺。范围扩展契约见 HANDOFF §39：用户显式选择本页或整工程本地模拟；Agent 对话仍由现有 ViewModel 链路执行，远程 TXT 翻译已有 §43/§49 接线与 CI，队列、暂停和进程重启后的原任务接续尚未实现。
 
 ## 接线与任务身份
 

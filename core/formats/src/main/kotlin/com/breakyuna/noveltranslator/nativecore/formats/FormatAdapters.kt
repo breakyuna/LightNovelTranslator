@@ -95,6 +95,7 @@ object NativeFormatAdapters {
         EpubFormatAdapter(),
         XlsxFormatAdapter(),
         RpgMakerMvMzAdapter(),
+        com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssFormatAdapter(),
     )
 
     fun install(): Set<ProjectAssetFormat> {

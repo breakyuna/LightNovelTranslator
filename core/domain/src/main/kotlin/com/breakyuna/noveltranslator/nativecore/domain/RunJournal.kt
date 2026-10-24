@@ -2,7 +2,7 @@ package com.breakyuna.noveltranslator.nativecore.domain
 
 /** Local execution facts, never an authorization to replay a model request or project write. */
 enum class StoredRunState { RUNNING, WAITING_APPROVAL, SUCCEEDED, CANCELLED, FAILED, INTERRUPTED }
-enum class StoredRunStage { ACCEPTED, REQUESTING, RESPONSE_RECORDED, COMMITTING, COMMITTED }
+enum class StoredRunStage { ACCEPTED, REQUESTING, REQUEST_FAILED, RESPONSE_RECORDED, COMMITTING, MARKING_FAILURE, COMMITTED }
 
 class RunCheckpoint(
     val stage: StoredRunStage,
@@ -18,9 +18,9 @@ class RunCheckpoint(
         require(revision == null || revision >= 0)
         require(committedItems >= 0 && requests >= 0)
         require(this.pendingCommands.size <= 20 && this.pendingCommands.distinct().size == this.pendingCommands.size)
-        require(this.pendingCommands.isEmpty() || stage == StoredRunStage.COMMITTING)
+        require(this.pendingCommands.isEmpty() || (stage == StoredRunStage.COMMITTING || stage == StoredRunStage.MARKING_FAILURE))
         require(agentRequest == null || translationAttempt == null)
-        require(translationAttempt == null || stage == StoredRunStage.REQUESTING)
+        require(translationAttempt == null || stage == StoredRunStage.REQUESTING || stage == StoredRunStage.REQUEST_FAILED)
     }
 }
 

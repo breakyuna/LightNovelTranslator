@@ -29,15 +29,19 @@ import kotlinx.coroutines.ensureActive
 
 @Composable
 internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTextPolicy) -> Unit,
-    save: () -> Unit, reload: () -> Unit) {
+    save: () -> Unit, reload: () -> Unit, presets: NativeRulePresetActions? = null,
+    templates: NativePromptTemplateActions? = null) {
     val ref = state.project?.ref ?: return
     val draft = state.policyDraft?.takeIf { it.ref == ref }
     var kindName by rememberSaveable(ref) { mutableStateOf(TextRuleKind.TERM.name) }
     val kind = TextRuleKind.valueOf(kindName)
     var menu by remember { mutableStateOf(false) }
     var editing by rememberSaveable(ref) { mutableStateOf<String?>(null) }
+    var templateOpen by rememberSaveable(ref) { mutableStateOf(false) }
+    var library by rememberSaveable(ref) { mutableStateOf(false) }
     var exchange by rememberSaveable(ref) { mutableStateOf(false) }
     var reloading by rememberSaveable(ref) { mutableStateOf(false) }
+    var exchangeError by remember(ref) { mutableStateOf(false) }
     var invalidEntry by remember(ref) { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
     val writable = !state.busy && !state.policyLoadIncomplete && draft != null && !draft.conflict
@@ -47,6 +51,17 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
         confirmButton = { TextButton(onClick = { reloading = false; reload() }, enabled = !state.busy) { Text(stringResource(R.string.native_discard)) } },
         dismissButton = { TextButton(onClick = { reloading = false }) { Text(stringResource(R.string.native_cancel)) } })
     if (draft != null) {
+        if (templateOpen) key(ref, draft.command) {
+            NativePromptTemplateDialog(requireNotNull(state.project), draft.policy, writable,
+                close = { templateOpen = false }, library = templates) { expected, policy ->
+                if (writable && draft.policy.fingerprint() == expected) { change(policy); templateOpen = false }
+            }
+        }
+        if (library && presets != null) key(ref, draft.command) {
+            NativeRulePresetLibrary(ref, draft.policy, presets, writable, close = { library = false }) { expected, policy ->
+                if (writable && draft.policy.fingerprint() == expected) { change(policy); library = false }
+            }
+        }
         editing?.let { id -> NativeTextRuleEditor(ref, id, draft.policy.rules.firstOrNull { it.id == id }, kind,
             invalid = invalidEntry, close = { editing = null; invalidEntry = false }) { rule ->
             val rules = draft.policy.rules.toMutableList()
@@ -56,8 +71,10 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
             try { ProjectTextPolicyCodec.encode(policy); change(policy); editing = null; invalidEntry = false }
             catch (_: IllegalArgumentException) { invalidEntry = true }
         } }
-        if (exchange) NativePolicyImportDialog(ref, close = { exchange = false }) {
-            change(it); exchange = false // Preparing a replacement draft never saves it.
+        if (exchange) key(ref, draft.command) {
+            NativePolicyImportDialog(ref, draft.policy, close = { exchange = false }) { expected, policy ->
+                if (writable && draft.policy.fingerprint() == expected) { change(policy); exchange = false }
+            }
         }
     }
     LazyColumn(Modifier.fillMaxSize().testTag("native-policy-page"), contentPadding = PaddingValues(16.dp),
@@ -81,6 +98,8 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
                         Switch(draft.policy.promptEnabled, { change(draft.policy.changed(promptEnabled = it)) }, enabled = writable)
                         Text(stringResource(R.string.native_policy_prompt_enabled))
                     }
+                    TextButton(onClick = { templateOpen = true }, enabled = writable,
+                        modifier = Modifier.testTag("native-prompt-template-open")) { Text(stringResource(R.string.native_prompt_template)) }
                     OutlinedTextField(draft.policy.prompt, { if (it.length <= 16_384)
                         runCatching { draft.policy.changed(prompt = it) }.getOrNull()?.let(change) },
                         label = { Text(stringResource(R.string.native_policy_prompt)) }, enabled = writable, minLines = 2, maxLines = 5,
@@ -125,9 +144,22 @@ internal fun NativeTextRulesPage(state: NativeProjectUiState, change: (ProjectTe
             item(key = "exchange") {
                 Column {
                     Text(stringResource(R.string.native_policy_exchange_notice), style = MaterialTheme.typography.bodySmall)
+                    if (presets != null) TextButton(onClick = { library = true }, enabled = writable) {
+                        Text(stringResource(R.string.native_preset_library))
+                    }
                     Row {
                         TextButton(onClick = { exchange = true }, enabled = writable) { Text(stringResource(R.string.native_policy_import)) }
                         TextButton(onClick = { clipboard.setText(AnnotatedString(ProjectTextPolicyCodec.encode(draft.policy))) }, enabled = !state.busy) { Text(stringResource(R.string.native_policy_export)) }
+                    }
+                    if (exchangeError) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+                    Row {
+                        TextButton(onClick = {
+                            runCatching { RuleExchangeCodec.encodePolicy(draft.policy) }
+                                .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
+                                .onFailure { exchangeError = true }
+                        }, enabled = !state.busy) {
+                            Text(stringResource(R.string.native_policy_export_exchange))
+                        }
                     }
                 }
             }
@@ -169,38 +201,91 @@ private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: Pro
     }
 }
 
+private enum class NativeRuleImportKind { POLICY, EXCHANGE, PRESET }
+
 @Composable
-private fun NativePolicyImportDialog(ref: LocalProjectRef, close: () -> Unit, apply: (ProjectTextPolicy) -> Unit) {
+private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectTextPolicy, close: () -> Unit,
+    apply: (ObjectFingerprint, ProjectTextPolicy) -> Unit) {
     var text by rememberSaveable(ref) { mutableStateOf("") }
-    // Parsing is performed only after explicit Preview, never in a Composable or on each key press.
+    var modeName by rememberSaveable(ref) { mutableStateOf(NativeRuleImportKind.POLICY.name) }
+    var overwrite by rememberSaveable(ref) { mutableStateOf(false) }
+    var includePrompt by rememberSaveable(ref) { mutableStateOf(true) }
     var preview by remember(ref) { mutableStateOf<ProjectTextPolicy?>(null) }
+    var counts by remember(ref) { mutableStateOf<List<Int>?>(null) }
     var invalid by remember(ref) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     var reading by remember(ref) { mutableStateOf(false) }
+    val mode = NativeRuleImportKind.valueOf(modeName)
+    fun invalidate() { preview = null; counts = null; invalid = false }
     NativePolicyForm(close, stringResource(R.string.native_policy_import), "native-policy-import-dialog", preview != null && !reading,
-        { preview?.let(apply) }) {
+        { preview?.let { apply(baseline.fingerprint(), it) } }) {
         Text(stringResource(R.string.native_policy_exchange_notice))
-        OutlinedTextField(text, { if (it.length <= ProjectTextPolicyCodec.MAX_CHARS) { text = it; preview = null; invalid = false } },
+        NativeRuleImportKind.entries.forEach { kind ->
+            val label = when (kind) {
+                NativeRuleImportKind.POLICY -> R.string.native_policy_import_policy
+                NativeRuleImportKind.EXCHANGE -> R.string.native_policy_import_exchange
+                NativeRuleImportKind.PRESET -> R.string.native_policy_import_preset
+            }
+            TextButton(onClick = { modeName = kind.name; invalidate() }, enabled = !reading) {
+                RadioButton(mode == kind, onClick = null); Text(stringResource(label))
+            }
+        }
+        if (mode != NativeRuleImportKind.POLICY) Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(overwrite, { overwrite = it; invalidate() }, enabled = !reading)
+            Text(stringResource(if (mode == NativeRuleImportKind.PRESET) R.string.native_policy_preset_replace else R.string.native_policy_exchange_overwrite), Modifier.weight(1f))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(includePrompt, { includePrompt = it; invalidate() }, enabled = !reading)
+            Text(stringResource(R.string.native_policy_include_prompt), Modifier.weight(1f))
+        }
+        OutlinedTextField(text, { if (it.length <= RulePresetCodec.MAX_CHARS) { text = it; invalidate() } },
             minLines = 4, maxLines = 8, enabled = !reading, label = { Text(stringResource(R.string.native_policy_json)) }, modifier = Modifier.fillMaxWidth())
         TextButton(onClick = {
             reading = true
             scope.launch {
-                try { preview = withContext(kotlinx.coroutines.Dispatchers.Default) {
-                    ProjectTextPolicyCodec.decode(text).also { TextRuleValidation.validate(it) { ensureActive() } }
-                }; invalid = false }
-                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                catch (_: Exception) { preview = null; invalid = true }
+                try {
+                    val result = withContext(kotlinx.coroutines.Dispatchers.Default) {
+                        when (mode) {
+                            NativeRuleImportKind.POLICY -> {
+                                val decoded = ProjectTextPolicyCodec.decode(text)
+                                val policy = if (includePrompt) decoded else decoded.changed(prompt = baseline.prompt, promptEnabled = baseline.promptEnabled)
+                                TextRuleValidation.validate(policy) { ensureActive() }
+                                policy to listOf(0, 0, 0, 0)
+                            }
+                            NativeRuleImportKind.EXCHANGE -> {
+                                val result = com.breakyuna.noveltranslator.nativecore.engine.RulePreviewService().preview(
+                                    baseline, RuleExchangeCodec.decode(text),
+                                    if (overwrite) RuleExchangeDuplicatePolicy.OVERWRITE else RuleExchangeDuplicatePolicy.SKIP,
+                                    includePrompt) { ensureActive() }
+                                (if (result.clean) result.preview.policy else null) to
+                                    listOf(result.added.size, result.updated.size, result.unchanged.size, result.conflicting.size)
+                            }
+                            NativeRuleImportKind.PRESET -> {
+                                val result = RulePresetCodec.decode(text).applyTo(baseline,
+                                    if (overwrite) RulePresetApplyMode.REPLACE else RulePresetApplyMode.MERGE, includePrompt)
+                                result.policy to listOf(result.diff.addedRuleIds.size, result.diff.updatedRuleIds.size,
+                                    result.diff.unchangedRuleIds.size, result.diff.removedRuleIds.size)
+                            }
+                        }
+                    }
+                    preview = result.first; counts = result.second; invalid = result.first == null
+                } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { preview = null; counts = null; invalid = true }
                 finally { reading = false }
             }
         }, enabled = !reading && text.isNotEmpty()) { Text(stringResource(R.string.native_policy_preview)) }
         if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+        if (mode != NativeRuleImportKind.POLICY) counts?.let {
+            Text(stringResource(if (mode == NativeRuleImportKind.PRESET) R.string.native_policy_preset_diff else R.string.native_policy_exchange_diff,
+                it[0], it[1], it[2], it[3]))
+        }
         preview?.let { Text(stringResource(R.string.native_policy_preview_count, it.rules.size)) }
     }
 }
 
 @Composable
-private fun NativePolicyForm(close: () -> Unit, title: String, tag: String, enabled: Boolean,
-    apply: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+internal fun NativePolicyForm(close: () -> Unit, title: String, tag: String, enabled: Boolean,
+    apply: () -> Unit, applyLabel: String? = null, content: @Composable ColumnScope.() -> Unit) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() })
@@ -212,7 +297,9 @@ private fun NativePolicyForm(close: () -> Unit, title: String, tag: String, enab
                         verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TextButton(onClick = close) { Text(stringResource(R.string.native_cancel)) }
-                        TextButton(onClick = apply, enabled = enabled, modifier = Modifier.testTag("native-policy-apply")) { Text(stringResource(R.string.native_policy_apply)) }
+                        TextButton(onClick = apply, enabled = enabled, modifier = Modifier.testTag("native-policy-apply")) {
+                            Text(applyLabel ?: stringResource(R.string.native_policy_apply))
+                        }
                     }
                 }
             }

@@ -24,7 +24,8 @@
           "key": "/api/agent/message",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG02": {
       "category": "bound",
@@ -36,7 +37,8 @@
           "line": 14,
           "note": "工具参数根 Schema 校验与定义入口"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG03": {
       "category": "discovery",
@@ -51,7 +53,8 @@
           "key": "/api/agent/input-status",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG04": {
       "category": "discovery",
@@ -76,7 +79,8 @@
           "key": "/api/agent/queue/send",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG05": {
       "category": "bound",
@@ -88,7 +92,8 @@
           "line": 105,
           "note": "执行中引导的队列项占用与提交顺序"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG06": {
       "category": "discovery",
@@ -103,7 +108,8 @@
           "key": "/api/agent/stop",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG07": {
       "category": "discovery",
@@ -123,7 +129,8 @@
           "key": "/api/agent/reset",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG08": {
       "category": "bound",
@@ -135,7 +142,8 @@
           "line": 287,
           "note": "公开时间线把 steer 与普通输入分开展示"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG09": {
       "category": "discovery",
@@ -145,7 +153,8 @@
           "key": "/api/agent/context/compact",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG10": {
       "category": "discovery",
@@ -155,7 +164,8 @@
           "key": "/api/agent/continue",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG11": {
       "category": "discovery",
@@ -165,7 +175,8 @@
           "key": "/api/agent/question/resolve",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG12": {
       "category": "discovery",
@@ -180,7 +191,8 @@
           "key": "agent_approval_mode",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG13": {
       "category": "discovery",
@@ -215,7 +227,8 @@
           "key": "/api/agent/workspace/activate-path",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG14": {
       "category": "discovery",
@@ -225,7 +238,8 @@
           "key": "/api/agent/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG15": {
       "category": "bound",
@@ -237,7 +251,8 @@
           "line": 23,
           "note": "按用途解析模型与用量读取"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "AG16": {
       "category": "bound",
@@ -249,7 +264,8 @@
           "line": 11,
           "note": "Agent 内批量翻译工具"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM01": {
       "category": "discovery",
@@ -264,7 +280,8 @@
           "key": "txt",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM02": {
       "category": "discovery",
@@ -274,7 +291,8 @@
           "key": "md",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM03": {
       "category": "discovery",
@@ -284,7 +302,8 @@
           "key": "epub",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM04": {
       "category": "discovery",
@@ -304,7 +323,8 @@
           "key": "vtt",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM05": {
       "category": "discovery",
@@ -319,7 +339,8 @@
           "key": "ssa",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM06": {
       "category": "discovery",
@@ -329,7 +350,8 @@
           "key": "json",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM07": {
       "category": "discovery",
@@ -339,7 +361,8 @@
           "key": "xlsx",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM08": {
       "category": "discovery",
@@ -349,7 +372,8 @@
           "key": "trans",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM09": {
       "category": "discovery",
@@ -359,7 +383,8 @@
           "key": "rpy",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM10": {
       "category": "discovery",
@@ -369,7 +394,8 @@
           "key": "rpgmaker_mv_mz",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM11": {
       "category": "discovery",
@@ -379,7 +405,8 @@
           "key": "rpgmaker_rgss",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "FM12": {
       "category": "discovery",
@@ -389,7 +416,8 @@
           "key": "pdf",
           "status": "adapter_dir_found"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO01": {
       "category": "discovery",
@@ -454,7 +482,8 @@
           "key": "model",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO02": {
       "category": "bound",
@@ -466,7 +495,8 @@
           "line": 23,
           "note": "协议适配以 api_format 区分，不靠 provider 名称"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO03": {
       "category": "bound",
@@ -478,7 +508,8 @@
           "line": 65,
           "note": "认证类型与密钥字段定义"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO04": {
       "category": "discovery",
@@ -503,7 +534,8 @@
           "key": "/api/models/auth/logout",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO05": {
       "category": "discovery",
@@ -513,7 +545,8 @@
           "key": "/api/models/catalog/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO06": {
       "category": "discovery",
@@ -573,7 +606,8 @@
           "key": "/api/models/test",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO07": {
       "category": "bound",
@@ -585,7 +619,8 @@
           "line": 269,
           "note": "思考等级规范化"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO08": {
       "category": "bound",
@@ -597,7 +632,8 @@
           "line": 93,
           "note": "额外请求 headers/body 字段"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO09": {
       "category": "discovery",
@@ -657,7 +693,8 @@
           "key": "/api/models/test",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO10": {
       "category": "bound",
@@ -669,7 +706,8 @@
           "line": 170,
           "note": "输入/思考/输出 token 分别读取"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "MO11": {
       "category": "discovery",
@@ -679,7 +717,8 @@
           "key": "request_timeout",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP01": {
       "category": "discovery",
@@ -689,7 +728,8 @@
           "key": "/api/runtime/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP02": {
       "category": "bound",
@@ -701,7 +741,8 @@
           "line": 120,
           "note": "长任务终态与停止；Android 前台 Service/通知仍是原生实现"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP03": {
       "category": "discovery",
@@ -746,7 +787,8 @@
           "key": "/api/web/bootstrap",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP04": {
       "category": "discovery",
@@ -771,7 +813,8 @@
           "key": "/api/diagnostics/renderer-error",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP05": {
       "category": "discovery",
@@ -786,22 +829,26 @@
           "key": "/api/events/stream",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "OP06": {
       "category": "native_only",
       "discovery": [],
-      "native_only": "旧 LNT Room 数据迁移器与档案，LG 仓库没有 LNT 数据源"
+      "native_only": "旧 LNT Room 数据迁移器与档案，LG 仓库没有 LNT 数据源",
+      "scope": "cancelled"
     },
     "OP07": {
       "category": "native_only",
       "discovery": [],
-      "native_only": "Android 签名升级、安装与备份回退边界，由平台实现"
+      "native_only": "Android 签名升级、安装与备份回退边界，由平台实现",
+      "scope": "active"
     },
     "OP08": {
       "category": "native_only",
       "discovery": [],
-      "native_only": "旧 LNT 实现/资源/依赖清理审计，属于本仓库退役工作"
+      "native_only": "旧 LNT 实现/资源/依赖清理审计，属于本仓库退役工作",
+      "scope": "active"
     },
     "OP09": {
       "category": "discovery",
@@ -811,7 +858,8 @@
           "key": "/api/health",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR01": {
       "category": "discovery",
@@ -871,7 +919,8 @@
           "key": "project_fixed_path",
           "status": "frontend_only"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR02": {
       "category": "discovery",
@@ -931,7 +980,8 @@
           "key": "recent_projects",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR03": {
       "category": "bound",
@@ -943,7 +993,8 @@
           "line": 282,
           "note": "资产结构写入与原始记录集中提交"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR04": {
       "category": "discovery",
@@ -973,7 +1024,8 @@
           "key": "/api/workbench/files/preview",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR05": {
       "category": "bound",
@@ -985,7 +1037,8 @@
           "line": 6,
           "note": "Item 状态集合与持久字段 Schema"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR06": {
       "category": "bound",
@@ -997,7 +1050,8 @@
           "line": 7,
           "note": "对象指纹计算入口"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR07": {
       "category": "discovery",
@@ -1067,7 +1121,8 @@
           "key": "target_language",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR08": {
       "category": "discovery",
@@ -1102,7 +1157,8 @@
           "key": "/api/workbench/translation/reset",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR09": {
       "category": "discovery",
@@ -1147,7 +1203,8 @@
           "key": "/api/session/project/open-preview",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "PR10": {
       "category": "bound",
@@ -1165,7 +1222,8 @@
           "line": 1,
           "note": "Zstd 压缩读写"
         }
-      ]
+      ],
+      "scope": "cancelled"
     },
     "QL01": {
       "category": "discovery",
@@ -1185,7 +1243,8 @@
           "key": "glossary",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL02": {
       "category": "discovery",
@@ -1205,7 +1264,8 @@
           "key": "text-preserve",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL03": {
       "category": "discovery",
@@ -1230,7 +1290,8 @@
           "key": "post-translation-replacement",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL04": {
       "category": "discovery",
@@ -1245,7 +1306,8 @@
           "key": "/api/quality/rules/export",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL05": {
       "category": "discovery",
@@ -1325,7 +1387,8 @@
           "key": "translation_custom_prompt_default_preset",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL06": {
       "category": "discovery",
@@ -1395,7 +1458,8 @@
           "key": "custom-prompt",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL07": {
       "category": "discovery",
@@ -1425,7 +1489,8 @@
           "key": "/api/proofreading/items/replace-all",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL08": {
       "category": "bound",
@@ -1437,7 +1502,8 @@
           "line": 140,
           "note": "六类校对警告求值"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL09": {
       "category": "discovery",
@@ -1467,7 +1533,8 @@
           "key": "/api/proofreading/items/replace-all",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "QL10": {
       "category": "discovery",
@@ -1477,7 +1544,8 @@
           "key": "/api/quality/statistics/view",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR01": {
       "category": "discovery",
@@ -1502,7 +1570,8 @@
           "key": "/api/batch-translation/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR02": {
       "category": "discovery",
@@ -1512,7 +1581,8 @@
           "key": "source_language",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR03": {
       "category": "discovery",
@@ -1522,7 +1592,8 @@
           "key": "skip_duplicate_source_text_enable",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR04": {
       "category": "discovery",
@@ -1532,7 +1603,8 @@
           "key": "preceding_lines_threshold",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR05": {
       "category": "discovery",
@@ -1547,7 +1619,8 @@
           "key": "mtool_optimizer_enable",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR06": {
       "category": "discovery",
@@ -1557,7 +1630,8 @@
           "key": "write_translated_name_fields_to_file",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR07": {
       "category": "discovery",
@@ -1567,7 +1641,8 @@
           "key": "target_language",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR08": {
       "category": "bound",
@@ -1579,7 +1654,8 @@
           "line": 48,
           "note": "请求额度/并发调度"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR09": {
       "category": "bound",
@@ -1591,7 +1667,8 @@
           "line": 11,
           "note": "内容重试规划"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR10": {
       "category": "discovery",
@@ -1611,7 +1688,8 @@
           "key": "/api/batch-translation/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR11": {
       "category": "discovery",
@@ -1621,7 +1699,8 @@
           "key": "/api/project/translation-stats",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "TR12": {
       "category": "discovery",
@@ -1641,7 +1720,8 @@
           "key": "/api/batch-translation/snapshot",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX01": {
       "category": "discovery",
@@ -1651,7 +1731,8 @@
           "key": "project-home",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX02": {
       "category": "discovery",
@@ -1661,7 +1742,8 @@
           "key": "agent",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX03": {
       "category": "discovery",
@@ -1691,7 +1773,8 @@
           "key": "workbench",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX04": {
       "category": "discovery",
@@ -1701,7 +1784,8 @@
           "key": "proofreading",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX05": {
       "category": "discovery",
@@ -1736,7 +1820,8 @@
           "key": "custom-prompt",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX06": {
       "category": "discovery",
@@ -1771,7 +1856,8 @@
           "key": "laboratory",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX07": {
       "category": "discovery",
@@ -1856,7 +1942,8 @@
           "key": "output_folder_open_on_finish",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "UX08": {
       "category": "discovery",
@@ -1866,7 +1953,8 @@
           "key": "app_language",
           "status": "referenced_in_both"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS01": {
       "category": "discovery",
@@ -1896,7 +1984,8 @@
           "key": "/api/agent/reset",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS02": {
       "category": "discovery",
@@ -1926,7 +2015,8 @@
           "key": "host",
           "status": "used"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS03": {
       "category": "discovery",
@@ -2036,7 +2126,8 @@
           "key": "builtin/skills/xlsx",
           "status": "resource_present"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS04": {
       "category": "bound",
@@ -2048,7 +2139,8 @@
           "line": 6,
           "note": "变更提交工具入口"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS05": {
       "category": "discovery",
@@ -2088,7 +2180,8 @@
           "key": "/api/agent/save-path/respond",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS06": {
       "category": "discovery",
@@ -2118,7 +2211,8 @@
           "key": "host",
           "status": "used"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS07": {
       "category": "discovery",
@@ -2223,7 +2317,8 @@
           "key": "builtin/skills/xlsx",
           "status": "resource_present"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS08": {
       "category": "discovery",
@@ -2268,7 +2363,8 @@
           "key": "/api/skills/file/change",
           "status": "resolved"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS09": {
       "category": "discovery",
@@ -2308,7 +2404,8 @@
           "key": "host",
           "status": "used"
         }
-      ]
+      ],
+      "scope": "active"
     },
     "WS10": {
       "category": "bound",
@@ -2326,7 +2423,13 @@
           "line": 3,
           "note": "网页获取工具入口"
         }
-      ]
+      ],
+      "scope": "active"
     }
-  }
+  },
+  "active_feature_count": 96,
+  "cancelled_feature_ids": [
+    "OP06",
+    "PR10"
+  ]
 }

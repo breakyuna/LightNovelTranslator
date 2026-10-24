@@ -1,7 +1,6 @@
 # Agent 原生消息与单次请求边界
 
-本文说明本轮已写入源码的端口与原型约束；实施进度只记 [HANDOFF](HANDOFF.md)。
-它不是 Koog 已迁移、SDK 检查点已可用或原生产品功能已完成的证明。
+本文 §1 核对当前端口与消费者；§2—5 保留首轮原型的约束、限制及当时验证记录，不作为当前接线清单。当前 Koog 对话、请求持久化、远程传输、SSE 与单条审批已有指定提交 CI；§74 新增只读工具仍未构建。唯一实施进度与验证边界见 [HANDOFF §3、§49、§74](HANDOFF.md)，完整 SDK 检查点和产品验收仍未完成。
 
 ## 1. 实际代码与消费者
 
@@ -9,18 +8,20 @@
 |---|---|---|
 | domain/AgentMessage.kt | 原生角色、稳定调用身份、供应商调用 ID、工具结果、图片固化引用、思考续传数据、配对验证 | AgentModelRequest、请求指纹、AgentRequestBoundary |
 | domain/JsonObjectValue.kt | 有界对象解析、转义同名键拒绝、数字 token 保留、脱敏默认字符串 | 工具参数、Schema、工具结果与供应商续传数据 |
-| domain/AgentModelPort.kt | 不可变请求、配置修订身份、响应、用量来源、错误与终止分类 | AgentRequestBoundary；只有测试提供假模型实现 |
-| domain/AgentPersistencePort.kt | 请求内容核对、发送权 CAS、响应/用量事务回执的端口契约 | AgentRequestBoundary；只有测试提供内存假存储 |
-| domain/AgentRequestFingerprint.kt | 版本化 SHA-256 请求内容指纹 | 测试存储及未来持久化适配器共用；不输出正文 |
+| domain/AgentModelPort.kt | 不可变请求、配置修订身份、响应、用量来源、错误与终止分类 | NativeModelGateway / CompatibleAgentModel；AgentRequestBoundary 经共享网关调用，测试另有假模型 |
+| domain/AgentPersistencePort.kt | 请求内容核对、发送权 CAS、响应/用量事务回执的端口契约 | NativeAgentStore 实现应用 Room 持久化，供 AgentRequestBoundary / NativeKoogConversation 使用 |
+| domain/AgentRequestFingerprint.kt | 版本化 SHA-256 请求内容指纹 | NativeAgentStore 与测试存储共用；不输出正文 |
 | domain/AgentToolPort.kt | 标量参数定义同源生成 Schema 和校验器 | AgentToolRegistry |
-| agent/AgentRequestBoundary.kt | 单次模型调用、回执重放、不确定拒绝、停止再校验、已知响应保留 | 端口组合测试；尚未接 Koog PromptExecutor |
-| agent/AgentToolRegistry.kt | 只读工具分发、参数校验、真实运行 lease 核对、错误脱敏 | 两个测试自有工具；没有假冒工程生产工具 |
+| agent/AgentRequestBoundary.kt | 单次模型调用、回执重放、不确定拒绝、停止再校验、已知响应保留 | NativeKoogConversation / NativeKoogWorkspace 已构造边界，供 Koog 请求执行使用；另有端口组合测试 |
+| agent/AgentToolRegistry.kt | 只读工具分发、参数校验、真实运行 lease 核对、错误脱敏 | NativeProjectTools 注册工程摘要/条目读取/差异准备工具；§74 新增列表、字面搜索和统计（未构建） |
 
 所有路径相对 `core/<module>/src/main/kotlin/com/breakyuna/noveltranslator/nativecore/`。
-Agent 主源码只依赖 domain、协程与 JSON 树 API；engine 仅作为测试装配依赖，生产源码不跨模块调用 engine。
+Agent 主源码依赖 domain、Koog、协程与 JSON 树 API；engine 仅作为测试装配依赖，生产源码不跨模块调用 engine。
 没有复制旧 LlmGateway、Provider Entity、AgentToolHost、Book/Edition 或全局 ViewModel。
 
-## 2. 历史与参数不变量
+## 2. 历史与参数不变量（首轮原型记录）
+
+下文“此轮/未接/没有生产实现”等描述指首轮原型。后续真实消费者已更新到 §1；远程模型、持久请求/用量回执、Compose 预览和单条审批的后续契约见 [AGENT_CONVERSATION](AGENT_CONVERSATION.md)、[S2_AGENT_SLICE](S2_AGENT_SLICE.md)、[STREAMING](STREAMING.md) 与 [MODEL_SCHEDULING](MODEL_SCHEDULING.md)。首轮的“不接生产”描述不撤销后续已接线能力，也不代表完整审批/恢复已完成。
 
 - system 只在会话内容之前出现；用户、助手、工具结果角色独立，不转写成一段 user 文本。
 - 工具调用包含内部稳定 ID 与可选供应商原始 ID；供应商 ID 可以只在单次请求内唯一，不能拿它覆盖跨回合内部身份。
@@ -33,7 +34,7 @@ Agent 主源码只依赖 domain、协程与 JSON 树 API；engine 仅作为测�
 - 请求构造冻结消息/工具集合，指纹规范对象键顺序，保留数组顺序、数字词法、模型修订、附件摘要与续传字段。拒绝无法无损 UTF-8 编码的孤立代理项，避免内容指纹碰撞。
 - Token 的 actual/estimated/unknown 分开，unknown 不能伪装成 0；未实现费用估算与累计统计服务。
 
-## 3. 请求与回执顺序
+## 3. 请求与回执顺序（首轮原型记录）
 
 | 阶段 | 行为 | 失败或重复的处理 |
 |---|---|---|
@@ -53,7 +54,7 @@ Agent 主源码只依赖 domain、协程与 JSON 树 API；engine 仅作为测�
 存储端口没有生产默认实现。生产适配器必须在应用记录事务中实现内容指纹核对、发送 CAS 和响应/用量一次写入，保存指纹格式版本，并限制 IO 时间；测试 FakeRequestStore 不可进入 app 主链路。
 事件 sink 必须非阻塞并按完整请求身份处理预览；展示失败不重试付费请求。此轮没有 Compose 消费者。
 
-## 4. 工具权限
+## 4. 工具权限（首轮原型记录）
 
 注册表仅公开并执行 `READ_ONLY` 工具；PROJECT_WRITE、WORKSPACE_WRITE、PAID_REQUEST、AUTHENTICATION 在真实审批/回执路径缺失时全部拒绝。
 模型说“已确认”不影响执行层判定。只读工具可重复查询变化后的事实，不迁入旧“同参数第二次一律熔断”的机制。
@@ -62,7 +63,7 @@ Kotlin 宿主 handler 是受信任的应用实现，不是脚本沙箱；脚本�
 
 此轮未提供工程数据库写工具、假审批、联网或真实模型请求。工具失败只回传固定错误码与已知字段，不回显异常正文；取消继续抛出。
 
-## 5. 外部证据与待验证
+## 5. 外部证据与待验证（首轮原型记录）
 
 新增 JSON 依赖在 version catalog 声明 `kotlinx-serialization-json:1.9.0`，使用库自带 JSON 树 API，不为自己的类生成 serializer。
 API 符号静态核对依据为该版本的官方 [Json](https://github.com/Kotlin/kotlinx.serialization/blob/v1.9.0/formats/json/commonMain/src/kotlinx/serialization/json/Json.kt)、[JsonElement](https://github.com/Kotlin/kotlinx.serialization/blob/v1.9.0/formats/json/commonMain/src/kotlinx/serialization/json/JsonElement.kt) 和 [builders](https://github.com/Kotlin/kotlinx.serialization/blob/v1.9.0/formats/json/commonMain/src/kotlinx/serialization/json/JsonElementBuilders.kt) 源码；不是已完成依赖解析或 Android 打包的证据。

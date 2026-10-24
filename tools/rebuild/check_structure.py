@@ -212,7 +212,12 @@ for name in MODULES:
         ):
             if target not in MODULES or tail == '*':
                 continue
-            simple = tail.split('.')[0]
+            # A module-internal subpackage (for example formats.rgss.RgssFormatAdapter)
+            # names a declared type after one or more lower-case package segments. Use the
+            # first upper-case segment so nested-class imports still resolve to the outer
+            # declaration instead of treating the package name as a type.
+            parts = [part for part in tail.split('.') if part]
+            simple = next((part for part in parts if part[0].isupper()), parts[0] if parts else tail)
             require(simple in declared[target],
                     f'{source.relative_to(ROOT)}: import {full} is not declared in :core:{target}')
 app = (ROOT / 'app/build.gradle.kts').read_text()

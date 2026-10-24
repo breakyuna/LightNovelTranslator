@@ -1,5 +1,7 @@
 # TXT 校对查询与统计契约
 
+当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
+
 本切片实现 R15/R32 的状态/文本查询基础，不代表完整校对台。唯一实施记录与验证边界见 [HANDOFF §37、§41](HANDOFF.md)；完整目标仍见 [UI_SPEC U04](UI_SPEC.md)。
 
 ## 查询与快照
@@ -8,7 +10,7 @@
 
 TextItemQuery 支持全部/未处理/已处理/已排除状态，搜索原文、译文或两者。状态与文本条件取交集；同一条目同时命中原文和译文也只计一次。文本是最多 256 个 UTF-16 代码单元的、区分大小写的字面子串，保留空白；拒绝 NUL 和不合法 Unicode。SQL 值全部使用参数绑定，不拼入用户文本，不解释正则或通配符。搜索依据 [SQLite instr](https://www.sqlite.org/lang_corefunc.html#instr)，不依赖新 Android 正则 API。查询对象的 toString 不包含搜索正文。
 
-同一 SQLite 事务读取工程摘要、查询总命中数、当前有界条目和全工程三种状态计数；命中总数不受 afterId/页长影响。readPage 也提供全工程计数。统计额外提供 translatableUnprocessed，仅计 NONE 且源文满足 Kotlin isNotBlank 的条目；普通未处理计数仍包括空白源文。SQL trim 的字符集按当前 Kotlin isWhitespace 派生，避免仅排除 ASCII 空格。整工程模拟资格使用该子集，不能把普通状态计数当作可翻译数。TextProjectPage 校验命中计数范围及状态计数总和与摘要一致。正文只为有界窗口读取；统计在数据库聚合，不把整本正文传入 UI，也不取得模型/写租约。既有 items 的预期修订检查保持不变，没有 schema、迁移或格式变更。
+同一 SQLite 事务读取工程摘要、查询总命中数、当前有界条目和全工程三种状态计数；命中总数不受 afterId/页长影响。readPage 也提供全工程计数。统计额外提供 translatableUnprocessed，当前 §60 未构建增量仅计启用资产中 NONE 且源文满足 Kotlin isNotBlank 的条目；普通未处理计数仍包括空白源文。SQL trim 的字符集按当前 Kotlin isWhitespace 派生，避免仅排除 ASCII 空格。整工程模拟资格使用该子集，不能把普通状态计数当作可翻译数。TextProjectPage 校验命中计数范围及状态计数总和与摘要一致。正文只为有界窗口读取；统计在数据库聚合，不把整本正文传入 UI，也不取得模型/写租约。既有 items 的预期修订检查保持不变，没有 schema、迁移或格式变更。
 
 ## 窗口与编辑
 
@@ -30,6 +32,10 @@ TextItemWindow 是 1—100 个严格递增、去重且自持快照的 ItemId。�
 
 指定提交构建、全量测试/Lint 已通过，见 HANDOFF §41。仍待 PC/获授权 CI 的截图录制与实际查看，以及设备的输入法、横屏、语言切换、返回和列表交互检查。SQL 全工程搜索/统计的目标设备耗时与取消延迟尚未测量，不登记性能结论；现有 TXT 字节/条数预算仍适用。
 
-当前页批选、状态与清空译文的写入契约见 [MANUAL_BATCH](MANUAL_BATCH.md)，开发记录见 HANDOFF §38，最新 CI 与未验证边界见 §41。§46—47 另增警告/缺失术语筛选统计、上一条/下一条匹配定位与单条草稿替换源码，未构建；后续仍须实现资产/完整术语筛选、姓名/PDF 页级事实、跨页/全部筛选结果写入、工程级查找替换和完整六类警告兼容与宽屏表格；本切片不关闭 R15/R32 或完整 S1/S2。
+当前页批选、状态与清空译文的写入契约见 [MANUAL_BATCH](MANUAL_BATCH.md)，开发记录见 HANDOFF §38，当前 CI 与未验证边界见 §3、§49。§46—47 另增警告/缺失术语筛选统计、上一条/下一条匹配定位与单条草稿替换源码，已由 Actions #146 覆盖；后续仍须实现资产/完整术语筛选、姓名/PDF 页级事实、跨页/全部筛选结果写入、工程级查找替换和完整六类警告兼容与宽屏表格；本切片不关闭 R15/R32 或完整 S1/S2。
 
-§45 另增完整编辑草稿的显式本地六类检查源码，未构建，实际算法与局限见 [TEXT_QUALITY](TEXT_QUALITY.md)；后续 §46 的列表接线见 [QUALITY_SCAN](QUALITY_SCAN.md)，§47 草稿替换见 [EDITOR_TOOLS](EDITOR_TOOLS.md)。
+§45 另增完整编辑草稿的显式本地六类检查源码，已由 Actions #146 覆盖，实际算法与局限见 [TEXT_QUALITY](TEXT_QUALITY.md)；后续 §46 的列表接线见 [QUALITY_SCAN](QUALITY_SCAN.md)，§47 草稿替换见 [EDITOR_TOOLS](EDITOR_TOOLS.md)。
+
+## 资产范围增量（未构建）
+
+HANDOFF §61 为 TextItemQuery 增加 assetId，查询、分页、相邻定位共用谓词。matchingStatistics 表示完整筛选范围的状态数，statistics 仍为全工程。资产筛选按工程身份恢复；已删除资产保持空结果，不能自动扩大范围。质量扫描按资产分页和预算，索引绑定完整查询。本增量未取得 CI/设备证据。

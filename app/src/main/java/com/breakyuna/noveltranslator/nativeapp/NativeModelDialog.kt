@@ -30,7 +30,9 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 @Composable
 internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, error: Int?, loading: Boolean,
     dismiss: () -> Unit, save: (String, String, String?, () -> Unit) -> Unit,
-    fetch: (String, String, ModelConfigurationRef?, (List<String>) -> Unit) -> Unit, cancel: () -> Unit) {
+    fetch: (String, String, ModelConfigurationRef?, (List<String>) -> Unit) -> Unit, cancel: () -> Unit,
+    saveProfile: ((String, String, NativeModelProtocol, List<String>?, () -> Unit) -> Unit)? = null,
+    fetchProfile: ((String, String, ModelConfigurationRef?, NativeModelProtocol, (List<String>) -> Unit) -> Unit)? = null) {
     // The form accepts operation URLs. Show one explicitly so reopening a base ending in
     // /models or /chat/completions cannot strip a reverse-proxy prefix on save/discovery.
     var endpoint by rememberSaveable(settings?.reference) { mutableStateOf(settings?.let {
@@ -39,26 +41,47 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
     var model by rememberSaveable(settings?.reference) { mutableStateOf(settings?.model ?: "") }
     // Password and discovery results never enter SavedStateHandle/Bundle or model snapshots.
     var secret by remember(settings?.reference) { mutableStateOf("") }
+    var keysText by remember(settings?.reference) { mutableStateOf("") }
     var keepKey by rememberSaveable(settings?.reference) { mutableStateOf(settings?.hasCredential == true) }
+    var protocolName by rememberSaveable(settings?.reference) {
+        mutableStateOf((settings?.protocol ?: NativeModelProtocol.OPENAI_CHAT_COMPLETIONS).name)
+    }
+    var protocolMenu by remember { mutableStateOf(false) }
     var invalid by remember { mutableStateOf(false) }
     var attempted by remember { mutableStateOf(false) }
+    val profileMode = saveProfile != null
+    val protocol = runCatching { NativeModelProtocol.valueOf(protocolName) }
+        .getOrDefault(NativeModelProtocol.OPENAI_CHAT_COMPLETIONS)
     val normalized = runCatching { NativeModelEndpoint.normalize(endpoint) }.getOrNull()
     val savedBase = settings?.let { runCatching { NativeModelEndpoint.base(it.endpoint) }.getOrNull() }
     val canKeep = settings?.hasCredential == true && normalized != null &&
         normalized == savedBase
-    val stored = settings?.reference?.takeIf { keepKey && canKeep && secret.isEmpty() }
-    var available by remember(endpoint, secret, stored) { mutableStateOf<List<String>?>(null) }
-    var picker by remember(endpoint, secret, stored) { mutableStateOf(false) }
+    val canReuse = keepKey && canKeep && (if (profileMode) keysText.isBlank() else secret.isEmpty())
+    val stored = settings?.reference?.takeIf { canReuse }
+    val discoveryKey = if (profileMode) keysText.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+    else secret
+    var available by remember(endpoint, discoveryKey, stored) { mutableStateOf<List<String>?>(null) }
+    var picker by remember(endpoint, discoveryKey, stored) { mutableStateOf(false) }
     val formScroll = rememberScrollState()
     val latestLoading by rememberUpdatedState(loading)
     val latestCancel by rememberUpdatedState(cancel)
     DisposableEffect(Unit) { onDispose { if (latestLoading) latestCancel() } }
-    fun close() { if (loading) cancel(); secret = ""; dismiss() }
+    fun close() { if (loading) cancel(); secret = ""; keysText = ""; dismiss() }
     fun submit() {
         try {
-            NativeModelSettingsValidation.validate(endpoint, model, secret)
-            invalid = false; attempted = true
-            save(endpoint, model, if (stored != null) null else secret) { secret = ""; dismiss() }
+            if (profileMode) {
+                val keys = if (stored != null) null else keysText.lineSequence()
+                    .map { it.trim() }.filter { it.isNotEmpty() }.toList()
+                if (keys != null && keys.distinct().size != keys.size) throw InvalidModelSettings()
+                NativeModelSettingsValidation.validateProfile(endpoint, model, keys ?: emptyList())
+                invalid = false; attempted = true
+                val persist = requireNotNull(saveProfile)
+                persist(endpoint, model, protocol, keys) { secret = ""; keysText = ""; dismiss() }
+            } else {
+                NativeModelSettingsValidation.validate(endpoint, model, secret)
+                invalid = false; attempted = true
+                save(endpoint, model, if (stored != null) null else secret) { secret = ""; dismiss() }
+            }
         } catch (_: InvalidModelSettings) { invalid = true }
     }
     fun dismissVisibleContent() { if (picker) picker = false else if (!busy || loading) close() }
@@ -82,18 +105,46 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
                         Text(stringResource(R.string.native_model_endpoint_hint), style = MaterialTheme.typography.bodySmall)
                         if (normalized?.startsWith("http://") == true) Text(stringResource(R.string.native_model_http_notice), style = MaterialTheme.typography.bodySmall)
-                        OutlinedTextField(value = secret, onValueChange = { invalid = false; if (it.length <= 8192) secret = it },
-                            label = { Text(stringResource(R.string.native_model_key)) }, enabled = !busy, singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                        if (profileMode) {
+                            Box {
+                                OutlinedButton(onClick = { protocolMenu = true }, enabled = !busy,
+                                    modifier = Modifier.fillMaxWidth().testTag("native-model-protocol")) {
+                                    val title = stringResource(R.string.native_model_protocol) + ": " + protocolLabel(protocol)
+                                    Text(title)
+                                }
+                                DropdownMenu(expanded = protocolMenu, onDismissRequest = { protocolMenu = false }) {
+                                    NativeModelProtocol.entries.forEach { candidate ->
+                                        DropdownMenuItem(text = { Text(protocolLabel(candidate)) },
+                                            onClick = { protocolName = candidate.name; protocolMenu = false; invalid = false })
+                                    }
+                                }
+                            }
+                            OutlinedTextField(value = keysText, onValueChange = {
+                                invalid = false
+                                if (it.length <= 8192 * NativeModelSettings.MAX_KEYS) keysText = it
+                            }, label = { Text(stringResource(R.string.native_model_keys)) }, enabled = !busy,
+                                minLines = 2, maxLines = 4, visualTransformation = PasswordVisualTransformation(),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                                modifier = Modifier.fillMaxWidth().testTag("native-model-keys"))
+                            Text(stringResource(R.string.native_model_keys_hint), style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            OutlinedTextField(value = secret, onValueChange = { invalid = false; if (it.length <= 8192) secret = it },
+                                label = { Text(stringResource(R.string.native_model_key)) }, enabled = !busy, singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
+                        }
                         if (settings?.hasCredential == true) Row {
-                            Checkbox(checked = stored != null, onCheckedChange = { keepKey = it }, enabled = !busy && canKeep && secret.isEmpty())
+                            Checkbox(checked = stored != null, onCheckedChange = { keepKey = it },
+                                enabled = !busy && canKeep && (if (profileMode) keysText.isBlank() else secret.isEmpty()))
                             Text(stringResource(R.string.native_model_keep_key), Modifier.weight(1f).padding(top = 12.dp))
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(enabled = !busy && normalized != null, onClick = {
                                 attempted = true; invalid = false
-                                fetch(endpoint, secret, stored) { models -> available = models; picker = models.isNotEmpty() }
+                                val loaded = { models: List<String> -> available = models; picker = models.isNotEmpty() }
+                                if (profileMode && fetchProfile != null)
+                                    requireNotNull(fetchProfile)(endpoint, discoveryKey, stored, protocol, loaded)
+                                else fetch(endpoint, discoveryKey, stored, loaded)
                             }) { Text(stringResource(R.string.native_models_fetch)) }
                             if (loading) TextButton(onClick = cancel) { Text(stringResource(R.string.native_cancel)) }
                         }
@@ -117,6 +168,15 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
         }
     }
 }
+
+@Composable
+private fun protocolLabel(protocol: NativeModelProtocol): String = stringResource(when (protocol) {
+    NativeModelProtocol.OPENAI_CHAT_COMPLETIONS -> R.string.native_model_protocol_chat
+    NativeModelProtocol.OPENAI_RESPONSES -> R.string.native_model_protocol_responses
+    NativeModelProtocol.GOOGLE_GEMINI -> R.string.native_model_protocol_gemini
+    NativeModelProtocol.ANTHROPIC_MESSAGES -> R.string.native_model_protocol_anthropic
+    NativeModelProtocol.SAKURA_LLM -> R.string.native_model_protocol_sakura
+})
 
 @Composable
 private fun NativeModelPicker(models: List<String>, current: String, select: (String) -> Unit, dismiss: () -> Unit) {

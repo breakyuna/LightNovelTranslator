@@ -10,7 +10,7 @@ import kotlinx.serialization.json.put
 /** Native project format; LG files require a separate compatibility converter. */
 object NativeProjectFormat {
     const val EXTENSION = "lnt"
-    const val SCHEMA_VERSION = 3
+    const val SCHEMA_VERSION = 4
     const val APPLICATION_ID = 0x4c4e5431 // LNT1, independent of the filename.
 }
 
@@ -107,11 +107,13 @@ class TextProjectPage(
     val summary: TextProjectSummary, items: List<TextProjectItem>,
     val statistics: TextItemStatistics? = null,
     val matchingItems: Int = summary.itemCount,
+    val matchingStatistics: TextItemStatistics? = null,
 ) {
     val items: List<TextProjectItem> = java.util.Collections.unmodifiableList(ArrayList(items))
     init {
         require(matchingItems in 0..summary.itemCount)
         require(statistics == null || statistics.total == summary.itemCount)
+        require(matchingStatistics == null || matchingStatistics.total == matchingItems)
     }
 }
 

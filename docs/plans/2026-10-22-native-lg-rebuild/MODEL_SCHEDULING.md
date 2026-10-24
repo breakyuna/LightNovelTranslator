@@ -1,8 +1,8 @@
 # 共享请求调度与用量汇总契约
 
-后续未验证增量：§43 新增远程 TXT 批翻、持久请求/Token 元数据、Room v4 迁移及运行中同工程切页，见 [REMOTE_TRANSLATION](REMOTE_TRANSLATION.md) 和 [HANDOFF §43](HANDOFF.md)。该增量未提交、未构建；下文 §41 CI 只覆盖此前版本，历史“仍为本地模拟/仅运行期用量”等限制按原切片理解。
+当前进度与验证边界统一见 [HANDOFF §3、§49](HANDOFF.md)。本专题相关源码已纳入 `2643b2c` / Actions #146 的 test/lint/release 成功基线；新增设备/视觉、真实供应商与 Room schema 导出仍待补齐。
 
-开发记录见 HANDOFF §39，最新 CI 证据与验证边界见 [HANDOFF §41](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
+开发记录见 HANDOFF §39，当前 CI 证据与验证边界见 [HANDOFF §3、§49](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
 
 ## 请求资格
 
@@ -38,3 +38,7 @@
 调度回归包括 FIFO、排队/在途取消、并发与 RPS、RPM 跨配置修订、独立资源、无隐式重试、响应与取消竞态，以及停止后的 Agent/翻译不派发。用量回归包括实测/估算/未知分离、分量缺失、Long 以上精确累计、三页写回及对话框切换运行。
 
 上述回归已纳入提交 `8e74fff` 的 Actions #136 全量 test/lint/release 成功基线，统计见 HANDOFF §41；仍需验收设备取消、前台服务、界面视觉和大工程预算。
+
+## 后续独立核心与接线边界
+
+§49 的 KeyPool、ModelProtocolTransport、CapabilityCatalog 与用量账本已有独立核心和 CI；§69 未构建源码已把协议/多密钥/KeyPool 选择与进程内 UsageLedger 接入 Agent/翻译网关，并把协议/多密钥列存入 Room v5。Key 冷却/禁用仍只在进程内，跨进程持久化、OAuth、动态探测/限额、费用定价及完整跨 Agent 持久账本仍待实施；现有共享 FIFO/并发/RPM 接线继续使用。

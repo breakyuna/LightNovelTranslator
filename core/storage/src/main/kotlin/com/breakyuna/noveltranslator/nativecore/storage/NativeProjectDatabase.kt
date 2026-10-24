@@ -115,10 +115,39 @@ internal object NativeProjectDatabase {
             committed_at INTEGER NOT NULL)""",
     )
 
+    // Removed entries retain source, format metadata and current fingerprints for historical
+    // revision validation. They are never queried as active translation targets.
+    private val archivedItemSchema = v3Schema.first { it.startsWith("CREATE TABLE items (") }
+        .replace("CREATE TABLE items (", "CREATE TABLE archived_items (")
+        .replace("PRIMARY KEY AUTOINCREMENT", "PRIMARY KEY")
+        .replace(" REFERENCES assets(id)", "")
+    private val v4Schema = v3Schema.map { sql ->
+        if (sql.startsWith("CREATE TABLE item_revisions (")) sql.replace(" REFERENCES items(id)", "") else sql
+    } + archivedItemSchema
+
+    fun ensureV4(db: SQLiteDatabase) {
+        if (db.version >= 4) return
+        ensureV3(db)
+        db.setForeignKeyConstraintsEnabled(false)
+        try {
+            transaction(db) {
+                validateSchema(db)
+                db.execSQL("ALTER TABLE item_revisions RENAME TO old_item_revisions")
+                db.execSQL(v4Schema.first { it.startsWith("CREATE TABLE item_revisions (") })
+                db.execSQL("INSERT INTO item_revisions SELECT * FROM old_item_revisions")
+                db.execSQL("DROP TABLE old_item_revisions")
+                db.execSQL(archivedItemSchema)
+                db.version = 4
+            }
+        } finally { db.setForeignKeyConstraintsEnabled(true) }
+        validateSchema(db)
+    }
+
     private fun schema(version: Int): List<String> = when (version) {
         1 -> v1Schema
         2 -> v1Schema + policySchema
-        else -> v3Schema
+        3 -> v3Schema
+        else -> v4Schema
     }
 
     private fun initialPolicy(db: SQLiteDatabase) {
@@ -349,13 +378,13 @@ internal object NativeProjectDatabase {
         }
     }
 
-    private fun tables(version: Int): List<String> = when (version) {
+    private fun tables(version: Int): List<String> = (when (version) {
         1 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions")
         2 -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
             "text_policy", "policy_revisions", "policy_receipts")
         else -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
             "text_policy", "policy_revisions", "policy_receipts", "project_settings", "asset_receipts", "asset_revisions")
-    }
+    }) + if (version >= 4) listOf("archived_items") else emptyList()
 
     private fun hasSequenceTable(db: SQLiteDatabase, schema: String): Boolean = db.rawQuery(
         "SELECT 1 FROM $schema.sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'", null,

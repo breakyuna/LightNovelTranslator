@@ -18,7 +18,7 @@ class ManualTextBatch(
 ) {
     val targets: List<TextBatchTarget> = java.util.Collections.unmodifiableList(ArrayList(targets))
     init {
-        require(expectedRevision >= 0 && this.targets.size in 1..100)
+        require(expectedRevision >= 0 && this.targets.size in 1..100_000)
         require(commandId.value.length <= 2048)
         require(this.targets.zipWithNext().all { (a, b) -> a.id.value < b.id.value })
     }
@@ -49,3 +49,12 @@ data class ManualBatchReceipt(
     val commandId: CommandId, val ref: LocalProjectRef, val status: ManualEditStatus,
     val revision: Long, val affectedItems: Int,
 )
+
+
+/** Query selection is frozen before confirmation; the commit never reruns the query. */
+interface QueryManualBatchPort {
+    suspend fun prepareQualityBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        selection: TextQualitySelection, change: TextBatchChange): ManualTextBatch?
+    suspend fun prepareQueryBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, change: TextBatchChange): ManualTextBatch?
+}

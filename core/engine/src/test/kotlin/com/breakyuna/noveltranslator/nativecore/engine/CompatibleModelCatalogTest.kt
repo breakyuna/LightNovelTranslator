@@ -92,6 +92,29 @@ class CompatibleModelCatalogTest {
         assertTrue(catalog.parse("{\"data\":[]}").isEmpty())
     }
 
+    @Test fun protocolSpecificEndpointsAndHeadersAreUsedWithoutLeakingTheKeyIntoUrls() = runBlocking {
+        val runtime = RuntimeCoordinator()
+        var anthropic: Request? = null
+        val anthropicCatalog = CompatibleModelCatalog(Settings(), runtime, http { anthropic = it })
+        assertEquals(listOf("a", "z"), anthropicCatalog.models("https://example.com/v1", "secret", null,
+            NativeModelProtocol.ANTHROPIC_MESSAGES))
+        assertEquals("https://example.com/v1/models", requireNotNull(anthropic).url.toString())
+        assertEquals("secret", anthropic!!.header("x-api-key"))
+        assertEquals("2023-06-01", anthropic!!.header("anthropic-version"))
+        assertNull(anthropic!!.header("Authorization"))
+
+        var gemini: Request? = null
+        val geminiCatalog = CompatibleModelCatalog(Settings(), runtime, http(
+            "{\"models\":[{\"name\":\"models/gemini-b\"},{\"name\":\"models/gemini-a\"}]}") { gemini = it })
+        assertEquals(listOf("gemini-a", "gemini-b"),
+            geminiCatalog.models("https://generativelanguage.googleapis.com", "secret", null,
+                NativeModelProtocol.GOOGLE_GEMINI))
+        assertEquals("https://generativelanguage.googleapis.com/v1beta/models", requireNotNull(gemini).url.toString())
+        assertEquals("secret", gemini!!.header("x-goog-api-key"))
+        assertNull(gemini!!.header("Authorization"))
+        assertFalse(runtime.snapshot().authenticationWriteRunning)
+    }
+
     @Test fun activeRunPreventsConcurrentModelDiscovery() = runBlocking {
         val runtime = RuntimeCoordinator(); val project = ProjectId("project"); val chat = ChatId("chat")
         runtime.selectChat(ChatIdentity(project, chat))

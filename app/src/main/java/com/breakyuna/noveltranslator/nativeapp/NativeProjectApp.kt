@@ -47,6 +47,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val saveAsset = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { model.completeAssetExport(it) }
     val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream"), model::completeExport)
     val saveText = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), model::completeExport)
+    val saveBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeBackupExport)
+    val openBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importBackup(it) }
     val message = state.error ?: state.notice
     val text = message?.let { stringResource(it) }
     LaunchedEffect(text) { if (text != null) { snackbar.showSnackbar(text); model.dismissMessage() } }
@@ -111,7 +113,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model::allowAgentEdit, model::rejectAgentEdit, model::selectPage, model::agentInput,
                                     model::sendAgentMessage, model::saveAgentModel, model::newAgentChat, model::selectAgentChat,
                                     model::fetchAgentModels, model::cancelAction, model::inspectAgentMessage, model::closeAgentMessage,
-                                    model.agentStream)
+                                    model.agentStream, model::saveAgentModelProfile, model::fetchAgentModelsProfile)
                                 NativePage.WORKBENCH -> Workbench(
                                     state = state,
                                     cleanup = model::cleanupOutputs,
@@ -123,15 +125,23 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     addAsset = {
                                         if (model.prepareAddAsset()) inputAsset.launch(arrayOf("*/*"))
                                     },
+                                    mutateAsset = model::mutateAsset,
+                                    editSettings = model::saveProjectSettings,
+                                    exportAssetBilingual = { assetId ->
+                                        model.prepareAssetExport(assetId, true)?.let { saveAsset.launch(it) }
+                                    },
                                     exportAsset = { assetId ->
                                         model.prepareAssetExport(assetId)?.let { saveAsset.launch(it) }
                                     },
+                                    exportBackup = { model.prepareBackupExport()?.let { saveBackup.launch(it) } },
+                                    importBackup = { if (model.prepareBackupImport()) openBackup.launch(arrayOf("application/zip", "application/octet-stream")) },
                                 )
-                                NativePage.RULES -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy)
+                                NativePage.RULES -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy,
+                                    model.rulePresetActions, model.promptTemplateActions)
                                 NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage,
                                     model::simulatePage, notificationsGranted, model::queryProofreading,
                                     NativeBatchActions(model::selectItems, model::toggleItem, model::selectPageItems,
-                                        model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch),
+                                        model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch, model::prepareQueryBatch),
                                     model::simulateProject, model::translateRemote,
                                     qualityActions = NativeQualityActions(model::scanQuality, model::filterQuality, model::clearQuality)) {
                                     if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -163,6 +173,14 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         )
     }
 }
+
+@Composable
+private fun formatLabel(format: com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat): String =
+    when (format) {
+        com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat.RPGMAKER_RGSS ->
+            stringResource(R.string.native_format_rpgmaker_rgss)
+        else -> format.name
+    }
 
 @Composable
 internal fun ProjectsHome(state: NativeProjectUiState, onCreate: () -> Unit, onImport: () -> Unit,
@@ -204,9 +222,47 @@ internal fun ProjectsHome(state: NativeProjectUiState, onCreate: () -> Unit, onI
 
 @Composable
 internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export: (NativeExport) -> Unit,
-    addAsset: () -> Unit, exportAsset: (Long) -> Unit) {
+    addAsset: () -> Unit, exportAsset: (Long) -> Unit,
+    mutateAsset: ((NativeAssetMutation) -> Unit)? = null,
+    editSettings: ((NativeProjectSettingsChange) -> Unit)? = null,
+    exportAssetBilingual: ((Long) -> Unit)? = null,
+    exportBackup: (() -> Unit)? = null, importBackup: (() -> Unit)? = null) {
+    val project = requireNotNull(state.project)
+    var settingsOpen by remember(project.ref) { mutableStateOf(false) }
+    if (settingsOpen && editSettings != null) NativeProjectSettingsDialog(state, { settingsOpen = false }, editSettings)
+    var confirmation by remember(project.ref, project.revision) { mutableStateOf<NativeAssetMutation?>(null) }
+    val canManage = !state.busy && state.editor == null && state.manualBatch == null && !state.selectingItems &&
+        state.policyDraft?.dirty != true && !state.policyLoadIncomplete && !state.runLoadIncomplete
+    fun intent(assetId: Long, change: NativeAssetChange) = NativeAssetMutation(project.ref, project.revision,
+        assetId, change, com.breakyuna.noveltranslator.nativecore.domain.CommandId(java.util.UUID.randomUUID().toString()))
+    confirmation?.let { fixed ->
+        val asset = project.assets.firstOrNull { it.id == fixed.assetId }
+        if (asset != null) AlertDialog(onDismissRequest = { if (!state.busy) confirmation = null },
+            title = { Text(stringResource(if (fixed.change == NativeAssetChange.REMOVE) R.string.native_asset_remove else R.string.native_asset_reset)) },
+            text = { Text(stringResource(if (fixed.change == NativeAssetChange.REMOVE) R.string.native_asset_remove_warning else R.string.native_asset_reset_warning,
+                asset.path.value, asset.itemCount)) },
+            confirmButton = { TextButton(onClick = { confirmation = null; mutateAsset?.invoke(fixed) }, enabled = canManage) {
+                Text(stringResource(R.string.native_asset_confirm)) } },
+            dismissButton = { TextButton(onClick = { confirmation = null }, enabled = !state.busy) {
+                Text(stringResource(R.string.native_cancel)) } })
+    }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text(stringResource(R.string.native_workbench), style = MaterialTheme.typography.headlineSmall) }
+        if (editSettings != null) item {
+            OutlinedButton(onClick = { settingsOpen = true }, enabled = canManage) {
+                Text(stringResource(R.string.native_project_settings))
+            }
+        }
+        if (exportBackup != null || importBackup != null) item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (exportBackup != null) OutlinedButton(onClick = exportBackup, enabled = canManage) {
+                    Text(stringResource(R.string.native_backup_export))
+                }
+                if (importBackup != null) OutlinedButton(onClick = importBackup, enabled = canManage) {
+                    Text(stringResource(R.string.native_backup_import))
+                }
+            }
+        }
         item { Text(state.project!!.assetPath.value) }
         item { Text(stringResource(R.string.native_item_count, state.project!!.itemCount)) }
         item { Text(stringResource(R.string.native_translation_pending)) }
@@ -218,15 +274,45 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
         val assets = state.project?.assets.orEmpty()
         if (assets.isEmpty()) item { Text(stringResource(R.string.native_asset_empty)) }
         items(assets, key = { "asset-" + it.id }) { asset ->
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(asset.path.value, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(stringResource(R.string.native_asset_summary, asset.format.name, asset.itemCount),
-                        style = MaterialTheme.typography.bodySmall)
+            Column(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(asset.path.value, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(stringResource(R.string.native_asset_summary, formatLabel(asset.format), asset.itemCount),
+                            style = MaterialTheme.typography.bodySmall)
+                    }
+                    OutlinedButton(onClick = { exportAsset(asset.id) }, enabled = !state.busy) {
+                        Text(stringResource(R.string.native_export_asset))
+                    }
                 }
-                OutlinedButton(onClick = { exportAsset(asset.id) }, enabled = !state.busy) {
-                    Text(stringResource(R.string.native_export_asset))
+                if (exportAssetBilingual != null) TextButton(onClick = { exportAssetBilingual(asset.id) }, enabled = !state.busy) {
+                    Text(stringResource(R.string.native_export_bilingual))
+                }
+                if (mutateAsset != null) {
+                    Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Switch(asset.enabled, onCheckedChange = { enabled ->
+                            mutateAsset(intent(asset.id, if (enabled) NativeAssetChange.ENABLE else NativeAssetChange.DISABLE))
+                        }, enabled = canManage)
+                        Text(stringResource(R.string.native_asset_translation_enabled), modifier = Modifier.weight(1f))
+                    }
+                    val index = assets.indexOfFirst { it.id == asset.id }
+                    Row {
+                        TextButton(onClick = { mutateAsset(intent(asset.id, NativeAssetChange.MOVE_UP)) }, enabled = canManage && index > 0) {
+                            Text(stringResource(R.string.native_asset_move_up))
+                        }
+                        TextButton(onClick = { mutateAsset(intent(asset.id, NativeAssetChange.MOVE_DOWN)) }, enabled = canManage && index < assets.lastIndex) {
+                            Text(stringResource(R.string.native_asset_move_down))
+                        }
+                    }
+                    Row {
+                        TextButton(onClick = { confirmation = intent(asset.id, NativeAssetChange.RESET) }, enabled = canManage) {
+                            Text(stringResource(R.string.native_asset_reset))
+                        }
+                        TextButton(onClick = { confirmation = intent(asset.id, NativeAssetChange.REMOVE) }, enabled = canManage && assets.size > 1) {
+                            Text(stringResource(R.string.native_asset_remove))
+                        }
+                    }
                 }
             }
         }
@@ -261,7 +347,9 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
         state.items.firstOrNull()?.id?.value) { mutableStateOf(false) }
     var wholeProject by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
         state.project?.ref?.generation?.value) { mutableStateOf(false) }
-    val pendingPage = state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }
+    val enabledAssets = state.project?.assets.orEmpty().filter { it.enabled }.map { it.id }.toSet()
+    val pendingPage = state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource &&
+        (state.project?.assets.isNullOrEmpty() || it.assetId in enabledAssets) }
     val pendingProject = simulateProject != null && (state.itemStatistics?.translatableUnprocessed ?: 0) > 0
     var remote by rememberSaveable(state.project?.ref, state.items.firstOrNull()?.id?.value) { mutableStateOf(false) }
     if (remote && remoteTranslation != null && state.modelSettings != null)
@@ -306,7 +394,8 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
                     if (remoteTranslation != null) {
                         TextButton(onClick = { remote = true }, modifier = Modifier.fillMaxWidth(),
                             enabled = state.modelSettings != null && !state.policyLoadIncomplete && state.policyDraft?.dirty != true && !state.busy && state.editor == null && state.manualBatch == null &&
-                                !state.selectingItems && !state.runLoadIncomplete && !state.proofreadingQuery.active && state.qualityView == null && (pendingPage || pendingProject)) {
+                                !state.selectingItems && !state.runLoadIncomplete && !state.proofreadingQuery.active && state.qualityView == null &&
+                                (pendingPage || pendingProject || (state.itemStatistics?.processed ?: 0) > 0 || (state.itemStatistics?.errors ?: 0) > 0)) {
                             Text(stringResource(R.string.native_remote_translate))
                         }
                         if (state.modelSettings == null) Text(stringResource(R.string.native_remote_configure), Modifier.padding(horizontal = 16.dp),
@@ -326,6 +415,7 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
                                 maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
+                    if (batchActions != null) NativeQueryBatchButton(state, batchActions)
                     if (state.selectingItems && batchActions != null) NativeBatchToolbar(state, batchActions)
                     if (state.proofreadingQuery.active) state.matchingItems?.let { count ->
                         Text(stringResource(R.string.native_proof_matching, count), Modifier.padding(horizontal = 16.dp),

@@ -32,6 +32,21 @@ class CompatibleTranslationProtocolTest {
         catch (error: AgentModelFailure) { assertEquals(kind, error.kind) }
     }
 
+    @Test fun precedingContextIsSerializedSeparatelyAndCannotExpandTheResponseIdentitySet() {
+        val withContext = TranslationModelRequest(ref, request.run, request.attempt, configuration,
+            request.inputs, options, precedings = listOf(TranslationContextLine(ItemId(7), "Previous.", ObjectFingerprint("c".repeat(64)))))
+        val body = Json.parseToJsonElement(CompatibleTranslationProtocol.request(withContext, "fixture", options)).jsonObject
+        val user = Json.parseToJsonElement(body.getValue("messages").jsonArray.last().jsonObject
+            .getValue("content").jsonPrimitive.content).jsonObject
+        assertEquals("7", user.getValue("precedings").jsonArray.single().jsonObject.getValue("id").jsonPrimitive.content)
+        assertEquals(2, CompatibleTranslationProtocol.response(withContext, envelope()).outputs.size)
+        try {
+            CompatibleTranslationProtocol.response(withContext, envelope(content(listOf(item(), item(JsonPrimitive("2"), "b".repeat(64)),
+                item(JsonPrimitive("7"), "c".repeat(64))))))
+            fail("Accepted a context-only output")
+        } catch (error: AgentModelFailure) { assertEquals(ModelFailureKind.PARSING, error.kind) }
+    }
+
     @Test fun identitiesAboveJavascriptPrecisionAreSerializedAsStringsAndOptionsAreFrozen() {
         val body = Json.parseToJsonElement(CompatibleTranslationProtocol.request(request, "fixture", options)).jsonObject
         assertFalse(body.getValue("stream").jsonPrimitive.boolean)

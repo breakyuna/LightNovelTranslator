@@ -51,13 +51,24 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
             // Never erase an unresolved request/commit by beginning another one.
             when (row.stage) {
                 "REQUESTING" -> require(checkpoint.stage == StoredRunStage.RESPONSE_RECORDED ||
+                    (checkpoint.stage == StoredRunStage.REQUEST_FAILED && attempt?.value == row.requestAttemptId &&
+                        checkpoint.requests == row.requests) ||
                     (checkpoint.stage == StoredRunStage.REQUESTING && attempt?.value == row.requestAttemptId &&
                         request?.branchId?.value == row.requestBranchId &&
                         checkpoint.requests == row.requests))
+                "MARKING_FAILURE" -> require(checkpoint.stage == StoredRunStage.COMMITTED ||
+                    (checkpoint.stage == StoredRunStage.MARKING_FAILURE && checkpoint.pendingCommands == commands(row)))
                 "COMMITTING" -> require(checkpoint.stage == StoredRunStage.COMMITTED ||
                     (checkpoint.stage == StoredRunStage.COMMITTING && checkpoint.pendingCommands == commands(row)))
             }
+            val failedReceipt = if (checkpoint.stage == StoredRunStage.REQUEST_FAILED) {
+                require(row.owner == RuntimeOwner.TRANSLATION.name && row.stage == "REQUESTING" && attempt != null)
+                db.translationRequests().find(attempt.value)?.also {
+                    require(NativeTranslationAuditStore.matches(it, ref(row), handle.run))
+                }
+            } else null
             check(db.runs().update(row.copy(stage = checkpoint.stage.name, revision = checkpoint.revision,
+                needsReview = row.needsReview || failedReceipt?.state == "DISPATCHED",
                 committedItems = checkpoint.committedItems, requests = checkpoint.requests,
                 pendingCommands = JsonArray(checkpoint.pendingCommands.map { JsonPrimitive(it.value) }).toString(),
                 requestAttemptId = attempt?.value, requestBranchId = checkpoint.agentRequest?.branchId?.value,
@@ -99,7 +110,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
     }
 
     private suspend fun reconcileCommit(row: NativeRunRow): NativeRunRow {
-        if (row.stage != "COMMITTING") return row
+        if (row.stage != "COMMITTING" && row.stage != "MARKING_FAILURE") return row
         val commands = commands(row)
         if (commands.isEmpty()) return row.copy(needsReview = true)
         val receipts = commands.map { projects.receipt(ref(row), it) }
@@ -107,7 +118,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
         if (committed.isEmpty()) return row
         if (committed.size != commands.size) return row.copy(needsReview = true)
         return row.copy(stage = "COMMITTED", revision = committed.maxOf { it.revision },
-            committedItems = Math.addExact(row.committedItems, commands.size), pendingCommands = "[]")
+            committedItems = if (row.stage == "MARKING_FAILURE") row.committedItems else Math.addExact(row.committedItems, commands.size), pendingCommands = "[]")
     }
 
     private fun reconcileRequest(row: NativeRunRow): NativeRunRow {

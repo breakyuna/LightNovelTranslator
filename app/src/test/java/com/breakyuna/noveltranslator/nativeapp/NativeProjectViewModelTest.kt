@@ -68,6 +68,185 @@ class NativeProjectViewModelTest {
         RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("simulate")), graph.simulationConfiguration,
         project.revision, after)
 
+    @Test fun qualitySelectionBatchLeavesOtherRowsUntouchedAndInvalidatesTheOldIndex() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("quality-batch-ui"), "fixture", RelativePath("source.txt"),
+                (1..146).joinToString("\n") { "row-$it" }.toByteArray())
+            val first = graph.projects.readPage(project.ref).items.first()
+            graph.projects.edit(ManualTextEdit(CommandId("processed-first"), project.ref, first.id, 0, first.fingerprint, "saved"))
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.scanQuality(TextProofreadingOptions()); model.state.first { !it.busy }
+            model.filterQuality(TextQualityFilter(TextQualityOutcome.NOT_EVALUATED)); model.state.first { !it.busy }
+            assertEquals(145, model.state.value.qualityView!!.ids.size)
+            model.prepareQueryBatch(TextBatchChange.EXCLUDE); model.state.first { !it.busy }
+            val fixed = requireNotNull(model.state.value.manualBatch)
+            assertEquals(145, fixed.targets.size)
+            assertTrue(fixed.targets.none { it.id == first.id })
+            model.confirmManualBatch(fixed); model.state.first { !it.busy }
+            assertTrue(model.state.value.qualityInvalidated)
+            assertFalse(model.state.value.qualityCurrent)
+            val page = graph.projects.readPage(project.ref)
+            assertEquals(145, page.statistics!!.excluded)
+            assertEquals(1, page.statistics!!.processed)
+            assertEquals("saved", page.items.first().translation)
+            model.prepareQueryBatch(TextBatchChange.CLEAR_AND_RESET); model.state.first { !it.busy }
+            assertNull(model.state.value.manualBatch)
+            assertEquals(146L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun wholeQueryPreviewRestoresFromPrivateFileAndRequiresExplicitConfirmation() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("query-batch-ui"), "fixture", RelativePath("source.txt"),
+                (1..145).joinToString("\n") { "target-$it" }.toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (previousOwner, original) = model(saved, graph.projects, graph.backgroundTranslations)
+            original.state.first { !it.busy }
+            original.queryProofreading(TextItemQuery(text = "target-")); original.state.first { !it.busy }
+            original.prepareQueryBatch(TextBatchChange.EXCLUDE); original.state.first { !it.busy }
+            assertEquals(145, original.state.value.manualBatch!!.targets.size)
+            assertTrue(original.state.value.manualBatchQuery)
+            assertNull(saved.get<ArrayList<String>>("manual_batch"))
+            assertNotNull(saved.get<String>("manual_batch_disk"))
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            previousOwner.clear()
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            restored.state.first { !it.busy }
+            val fixed = requireNotNull(restored.state.value.manualBatch)
+            assertEquals(145, fixed.targets.size)
+            assertTrue(restored.state.value.manualBatchQuery)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            restored.confirmManualBatch(fixed); restored.state.first { !it.busy }
+            assertNull(restored.state.value.manualBatch)
+            assertNull(saved.get<String>("manual_batch_disk"))
+            assertEquals(145L, graph.projects.open(project.ref).revision)
+            assertEquals(145, graph.projects.readPage(project.ref).statistics!!.excluded)
+        }
+    }
+
+    @Test fun assetFilterRestoresForTheSameProjectAndDoesNotWidenAfterRemoval() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("asset-filter-create"), "fixture", RelativePath("first.txt"), "first".toByteArray())
+            graph.projects.importAsset(AssetImportPlan(CommandId("asset-filter-import"), project.ref, 0,
+                RelativePath("second.txt"), ProjectAssetFormat.TXT, "second".toByteArray(), listOf(AssetImportUnit(0, 0, "second"))))
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (owner, firstModel) = model(saved, graph.projects, graph.backgroundTranslations)
+            firstModel.state.first { !it.busy }
+            val asset = firstModel.state.value.project!!.assets.last().id
+            val query = TextItemQuery(assetId = asset)
+            firstModel.queryProofreading(query); firstModel.state.first { !it.busy }
+            assertEquals(1, firstModel.state.value.matchingItems)
+            assertEquals(1, firstModel.state.value.matchingStatistics!!.total)
+            assertEquals(asset, firstModel.state.value.items.single().assetId)
+            owner.clear()
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            restored.state.first { !it.busy }
+            assertEquals(query, restored.state.value.proofreadingQuery)
+            restored.mutateAsset(NativeAssetMutation(project.ref, 1, asset, NativeAssetChange.REMOVE, CommandId("remove-filtered")))
+            restored.state.first { !it.busy }
+            assertTrue(restored.state.value.items.isEmpty())
+            assertEquals(query, restored.state.value.proofreadingQuery)
+            assertEquals(0, restored.state.value.matchingItems)
+            assertEquals(1, restored.state.value.project!!.itemCount)
+        }
+    }
+
+    @Test fun assetSwitchRefreshesTheStoredMembershipWithoutChangingText() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("switch-create"), "fixture", RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            val asset = model.state.value.project!!.assets.single()
+            model.mutateAsset(NativeAssetMutation(project.ref, 0, asset.id, NativeAssetChange.DISABLE, CommandId("disable-ui")))
+            model.state.first { !it.busy }
+            assertFalse(model.state.value.project!!.assets.single().enabled)
+            assertEquals("source", graph.projects.readPage(project.ref).items.single().source)
+            model.mutateAsset(NativeAssetMutation(project.ref, 1, asset.id, NativeAssetChange.ENABLE, CommandId("enable-ui")))
+            model.state.first { !it.busy }
+            assertTrue(model.state.value.project!!.assets.single().enabled)
+            assertEquals(2L, model.state.value.project!!.revision)
+        }
+    }
+
+    @Test fun projectSettingsPersistAndFreezeExportOptionsBeforeThePicker() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("settings-ui-create"), "fixture", RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            val settings = ProjectSettings("ja", "de", bilingualDeduplicateSame = false, writeTranslatedNames = true)
+            model.saveProjectSettings(NativeProjectSettingsChange(project.ref, 0, CommandId("save-settings"), settings))
+            model.state.first { !it.busy }
+            assertEquals(settings.fingerprint(), graph.projects.projectSettings(project.ref).fingerprint())
+            assertEquals(settings.fingerprint(), model.state.value.project!!.settings!!.fingerprint())
+            assertEquals(1L, model.state.value.project!!.revision)
+            assertEquals(settings.targetLanguage, model.state.value.project!!.settings!!.targetLanguage)
+            val asset = model.state.value.project!!.assets.single()
+            assertNotNull(model.prepareAssetExport(asset.id, true))
+            val pending = requireNotNull(saved.get<ArrayList<String>>("native_asset_export"))
+            assertEquals(9, pending.size)
+            assertEquals(listOf("true", "false", "true", "ja"), pending.subList(5, 9))
+            assertNotNull(model.prepareExport(NativeExport.BILINGUAL))
+            assertEquals("false", saved.get<ArrayList<String>>("native_export")!![5])
+            model.saveProjectSettings(NativeProjectSettingsChange(project.ref, 0, CommandId("stale-settings"), ProjectSettings("en")))
+            model.state.first { !it.busy }
+            assertEquals(R.string.native_conflict, model.state.value.error)
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+            model.saveProjectSettings(NativeProjectSettingsChange(project.ref, 1, CommandId("new-settings"), ProjectSettings("en")))
+            model.state.first { !it.busy }
+            model.completeAssetExport(android.net.Uri.parse("content://unopened-export/target"))
+            model.state.first { !it.busy }
+            assertEquals(R.string.native_conflict, model.state.value.error)
+            assertEquals(2L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun assetCommandsBindRevisionRefreshListsAndProtectTheLastAsset() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("asset-ui-create"), "fixture", RelativePath("first.txt"), "first".toByteArray())
+            graph.projects.importAsset(AssetImportPlan(CommandId("asset-ui-import"), project.ref, 0,
+                RelativePath("second.txt"), ProjectAssetFormat.TXT, "second".toByteArray(), listOf(AssetImportUnit(0, 0, "second"))))
+            val row = graph.projects.readPage(project.ref).items.last()
+            graph.projects.edit(ManualTextEdit(CommandId("asset-ui-edit"), project.ref, row.id, 1, row.fingerprint, "translated"))
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            val second = model.state.value.project!!.assets.last().id
+            val stale = NativeAssetMutation(project.ref, 2, second, NativeAssetChange.REMOVE, CommandId("stale-remove"))
+            model.mutateAsset(NativeAssetMutation(project.ref, 2, second, NativeAssetChange.RESET, CommandId("reset-asset")))
+            model.state.first { !it.busy }
+            assertEquals("", graph.projects.readPage(project.ref).items.last().translation)
+            assertEquals(TextItemStatus.NONE, graph.projects.readPage(project.ref).items.last().status)
+            assertEquals(2, model.state.value.project!!.assets.size)
+            val afterReset = model.state.value.project!!.revision
+            model.mutateAsset(stale); model.state.first { !it.busy }
+            assertEquals(R.string.native_conflict, model.state.value.error)
+            assertEquals(afterReset, graph.projects.open(project.ref).revision)
+            model.mutateAsset(NativeAssetMutation(project.ref, afterReset, second, NativeAssetChange.MOVE_UP, CommandId("move-asset")))
+            model.state.first { !it.busy }
+            assertEquals(second, model.state.value.project!!.assets.first().id)
+            model.mutateAsset(NativeAssetMutation(project.ref, model.state.value.project!!.revision, second,
+                NativeAssetChange.REMOVE, CommandId("remove-asset")))
+            model.state.first { !it.busy }
+            assertEquals(1, model.state.value.project!!.assets.size)
+            assertEquals(1, model.state.value.project!!.itemCount)
+            val remaining = model.state.value.project!!
+            model.mutateAsset(NativeAssetMutation(project.ref, remaining.revision, remaining.assets.single().id,
+                NativeAssetChange.REMOVE, CommandId("remove-last")))
+            model.state.first { !it.busy }
+            assertEquals(remaining.revision, graph.projects.open(project.ref).revision)
+        }
+    }
+
     @Test fun replacementPreviewOnlyUpdatesTheMatchingDraftAfterApplyAndNeverSavesImplicitly() = runBlocking {
         withTimeout(10_000) {
             val project = graph.projects.createTxt(CommandId("replace-ui"), "fixture", RelativePath("source.txt"), "source".toByteArray())

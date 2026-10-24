@@ -211,3 +211,6 @@ class RulePresetCatalog(presets: List<RulePreset>) {
         const val MAX_PRESETS = 128
     }
 }
+
+/** Lightweight library listing; complete rule/prompt bodies are loaded only after selection. */
+data class RulePresetSummary(val id: String, val name: String, val description: String, val rules: Int)

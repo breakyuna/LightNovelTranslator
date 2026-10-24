@@ -12,7 +12,7 @@ import kotlinx.serialization.json.put
  * half-imported asset nor an accepted command without a receipt.
  */
 internal object ProjectAssetWriteStore {
-    fun importAsset(db: SQLiteDatabase, plan: AssetImportPlan, beforeCommit: () -> Unit): AssetMutationReceipt =
+    fun importAsset(db: SQLiteDatabase, plan: AssetImportPlan, maximumItems: Int, beforeCommit: () -> Unit): AssetMutationReceipt =
         NativeProjectDatabase.transaction(db) {
             val summary = NativeProjectDatabase.summary(db, plan.ref)
             val prior = receipt(db, plan.ref, plan.commandId)
@@ -28,6 +28,9 @@ internal object ProjectAssetWriteStore {
                 return@transaction reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
                     AssetMutationStatus.CONFLICT, summary.revision, null, plan.digest())
             }
+            val retained = NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM items") +
+                if (db.version >= 4) NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM archived_items") else 0L
+            if (retained + plan.units.size > maximumItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             val ordinal = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM assets").toInt()
             val assetId = db.insertOrThrow("assets", null, ContentValues().apply {
                 put("path", plan.path.value); put("file_type", plan.format.name); put("codec", "raw-v1")
@@ -35,7 +38,9 @@ internal object ProjectAssetWriteStore {
                 put("ordinal", ordinal); put("enabled", if (plan.enabled) 1 else 0); put("metadata", plan.metadata)
             })
             NativeProjectDatabase.insertChunks(db, assetId, plan.bytes, beforeCommit)
-            var nextId = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(id), 0) FROM items") + 1
+            var nextId = Math.addExact(NativeProjectDatabase.scalar(db,
+                "SELECT MAX(value) FROM (SELECT COALESCE(MAX(id),0) AS value FROM items " +
+                    "UNION ALL SELECT COALESCE(MAX(seq),0) FROM sqlite_sequence WHERE name='items')"), 1L)
             for (unit in plan.units) {
                 val id = ItemId(nextId++)
                 val fingerprint = TextProjectFingerprint.item(id, unit.row, unit.source, unit.translation,
@@ -89,6 +94,8 @@ internal object ProjectAssetWriteStore {
                 AssetMutationKind.REMOVE, AssetMutationStatus.UNKNOWN_ASSET, summary.revision, assetId, digest)
             if (summary.assets.size == 1) return@transaction reject(db, commandId, ref,
                 AssetMutationKind.REMOVE, AssetMutationStatus.CONFLICT, summary.revision, assetId, digest)
+            check(db.version >= 4) { "Asset removal requires archived item history" }
+            db.execSQL("INSERT INTO archived_items SELECT * FROM items WHERE asset_id=?", arrayOf(assetId))
             db.delete("items", "asset_id=?", arrayOf(assetId.toString()))
             db.delete("asset_chunks", "asset_id=?", arrayOf(assetId.toString()))
             db.delete("assets", "id=?", arrayOf(assetId.toString()))
@@ -148,6 +155,41 @@ internal object ProjectAssetWriteStore {
             beforeCommit()
             AssetMutationReceipt(commandId, ref, AssetMutationKind.REORDER, AssetMutationStatus.COMMITTED,
                 next, null, at)
+        }
+
+    fun setEnabled(db: SQLiteDatabase, commandId: CommandId, ref: LocalProjectRef, revision: Long,
+                   assetId: Long, enabled: Boolean, beforeCommit: () -> Unit): AssetMutationReceipt =
+        NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            val digest = AssetCommandFingerprint.enabled(ref, revision, assetId, enabled, commandId)
+            val previous = receipt(db, ref, commandId)
+            if (previous != null) {
+                if (previous.first != digest) fail(TextProjectException.Reason.COMMAND_CONFLICT)
+                return@transaction previous.second
+            }
+            if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.ENABLED,
+                AssetMutationStatus.STALE_REVISION, summary.revision, assetId, digest)
+            if (summary.assets.none { it.id == assetId }) return@transaction reject(db, commandId, ref,
+                AssetMutationKind.ENABLED, AssetMutationStatus.UNKNOWN_ASSET, summary.revision, assetId, digest)
+            check(db.update("assets", ContentValues().apply { put("enabled", if (enabled) 1 else 0) },
+                "id=?", arrayOf(assetId.toString())) == 1)
+            val next = Math.addExact(summary.revision, 1)
+            val at = now()
+            db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(next))
+            db.insertOrThrow("asset_revisions", null, ContentValues().apply {
+                put("revision", next); put("kind", AssetMutationKind.ENABLED.name); put("asset_id", assetId)
+                put("payload", buildJsonObject { put("enabled", enabled) }.toString())
+                put("instance_id", ref.instanceId.value); put("generation", ref.generation.value)
+                put("command_id", commandId.value); put("committed_at", at)
+            })
+            db.insertOrThrow("asset_receipts", null, ContentValues().apply {
+                put("instance_id", ref.instanceId.value); put("generation", ref.generation.value)
+                put("command_id", commandId.value); put("digest", digest)
+                put("outcome", AssetMutationStatus.COMMITTED.name); put("revision", next); put("asset_id", assetId)
+                put("kind", AssetMutationKind.ENABLED.name); put("committed_at", at)
+            })
+            beforeCommit()
+            AssetMutationReceipt(commandId, ref, AssetMutationKind.ENABLED, AssetMutationStatus.COMMITTED, next, assetId, at)
         }
 
     fun reset(db: SQLiteDatabase, commandId: CommandId, ref: LocalProjectRef, revision: Long,

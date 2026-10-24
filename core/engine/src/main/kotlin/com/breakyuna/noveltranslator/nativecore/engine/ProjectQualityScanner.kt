@@ -22,17 +22,29 @@ class ProjectQualityScanner(private val projects: TextProjectPort, private val p
             stale()
         TextRuleValidation.validate(snapshot.policy) { context.ensureActive() }
         val inspector = TextProofreadingInspector(snapshot.policy) { context.ensureActive() }
+        val scopeQuery = TextItemQuery(assetId = query.assetId)
+        val scopeCount = if (query.assetId == null) summary.itemCount else {
+            val first = projects.queryPage(ref, scopeQuery, 0, 1)
+            if (first.summary.ref != ref || first.summary.revision != expectedRevision) stale()
+            first.matchingItems
+        }
         val facts = ArrayList<TextQualityFact>()
         var after = 0L; var scanned = 0; var characters = 0L; var entries = 0
-        progress(TextQualityScanProgress(0, summary.itemCount))
+        progress(TextQualityScanProgress(0, scopeCount))
         while (true) {
             context.ensureActive()
-            val page = projects.items(ref, expectedRevision, after, 20)
+            val page = if (query.assetId == null) projects.items(ref, expectedRevision, after, 20) else {
+                val selected = projects.queryPage(ref, scopeQuery, after, 20)
+                if (selected.summary.ref != ref || selected.summary.revision != expectedRevision ||
+                    selected.matchingItems != scopeCount) stale()
+                TextItemPage(selected.summary.revision, selected.items)
+            }
             if (page.revision != expectedRevision || page.items.size > 20) stale()
             if (page.items.isEmpty()) break
             for (item in page.items) {
                 context.ensureActive()
-                if (item.id.value <= after || ++scanned > summary.itemCount) stale()
+                if (query.assetId != null && item.assetId != query.assetId) stale()
+                if (item.id.value <= after || ++scanned > scopeCount) stale()
                 after = item.id.value
                 characters += item.source.length.toLong() + item.translation.length
                 if (characters > limits.characters) limit()
@@ -42,10 +54,10 @@ class ProjectQualityScanner(private val projects: TextProjectPort, private val p
                 if (entries > limits.resultEntries) limit()
                 facts.add(TextQualityFact(item.id, item.fingerprint, result))
             }
-            progress(TextQualityScanProgress(scanned, summary.itemCount))
+            progress(TextQualityScanProgress(scanned, scopeCount))
         }
         context.ensureActive()
-        if (scanned != summary.itemCount || projects.open(ref).revision != expectedRevision) stale()
+        if (scanned != scopeCount || projects.open(ref).revision != expectedRevision) stale()
         val index = TextQualityIndex(ref, expectedRevision, query, options, snapshot.fingerprint, facts, scanned)
         context.ensureActive()
         index
@@ -62,6 +74,7 @@ class ProjectQualityScanner(private val projects: TextProjectPort, private val p
     }
 
     private fun matches(item: TextProjectItem, query: TextItemQuery): Boolean {
+        if (query.assetId != null && query.assetId != item.assetId) return false
         if (query.status != null && query.status != item.status) return false
         if (query.text.isEmpty()) return true
         return when (query.field) {

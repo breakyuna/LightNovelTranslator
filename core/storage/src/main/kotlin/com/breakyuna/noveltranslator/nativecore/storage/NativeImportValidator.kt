@@ -13,6 +13,19 @@ internal object NativeImportValidator {
         NativeProjectDatabase.open(file).use { db ->
             NativeProjectDatabase.validateSchema(db)
             val version = db.version
+            val allItems = if (version >= 4) "(SELECT * FROM items UNION ALL SELECT * FROM archived_items)" else "items"
+            if (version >= 4) {
+                val badTypes = listOf("id", "asset_id", "row_index", "slot", "skip_internal_filter")
+                    .joinToString(" OR ") { "typeof($it) != 'integer'" }
+                db.rawQuery("SELECT 1 FROM archived_items WHERE $badTypes LIMIT 1", null).use { if (it.moveToFirst()) corrupt() }
+                db.rawQuery("SELECT 1 FROM archived_items a WHERE a.asset_id <= 0 OR EXISTS (SELECT 1 FROM assets s WHERE s.id=a.asset_id) " +
+                    "OR NOT EXISTS (SELECT 1 FROM asset_revisions r WHERE r.kind='REMOVE' AND r.asset_id=a.asset_id) LIMIT 1",
+                    null).use { if (it.moveToFirst()) corrupt() }
+                for ((column, max) in listOf("source" to limits.maxItemChars, "translation" to limits.maxItemChars,
+                    "fingerprint" to 64, "status" to 32, "tag" to 4096, "extra_field" to 65_536,
+                    "name_source" to 32 * 4096, "name_translation" to 32 * 4096))
+                    requireTextBudget(db, "archived_items", column, max)
+            }
             for ((table, columns) in listOf(
                 "project" to listOf("singleton", "revision", "fingerprint_version"),
                 "assets" to listOf("id", "original_size"),
@@ -50,7 +63,7 @@ internal object NativeImportValidator {
                 ProjectId(id) to it.getLong(2)
             }
             val assetIds = validateAssets(db, version, limits, checkActive)
-            if (count(db, "items") > limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+            if (count(db, "items") + (if (version >= 4) count(db, "archived_items") else 0L) > limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             if (count(db, "item_revisions") > budget.maxHistoryRows || count(db, "write_receipts") > budget.maxHistoryRows) {
                 fail(TextProjectException.Reason.LIMIT_EXCEEDED)
             }
@@ -73,22 +86,24 @@ internal object NativeImportValidator {
             }
             val itemColumns = if (version >= 3) NativeProjectDatabase.ITEM_COLUMNS
                 else NativeProjectDatabase.ITEM_COLUMNS_V2 + ", asset_id"
-            db.rawQuery("SELECT $itemColumns FROM items ORDER BY id", null).use { cursor ->
+            db.rawQuery(if (version >= 4) "SELECT $itemColumns, 0 AS archived FROM items UNION ALL " +
+                "SELECT $itemColumns, 1 AS archived FROM archived_items ORDER BY id"
+                else "SELECT $itemColumns FROM items ORDER BY id", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     checkActive()
                     if (cursor.getLong(0) <= 0 || cursor.getLong(1) !in 0 until limits.maxItems.toLong()) corrupt()
                     val assetId = if (version >= 3) cursor.getLong(6) else cursor.getLong(6)
-                    if (assetId !in assetIds) corrupt()
+                    if ((version < 4 || cursor.getInt(cursor.columnCount - 1) == 0) && assetId !in assetIds) corrupt()
                     charge(cursor.getString(2).length.toLong() * 2 + cursor.getString(3).length)
                     val item = NativeProjectDatabase.item(cursor, version)
                     if (item.source.length > limits.maxItemChars || item.translation.length > limits.maxItemChars) {
                         fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                     }
-                    chains[item.id.value] = item.fingerprint
+                    if (chains.put(item.id.value, item.fingerprint) != null) corrupt()
                     currentFingerprints[item.id.value] = item.fingerprint
                 }
             }
-            val maxItemId = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(id), 0) FROM items")
+            val maxItemId = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(id), 0) FROM $allItems")
             val sequenceNames = if (version >= 3) setOf("items", "assets") else setOf("items")
             db.rawQuery("SELECT name, seq FROM sqlite_sequence", null).use {
                 val seen = mutableSetOf<String>()
@@ -99,8 +114,14 @@ internal object NativeImportValidator {
                         if (name == "sqlite_sequence") continue
                     }
                     if (name == "items" && it.getLong(1) < maxItemId) corrupt()
+                    if (version >= 4 && name == "assets") {
+                        val maxAsset = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(value),0) FROM " +
+                            "(SELECT MAX(id) AS value FROM assets UNION ALL SELECT MAX(asset_id) FROM archived_items UNION ALL SELECT MAX(asset_id) FROM asset_revisions)")
+                        if (it.getLong(1) < maxAsset) corrupt()
+                    }
                 }
                 if (maxItemId > 0 && "items" !in seen) corrupt()
+                if (version >= 4 && "assets" !in seen) corrupt()
             }
             val policyCount = if (version >= 2) count(db, "policy_revisions") else 0
             val assetCount = if (version >= 3) count(db, "asset_revisions") else 0
@@ -127,6 +148,8 @@ internal object NativeImportValidator {
                 while (it.moveToNext()) { checkActive(); if (it.getLong(0) != ++global) corrupt() }
                 if (global != project.second) corrupt()
             }
+            db.rawQuery("SELECT 1 FROM item_revisions r WHERE NOT EXISTS " +
+                "(SELECT 1 FROM $allItems i WHERE i.id=r.item_id) LIMIT 1", null).use { if (it.moveToFirst()) corrupt() }
             validateItemRevisions(db, version, limits, project, chains, revised, ::charge, checkActive)
             if (currentFingerprints.any { (id, fingerprint) -> chains[id] != fingerprint }) corrupt()
             db.rawQuery("SELECT instance_id, generation, command_id, digest, item_id, outcome, revision, committed_at FROM write_receipts", null).use { cursor ->
@@ -154,19 +177,20 @@ internal object NativeImportValidator {
     private fun validateItemRevisions(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
         project: Pair<ProjectId, Long>, chains: HashMap<Long, ObjectFingerprint>, revised: MutableSet<Long>,
         charge: (Long) -> Unit, checkActive: () -> Unit) {
+        val items = if (version >= 4) "(SELECT * FROM items UNION ALL SELECT * FROM archived_items)" else "items"
         val sql = if (version >= 3) {
             """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
                 r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
                 i.row_index, i.source, i.asset_id, i.slot, i.tag, i.name_source, i.name_translation,
                 i.extra_field, i.skip_internal_filter,
                 (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
-                    AND w.command_id = r.command_id) FROM item_revisions r JOIN items i ON i.id = r.item_id ORDER BY r.revision"""
+                    AND w.command_id = r.command_id) FROM item_revisions r JOIN $items i ON i.id = r.item_id ORDER BY r.revision"""
         } else {
             """SELECT r.revision, r.item_id, r.previous_fingerprint, r.fingerprint,
                 r.translation, r.status, r.instance_id, r.generation, r.command_id, r.committed_at,
                 i.row_index, i.source, i.asset_id, 0, '', NULL, NULL, '{}', 0,
                 (SELECT w.digest FROM write_receipts w WHERE w.instance_id = r.instance_id AND w.generation = r.generation
-                    AND w.command_id = r.command_id) FROM item_revisions r JOIN items i ON i.id = r.item_id ORDER BY r.revision"""
+                    AND w.command_id = r.command_id) FROM item_revisions r JOIN $items i ON i.id = r.item_id ORDER BY r.revision"""
         }
         db.rawQuery(sql, null).use { cursor ->
             var revision = 0L

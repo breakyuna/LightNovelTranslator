@@ -23,17 +23,17 @@ Agent 页顶部的模型按钮进入设置。支持显式 HTTP / HTTPS API 基�
 - 同一标准化端点可显式勾选复用已保存 Key；UI 只保存该选择，不把旧 Key 解密回表单。新增 Key 替换当前配置；取消勾选且留空表示新配置不使用 Key，不删除旧修订的密文。
 - 修改端点后不能隐式转发旧 Key。UI、模型发现端口和配置存储都核对标准化端点；用户如需迁移凭据须重新输入。旧的配置修订仍可按其原身份解析。
 
-无认证模式以既有 encryptedKey 字段的空字符串表示，不变更表字段、Room v3 或 `.lnt` v1。v3 运行迁移已有指定提交 CI 证据，见 HANDOFF §41；导出 schema 和设备升级仍需补齐。
+无认证模式以空凭据列表表示。§69 未构建源码把应用 Room 升至 v5，新增 protocol/encryptedKeys/keyCount；旧 encryptedKey 列保留并用原 AAD 读取，支持每配置最多 256 条有序 Key（逐条 Keystore AES-GCM，AAD 绑定修订与序号）。v1→v4 迁移已有 #146 证据；v5 迁移、导出 schema 和设备升级仍需补齐。
 
 ## 3. 获取模型列表
 
 `NativeModelDialog → NativeProjectViewModel → NativeModelGateway → CompatibleModelCatalog → CompatibleHttpTransport`。
 
-仅在点击后 `GET <base>/models`，不发送聊天、小说正文或推理测试，不创建 Agent 付费请求回执。认证占用阻止它与活动模型运行/配置修改竞争。列表请求最多 20 秒，继承 HTTP 取消和 2 MiB 响应预算；不重试、不跟随重定向。
+仅在点击后发送只读 GET，不发送聊天、小说正文或推理测试，不创建 Agent 付费请求回执。认证占用阻止它与活动模型运行/配置修改竞争。列表请求最多 20 秒，继承 HTTP 取消和 2 MiB 响应预算；不重试、不跟随重定向。
 
-解析兼容的 `data: [{id: string}]`，最多 1000 项，ID 最长 200 字符，拒绝控制字符/非法形状，去重并排序。列表可搜索选择；获取失败或空列表仍允许手填模型 ID。修改端点、临时 Key 或已存凭据选择会清空旧列表，避免把上一端点结果当作当前结果。错误在表单内呈现，不重复显示全局错误 snackbar；关闭正在加载的表单会取消该请求。
+§69 未构建源码增加协议重载：OpenAI Chat/Responses 与 Sakura 仍为 `GET <base>/models` + Bearer；Anthropic 为 `<base>/v1/models` + `x-api-key` 与 `anthropic-version`；Gemini 为 `<base>/v1beta/models` + `x-goog-api-key`，并解析 `models[].name` 的 `models/` 前缀。OpenAI 形状仍只接受 `data: [{id: string}]`，最多 1000 项，ID 最长 200 字符，拒绝控制字符/非法形状，去重并排序。列表可搜索选择；获取失败或空列表仍允许手填模型 ID。修改端点、临时 Key 或已存凭据选择会清空旧列表，避免把上一端点结果当作当前结果。错误在表单内呈现，不重复显示全局错误 snackbar；关闭正在加载的表单会取消该请求。
 
-列表只证明服务器公布了模型 ID，不推断模型支持工具、视觉或思考，不加载/下载模型，也不保证生成时可用。仍只有兼容 Chat Completions 文本/工具传输；原生 Ollama `/api/tags`、Anthropic/Responses、OAuth 和完整模型能力探测不在该切片内。
+列表只证明服务器公布了模型 ID，不推断模型支持工具、视觉或思考，不加载/下载模型，也不保证生成时可用。协议列表路径/认证已接源码，但未调用真实供应商；原生 Ollama `/api/tags`、OAuth 和完整模型能力探测仍不在该切片内。
 
 协议来源：[Ollama 本地兼容接口](https://docs.ollama.com/api/openai-compatibility)、[LM Studio 模型列表](https://lmstudio.ai/docs/developer/openai-compat/models)、[Android 网络安全配置](https://developer.android.com/privacy-and-security/security-config)。这些材料说明接口/平台规则，不是本项目的联调证据。
 

@@ -42,6 +42,49 @@ class NativeRunStoreTest {
     }
     private suspend fun reopen() { runs.close(); runs = NativeRunStore(context, projects, runtime); runs.recoverInterrupted() }
 
+    @Test fun recoveryOfFailureStatusWritesDoesNotCountThemAsTranslations() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        val record = runs.begin(project.ref, lease.identity, RuntimeOwner.TRANSLATION)
+        val rows = projects.readPage(project.ref).items
+        val edits = rows.mapIndexed { offset, item -> ManualTextEdit(CommandId("error-$offset"), project.ref,
+            item.id, offset.toLong(), item.fingerprint, item.translation, TextItemStatus.ERROR) }
+        runs.checkpoint(record, RunCheckpoint(StoredRunStage.MARKING_FAILURE, 0,
+            pendingCommands = edits.map { it.commandId }))
+        projects.markTranslationFailures(lease, TranslationFailureBatch(project.ref, 0, edits))
+        runtime.finishRun(lease)
+        reopen()
+        val restored = runs.recent(project.ref).single()
+        assertEquals(0, restored.checkpoint.committedItems)
+        assertEquals(2L, restored.checkpoint.revision)
+        assertEquals(StoredRunStage.COMMITTED, restored.checkpoint.stage)
+        assertFalse(restored.needsReview)
+        assertTrue(projects.readPage(project.ref).items.all { it.status == TextItemStatus.ERROR })
+    }
+
+    @Test fun retryAfterUnknownDispatchPreservesReviewEvenIfLaterRequestSucceeds() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        val record = runs.begin(project.ref, lease.identity, RuntimeOwner.TRANSLATION)
+        val row = projects.readPage(project.ref).items.first()
+        val first = RequestAttemptId("unknown-first")
+        val audit = NativeTranslationAuditStore(context, runtime, projects)
+        try {
+            runs.checkpoint(record, RunCheckpoint(StoredRunStage.REQUESTING, 0, requests = 1, translationAttempt = first))
+            audit.dispatched(lease, TranslationModelRequest(project.ref, lease.identity, first,
+                ModelConfigurationRef("remote", 1), listOf(TranslationInput(row.id, row.source, row.fingerprint)),
+                RemoteTranslationOptions("en")), "a".repeat(64))
+            runs.checkpoint(record, RunCheckpoint(StoredRunStage.REQUEST_FAILED, 0, requests = 1, translationAttempt = first))
+            runs.checkpoint(record, RunCheckpoint(StoredRunStage.REQUESTING, 0, requests = 2,
+                translationAttempt = RequestAttemptId("replacement")))
+            runs.checkpoint(record, RunCheckpoint(StoredRunStage.RESPONSE_RECORDED, 0, requests = 2))
+            runs.finish(record, StoredRunState.SUCCEEDED)
+            runtime.finishRun(lease)
+            val restored = runs.recent(project.ref).single()
+            assertTrue(restored.needsReview)
+            assertEquals(StoredRunState.INTERRUPTED, restored.state)
+            assertEquals(2, restored.checkpoint.requests)
+        } finally { audit.close() }
+    }
+
     @Test fun abandonedRequestIsInterruptedWithoutReplayAndRecoveryIsIdempotent() = runBlocking {
         val project = project(); val lease = begin(project.ref)
         val record = runs.begin(project.ref, lease.identity, RuntimeOwner.TRANSLATION)

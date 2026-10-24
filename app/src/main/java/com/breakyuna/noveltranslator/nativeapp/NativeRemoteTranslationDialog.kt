@@ -26,17 +26,27 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
     start: NativeRemoteTranslationAction) {
     val project = remember { requireNotNull(state.project) }
     val model = remember { requireNotNull(state.modelSettings) }
-    var target by rememberSaveable(project.ref) { mutableStateOf("") }
-    var source by rememberSaveable(project.ref) { mutableStateOf("auto") }
+    var target by rememberSaveable(project.ref) { mutableStateOf(project.settings?.targetLanguage.orEmpty()) }
+    var source by rememberSaveable(project.ref) { mutableStateOf(project.settings?.sourceLanguage?.ifBlank { "auto" } ?: "auto") }
     var instructions by rememberSaveable(project.ref) { mutableStateOf("") }
     var batch by rememberSaveable(project.ref) { mutableStateOf("10") }
+    var deduplicate by rememberSaveable(project.ref) { mutableStateOf(false) }
+    var retries by rememberSaveable(project.ref) { mutableStateOf("0") }
+    var preceding by rememberSaveable(project.ref) { mutableStateOf("2") }
     var characters by rememberSaveable(project.ref) { mutableStateOf("16384") }
-    val pendingPage = state.items.any { it.status == TextItemStatus.NONE && it.hasTranslatableSource }
-    val pendingProject = (state.itemStatistics?.translatableUnprocessed ?: 0) > 0
+    var modeName by rememberSaveable(project.ref) { mutableStateOf(TranslationStartMode.NEW.name) }
+    val mode = TranslationStartMode.valueOf(modeName)
+    val enabledAssets = project.assets.filter { it.enabled }.map { it.id }.toSet()
+    val pendingPage = state.items.any { mode.accepts(it.status) && it.hasTranslatableSource &&
+        (project.assets.isEmpty() || it.assetId in enabledAssets) }
+    val statistics = state.itemStatistics
+    val pendingProject = statistics != null && (statistics.translatableUnprocessed > 0 ||
+        (mode != TranslationStartMode.NEW && statistics.errors > 0) ||
+        (mode == TranslationStartMode.RESET && statistics.processed > 0))
     var whole by rememberSaveable(project.ref) { mutableStateOf(!pendingPage && pendingProject) }
-    val options = remember(target, source, instructions, batch, characters) {
+    val options = remember(target, source, instructions, batch, characters, mode, preceding, retries, deduplicate) {
         runCatching { RemoteTranslationOptions(target, source, instructions,
-            requireNotNull(batch.toIntOrNull()), requireNotNull(characters.toIntOrNull())) }.getOrNull()
+            requireNotNull(batch.toIntOrNull()), requireNotNull(characters.toIntOrNull()), mode, requireNotNull(preceding.toIntOrNull()), requireNotNull(retries.toIntOrNull()), deduplicate) }.getOrNull()
     }
     val activeProject = state.project
     val eligible = !state.busy && !state.runLoadIncomplete && !state.policyLoadIncomplete && state.policyDraft?.dirty != true && activeProject != null && activeProject.ref == project.ref &&
@@ -58,6 +68,20 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
                         Text(model.model)
                         Text(model.endpoint, style = MaterialTheme.typography.bodySmall)
                         Text(stringResource(R.string.native_remote_warning), color = MaterialTheme.colorScheme.error)
+                        TranslationStartMode.entries.forEach { candidate ->
+                            val label = when (candidate) {
+                                TranslationStartMode.NEW -> R.string.native_translation_mode_new
+                                TranslationStartMode.CONTINUE -> R.string.native_translation_mode_continue
+                                TranslationStartMode.RESET -> R.string.native_translation_mode_reset
+                            }
+                            TextButton(onClick = { modeName = candidate.name }, enabled = !state.busy,
+                                modifier = Modifier.testTag("native-translation-mode-${candidate.name}")) {
+                                RadioButton(mode == candidate, onClick = null)
+                                Text(stringResource(label))
+                            }
+                        }
+                        if (mode == TranslationStartMode.RESET) Text(
+                            stringResource(R.string.native_translation_reset_warning), color = MaterialTheme.colorScheme.error)
                         OutlinedTextField(target, { if (it.length <= 80) target = it }, singleLine = true,
                             label = { Text(stringResource(R.string.native_remote_target)) }, modifier = Modifier.fillMaxWidth().testTag("native-remote-target"))
                         OutlinedTextField(source, { if (it.length <= 80) source = it }, singleLine = true,
@@ -68,6 +92,18 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
                             label = { Text(stringResource(R.string.native_remote_batch)) }, modifier = Modifier.fillMaxWidth())
                         OutlinedTextField(characters, { if (it.length <= 5 && it.all { c -> c in '0'..'9' }) characters = it }, singleLine = true,
                             label = { Text(stringResource(R.string.native_remote_characters)) }, modifier = Modifier.fillMaxWidth())
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(deduplicate, onCheckedChange = { if (!state.busy) deduplicate = it },
+                                enabled = !state.busy, modifier = Modifier.testTag("native-translation-deduplicate"))
+                            Text(stringResource(R.string.native_translation_deduplicate), modifier = Modifier.weight(1f))
+                        }
+                        OutlinedTextField(retries, { if (it.length <= 1 && it.all { c -> c in '0'..'9' }) retries = it },
+                            singleLine = true, label = { Text(stringResource(R.string.native_translation_retries)) },
+                            modifier = Modifier.fillMaxWidth().testTag("native-translation-retries"))
+                        Text(stringResource(R.string.native_translation_retry_warning), style = MaterialTheme.typography.bodySmall)
+                        OutlinedTextField(preceding, { if (it.length <= 2 && it.all { c -> c in '0'..'9' }) preceding = it },
+                            singleLine = true, label = { Text(stringResource(R.string.native_translation_preceding)) },
+                            modifier = Modifier.fillMaxWidth().testTag("native-translation-preceding"))
                         TextButton(onClick = { whole = false }, enabled = pendingPage) {
                             RadioButton(!whole, onClick = null); Text(stringResource(R.string.native_simulation_scope_page))
                         }

@@ -22,3 +22,7 @@ keystore.properties
 
 # Native multi-module outputs
 **/build/
+
+# Python tooling caches
+__pycache__/
+*.pyc
