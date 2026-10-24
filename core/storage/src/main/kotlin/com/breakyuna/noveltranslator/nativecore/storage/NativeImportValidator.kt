@@ -492,8 +492,8 @@ internal object NativeImportValidator {
             (columns.contains("name_source") || columns.contains("name_translation")) &&
                 db.rawQuery(
                     "SELECT 1 FROM item_revisions WHERE " +
-                        (if (columns.contains("name_source")) "length(name_source) > ? " else "0 ") + " OR " +
-                        (if (columns.contains("name_translation")) "length(name_translation) > ? " else "0 ") + "LIMIT 1",
+                        (if (columns.contains("name_source")) "length(name_source) > CAST(? AS INTEGER) " else "0 ") + " OR " +
+                        (if (columns.contains("name_translation")) "length(name_translation) > CAST(? AS INTEGER) " else "0 ") + "LIMIT 1",
                     arrayOf(limit.toString(), limit.toString()),
                 ).use { it.moveToFirst() }
         }
@@ -502,7 +502,8 @@ internal object NativeImportValidator {
     }
 
     private fun requireTextBudget(db: SQLiteDatabase, table: String, column: String, limit: Int) {
-        db.rawQuery("SELECT 1 FROM $table WHERE length($column) > ? OR length(CAST($column AS BLOB)) > ? LIMIT 1",
+        db.rawQuery("SELECT 1 FROM $table WHERE length($column) > CAST(? AS INTEGER) OR " +
+            "length(CAST($column AS BLOB)) > CAST(? AS INTEGER) LIMIT 1",
             arrayOf(limit.toString(), (limit * 4).toString())).use {
             if (it.moveToFirst()) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         }
