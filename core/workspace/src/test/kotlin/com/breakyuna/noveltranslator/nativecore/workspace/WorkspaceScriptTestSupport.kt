@@ -8,7 +8,7 @@ internal fun scriptRequest(
         WorkspaceCapability.EMIT_ARTIFACTS,
     ),
     limits: WorkspaceScriptLimits = WorkspaceScriptLimits.of(WorkspaceBudget()),
-    deadlineAtMillis: Long = 10_000L,
+    deadlineAtMillis: Long = System.currentTimeMillis() + 10_000L,
     cancellation: WorkspaceCancellation = WorkspaceCancellation(),
 ): WorkspaceScriptRequest = WorkspaceScriptRequest(
     commandId = COMMAND_ID,

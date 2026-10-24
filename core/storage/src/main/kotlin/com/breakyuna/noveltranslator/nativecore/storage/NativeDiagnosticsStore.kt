@@ -12,8 +12,6 @@ import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -173,7 +171,6 @@ class NativeDiagnosticsStore(
             null
         }
         synchronized(PROCESS_LOCK) {
-            currentCoroutineContext().ensureActive()
             ensureDirectory()
             ensureStoreId()
             repairActiveFile()
@@ -196,8 +193,7 @@ class NativeDiagnosticsStore(
         withContext(Dispatchers.IO) {
             require(limit in 1..NativeDiagnosticsLimits.MAX_PAGE_SIZE) { "Invalid page size" }
             synchronized(PROCESS_LOCK) {
-                currentCoroutineContext().ensureActive()
-                ensureDirectory()
+                    ensureDirectory()
                 val currentStoreId = ensureStoreId()
                 require(cursor == null || cursor.storeId == currentStoreId) { "Stale diagnostics cursor" }
                 val records = readAllRecords().sortedByDescending { it.sequence }
@@ -215,7 +211,6 @@ class NativeDiagnosticsStore(
     suspend fun read(id: String): NativeDiagnosticRecord? = withContext(Dispatchers.IO) {
         val safeId = normalizeId(id)
         synchronized(PROCESS_LOCK) {
-            currentCoroutineContext().ensureActive()
             ensureDirectory()
             ensureStoreId()
             repairActiveFile()
@@ -235,8 +230,7 @@ class NativeDiagnosticsStore(
             allFilesOldestFirst().forEach fileLoop@{ file ->
                 if (!file.isFile) return@fileLoop
                 readLines(file).forEach lineLoop@{ line ->
-                    currentCoroutineContext().ensureActive()
-                    val record = NativeDiagnosticCodec.decode(line, limits) ?: return@lineLoop
+                            val record = NativeDiagnosticCodec.decode(line, limits) ?: return@lineLoop
                     val encoded = NativeDiagnosticCodec.encode(record).toByteArray(Charsets.UTF_8)
                     buffered.write(encoded)
                     buffered.write('\n'.code)
@@ -255,7 +249,6 @@ class NativeDiagnosticsStore(
      */
     suspend fun clear(): Unit = withContext(Dispatchers.IO) {
         synchronized(PROCESS_LOCK) {
-            currentCoroutineContext().ensureActive()
             ensureDirectory()
             // Rotate the store id first so an interrupted clear can never make an old cursor
             // address records from the new history.

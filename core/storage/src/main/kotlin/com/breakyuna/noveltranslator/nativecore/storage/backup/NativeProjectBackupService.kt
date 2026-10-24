@@ -34,7 +34,7 @@ class NativeProjectBackupService(private val projects: TextProjectPort, private 
                 currentCoroutineContext().ensureActive()
                 require(snapshot.length() in 0..MAX_PROJECT_BYTES)
                 val digest = sha256(snapshot)
-                val manifest = BackupManifest(project.name, ref, project.revision, snapshot.length(), digest,
+                val manifest = ProjectBackupManifest(project.name, ref, project.revision, snapshot.length(), digest,
                     System.currentTimeMillis())
                 currentCoroutineContext().ensureActive()
                 val target = destination()
@@ -42,7 +42,7 @@ class NativeProjectBackupService(private val projects: TextProjectPort, private 
                     ZipOutputStream(target.buffered()).use { zip ->
                         zip.setLevel(6)
                         zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
-                        zip.write(BackupManifestCodec.encode(manifest).toByteArray(Charsets.UTF_8))
+                        zip.write(ProjectBackupManifestCodec.encode(manifest).toByteArray(Charsets.UTF_8))
                         zip.closeEntry()
                         zip.putNextEntry(ZipEntry(PROJECT_ENTRY))
                         FileInputStream(snapshot).use { input -> input.copyTo(zip, 64 * 1024) }
@@ -66,7 +66,7 @@ class NativeProjectBackupService(private val projects: TextProjectPort, private 
             try {
                 readArchive(source(), manifestFile, projectFile)
                 currentCoroutineContext().ensureActive()
-                val manifest = BackupManifestCodec.decode(manifestFile.readTextBounded(MAX_MANIFEST_BYTES))
+                val manifest = ProjectBackupManifestCodec.decode(manifestFile.readTextBounded(MAX_MANIFEST_BYTES))
                 require(projectFile.length() == manifest.projectBytes && projectFile.length() in 0..MAX_PROJECT_BYTES)
                 require(sha256(projectFile) == manifest.sha256)
                 currentCoroutineContext().ensureActive()
@@ -171,7 +171,7 @@ data class BackupSummary(
     val createdAtMillis: Long,
 )
 
-private data class BackupManifest(
+private data class ProjectBackupManifest(
     val name: String,
     val ref: LocalProjectRef,
     val revision: Long,
@@ -180,8 +180,8 @@ private data class BackupManifest(
     val createdAtMillis: Long,
 )
 
-private object BackupManifestCodec {
-    fun encode(manifest: BackupManifest): String = buildJsonObject {
+private object ProjectBackupManifestCodec {
+    fun encode(manifest: ProjectBackupManifest): String = buildJsonObject {
         put("format", "lnt-project-backup")
         put("version", 1)
         put("name", manifest.name)
@@ -194,7 +194,7 @@ private object BackupManifestCodec {
         put("created_at", manifest.createdAtMillis)
     }.toString()
 
-    fun decode(text: String): BackupManifest {
+    fun decode(text: String): ProjectBackupManifest {
         val root = JsonObjectValue.parse(text, JsonInputLimits(1024 * 1024, 8)).json
         require(root.keys == setOf("format", "version", "name", "project_id", "instance_id", "generation",
             "revision", "project_bytes", "sha256", "created_at"))
@@ -218,7 +218,7 @@ private object BackupManifestCodec {
         val generation = RecoveryGeneration(long("generation", 1))
         val sha = string("sha256")
         require(sha.length == 64 && sha.all { it in '0'..'9' || it in 'a'..'f' })
-        return BackupManifest(name, LocalProjectRef(projectId, instanceId, generation), long("revision", 0),
+        return ProjectBackupManifest(name, LocalProjectRef(projectId, instanceId, generation), long("revision", 0),
             long("project_bytes", 0), sha, long("created_at", 0))
     }
 }
