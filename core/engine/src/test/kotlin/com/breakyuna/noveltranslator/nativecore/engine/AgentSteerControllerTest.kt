@@ -16,7 +16,7 @@ class AgentSteerControllerTest {
             settlement: AgentInputAppendSettlement?): StoredAgentInputQueue = error("unused")
         override suspend fun loadSteerLedger(ref: LocalProjectRef, chat: ChatId, run: RunIdentity) = ledger
         override suspend fun replaceSteerLedger(write: ProjectWriteLease, snapshot: StoredAgentSteerLedger): StoredAgentSteerLedger {
-            check(snapshot.revision == (ledger?.revision ?: 0))
+            check(snapshot.revision == (ledger?.revision ?: 0)) { "snapshot=${snapshot.revision}, stored=${ledger?.revision}" }
             return StoredAgentSteerLedger(snapshot.ref, snapshot.revision + 1, snapshot.state).also { ledger = it }
         }
     }

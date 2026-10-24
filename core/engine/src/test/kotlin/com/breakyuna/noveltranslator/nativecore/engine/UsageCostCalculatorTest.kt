@@ -169,7 +169,7 @@ class UsageCostCalculatorTest {
 
         assertEquals("0.003000000000", quote.actual.line(UsageComponent.INPUT).amount.toPlainString())
         assertEquals("0.000000000000", quote.actual.line(UsageComponent.OUTPUT).amount.toPlainString())
-        assertEquals("0.030000000000", quote.estimated.line(UsageComponent.OUTPUT).amount.toPlainString())
+        assertEquals("30.000000000000", quote.estimated.line(UsageComponent.OUTPUT).amount.toPlainString())
         assertEquals("0.007500000000", quote.estimated.line(UsageComponent.CACHE_WRITE).amount.toPlainString())
         assertEquals("0.003000000000", quote.actual.knownTotal.toPlainString())
         assertEquals("30.007500000000", quote.estimated.knownTotal.toPlainString())
