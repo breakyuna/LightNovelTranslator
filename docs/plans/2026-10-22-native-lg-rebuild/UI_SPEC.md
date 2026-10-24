@@ -1,6 +1,6 @@
 # 原生 Android UI 重做规格
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 仅存在于工作区，未提交、未构建。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 已提交为 `b47178a`，Actions run 40132451221 的 test/lint/release 与签名校验成功。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
 
 当前验收边界：TXT 手工页已有 §22 用户设备确认；新增 Agent/模拟界面已有 #158 组件断言，但仓库只保留 `greeting.png`，原生 Roborazzi 产物未录制/复核，视觉验收仍未完成。完整页面/多设备范围仍开放，唯一当前进度见 [HANDOFF §3](HANDOFF.md)。
 

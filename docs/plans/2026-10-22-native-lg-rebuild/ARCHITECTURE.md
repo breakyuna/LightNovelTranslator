@@ -1,6 +1,6 @@
 # 原生 LG 目标架构
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 已提交为 `b47178a`，Actions run 40132451221 的 test/lint/release 与签名校验成功。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
 
 当前实现的构建/测试证据见 [HANDOFF §3](HANDOFF.md)。新 Agent/模拟切片已通过 Actions #158；本文目标中的后台/完整恢复/全格式等未实现能力不因 CI 全绿自动完成。
 

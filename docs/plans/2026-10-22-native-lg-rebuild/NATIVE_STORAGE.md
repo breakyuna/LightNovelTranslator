@@ -1,6 +1,6 @@
 # 原生 TXT 存储契约
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 仅存在于工作区，未提交、未构建。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 已提交为 `b47178a`，Actions run 40132451221 的 test/lint/release 与签名校验成功。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
 
 当前应用库边界：持久执行记录、中断核对、Room v4 远程请求元数据、v5 模型协议/多密钥、v6 用量账本、v7 固定翻译任务和 v8 响应/提交暂存、v9 Agent 输入队列/steer、v10 任务终止、v11 成员裁决、v12 手动摘要、v13 历史分支；2—13.json 权威导出仍未生成。当前基线见 [HANDOFF §3](HANDOFF.md)，契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
 

@@ -25,7 +25,7 @@
 
 ## 3. 实施状态
 
-当前已提交验证基线：分支 `refactor/translation-agent-2026-10`，HEAD `77daf74`；提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101 的源码与后续编译/测试修复。当前工作区在 §102—107 规则/模板/替换增量之上，又新增 §110 姓名写回（`.lnt` v5）、Agent 输入队列/steer 持久化（Room v9）与界面、翻译任务裁决核心、模型费用核心及 RGSS 数据文件字符串读写；均未提交、未构建。当前源码 `.lnt` 为 v5，应用 Room 为 v13，二者独立；旧 LNT 数据迁移（R36）已按用户决定移出当前范围，迁移代码已删除。各开发轮中的“未提交/未构建/未运行”保留为当轮历史，当前状态以本节为准。
+当前已提交验证基线：分支 `refactor/translation-agent-2026-10`，HEAD `b47178a`；提交 `b47178a` 的 [Actions run 40132451221](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40132451221) 已通过 test/lint/release 和签名校验，覆盖 §102—§122 的规则/模板/替换、姓名写回（`.lnt` v5）、Agent 队列/steer/自动压缩、翻译任务裁决与队列、模型费用、RGSS/PDF、持久用量账本、诊断日志/应用备份、技能库与 More 页。当前源码 `.lnt` 为 v5，应用 Room 为 v13，二者独立；`2.json`—`13.json` schema 导出、真机升级/视觉/真实供应商验收仍缺。旧 LNT 数据迁移（R36）已按用户决定移出当前范围，迁移代码已删除。各开发轮中的“未提交/未构建/未运行”保留为当轮历史，当前状态以本节为准。
 
 | 范围 | 已实现与接线 | 尚缺内容与验证 |
 |---|---|---|
@@ -1770,9 +1770,9 @@ UsageLedgerReadPort 新增导出契约，NativeUsageLedgerStore 在一致读取�
 用户在本轮明确要求“本轮修改完成后，停止任务”。完成本节源码/回归源码/文档与静态检查后暂停，不再展开新功能。整体目标尚未完成：当前大量未提交增量不继承 #158，自动压缩、完整分支/检查点/跨进程恢复、任务跳过与队列、真实工作区/脚本/技能/联网、PDF/格式分支及完整 UI/备份/旧链路退役继续开放。恢复工作须先重新核对实际工作区、本节及 §3；先处理未构建增量和已有安全边界，不把本节保护预算当作最终范围缩减。
 
 
-## 122. 功能收口批次：持久任务队列、自动压缩、PDF、诊断/应用备份、技能与 More 页（2026-10-25，未构建）
+## 122. 功能收口批次：持久任务队列、自动压缩、PDF、诊断/应用备份、技能与 More 页（2026-10-25，已通过 CI）
 
-用户要求持续推进剩余业务、允许非冲突子任务并行，直到只剩验证。本轮在 §102—121 工作区之上新增以下未提交、未构建增量；所有验证仍为静态审查。
+用户要求持续推进剩余业务、允许非冲突子任务并行，直到只剩验证。本轮在 §102—121 工作区之上完成以下增量，已提交为 `b47178a` 并由 Actions run 40132451221 全绿验证。
 
 ### 本轮落地
 
@@ -1787,10 +1787,10 @@ UsageLedgerReadPort 新增导出契约，NativeUsageLedgerStore 在一致读取�
 
 ### 验证与边界
 
-- 本轮只做静态审查，未运行 Gradle、单元测试、Robolectric、Lint、KSP、截图或设备命令；所有新增测试源码未执行。
-- `python tools/rebuild/check_structure.py`、`git diff --check` 与冲突标记扫描通过；不证明可编译。
+- Actions run 40132451221 的 test/lint/release 与签名校验全部成功；该 run 还暴露并修复了 domain 可变决策表、queue snapshot 类型、RGSS bare-data 路径、storage 备份类重名、诊断协程临界区、SQLite 预算比较、JUnit 返回值/测试夹具和 Compose 懒列表滚动等问题。
+- 本地仅执行 `python tools/rebuild/check_structure.py`、`git diff --check` 与冲突标记扫描；本机不运行 Gradle/测试/Lint。
 - 没有新增 Room schema 版本；仍为 `.lnt` v5 / Room v13，`2.json`—`13.json` 未生成，`.lnt`/Room 升级未设备验证。
-- 未提交、未推送、未触发 Actions；#158 不覆盖本轮增量。
+- 已提交并推送到 `refactor/translation-agent-2026-10` 并触发 Actions；#158 仅覆盖到 §101。
 
 ### 仍开放
 
