@@ -964,7 +964,8 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         val roots = active.ids + saved.pending.flatMap { it.ids }
         val targets = db.translationTasks().selected(row.id, roots.map { it.value }).associateBy { it.itemId }
         if (targets.size != roots.size || roots.any { id ->
-                saved.targets.singleOrNull { it.id == id }?.fingerprint?.sha256 != targets.getValue(id.value).fingerprint
+                val target = targets.getValue(id.value)
+                !target.done && saved.targets.singleOrNull { it.id == id }?.fingerprint?.sha256 != target.fingerprint
             }) return null
         val primary = roots.associateWith { id -> projects.item(spec.ref, id)?.item ?: throw TranslationTaskNeedsReview() }
         val ids = numbers(row.responseRemaining)

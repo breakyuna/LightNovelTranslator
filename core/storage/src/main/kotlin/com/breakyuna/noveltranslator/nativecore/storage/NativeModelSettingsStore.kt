@@ -76,6 +76,8 @@ internal interface NativeModelSettingsDao {
 
     @Query("SELECT * FROM native_model_settings WHERE revision=:revision") fun find(revision: Long): NativeModelSettingsRow?
     @Query("SELECT COALESCE(MAX(revision), 0) FROM native_model_settings") fun maxRevision(): Long
+    @Query("DELETE FROM native_model_settings WHERE profileId=:profileId")
+    fun deleteForProfile(profileId: String)
     @Insert fun insert(row: NativeModelSettingsRow)
 }
 
@@ -366,7 +368,10 @@ class NativeModelSettingsStore(context: Context, private val runtime: RuntimePor
         profileMutex.withLock {
             ensureProfilesLocked()
             val row = requireNotNull(db.profiles().find(id)) { "Unknown model profile" }
-            db.profiles().delete(id)
+            transaction {
+                db.profiles().delete(id)
+                db.models().deleteForProfile(id)
+            }
             val remaining = db.profiles().list()
             if (row.selectedTranslation && remaining.none { it.selectedTranslation && it.enabled }) {
                 remaining.firstOrNull { it.enabled && selectedPurposes(it).contains(ModelProfilePurpose.TRANSLATION) }

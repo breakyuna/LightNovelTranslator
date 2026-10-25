@@ -70,7 +70,8 @@ class NativePersonaTest {
         val persona = "PERSONA-ONLY-" + UUID.randomUUID()
         NativeAppSettingsStore(context).saveAppPersona(persona)
         val app = context as TranslatorApplication
-        val graph = app.nativeGraph.also { this.graph = it }
+        val graph = app.nativeGraph
+        this.graph = graph
         val project = graph.projects.createTxt(CommandId("persona-scope"), "persona-scope-" + UUID.randomUUID(),
             RelativePath("source.txt"), "source line".toByteArray())
         val policy = graph.projects.textPolicy(project.ref).policy

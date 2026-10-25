@@ -306,7 +306,7 @@ class TranslationQueueSchedulerTest {
         val completed = Fixture()
         val task = spec(projectA, "run-zero-skip")
         completed.coordinator.enqueue(task, task.run.commandId)
-        completed.outcomes.evidence = complete(committed = 1, target = 1)
+        completed.outcomes.evidence = complete(committed = 1, target = 1).copy(stage = "READY")
         assertEquals(1, completed.scheduler.drain())
         assertEquals(listOf(emptySet<ItemId>() to completionCommandForTest(task)),
             completed.decisions.completed)
