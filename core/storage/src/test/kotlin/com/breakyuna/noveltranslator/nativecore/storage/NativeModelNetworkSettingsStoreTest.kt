@@ -113,6 +113,7 @@ class NativeModelNetworkSettingsStoreTest {
         File(context.filesDir, "native_model_network_settings.json").writeText("broken")
         assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { store.networkSettings() } }
         assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { store.fingerprint() } }
+        Unit
     }
 
     @Test fun firstSaveWithAnExpectedFingerprintIsRejected() = runBlocking {

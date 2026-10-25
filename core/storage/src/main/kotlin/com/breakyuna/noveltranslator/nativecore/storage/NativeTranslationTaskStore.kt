@@ -36,6 +36,8 @@ internal interface NativeTranslationTaskDao {
     fun selected(task: String, ids: List<Long>): List<NativeTranslationTargetRow>
     @Query("UPDATE native_translation_targets SET done=1 WHERE task=:task AND itemId IN (:ids)")
     fun done(task: String, ids: List<Long>): Int
+    @Query("UPDATE native_translation_targets SET fingerprint=:fingerprint WHERE task=:task AND itemId=:itemId")
+    fun setFingerprint(task: String, itemId: Long, fingerprint: String)
     @Query("SELECT * FROM native_translation_targets WHERE task=:task AND itemId>:after ORDER BY itemId LIMIT 21")
     fun targetPage(task: String, after: Long): List<NativeTranslationTargetRow>
     @Query("SELECT COUNT(*) FROM native_translation_targets WHERE task=:task") fun count(task: String): Int
@@ -1137,8 +1139,17 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             receipts.filterNotNull().forEachIndexed { index, receipt -> require(receipt.itemId.value == items[index] && receipt.ref == ref) }
             val revision = receipts.filterNotNull().maxOf { it.revision }
             val remaining = numbers(row.responseRemaining).filterNot { it in items }
+            // A committed edit changes the item's translation/status, so the frozen dispatch
+            // fingerprint no longer matches. Refresh exactly the settled targets; failure evidence
+            // and later adjudication compare against the durable post-commit item state.
+            val settledItems = items.associateWith { id ->
+                projects.item(ref, ItemId(id))?.item ?: throw TranslationTaskNeedsReview()
+            }
             transaction {
                 check(db.translationTasks().done(row.id, items) == items.size)
+                settledItems.forEach { (id, item) ->
+                    db.translationTasks().setFingerprint(row.id, id, item.fingerprint.sha256)
+                }
                 db.translationResponses().removeStaged(row.id, items)
                 check(db.translationTasks().update(row.copy(stage = if (remaining.isEmpty()) "READY" else "RESPONSE_RECORDED", revision = revision,
                     committed = if (row.stage == "COMMITTING") Math.addExact(row.committed, commands.size) else row.committed,

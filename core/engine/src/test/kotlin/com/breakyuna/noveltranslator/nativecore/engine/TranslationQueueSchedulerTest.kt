@@ -185,7 +185,7 @@ class TranslationQueueSchedulerTest {
         requireNotNull(fixture.coordinator.nextRunnable())
         val batch = TranslationTaskFailureBatch(
             TranslationTaskFailureBatchId("batch-1"),
-            listOf(TranslationTaskFailureMember(ItemId(1), ObjectFingerprint("a".repeat(64)),
+            listOf(TranslationFailureMember(ItemId(1), ObjectFingerprint("a".repeat(64)),
                 ModelFailureKind.NETWORK, TranslationFailureReceipt.RECEIVED)),
         )
         fixture.coordinator.recordFailureBatch(task.queueIdentity(), batch)
@@ -211,7 +211,7 @@ class TranslationQueueSchedulerTest {
                 requireNotNull(fixture.coordinator.nextRunnable())
                 val batch = TranslationTaskFailureBatch(
                     TranslationTaskFailureBatchId("batch-1"),
-                    listOf(TranslationTaskFailureMember(ItemId(1), ObjectFingerprint("a".repeat(64)),
+                    listOf(TranslationFailureMember(ItemId(1), ObjectFingerprint("a".repeat(64)),
                         ModelFailureKind.NETWORK, TranslationFailureReceipt.RECEIVED)),
                 )
                 fixture.coordinator.recordFailureBatch(task.queueIdentity(), batch)
@@ -533,7 +533,7 @@ class TranslationQueueSchedulerTest {
         usage = if (receipt == TranslationFailureReceipt.RECEIVED) UsageSource.ACTUAL else UsageSource.UNKNOWN,
     )
 
-    private fun runningFixture(run: String): RecoveryFixture {
+    private suspend fun runningFixture(run: String): RecoveryFixture {
         val fixture = Fixture()
         val task = spec(projectA, run)
         fixture.coordinator.enqueue(task, task.run.commandId)

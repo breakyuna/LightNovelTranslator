@@ -229,13 +229,6 @@ class WorkspaceArtifactStore(
         }
         val runHash = runHashOf(runId)
         val currentRecords = ensureIndex().values.filter { it.runId == runId }
-        currentRecords.forEach { record ->
-            if (record.id in preparedIds) {
-                throw WorkspaceArtifactConflict(
-                    WorkspaceArtifactConflict.Reason.DUPLICATE_ID, record.path,
-                )
-            }
-        }
         val totalAfter = currentRecords.sumOf { it.sizeBytes } + prepared.sumOf { it.sizeBytes }
         if (currentRecords.size + prepared.size > maxArtifacts) {
             throw WorkspaceBudgetExceeded(

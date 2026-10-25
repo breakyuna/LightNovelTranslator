@@ -40,6 +40,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskReview
 import com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskSpec
 import com.breakyuna.noveltranslator.nativecore.domain.TranslationQueuedTask
 import com.breakyuna.noveltranslator.nativecore.domain.UsageSource
+import com.breakyuna.noveltranslator.nativecore.domain.queueIdentity
 import com.breakyuna.noveltranslator.nativecore.engine.TranslationFailureAdjudicationResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull

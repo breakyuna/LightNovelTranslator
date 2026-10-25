@@ -181,7 +181,7 @@ class NativeTextProjectStore(
             pages.sorted().associateWith { page ->
                 db.rawQuery("SELECT tag,extra_field FROM items WHERE asset_id=? AND row_index=? ORDER BY id LIMIT 2",
                     arrayOf(asset.id.toString(), page.toString())).use { cursor ->
-                    if (!cursor.moveToFirst() || cursor.moveToNext()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                    if (!cursor.moveToFirst() || cursor.count != 1) fail(TextProjectException.Reason.CORRUPT_PROJECT)
                     PdfPageDecisionBinding.mode(page, cursor.getString(0), cursor.getString(1))
                 }
             }

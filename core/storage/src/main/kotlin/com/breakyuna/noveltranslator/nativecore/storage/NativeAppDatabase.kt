@@ -60,7 +60,42 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
         val MIGRATION_17_18 = object : Migration(17, 18) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 MIGRATION_16_17.migrate(db)
+                repairModelProfiles(db)
             }
+        }
+
+        /**
+         * Early v17 builds created `native_model_profiles` without `serviceTier` and without the
+         * entity defaults, so Room rejects the table even after the additive 16->17 DDL. Rebuild
+         * the table in place and copy every row; unknown-by-then columns fall back to their entity
+         * defaults instead of being invented.
+         */
+        private fun repairModelProfiles(db: SupportSQLiteDatabase) {
+            val columns = db.query("PRAGMA table_info(native_model_profiles)").use { table ->
+                if (!table.moveToFirst()) return
+                val name = table.getColumnIndexOrThrow("name")
+                buildSet {
+                    do { add(table.getString(name)) } while (table.moveToNext())
+                }
+            }
+            fun column(name: String, fallback: String) = if (name in columns) name else fallback
+            db.execSQL("DROP TABLE IF EXISTS native_model_profiles_rebuild")
+            db.execSQL("CREATE TABLE native_model_profiles_rebuild (profileId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL, groupName TEXT NOT NULL, orderIndex INTEGER NOT NULL, enabled INTEGER NOT NULL, concurrency INTEGER, requestsPerMinute INTEGER, tools INTEGER, vision INTEGER, reasoning INTEGER, contextWindowTokens INTEGER, maxOutputTokens INTEGER, temperature REAL, topP REAL, generationMaxOutputTokens INTEGER, reasoningEffort TEXT, serviceTier TEXT, extraHeaders TEXT NOT NULL DEFAULT '{}', extraBody TEXT, selectedTranslation INTEGER NOT NULL DEFAULT 0, selectedAgent INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1)")
+            db.execSQL("INSERT INTO native_model_profiles_rebuild " +
+                "(profileId,name,kind,purpose,groupName,orderIndex,enabled,concurrency,requestsPerMinute,tools,vision,reasoning," +
+                "contextWindowTokens,maxOutputTokens,temperature,topP,generationMaxOutputTokens,reasoningEffort,serviceTier," +
+                "extraHeaders,extraBody,selectedTranslation,selectedAgent,revision) SELECT " +
+                "profileId,name,kind,purpose,groupName,orderIndex,enabled," +
+                "${column("concurrency", "NULL")},${column("requestsPerMinute", "NULL")}," +
+                "${column("tools", "NULL")},${column("vision", "NULL")},${column("reasoning", "NULL")}," +
+                "${column("contextWindowTokens", "NULL")},${column("maxOutputTokens", "NULL")}," +
+                "${column("temperature", "NULL")},${column("topP", "NULL")}," +
+                "${column("generationMaxOutputTokens", "NULL")},${column("reasoningEffort", "NULL")}," +
+                "${column("serviceTier", "NULL")},${column("extraHeaders", "'{}'")},${column("extraBody", "NULL")}," +
+                "${column("selectedTranslation", "0")},${column("selectedAgent", "0")}," +
+                "${column("revision", "1")} FROM native_model_profiles")
+            db.execSQL("DROP TABLE native_model_profiles")
+            db.execSQL("ALTER TABLE native_model_profiles_rebuild RENAME TO native_model_profiles")
         }
 
         val MIGRATION_16_17 = object : Migration(16, 17) {
@@ -76,7 +111,7 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
                 if (!hasProfileId) {
                     db.execSQL("ALTER TABLE native_model_settings ADD COLUMN profileId TEXT NOT NULL DEFAULT 'native-remote-model'")
                 }
-                db.execSQL("CREATE TABLE IF NOT EXISTS native_model_profiles (profileId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL, groupName TEXT NOT NULL, orderIndex INTEGER NOT NULL, enabled INTEGER NOT NULL, concurrency INTEGER, requestsPerMinute INTEGER, tools INTEGER, vision INTEGER, reasoning INTEGER, contextWindowTokens INTEGER, maxOutputTokens INTEGER, temperature REAL, topP REAL, generationMaxOutputTokens INTEGER, reasoningEffort TEXT, serviceTier TEXT, extraHeaders TEXT NOT NULL DEFAULT '{}', extraBody TEXT, selectedTranslation INTEGER NOT NULL, selectedAgent INTEGER NOT NULL, revision INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_model_profiles (profileId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL, groupName TEXT NOT NULL, orderIndex INTEGER NOT NULL, enabled INTEGER NOT NULL, concurrency INTEGER, requestsPerMinute INTEGER, tools INTEGER, vision INTEGER, reasoning INTEGER, contextWindowTokens INTEGER, maxOutputTokens INTEGER, temperature REAL, topP REAL, generationMaxOutputTokens INTEGER, reasoningEffort TEXT, serviceTier TEXT, extraHeaders TEXT NOT NULL DEFAULT '{}', extraBody TEXT, selectedTranslation INTEGER NOT NULL DEFAULT 0, selectedAgent INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1)")
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_asset_import_proposals (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, revision INTEGER NOT NULL, artifactRunId TEXT NOT NULL, artifactId TEXT NOT NULL, artifactPath TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, targetPath TEXT NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, binding TEXT, claimedAt INTEGER, receiptStatus TEXT, receiptRevision INTEGER, receiptAssetId INTEGER, receiptAt INTEGER, settledAt INTEGER, createdAt INTEGER NOT NULL)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_asset_import_proposals_commandId ON native_asset_import_proposals(commandId)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_native_asset_import_proposals_instanceId_generation_chatId ON native_asset_import_proposals(instanceId,generation,chatId)")

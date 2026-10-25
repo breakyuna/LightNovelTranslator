@@ -44,6 +44,7 @@ class NativePolicyProposalStoreTest {
         chat = agent.currentChat(ref)
         val before = projects.textPolicy(ref)
         projects.editTextPolicy(ProjectPolicyEdit(CommandId("seed"), ref, before.revision, before.fingerprint, original))
+        Unit
     }
     private fun reopen() {
         projects = NativeTextProjectStore(context, runtime); agent = NativeAgentStore(context, projects, runtime)

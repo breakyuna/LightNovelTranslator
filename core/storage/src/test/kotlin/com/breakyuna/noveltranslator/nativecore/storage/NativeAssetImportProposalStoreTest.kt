@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.RuntimeCoordinator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -160,7 +161,7 @@ class NativeAssetImportProposalStoreTest {
         assertEquals(AssetImportProposalState.CONFLICT, store.find(ref, chat, conflict.id).state)
     }
 
-    @Test fun claimCasIsSingleUseAndReconcileRecordsConflictWithoutReplaying() = runBlocking {
+    @Test fun claimCasIsSingleUseAndReconcileRecordsConflictWithoutReplaying() = runBlocking(Dispatchers.IO) {
         val view = prepare()
         val binding = AssetImportBinding(view.id, view.digest, view.command).fingerprint.sha256
         val db = NativeAppDatabase.open(context)
@@ -179,7 +180,7 @@ class NativeAssetImportProposalStoreTest {
         assertEquals(0, applier.calls)
     }
 
-    @Test fun rejectAfterClaimNeverReportsRejectedOrApplied() = runBlocking {
+    @Test fun rejectAfterClaimNeverReportsRejectedOrApplied() = runBlocking(Dispatchers.IO) {
         val view = prepare()
         val binding = AssetImportBinding(view.id, view.digest, view.command).fingerprint.sha256
         val db = NativeAppDatabase.open(context)

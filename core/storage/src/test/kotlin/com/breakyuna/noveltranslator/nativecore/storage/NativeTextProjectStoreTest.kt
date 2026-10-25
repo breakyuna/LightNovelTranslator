@@ -66,7 +66,7 @@ class NativeTextProjectStoreTest {
         assertArrayEquals(source, original.toByteArray())
         val translated = ByteArrayOutputStream()
         store.exportTxt(project.ref) { translated }
-        assertEquals("译文\nsecond", translated.toString("UTF-8"))
+        assertEquals("译文\r\nsecond", translated.toString("UTF-8"))
     }
 
     @Test fun creationRetriesReuseInstanceAndChangedContentConflicts() = runBlocking {

@@ -55,5 +55,6 @@ class NativeLaboratorySettingsStoreTest {
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking { NativeLaboratorySettingsStore(context).load() }
         }
+        Unit
     }
 }

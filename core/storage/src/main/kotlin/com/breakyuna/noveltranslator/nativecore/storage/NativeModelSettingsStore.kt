@@ -75,6 +75,7 @@ internal interface NativeModelSettingsDao {
     fun latestPerProfile(): List<NativeModelSettingsRow>
 
     @Query("SELECT * FROM native_model_settings WHERE revision=:revision") fun find(revision: Long): NativeModelSettingsRow?
+    @Query("SELECT COALESCE(MAX(revision), 0) FROM native_model_settings") fun maxRevision(): Long
     @Insert fun insert(row: NativeModelSettingsRow)
 }
 
@@ -203,8 +204,7 @@ class NativeModelSettingsStore(context: Context, private val runtime: RuntimePor
         keys: List<String>): NativeModelSettings {
         require(keys.size <= NativeModelSettings.MAX_KEYS)
         keys.forEach(NativeModelSettingsValidation::validateKey)
-        val previous = db.models().current(profileId)
-        val revision = Math.addExact(previous?.revision ?: 0, 1)
+        val revision = Math.addExact(db.models().maxRevision(), 1)
         val encryptedKeys = if (keys.isEmpty()) "" else buildJsonArray {
             keys.forEachIndexed { index, value -> add(JsonPrimitive(encrypt(value, profileId, revision, index))) }
         }.toString()

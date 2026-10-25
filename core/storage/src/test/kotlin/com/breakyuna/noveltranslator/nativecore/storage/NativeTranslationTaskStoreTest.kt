@@ -1203,11 +1203,13 @@ class NativeTranslationTaskStoreTest {
         tasks.committed(lease, revision, 0)
         tasks.failed(lease)
         assertEquals(emptySet<ItemId>(), tasks.skipSelection(lease))
+        runtime.finishRun(lease)
         val evidence = tasks.failures(original.ref, original.run, 0L)
         tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-skip-selection"),
             TranslationTaskCommandAction.SKIP_MEMBERS, evidence.members, CommandId("skip-selection"))
-        assertEquals(setOf(item.id), tasks.skipSelection(lease))
-        runtime.finishRun(lease)
+        val resumed = begin(original)
+        assertEquals(setOf(item.id), tasks.skipSelection(resumed))
+        runtime.finishRun(resumed)
     }
 
     private suspend fun failSingleTarget(

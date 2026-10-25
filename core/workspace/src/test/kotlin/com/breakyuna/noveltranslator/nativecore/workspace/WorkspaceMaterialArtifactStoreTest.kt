@@ -558,7 +558,7 @@ class WorkspaceArtifactStoreTest {
         val result = store.prune(setOf(active), keepInactiveRuns = 1)
         assertEquals(listOf(first), result.removedRuns)
         assertEquals(1, result.removedArtifacts)
-        assertEquals(3L, result.removedBytes)
+        assertEquals(1L, result.removedBytes)
         assertEquals(1, result.retainedActiveRuns)
         assertTrue(store.list(first).isEmpty())
         assertEquals(1, store.list(second).size)

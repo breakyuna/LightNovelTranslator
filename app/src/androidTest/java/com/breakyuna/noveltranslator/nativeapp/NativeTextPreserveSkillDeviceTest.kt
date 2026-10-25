@@ -35,8 +35,13 @@ class NativeTextPreserveSkillDeviceTest {
         val script = context.assets.open("workspace-skills/glossary/scripts/main.js").bufferedReader().use { it.readText() }
         var report: String? = null
         val result = ProjectWorkspaceAnalysis(context, projects,
-            artifactPublisher = ProjectWorkspaceArtifactPublisher { _, _, drafts ->
-                report = drafts.single().bytes.toString(Charsets.UTF_8); emptyList()
+            artifactPublisher = ProjectWorkspaceArtifactPublisher { _, lease, drafts ->
+                report = drafts.single().bytes.toString(Charsets.UTF_8)
+                drafts.map { draft ->
+                    WorkspaceArtifactRecord(WorkspaceArtifactId("artifact-" + draft.path.value.replace('/', '-')),
+                        lease.identity.runId, draft.path, draft.mediaType, WorkspaceArtifactKind.JSON,
+                        draft.sizeBytes, draft.sha256, 0)
+                }
             }).analyze(ref, lease, script, 3, inputJson = """
                 {"patterns":[{"key":"ss","text":"SS","case_sensitive":false},
                 {"key":"width","text":"JK","case_sensitive":true},
@@ -75,10 +80,14 @@ class NativeTextPreserveSkillDeviceTest {
             .bufferedReader().use { it.readText() }
         var report: String? = null
         val analysis = ProjectWorkspaceAnalysis(context, projects,
-            artifactPublisher = ProjectWorkspaceArtifactPublisher { actualRef, _, drafts ->
+            artifactPublisher = ProjectWorkspaceArtifactPublisher { actualRef, lease, drafts ->
                 assertEquals(ref, actualRef)
                 report = drafts.single().bytes.toString(Charsets.UTF_8)
-                emptyList()
+                drafts.map { draft ->
+                    WorkspaceArtifactRecord(WorkspaceArtifactId("artifact-" + draft.path.value.replace('/', '-')),
+                        lease.identity.runId, draft.path, draft.mediaType, WorkspaceArtifactKind.JSON,
+                        draft.sizeBytes, draft.sha256, 0)
+                }
             })
         val result = analysis.analyze(ref, lease, script, 3, inputJson = """
             {"patterns":[{"key":"tag","source":"TAG"},{"key":"zero","source":"(?=T)"},
