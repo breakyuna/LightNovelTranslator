@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -165,6 +166,24 @@ class RpgMakerMvMzAdapterTest {
             adapter.read(FormatArchiveFixtures.zip(listOf(
                 "readme.txt" to "not a game".toByteArray())), path)
         }
+    }
+
+    @Test fun genericZipImportIsPromotedOnlyForRpgMakerProjects() {
+        assertEquals(ProjectAssetFormat.RPGMAKER_MV_MZ, resolveImportFormat("game.zip", rpg()))
+        assertEquals(ProjectAssetFormat.RPGMAKER_MV_MZ,
+            resolveImportFormat("game.bin", rpg(prefix = "www/")))
+        assertEquals(ProjectAssetFormat.EPUB, resolveImportFormat("book.epub", rpg()))
+        assertEquals(ProjectAssetFormat.TXT, resolveImportFormat("notes.txt", rpg()))
+        assertEquals(ProjectAssetFormat.BINARY, resolveImportFormat("game.zip",
+            FormatArchiveFixtures.zip(listOf("readme.txt" to "not a game".toByteArray()))))
+        assertEquals(ProjectAssetFormat.BINARY, resolveImportFormat("game.zip",
+            byteArrayOf(0x50, 0x4b, 0x03, 0x04, 0x00)))
+        assertTrue(RpgMakerArchiveSniffer.matches(rpg()))
+        assertFalse(RpgMakerArchiveSniffer.matches(
+            FormatArchiveFixtures.zip(listOf("readme.txt" to "not a game".toByteArray()))))
+        assertFalse(RpgMakerArchiveSniffer.matches(
+            FormatArchiveFixtures.zip(listOf("../evil" to byteArrayOf(1),
+                "data/System.json" to "{}".toByteArray()))))
     }
 
     private fun unit(document: FormatDocument, tag: String, source: String): FormatUnit =

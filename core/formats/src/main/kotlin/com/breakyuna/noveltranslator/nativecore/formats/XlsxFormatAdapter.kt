@@ -16,6 +16,12 @@ import org.w3c.dom.Element
  * XLSX adapter for string cells. Reads all worksheets in workbook order and writes only the
  * selected string cells: shared strings stay at their existing indices, inline strings are
  * replaced in place, and styles, formulas, numbers and every unrelated ZIP member stay intact.
+ *
+ * Formula cells are never extracted or rewritten, even when they carry a cached `t="str"` value,
+ * because replacing that value would leave a formula/result mismatch. Rich-text shared/inline
+ * strings with `<r>` or phonetic (`rPh`/`phoneticPr`) runs are also left untouched: flattening
+ * them into one `<t>` would lose per-run formatting or phonetic data, so they are reported as
+ * skipped instead of being silently corrupted.
  */
 class XlsxFormatAdapter : BinaryFormatAdapter {
     override val format: ProjectAssetFormat = ProjectAssetFormat.XLSX
@@ -25,7 +31,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
         val packageInfo = readWorkbookPackage(archive)
         val warnings = ArrayList<FormatWarning>()
         val sharedPath = packageInfo.sharedStringsPath
-        val sharedTexts: List<String> = if (sharedPath == null) {
+        val sharedStrings: List<SharedStringEntry> = if (sharedPath == null) {
             emptyList()
         } else {
             val member = archive[sharedPath]
@@ -42,7 +48,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
                     val document = parseXmlDocument(member.bytes)
                     childElements(document.documentElement)
                         .filter { localName(it) == "si" }
-                        .map { sharedText(it) }
+                        .map { SharedStringEntry(sharedText(it), hasRichRuns(it)) }
                 } catch (_: FormatContainerException) {
                     warnings.add(FormatWarning("xlsx.invalid_shared_strings", safePath(sharedPath),
                         null, "Shared strings XML could not be parsed"))
@@ -104,21 +110,31 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
                         "s" -> {
                             val index = childElements(cell).firstOrNull { localName(it) == "v" }
                                 ?.let { elementText(it).trim().toIntOrNull() }
-                            if (index == null || index !in sharedTexts.indices) {
+                            if (index == null || index !in sharedStrings.indices) {
                                 if (warnings.size < 1_000) {
                                     warnings.add(FormatWarning("xlsx.shared_string_missing",
                                         safePath(sheet.name + "!" + cellReference), rowNumber,
                                         "Shared string index is missing or out of range"))
                                 }
                                 null
+                            } else if (sharedStrings[index].rich) {
+                                warnRichText(warnings, sheet.name + "!" + cellReference, rowNumber)
+                                null
                             } else {
                                 sharedIndex = index
-                                sharedTexts[index]
+                                sharedStrings[index].text
                             }
                         }
                         "inlineStr" -> {
                             val inline = childElements(cell).firstOrNull { localName(it) == "is" }
-                            if (inline == null) null else sharedText(inline)
+                            if (inline == null) {
+                                null
+                            } else if (hasRichRuns(inline)) {
+                                warnRichText(warnings, sheet.name + "!" + cellReference, rowNumber)
+                                null
+                            } else {
+                                sharedText(inline)
+                            }
                         }
                         else -> null
                     } ?: continue
@@ -203,6 +219,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
                     for ((index, group) in sharedGroups) {
                         if (index !in sharedItems.indices) continue
                         val item = sharedItems[index]
+                        if (hasRichRuns(item)) continue
                         val current = sharedText(item)
                         if (!group.all { unit ->
                                 val extra = parseJsonObject(unit.extraField)
@@ -263,6 +280,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
                     val cell = cells[reference] ?: continue
                     if (attributeValue(cell, "t") != "inlineStr" || hasFormula(cell)) continue
                     val inline = childElements(cell).firstOrNull { localName(it) == "is" } ?: continue
+                    if (hasRichRuns(inline)) continue
                     val current = sharedText(inline)
                     if (extraString(extra, "digest") != containerSha256Hex(current)) continue
                     val target = effectiveTarget(unit, options) ?: continue
@@ -400,6 +418,24 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
         return output.toString()
     }
 
+    /**
+     * A rich-text container keeps per-run formatting or phonetic (`rPh`/`phoneticPr`) data that a
+     * single replacement `<t>` would lose.
+     */
+    internal fun hasRichRuns(element: Element): Boolean =
+        childElements(element).any {
+            when (localName(it)) {
+                "r", "rPh", "phoneticPr" -> true
+                else -> false
+            }
+        }
+
+    private fun warnRichText(warnings: MutableList<FormatWarning>, path: String, row: Int) {
+        if (warnings.size >= 1_000) return
+        warnings.add(FormatWarning("xlsx.rich_text_skipped", safePath(path), row,
+            "Rich-text runs are preserved but not extracted"))
+    }
+
     private fun hasFormula(cell: Element): Boolean =
         childElements(cell).any { localName(it) == "f" }
 
@@ -450,6 +486,7 @@ class XlsxFormatAdapter : BinaryFormatAdapter {
 
     internal class SheetReference(val name: String, val path: String)
     internal class WorkbookPackage(val sheets: List<SheetReference>, val sharedStringsPath: String?)
+    private class SharedStringEntry(val text: String, val rich: Boolean)
     private class Relationship(val target: String, val type: String, val external: Boolean)
 
     private companion object {

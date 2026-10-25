@@ -258,6 +258,7 @@ internal object ProjectAssetWriteStore {
             }
             if (revision != summary.revision) return@transaction reject(db, commandId, ref, AssetMutationKind.SETTINGS,
                 AssetMutationStatus.STALE_REVISION, summary.revision, null, digest)
+            ProjectPageTranslationPolicy(settings, summary.assets)
             db.execSQL("UPDATE project_settings SET payload=?,fingerprint=? WHERE singleton=1",
                 arrayOf(ProjectSettingsCodec.encode(settings), settings.fingerprint().sha256))
             val next = Math.addExact(summary.revision, 1)
@@ -279,14 +280,17 @@ internal object ProjectAssetWriteStore {
                 next, null, at)
         }
 
-    fun receipt(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Pair<String, AssetMutationReceipt>? =
-        db.rawQuery("""SELECT digest,outcome,revision,asset_id,kind,committed_at FROM asset_receipts
+    fun receipt(db: SQLiteDatabase, ref: LocalProjectRef, commandId: CommandId): Pair<String, AssetMutationReceipt>? {
+        ProjectWriteStore.rejectApprovedItemCommand(db, ref, commandId)
+        ProjectWriteStore.rejectApprovedPdfPageCommand(db, ref, commandId)
+        return db.rawQuery("""SELECT digest,outcome,revision,asset_id,kind,committed_at FROM asset_receipts
             WHERE instance_id=? AND generation=? AND command_id=?""",
             arrayOf(ref.instanceId.value, ref.generation.value.toString(), commandId.value)).use {
             if (!it.moveToFirst()) null else it.getString(0) to AssetMutationReceipt(commandId, ref,
                 AssetMutationKind.valueOf(it.getString(4)), AssetMutationStatus.valueOf(it.getString(1)),
                 it.getLong(2), if (it.isNull(3)) null else it.getLong(3), it.getLong(5))
         }
+    }
 
     private fun reject(db: SQLiteDatabase, commandId: CommandId, ref: LocalProjectRef, kind: AssetMutationKind,
                        status: AssetMutationStatus, revision: Long, assetId: Long?, digest: String): AssetMutationReceipt {

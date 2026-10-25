@@ -69,6 +69,10 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (classified: AgentModelFailure) { throw classified }
                 catch (notStored: TranslationResponseNotStored) { throw notStored }
+                // A local network-policy failure is not a provider/model failure and must not cool
+                // a key or be retried. Preserve the typed cause for the settings UI.
+                catch (local: InvalidModelNetworkSettings) { throw local }
+                catch (local: ModelNetworkSettingsUnavailable) { throw local }
                 catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.UNKNOWN) }
                 currentCoroutineContext().ensureActive()
                 // A stopped run may not accept a late, otherwise valid model response.

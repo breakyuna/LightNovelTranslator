@@ -86,4 +86,28 @@ class TextProofreadingInspectorTest {
         try { inspect("source", "译文", policy(ProjectTextRule("broken", TextRuleKind.PROTECT, "(", regex = true))); fail("Ignored rule") }
         catch (failure: InvalidTextRule) { assertEquals("broken", failure.ruleId) }
     }
+    @Test fun positiveTermHitsAndNameScopeAreExposed() {
+        val rules = policy(
+            ProjectTextRule("alice", TextRuleKind.TERM, "Alice", "艾莉丝", scope = TextRuleScope.BOTH),
+            ProjectTextRule("name-only", TextRuleKind.TERM, "Bob", "鲍勃", scope = TextRuleScope.NAME),
+        )
+        val result = TextProofreadingInspector(rules).inspect("Alice and Alice", "艾莉丝与艾莉丝",
+            TextItemStatus.PROCESSED, TextProofreadingOptions(ProofreadingLanguage.EN, ProofreadingLanguage.ZH),
+            nameSource = listOf("Alice", "Bob"), nameTranslation = listOf("艾莉丝", "鲍勃"))
+        assertEquals(3, result.termHits["alice"])
+        assertEquals(1, result.termHits["name-only"])
+        assertTrue(result.missingTermRuleIds.isEmpty())
+    }
+
+    @Test fun missingNameTermIsReportedWhileBodyOnlyTermDoesNotRequireNameMatch() {
+        val rules = policy(
+            ProjectTextRule("alice", TextRuleKind.TERM, "Alice", "艾莉丝", scope = TextRuleScope.NAME),
+            ProjectTextRule("body", TextRuleKind.TERM, "world", "世界"),
+        )
+        val result = TextProofreadingInspector(rules).inspect("Alice world", "世界",
+            TextItemStatus.PROCESSED, TextProofreadingOptions(ProofreadingLanguage.EN, ProofreadingLanguage.ZH),
+            nameSource = listOf("Alice"), nameTranslation = listOf("Alice"))
+        assertTrue("alice" in result.missingTermRuleIds)
+        assertFalse("body" in result.missingTermRuleIds)
+    }
 }

@@ -100,6 +100,53 @@ class NativeTranslationQueueStoreTest {
     }
 
     @Test
+    fun legacyVersionOneQueueDecodesWithoutAnExecutionRevisionAndUpgradesOnWrite() = runBlocking {
+        val store = newStore()
+        val coordinator = newCoordinator(store)
+        val task = spec(projectA, "run-legacy")
+        coordinator.enqueue(task, task.run.commandId)
+        val current = Json.parseToJsonElement(file(projectA).readText()).jsonObject
+        val legacyRoot = buildJsonObject {
+            current.forEach { (key, value) ->
+                when (key) {
+                    "version" -> put(key, JsonPrimitive(1))
+                    "fingerprint" -> Unit
+                    "tasks" -> put(key, JsonArray(value.jsonArray.map { row ->
+                        buildJsonObject {
+                            row.jsonObject.forEach { (name, child) ->
+                                if (name != "execution_revision") put(name, child)
+                            }
+                        }
+                    }))
+                    else -> put(key, value)
+                }
+            }
+        }
+        val fingerprint = ObjectFingerprint(TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(legacyRoot.toString())))
+        val document = buildJsonObject {
+            legacyRoot.forEach { (key, value) -> put(key, value) }
+            put("fingerprint", fingerprint.sha256)
+        }
+        file(projectA).writeText(document.toString())
+
+        val reopened = newStore()
+        val loaded = requireNotNull(reopened.load(projectA))
+        val legacy = requireNotNull(loaded.snapshot.task(task.queueIdentity()))
+        assertNull(legacy.executionRevision)
+        assertEquals(task.revision, legacy.actionableRevision)
+        assertEquals(0, legacy.commands.size)
+
+        val refreshed = newCoordinator(reopened).revalidateRevision(
+            task.queueIdentity(), CommandId("revalidate-legacy"), 9)
+        assertTrue(refreshed is TranslationQueueResult.Applied)
+        val saved = requireNotNull(newStore().load(projectA)).snapshot.task(task.queueIdentity())!!
+        assertEquals(9L, saved.executionRevision)
+        assertEquals(9L, saved.actionableRevision)
+        assertEquals(TranslationTaskCommandAction.REVALIDATE_REVISION, saved.commands.single().action)
+        assertEquals(task.revision, saved.identity.revision)
+    }
+
+    @Test
     fun corruptUnknownOversizedLostTailAndForeignFilesAreRejected() = runBlocking {
         val store = newStore()
         val coordinator = newCoordinator(store)
@@ -113,7 +160,7 @@ class NativeTranslationQueueStoreTest {
         file(projectA).writeText(valid.dropLast(20))
         expectCorrupt { store.load(projectA) }
 
-        file(projectA).writeText(root.withValue("version", JsonPrimitive(2)).toString())
+        file(projectA).writeText(root.withValue("version", JsonPrimitive(3)).toString())
         expectCorrupt { store.load(projectA) }
 
         val revision = root.getValue("revision").jsonPrimitive.long

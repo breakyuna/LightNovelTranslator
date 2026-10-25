@@ -15,7 +15,9 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
     private val keys: ModelKeyPool = ModelKeyPool(settings),
     private val usage: UsageLedgerRecorder? = null,
     /** Exact provider facts; EMPTY intentionally rejects tool-bearing non-chat requests. */
-    private val capabilities: CapabilityCatalog = CapabilityCatalog.EMPTY) : AgentModelPort {
+    private val capabilities: CapabilityCatalog = CapabilityCatalog.EMPTY,
+    /** Saved per-profile facts override the static fallback for this immutable revision. */
+    private val profiles: suspend (ModelConfigurationRef) -> NativeModelProfile? = { null }) : AgentModelPort {
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         var reference: ModelConfigurationRef? = null
         var selection: KeySelection? = null
@@ -23,10 +25,11 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             currentCoroutineContext().ensureActive()
             val config = settings.resolve(request.configuration)
             reference = config.reference
+            val profile = profiles(request.configuration)
             selection = keys.select(request.configuration)
             val protocol = config.protocol.toModelProtocol()
             if (protocol != ModelProtocol.OPENAI_CHAT_COMPLETIONS) {
-                val result = completeProtocol(request, config, protocol, selection?.credential.orEmpty(), emit)
+                val result = completeProtocol(request, config, profile, protocol, selection?.credential.orEmpty(), emit)
                 withContext(NonCancellable) {
                     keys.success(config.reference, selection)
                     runCatching { usage?.record(UsageRequestRecord(request.run, request.attemptId,
@@ -35,9 +38,11 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                 return result
             }
             val secret = selection?.credential.orEmpty()
+            if (request.tools.isNotEmpty() && profile?.capabilities?.tools == false)
+                throw AgentModelFailure(ModelFailureKind.CONTENT)
             val providerIds = request.history.filterIsInstance<AgentMessage.Assistant>().flatMap { it.parts }
                 .filterIsInstance<AssistantPart.ToolCall>().associate { it.call.id to requireNotNull(it.call.providerCallId) }
-            val body = buildJsonObject {
+            val body = applyProfileRequestOverrides(buildJsonObject {
                 put("model", config.model); put("stream", true)
                 put("stream_options", buildJsonObject { put("include_usage", true) })
                 put("messages", JsonArray(request.history.map { message(it, providerIds) }))
@@ -46,10 +51,12 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                         put("name", it.name); put("description", it.description); put("parameters", it.inputSchema.json)
                     }) }
                 }))
-            }.toString()
+            }.toString(), profile, protocol)
             if (TextProjectFingerprint.utf8(body).size > 2 * 1024 * 1024) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
-            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).header("Accept", "text/event-stream")
-                .post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).apply {
+                header("Accept", "text/event-stream")
+                profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
+            }.post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
             currentCoroutineContext().ensureActive()
             val active = runtime.snapshot().activeRun
             if (active == null || active.identity != request.run || active.phase != RuntimePhase.RUNNING) throw CancellationException("Agent request stopped")
@@ -74,8 +81,10 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             }
             return parsed
         } catch (cancelled: CancellationException) { throw cancelled }
+        catch (local: InvalidModelNetworkSettings) { throw local }
+        catch (local: ModelNetworkSettingsUnavailable) { throw local }
         catch (classified: AgentModelFailure) {
-            reference?.let { keys.failure(it, selection, classified.kind) }
+            reference?.let { keys.failure(it, selection, classified.kind, classified.retryAfterMillis) }
             throw classified
         }
         catch (_: Exception) {
@@ -90,7 +99,8 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
      * stream can never become a persisted assistant message.
      */
     private suspend fun completeProtocol(request: AgentModelRequest, config: NativeModelSettings,
-        protocol: ModelProtocol, secret: String, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+        profile: NativeModelProfile?, protocol: ModelProtocol, secret: String,
+        emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         val system = request.history.filterIsInstance<AgentMessage.System>()
             .joinToString("\n") { it.text }.takeIf { it.isNotBlank() }
         val conversation = request.history.filterNot { it is AgentMessage.System }
@@ -133,8 +143,9 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             ModelProtocolRequest(config.model, system, messages, tools)
         } catch (_: IllegalArgumentException) { throw AgentModelFailure(ModelFailureKind.CONTENT) }
         val response = try {
-            ModelProtocolTransport(transport, capabilities).complete(protocol, config,
-                secret, protocolRequest, CapabilityRequirement(tools = tools.isNotEmpty()))
+            ModelProtocolTransport(transport, capabilities)
+                .complete(protocol, config, secret, protocolRequest,
+                    CapabilityRequirement(tools = tools.isNotEmpty()), profile)
         } catch (failure: UnsupportedModelCapability) {
             throw AgentModelFailure(ModelFailureKind.CONTENT)
         }

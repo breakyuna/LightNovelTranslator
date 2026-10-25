@@ -8,6 +8,38 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WorkspaceScriptHostSessionTest {
+    @Test fun fetchWaitsForActuallySuspendingPortAndCapsCalls() {
+        var calls = 0
+        val port = object : WorkspaceFetchPort {
+            override suspend fun fetch(request: WorkspaceFetchRequest): WorkspaceFetchOutcome {
+                kotlinx.coroutines.delay(1)
+                calls++
+                return WorkspaceFetchOutcome.Fetched(WorkspaceFetchedDocument(request.url,
+                    "text/plain", "x".toByteArray(), false))
+            }
+        }
+        val host = session(scriptRequest(capabilities = setOf(WorkspaceCapability.FETCH)), fetch = port)
+        repeat(8) { assertTrue(host.fetch("https://example.com/", 1).contains("\"text\":\"x\"")) }
+        assertThrows(WorkspaceScriptHostLimitExceeded::class.java) { host.fetch("https://example.com/", 1) }
+        assertEquals(8, calls)
+    }
+
+    @Test fun fetchReservationsBoundCumulativeRequestedBytesBeforeAnotherCall() {
+        var calls = 0
+        val port = object : WorkspaceFetchPort {
+            override suspend fun fetch(request: WorkspaceFetchRequest): WorkspaceFetchOutcome {
+                calls++
+                return WorkspaceFetchOutcome.Fetched(WorkspaceFetchedDocument(request.url,
+                    "text/plain", "x".toByteArray(), false))
+            }
+        }
+        val host = session(scriptRequest(capabilities = setOf(WorkspaceCapability.FETCH),
+            limits = WorkspaceScriptLimits.of(WorkspaceBudget(maxOutputBytes = 1024))), fetch = port)
+        host.fetch("https://example.com/", 1024)
+        assertThrows(WorkspaceScriptHostLimitExceeded::class.java) { host.fetch("https://example.com/", 1) }
+        assertEquals(1, calls)
+    }
+
     @Test fun readsOnlyDeclaredMaterialsWithTheGrantedCapability() {
         val body = "hello".toByteArray(Charsets.UTF_8)
         val summary = materialSummary("mat-1", body)

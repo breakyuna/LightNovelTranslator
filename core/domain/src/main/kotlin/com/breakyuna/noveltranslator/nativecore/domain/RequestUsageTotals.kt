@@ -33,3 +33,19 @@ data class RequestUsageTotals(
         input.add(usage.input), cacheRead.add(usage.cacheRead), cacheWrite.add(usage.cacheWrite),
         thinking.add(usage.thinking), output.add(usage.output))
 }
+
+/**
+ * Certainty of the receipt totals. A missing response, an unresolved dispatch or any unknown
+ * metric makes the whole total UNKNOWN; a mixture of actual and estimated observations is
+ * conservatively ESTIMATED. No zero is invented for a request with no observed usage.
+ */
+fun RequestUsageTotals.usageSource(unresolvedDispatches: Long = 0): UsageSource {
+    require(unresolvedDispatches >= 0)
+    val metrics = listOf(input, cacheRead, cacheWrite, thinking, output)
+    return when {
+        responses == 0L || unresolvedDispatches > 0 || metrics.any { it.unknownRequests > 0 } ->
+            UsageSource.UNKNOWN
+        metrics.any { it.estimated.signum() > 0 } -> UsageSource.ESTIMATED
+        else -> UsageSource.ACTUAL
+    }
+}

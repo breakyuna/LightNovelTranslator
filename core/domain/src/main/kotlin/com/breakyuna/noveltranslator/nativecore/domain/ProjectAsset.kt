@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -181,36 +182,47 @@ class ProjectSettings(
     val bilingualDeduplicateSame: Boolean = true,
     val writeTranslatedNames: Boolean = false,
     val promptEnabled: Boolean = false,
+    pdfPages: List<PdfAssetPagePolicy> = emptyList(),
 ) {
+    val pdfPages: List<PdfAssetPagePolicy> = frozenList(pdfPages.sortedBy { it.assetId })
     init {
         require(targetLanguage.length <= 80 && targetLanguage.none(Char::isISOControl))
         require(sourceLanguage.length <= 80 && sourceLanguage.none(Char::isISOControl))
+        require(this.pdfPages.size <= 1_000 && this.pdfPages.map { it.assetId }.distinct().size == this.pdfPages.size)
+        require(this.pdfPages.sumOf { it.decisions.length.toLong() } <= 100_000)
         TextProjectFingerprint.utf8(targetLanguage)
         TextProjectFingerprint.utf8(sourceLanguage)
     }
     private val fingerprintValue: ObjectFingerprint by lazy {
         ObjectFingerprint(TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(ProjectSettingsCodec.encode(this))))
     }
+    fun withPdfPages(pages: List<PdfAssetPagePolicy>): ProjectSettings = ProjectSettings(targetLanguage, sourceLanguage,
+        bilingualDeduplicateSame, writeTranslatedNames, promptEnabled, pages)
     fun fingerprint(): ObjectFingerprint = fingerprintValue
     override fun toString(): String = "ProjectSettings(redacted)"
 }
 
 object ProjectSettingsCodec {
-    const val MAX_CHARS = 8_192
+    const val MAX_CHARS = 1_048_576
     fun encode(settings: ProjectSettings): String = buildJsonObject {
-        put("format", "lnt-project-settings"); put("version", 1)
+        put("format", "lnt-project-settings"); put("version", if (settings.pdfPages.isEmpty()) 1 else 2)
         put("target_language", settings.targetLanguage)
         put("source_language", settings.sourceLanguage)
         put("bilingual_deduplicate_same", settings.bilingualDeduplicateSame)
         put("write_translated_names", settings.writeTranslatedNames)
         put("prompt_enabled", settings.promptEnabled)
-    }.toString()
+        if (settings.pdfPages.isNotEmpty()) put("pdf_pages", JsonArray(settings.pdfPages.map {
+            buildJsonObject { put("asset", it.assetId); put("sha256", it.sha256); put("decisions", it.decisions) }
+        }))
+    }.toString().also { require(it.length <= MAX_CHARS) }
     fun decode(text: String): ProjectSettings {
         val root = JsonObjectValue.parse(text, JsonInputLimits(MAX_CHARS, 8)).json
+        val version = root["version"]
+        require(version == JsonPrimitive(1) || version == JsonPrimitive(2))
         require(root.keys == setOf("format", "version", "target_language", "source_language",
-            "bilingual_deduplicate_same", "write_translated_names", "prompt_enabled"))
+            "bilingual_deduplicate_same", "write_translated_names", "prompt_enabled") +
+            (if (version == JsonPrimitive(2)) setOf("pdf_pages") else emptySet<String>()))
         require(root.getValue("format") == JsonPrimitive("lnt-project-settings"))
-        require(root.getValue("version") == JsonPrimitive(1))
         fun string(key: String): String {
             val value = root.getValue(key) as? JsonPrimitive ?: throw IllegalArgumentException("settings")
             require(value.isString); return value.content
@@ -219,8 +231,13 @@ object ProjectSettingsCodec {
             val value = root.getValue(key) as? JsonPrimitive ?: throw IllegalArgumentException("settings")
             require(!value.isString); return requireNotNull(value.booleanOrNull)
         }
+        val pages = if (version == JsonPrimitive(2)) {
+            val entries = root["pdf_pages"] as? JsonArray ?: throw IllegalArgumentException("settings")
+            require(entries.isNotEmpty() && entries.size <= 1_000)
+            entries.map { PdfAssetPagePolicy.decode(it as? JsonObject ?: throw IllegalArgumentException("settings")) }
+        } else emptyList()
         return ProjectSettings(string("target_language"), string("source_language"),
-            boolean("bilingual_deduplicate_same"), boolean("write_translated_names"), boolean("prompt_enabled"))
+            boolean("bilingual_deduplicate_same"), boolean("write_translated_names"), boolean("prompt_enabled"), pages)
     }
 }
 

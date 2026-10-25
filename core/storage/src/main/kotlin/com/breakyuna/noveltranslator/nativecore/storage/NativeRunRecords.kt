@@ -23,6 +23,6 @@ internal interface NativeRunDao {
     fun recent(instance: String, generation: Long, project: String, limit: Int): List<NativeRunRow>
     @Query("SELECT COUNT(*) FROM native_runs WHERE state='RUNNING' AND processId=:process")
     fun activeCount(process: String): Int
-    @Query("SELECT state FROM native_agent_approvals WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND chatId=:chat AND runId=:run ORDER BY createdAt DESC,id DESC LIMIT 1")
+    @Query("SELECT state FROM (SELECT state,createdAt,id FROM native_agent_approvals WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND chatId=:chat AND runId=:run UNION ALL SELECT state,createdAt,id FROM native_item_proposals WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND chatId=:chat AND runId=:run UNION ALL SELECT state,createdAt,id FROM native_policy_proposals WHERE instanceId=:instance AND generation=:generation AND projectId=:project AND chatId=:chat AND runId=:run) ORDER BY createdAt DESC,id DESC LIMIT 1")
     fun approvalState(instance: String, generation: Long, project: String, chat: String?, run: String): String?
 }

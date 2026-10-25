@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.*
 import java.io.File
+import java.math.BigInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -25,12 +26,14 @@ class NativeTranslationTaskStoreTest {
     private lateinit var runtime: RuntimeCoordinator
     private lateinit var projects: NativeTextProjectStore
     private lateinit var tasks: NativeTranslationTaskStore
+    private lateinit var ledger: FakeLedger
     @Before fun setup() {
         context = ApplicationProvider.getApplicationContext(); context.deleteDatabase("lnt_native_app.db")
         File(context.filesDir, "native_projects").deleteRecursively()
         File(context.filesDir, "native_translation_retries").deleteRecursively()
         runtime = RuntimeCoordinator(); projects = NativeTextProjectStore(context, runtime)
-        tasks = NativeTranslationTaskStore(context, projects, runtime, DefaultTranslationRetryRecoveryPolicy)
+        ledger = FakeLedger()
+        tasks = NativeTranslationTaskStore(context, projects, runtime, DefaultTranslationRetryRecoveryPolicy, ledger)
     }
     @After fun cleanup() = runBlocking { tasks.close(); projects.close(); runtime.close() }
     private suspend fun spec(): TranslationTaskSpec {
@@ -126,6 +129,50 @@ class NativeTranslationTaskStoreTest {
             val items = projects.items(next.ref, next.revision, 0, 40).items
             assertEquals(setOf(first.id), tasks.remaining(nextLease, next.ref, items))
         } finally { runtime.finishRun(nextLease) }
+    }
+
+    @Test fun outcomeEvidenceComesFromTargetsReceiptsAndLedgerWithoutSyntheticActualUsage() = runBlocking {
+        val original = spec()
+        val lease = begin(original)
+        try {
+            tasks.open(lease, original)
+            val items = projects.items(original.ref, 0, 0, 40).items
+            assertEquals(3, items.size)
+            var evidence = tasks.outcome(original.ref, original.run, emptySet())
+            assertEquals("READY", evidence.stage)
+            assertEquals(3, evidence.targetItems)
+            assertEquals(0, evidence.committedItems)
+            assertEquals(0, evidence.skippedItems)
+            assertEquals(0, evidence.receiptedItems)
+            assertEquals(0, evidence.unresolvedDispatches)
+            assertEquals(UsageSource.UNKNOWN, evidence.usage)
+
+            // An explicit skip names real unfinished targets; an unknown member is never counted.
+            evidence = tasks.outcome(original.ref, original.run, items.take(2).map { it.id }.toSet())
+            assertEquals(2, evidence.skippedItems)
+            try {
+                tasks.outcome(original.ref, original.run, setOf(ItemId(9_999)))
+                fail("Accepted a non-target skip")
+            } catch (_: IllegalArgumentException) { }
+
+            ledger.value = DurableUsageSummary(1, 1, 0,
+                RequestUsageTotals(1, input = TokenUsageTotal(actual = BigInteger.TEN)))
+            evidence = tasks.outcome(original.ref, original.run, emptySet())
+            assertEquals(UsageSource.ACTUAL, evidence.usage)
+
+            val first = items.first()
+            val edit = ManualTextEdit(CommandId("outcome-commit"), original.ref, first.id, 0,
+                first.fingerprint, "translated")
+            tasks.committing(lease, 0, listOf(edit))
+            val revision = projects.commitTranslation(lease, TranslationBatch(original.ref, 0, listOf(edit)))
+            tasks.committed(lease, revision, 1)
+            evidence = tasks.outcome(original.ref, original.run, items.drop(1).map { it.id }.toSet())
+            assertEquals(3, evidence.targetItems)
+            assertEquals(1, evidence.committedItems)
+            assertEquals(1, evidence.receiptedItems)
+            assertEquals(2, evidence.skippedItems)
+            assertEquals(UsageSource.ACTUAL, evidence.usage)
+        } finally { runtime.finishRun(lease) }
     }
 
     @Test fun unreceiptedTaskCannotCreateAnErrorRetry() = runBlocking {
@@ -940,5 +987,265 @@ class NativeTranslationTaskStoreTest {
         assertEquals("RESPONSE_RECORDED", tasks.recent(spec.ref).single().stage)
         try { tasks.resume(spec.ref, spec.run); fail("Lost paid response was resent") }
         catch (_: TranslationTaskNeedsReview) { }
+    }
+
+    @Test fun failureEvidenceMatrixUsesPersistedReceiptsAndNeverInventsUsage() = runBlocking {
+        val original = spec()
+        val audit = NativeTranslationAuditStore(context, runtime, projects)
+        try {
+            val lease = begin(original); tasks.open(lease, original)
+            val items = projects.items(original.ref, 0, 0, 40).items
+            assertEquals(3, items.size)
+            val notDispatched = RequestAttemptId("evidence-not-dispatched")
+            tasks.requesting(lease, 0, notDispatched, listOf(items[0].id), 1)
+            val uncertain = RequestAttemptId("evidence-uncertain")
+            tasks.requesting(lease, 0, uncertain, listOf(items[1].id), 2)
+            audit.dispatched(lease, TranslationModelRequest(original.ref, original.run, uncertain,
+                original.configuration, listOf(TranslationInput(items[1].id, items[1].source, items[1].fingerprint)),
+                original.options), "a".repeat(64))
+            val received = RequestAttemptId("evidence-received")
+            tasks.requesting(lease, 0, received, listOf(items[2].id), 3)
+            val handle = audit.dispatched(lease, TranslationModelRequest(original.ref, original.run, received,
+                original.configuration, listOf(TranslationInput(items[2].id, items[2].source, items[2].fingerprint)),
+                original.options), "b".repeat(64))
+            audit.received(handle, actualUsage(), ModelFailureKind.PARSING)
+
+            val edits = items.mapIndexed { index, item ->
+                ManualTextEdit(CommandId("evidence-failure-$index"), original.ref, item.id,
+                    index.toLong(), item.fingerprint, item.translation, TextItemStatus.ERROR)
+            }
+            tasks.committing(lease, 0, edits, failures = true)
+            val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, edits))
+            tasks.committed(lease, revision, 0)
+            tasks.failed(lease)
+            runtime.finishRun(lease)
+
+            val evidence = tasks.failures(original.ref, original.run, 0L)
+            assertEquals(original.ref, evidence.review.ref)
+            assertEquals(original.run, evidence.review.run)
+            val byId = evidence.members.associateBy { it.itemId }
+            assertEquals(3, byId.size)
+            assertEquals(TranslationFailureReceipt.NOT_DISPATCHED, byId.getValue(items[0].id).receipt)
+            assertEquals(UsageSource.UNKNOWN, byId.getValue(items[0].id).usage)
+            assertEquals(ModelFailureKind.UNKNOWN, byId.getValue(items[0].id).failure)
+            assertEquals(TranslationFailureReceipt.DISPATCHED_NO_RECEIPT, byId.getValue(items[1].id).receipt)
+            assertEquals(UsageSource.UNKNOWN, byId.getValue(items[1].id).usage)
+            val receivedFact = byId.getValue(items[2].id)
+            assertEquals(TranslationFailureReceipt.RECEIVED, receivedFact.receipt)
+            assertEquals(ModelFailureKind.PARSING, receivedFact.failure)
+            assertEquals(UsageSource.ACTUAL, receivedFact.usage)
+            assertTrue(receivedFact.terminal)
+            assertTrue(evidence.members.none { it.committed })
+            assertEquals(items.map { it.fingerprint }, evidence.members.map { it.fingerprint })
+        } finally { audit.close() }
+    }
+
+    @Test fun retryDecisionReopensTheSameTaskAndSelectionNeverCreatesANewRun() = runBlocking {
+        val original = spec()
+        val (revision, item) = failSingleTarget(original)
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        val member = evidence.members.single()
+        val receipt = tasks.recordFailureDecision(
+            evidence = evidence,
+            batchId = TranslationTaskFailureBatchId("batch-retry-same"),
+            action = TranslationTaskCommandAction.RETRY_MEMBERS,
+            members = listOf(member),
+            command = CommandId("retry-same-task"),
+        )
+        assertEquals(0, receipt.retryBudget)
+        assertEquals(listOf(item.id), receipt.memberIds)
+        val after = tasks.review(original.ref, original.run)
+        assertEquals("READY", after.stage)
+        assertEquals(revision, after.revision)
+        assertEquals(1, tasks.recent(original.ref).size)
+
+        // A direct replay is idempotent and keeps the same fixed task row.
+        val replay = tasks.recordFailureDecision(
+            evidence, TranslationTaskFailureBatchId("batch-retry-same"),
+            TranslationTaskCommandAction.RETRY_MEMBERS, listOf(member), CommandId("retry-same-task"))
+        assertEquals(0, replay.retryBudget)
+        assertEquals(1, tasks.recent(original.ref).size)
+
+        val lease = begin(original)
+        try {
+            assertEquals(setOf(item.id), tasks.retrySelection(lease))
+            val opened = tasks.open(lease, original.copy(revision = revision), resuming = true)
+            assertEquals(0, opened.committed)
+        } finally { runtime.finishRun(lease) }
+
+        // A changed fingerprint must not be reopened under the old command.
+        val current = projects.item(original.ref, item.id)!!.item
+        projects.edit(ManualTextEdit(CommandId("outside-edit"), original.ref, item.id, revision,
+            current.fingerprint, "changed"))
+        try {
+            tasks.recordFailureDecision(
+                tasks.failures(original.ref, original.run, 0L), TranslationTaskFailureBatchId("batch-retry-stale"),
+                TranslationTaskCommandAction.RETRY_MEMBERS, listOf(member), CommandId("retry-stale"))
+            fail("Reopened a changed project item")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals(1, tasks.recent(original.ref).size)
+    }
+
+    @Test fun uncertainReceiptCannotBeRetriedOrSkippedButCanBeKept() = runBlocking {
+        val original = spec()
+        val item = failSingleTarget(original, uncertain = true).second
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        val member = evidence.members.single()
+        assertEquals(TranslationFailureReceipt.DISPATCHED_NO_RECEIPT, member.receipt)
+        for (action in listOf(TranslationTaskCommandAction.RETRY_MEMBERS,
+            TranslationTaskCommandAction.SKIP_MEMBERS)) {
+            try {
+                tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-uncertain"),
+                    action, listOf(member), CommandId("decision-${action.name}"))
+                fail("Adjudicated an uncertain receipt")
+            } catch (_: IllegalArgumentException) { }
+        }
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-uncertain"),
+            TranslationTaskCommandAction.KEEP_ERROR, listOf(member), CommandId("keep-uncertain"))
+        assertEquals("FAILED", tasks.review(original.ref, original.run).stage)
+        val lease = begin(original)
+        try { assertTrue(tasks.retrySelection(lease).isEmpty()) } finally { runtime.finishRun(lease) }
+    }
+
+    @Test fun skipAndFinalizeCompletedWithErrorsMatchTargetRowsAndNeverFabricateUsage() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        val items = projects.items(original.ref, 0, 0, 40).items
+        // Commit two real targets.
+        tasks.stage(lease, items.take(2).map { TranslationTaskOutput(it.id, it.fingerprint, "translated") })
+        val edits = tasks.staged(lease)
+        tasks.committing(lease, 0, edits)
+        val committedRevision = projects.commitTranslation(lease, TranslationBatch(original.ref, 0, edits))
+        tasks.committed(lease, committedRevision, 2)
+        // Mark the third target as a received local failure.
+        val base = projects.open(original.ref).revision
+        val failureEdit = ManualTextEdit(CommandId("skip-complete-error"), original.ref, items[2].id, base,
+            items[2].fingerprint, items[2].translation, TextItemStatus.ERROR)
+        tasks.committing(lease, base, listOf(failureEdit), failures = true)
+        val failureRevision = projects.markTranslationFailures(lease,
+            TranslationFailureBatch(original.ref, base, listOf(failureEdit)))
+        tasks.committed(lease, failureRevision, 2)
+        tasks.failed(lease)
+        runtime.finishRun(lease)
+        ledger.value = DurableUsageSummary(1, 1, 0,
+            RequestUsageTotals(1, input = TokenUsageTotal(actual = BigInteger.TEN)))
+
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        val member = evidence.members.single()
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-skip"),
+            TranslationTaskCommandAction.SKIP_MEMBERS, listOf(member), CommandId("skip-final"))
+        assertEquals("READY", tasks.review(original.ref, original.run).stage)
+        val outcome = tasks.outcome(original.ref, original.run, setOf(items[2].id))
+        assertEquals(3, outcome.targetItems); assertEquals(2, outcome.committedItems)
+        assertEquals(1, outcome.skippedItems); assertEquals(UsageSource.ACTUAL, outcome.usage)
+
+        tasks.completeWithErrors(original.ref, original.run, setOf(items[2].id),
+            CommandId("complete-with-errors"))
+        assertEquals("COMPLETE", tasks.review(original.ref, original.run).stage)
+        tasks.completeWithErrors(original.ref, original.run, setOf(items[2].id),
+            CommandId("complete-with-errors"))
+        assertEquals(1, tasks.recent(original.ref).size)
+        try {
+            tasks.completeWithErrors(original.ref, original.run, setOf(items[0].id),
+                CommandId("complete-foreign-target"))
+            fail("Accepted a committed target as a skip")
+        } catch (_: IllegalArgumentException) { }
+        try {
+            tasks.completeWithErrors(original.ref, original.run, emptySet(),
+                CommandId("complete-missing-skips"))
+            fail("Completed while a target remained unfinished")
+        } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun unknownLedgerUsageCannotFinalizeCompletedWithErrors() = runBlocking {
+        val original = spec()
+        val item = failSingleTarget(original).second
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-unknown-ledger"),
+            TranslationTaskCommandAction.SKIP_MEMBERS, listOf(evidence.members.single()),
+            CommandId("skip-unknown-ledger"))
+        try {
+            tasks.completeWithErrors(original.ref, original.run, setOf(item.id),
+                CommandId("complete-unknown-ledger"))
+            fail("Fabricated completion from unknown usage")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals("READY", tasks.review(original.ref, original.run).stage)
+        ledger.value = DurableUsageSummary(1, 1, 0,
+            RequestUsageTotals(1, input = TokenUsageTotal(actual = BigInteger.ONE)))
+        tasks.completeWithErrors(original.ref, original.run, setOf(item.id),
+            CommandId("complete-unknown-ledger"))
+        assertEquals("COMPLETE", tasks.review(original.ref, original.run).stage)
+    }
+
+    @Test fun completionRefusesAnUnresolvedDispatch() = runBlocking {
+        val original = spec()
+        val item = failSingleTarget(original, uncertain = true).second
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-uncertain-complete"),
+            TranslationTaskCommandAction.KEEP_ERROR, listOf(evidence.members.single()),
+            CommandId("keep-before-complete"))
+        try {
+            tasks.completeWithErrors(original.ref, original.run, setOf(item.id),
+                CommandId("uncertain-complete"))
+            fail("Completed an unresolved dispatch")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals("FAILED", tasks.review(original.ref, original.run).stage)
+    }
+
+    @Test fun skipSelectionExcludesOnlyActiveExplicitSkipDecisions() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        val item = projects.items(original.ref, 0, 0, 40).items.first()
+        val edit = ManualTextEdit(CommandId("skip-selection-failure"), original.ref, item.id, 0,
+            item.fingerprint, item.translation, TextItemStatus.ERROR)
+        tasks.committing(lease, 0, listOf(edit), failures = true)
+        val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, listOf(edit)))
+        tasks.committed(lease, revision, 0)
+        tasks.failed(lease)
+        assertEquals(emptySet<ItemId>(), tasks.skipSelection(lease))
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-skip-selection"),
+            TranslationTaskCommandAction.SKIP_MEMBERS, evidence.members, CommandId("skip-selection"))
+        assertEquals(setOf(item.id), tasks.skipSelection(lease))
+        runtime.finishRun(lease)
+    }
+
+    private suspend fun failSingleTarget(
+        original: TranslationTaskSpec,
+        uncertain: Boolean = false,
+    ): Pair<Long, TextProjectItem> {
+        val audit = NativeTranslationAuditStore(context, runtime, projects)
+        try {
+            val lease = begin(original); tasks.open(lease, original)
+            val item = projects.items(original.ref, 0, 0, 40).items.first()
+            val attempt = RequestAttemptId("failure-${original.run.runId.value}")
+            tasks.requesting(lease, 0, attempt, listOf(item.id), 1)
+            if (uncertain) {
+                audit.dispatched(lease, TranslationModelRequest(original.ref, original.run, attempt,
+                    original.configuration, listOf(TranslationInput(item.id, item.source, item.fingerprint)),
+                    original.options), "c".repeat(64))
+            }
+            val edit = ManualTextEdit(CommandId("failure-mark-${original.run.runId.value}"),
+                original.ref, item.id, 0, item.fingerprint, item.translation, TextItemStatus.ERROR)
+            tasks.committing(lease, 0, listOf(edit), failures = true)
+            val revision = projects.markTranslationFailures(lease, TranslationFailureBatch(original.ref, 0, listOf(edit)))
+            tasks.committed(lease, revision, 0)
+            tasks.failed(lease)
+            runtime.finishRun(lease)
+            return revision to item
+        } finally { audit.close() }
+    }
+
+    private fun actualUsage(): RequestUsage = RequestUsage(
+        TokenMeasurement(10, UsageSource.ACTUAL),
+        TokenMeasurement(2, UsageSource.ACTUAL),
+        TokenMeasurement(3, UsageSource.ACTUAL),
+        TokenMeasurement(4, UsageSource.ACTUAL),
+        TokenMeasurement(5, UsageSource.ACTUAL),
+    )
+
+    private class FakeLedger : UsageLedgerReadPort {
+        var value = DurableUsageSummary(0, 0, 0, RequestUsageTotals())
+        override suspend fun summary(query: UsageLedgerQuery): DurableUsageSummary = value
     }
 }

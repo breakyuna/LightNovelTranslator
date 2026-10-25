@@ -102,7 +102,7 @@ class RenpyFormatAdapterTest {
     }
 
     @Test
-    fun multilineAndTripleStringsArePreservedAndNotExtracted() {
+    fun extractsMultilineTripleStringsAndPreservesPythonBlocks() {
         val source = "translate schinese strings:\n" +
             "    old \"normal\"\n" +
             "    new \"\"\n" +
@@ -113,16 +113,28 @@ class RenpyFormatAdapterTest {
             "    \$ block = \"\"\"python\n" +
             "text\"\"\"\n"
         val document = adapter.read(source, path)
-        val unit = document.units.single()
-        assertEquals("normal", unit.source)
-        assertEquals(1, document.warnings.size)
+        assertEquals(listOf("normal", "multi\nline"), document.units.map { it.source })
+        assertEquals(listOf(TextItemStatus.NONE, TextItemStatus.NONE),
+            document.units.map { it.status })
+        assertTrue(document.warnings.isEmpty())
         assertEquals("2", (parse(document.metadata)["multiline_strings"] as JsonPrimitive).content)
+        assertEquals("0", (parse(document.metadata)["unsupported_statements"] as JsonPrimitive).content)
 
-        val changed = copyUnit(unit, translation = "普通", status = TextItemStatus.PROCESSED)
+        val normal = document.units[0]
+        val changed = copyUnit(normal, translation = "普通", status = TextItemStatus.PROCESSED)
         val output = adapter.write(source, listOf(changed))
         assertEquals(source.replaceFirst("    new \"\"\n", "    new \"普通\"\n"), output)
         assertTrue(output.contains("    old \"\"\"multi\nline\"\"\"\n"))
         assertTrue(output.contains("    \$ block = \"\"\"python\ntext\"\"\"\n"))
+
+        val triple = document.units[1]
+        val tripleOutput = adapter.write(source, listOf(
+            copyUnit(triple, translation = "译文\n第二行", status = TextItemStatus.PROCESSED),
+        ))
+        assertTrue(tripleOutput.contains("    new \"译文\\n第二行\"\n"))
+        assertTrue(tripleOutput.contains("    old \"\"\"multi\nline\"\"\"\n"))
+        assertTrue(tripleOutput.contains("    \$ block = \"\"\"python\ntext\"\"\"\n"))
+        assertEquals("译文\n第二行", adapter.read(tripleOutput, path).units[1].translation)
 
         rejects(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING) {
             adapter.read("translate schinese python:\n    \$ x = \"\"\"unterminated\n", path)
@@ -130,6 +142,32 @@ class RenpyFormatAdapterTest {
         rejects(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING) {
             adapter.read("translate schinese start:\n    e \"unterminated\n", path)
         }
+    }
+
+    @Test
+    fun tripleQuotedDialogueSpanningLinesIsRewrittenAsOneNormalLiteral() {
+        val source = "translate schinese start:\n" +
+            "    # e \"First line\\nsecond line\"\n" +
+            "    e \"\"\"First line\n" +
+            "second line\"\"\"\n" +
+            "translate schinese python:\n" +
+            "    \$ block = \"\"\"python\n" +
+            "text\"\"\"\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals("First line\nsecond line", unit.source)
+        assertEquals(TextItemStatus.NONE, unit.status)
+        assertEquals(source, adapter.write(source, document.units))
+
+        val changed = copyUnit(unit, translation = "译文\n第二行", status = TextItemStatus.PROCESSED)
+        val expected = "translate schinese start:\n" +
+            "    # e \"First line\\nsecond line\"\n" +
+            "    e \"译文\\n第二行\"\n" +
+            "translate schinese python:\n" +
+            "    \$ block = \"\"\"python\n" +
+            "text\"\"\"\n"
+        assertEquals(expected, adapter.write(source, listOf(changed)))
+        assertEquals("译文\n第二行", adapter.read(expected, path).units.single().translation)
     }
 
     @Test
@@ -182,6 +220,114 @@ class RenpyFormatAdapterTest {
         val output = adapter.write(source, listOf(changed))
         assertEquals(source.replaceFirst("    new \"\"\n", "    new \"保留\"\n"), output)
         assertTrue(output.contains("    # e 'single'\n    e 'single'\n"))
+    }
+
+    @Test
+    fun singleQuotedTripleStringsUseTheSameExtractionAndEscapingRules() {
+        val source = "translate schinese start:\n" +
+            "    # e '''He said \"hi\" C:\\\\tmp\\nnext'''\n" +
+            "    e '''他说 \"你好\" C:\\\\tmp\\n下一行'''\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals("He said \"hi\" C:\\tmp\nnext", unit.source)
+        assertEquals("他说 \"你好\" C:\\tmp\n下一行", unit.translation)
+        assertEquals(TextItemStatus.PROCESSED, unit.status)
+        assertEquals(source, adapter.write(source, document.units))
+
+        val changed = copyUnit(
+            unit,
+            translation = "新 \"台词\" C:\\tmp\n下一行",
+            status = TextItemStatus.PROCESSED,
+        )
+        val expected = "translate schinese start:\n" +
+            "    # e '''He said \"hi\" C:\\\\tmp\\nnext'''\n" +
+            "    e \"新 \\\"台词\\\" C:\\\\tmp\\n下一行\"\n"
+        assertEquals(expected, adapter.write(source, listOf(changed)))
+        assertEquals("新 \"台词\" C:\\tmp\n下一行",
+            adapter.read(expected, path).units.single().translation)
+    }
+
+    @Test
+    fun doubleQuotedTripleStringsAlsoDecodeQuotesAndBackslashes() {
+        val source = "translate schinese strings:\n" +
+            "    old \"\"\"He said \"hi\" and it's C:\\\\tmp\nnext\"\"\"\n" +
+            "    new \"\"\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals("He said \"hi\" and it's C:\\tmp\nnext", unit.source)
+        assertEquals(TextItemStatus.NONE, unit.status)
+
+        val changed = copyUnit(
+            unit,
+            translation = "他说 \"你好\" C:\\tmp\n下一行",
+            status = TextItemStatus.PROCESSED,
+        )
+        val expected = source.replaceFirst("    new \"\"\n",
+            "    new \"他说 \\\"你好\\\" C:\\\\tmp\\n下一行\"\n")
+        assertEquals(expected, adapter.write(source, listOf(changed)))
+        assertEquals("他说 \"你好\" C:\\tmp\n下一行",
+            adapter.read(expected, path).units.single().translation)
+    }
+
+    @Test
+    fun singleAndDoubleTripleStringsInOneBlockAreLocatedIndependently() {
+        val source = "translate schinese strings:\n" +
+            "    old '''single\none'''\n" +
+            "    new \"\"\n" +
+            "    old \"\"\"double\ntwo\"\"\"\n" +
+            "    new \"\"\n" +
+            "    old \"plain\"\n" +
+            "    new \"\"\n"
+        val document = adapter.read(source, path)
+        assertEquals(listOf("single\none", "double\ntwo", "plain"),
+            document.units.map { it.source })
+        assertEquals(listOf(TextItemStatus.NONE, TextItemStatus.NONE, TextItemStatus.NONE),
+            document.units.map { it.status })
+        assertEquals("2", (parse(document.metadata)["multiline_strings"] as JsonPrimitive).content)
+        assertEquals("0", (parse(document.metadata)["unsupported_statements"] as JsonPrimitive).content)
+        assertTrue(document.warnings.isEmpty())
+
+        val output = adapter.write(source, listOf(
+            copyUnit(document.units[0], translation = "单引号", status = TextItemStatus.PROCESSED),
+            copyUnit(document.units[2], translation = "普通", status = TextItemStatus.PROCESSED),
+        ))
+        val expected = "translate schinese strings:\n" +
+            "    old '''single\none'''\n" +
+            "    new \"单引号\"\n" +
+            "    old \"\"\"double\ntwo\"\"\"\n" +
+            "    new \"\"\n" +
+            "    old \"plain\"\n" +
+            "    new \"普通\"\n"
+        assertEquals(expected, output)
+        assertEquals(listOf("单引号", "", "普通"), adapter.read(output, path).units.map { it.translation })
+    }
+
+    @Test
+    fun singleTripleDialogueWithTrailingTripleArgumentKeepsTheOtherLiteral() {
+        val source = "translate schinese start:\n" +
+            "    # Character(\"Man\") '''Hello''' with PushMove(\"\"\"x\"\"\")\n" +
+            "    Character(\"Man\") '''你好''' with PushMove(\"\"\"x\"\"\")\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals("Hello", unit.source)
+        assertEquals("你好", unit.translation)
+        assertEquals(listOf("Man"), unit.nameSource)
+
+        val changed = copyUnit(unit, translation = "新台词", status = TextItemStatus.PROCESSED)
+        val expected = "translate schinese start:\n" +
+            "    # Character(\"Man\") '''Hello''' with PushMove(\"\"\"x\"\"\")\n" +
+            "    Character(\"Man\") \"新台词\" with PushMove(\"\"\"x\"\"\")\n"
+        assertEquals(expected, adapter.write(source, listOf(changed)))
+    }
+
+    @Test
+    fun unclosedSingleTripleStringsFailClosed() {
+        rejects(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING) {
+            adapter.read("translate schinese start:\n    e '''unterminated\n", path)
+        }
+        rejects(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING) {
+            adapter.read("translate schinese python:\n    \$ x = '''unterminated\n", path)
+        }
     }
 
     @Test

@@ -77,4 +77,33 @@ class NativeModelSettingsStoreTest {
         val explicit = store.save("http://192.168.1.2:1234/v1", "two", "")
         assertFalse(explicit.hasCredential)
     }
+    @Test fun profileCatalogPersistsSelectionCopyMoveAndConfiguration() = runBlocking {
+        val first = store.create(NewModelProfile(
+            name = "Local", purpose = ModelProfilePurpose.BOTH, endpoint = "http://127.0.0.1:1234/v1",
+            model = "one", protocol = NativeModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            keys = emptyList(), limits = ModelProfileLimits(2, 60)))
+        assertTrue(ModelProfilePurpose.AGENT in first.selectedFor)
+        assertTrue(ModelProfilePurpose.TRANSLATION in first.selectedFor)
+        val second = store.create(NewModelProfile(
+            name = "Second", purpose = ModelProfilePurpose.AGENT, endpoint = "http://127.0.0.1:1234/v1",
+            model = "two", protocol = NativeModelProtocol.OPENAI_CHAT_COMPLETIONS, keys = emptyList(),
+            limits = ModelProfileLimits(2, 60)))
+        assertTrue(ModelProfilePurpose.AGENT !in second.selectedFor)
+        val copied = store.copy(first.id, "Local copy")
+        assertEquals(ModelProfileKind.CUSTOM, copied.kind)
+        assertTrue(copied.selectedFor.isEmpty())
+        assertEquals(3, store.list().size)
+        val moved = store.move(second.id, -1)
+        assertEquals(listOf(second.id, first.id, copied.id), moved.map { it.id })
+        store.select(second.id, ModelProfilePurpose.AGENT)
+        val selected = requireNotNull(store.selected(ModelProfilePurpose.AGENT))
+        assertEquals(second.id, selected.id)
+        val configured = store.saveConfiguration(second.id, "http://127.0.0.1:1234/v1",
+            "three", NativeModelProtocol.OPENAI_RESPONSES, null)
+        assertEquals("three", configured.settings.model)
+        assertEquals(NativeModelProtocol.OPENAI_RESPONSES, configured.settings.protocol)
+        assertEquals(2, configured.limits?.concurrency)
+        store.delete(copied.id)
+        assertEquals(2, store.list().size)
+    }
 }

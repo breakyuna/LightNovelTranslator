@@ -45,13 +45,14 @@ class ModelKeyPool(private val settings: NativeModelSettingsPort, private val st
         }
     }
 
-    suspend fun failure(reference: ModelConfigurationRef, selection: KeySelection?, kind: ModelFailureKind) {
+    suspend fun failure(reference: ModelConfigurationRef, selection: KeySelection?, kind: ModelFailureKind,
+        retryAfterMillis: Long? = null) {
         if (selection == null) return
         val classified = KeyFailureKind.classify(kind) ?: return
         withContext(NonCancellable) {
             mutex.withLock {
                 val pool = pools[reference] ?: return@withLock
-                val updated = pool.recordFailure(selection.entry.id, classified)
+                val updated = pool.recordFailure(selection.entry.id, classified, retryAfterMillis = retryAfterMillis)
                 pools[reference] = updated
                 persist(reference, updated) // Preserve the original provider failure.
             }
@@ -62,6 +63,15 @@ class ModelKeyPool(private val settings: NativeModelSettingsPort, private val st
     suspend fun describe(reference: ModelConfigurationRef): List<KeyEntry> = mutex.withLock {
         Collections.unmodifiableList(ArrayList((pools[reference] ?: load(reference)).entries))
     }
+
+    /** Explicit user action; disabling a key never selects a fallback before persistence succeeds. */
+    suspend fun setEnabled(reference: ModelConfigurationRef, keyId: String, enabled: Boolean): List<KeyEntry> =
+        mutex.withLock {
+            val updated = (pools[reference] ?: load(reference)).setEnabled(keyId, enabled)
+            pools[reference] = updated
+            if (!persist(reference, updated)) throw AgentModelFailure(ModelFailureKind.UNKNOWN)
+            Collections.unmodifiableList(ArrayList(updated.entries))
+        }
 
     private suspend fun persist(reference: ModelConfigurationRef, pool: KeyPool): Boolean = try {
         stateStore?.write(pool.state(reference))

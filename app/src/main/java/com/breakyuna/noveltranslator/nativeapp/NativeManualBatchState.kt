@@ -5,24 +5,36 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /** Fixed target metadata and bounded replacement parameters; restoring never grants write permission. */
 internal fun encodeManualBatch(batch: ManualTextBatch): ArrayList<String> = arrayListOf(
-    batch.replacement?.let { if (it.regex) "3" else "2" } ?: "1", batch.commandId.value, batch.ref.projectId.value, batch.ref.instanceId.value,
+    if (batch.nameAssignment != null) "5" else batch.replacement?.let { if (it.target != TextReplacementTarget.TRANSLATION) "4" else if (it.regex) "3" else "2" } ?: "1", batch.commandId.value, batch.ref.projectId.value, batch.ref.instanceId.value,
     batch.ref.generation.value.toString(), batch.expectedRevision.toString(), batch.change.name,
 ).apply {
-    batch.replacement?.let { add(it.find); add(it.replacement); add(it.caseSensitive.toString()); if (it.regex) add("true") }
+    batch.replacement?.let { add(it.find); add(it.replacement); add(it.caseSensitive.toString()); if (it.target != TextReplacementTarget.TRANSLATION) { add(it.regex.toString()); add(it.target.name) } else if (it.regex) add("true") }
+    batch.nameAssignment?.let { add(kotlinx.serialization.json.JsonArray(it.map { name -> kotlinx.serialization.json.JsonPrimitive(name) }).toString()) }
     batch.targets.forEach { add(it.id.value.toString()); add(it.row.toString()); add(it.fingerprint.sha256) }
 }
 
 internal fun decodeManualBatch(values: List<String>?, maxTargets: Int = 100): ManualTextBatch? = runCatching {
     if (values == null || values.isEmpty() || maxTargets !in 1..100_000) return null
-    val offset = when (values[0]) { "1" -> 7; "2" -> 10; "3" -> 11; else -> return null }
+    val offset = when (values[0]) { "1" -> 7; "2" -> 10; "3" -> 11; "4" -> 12; "5" -> 8; else -> return null }
     if (values.size !in (offset + 3)..(offset + 3 * maxTargets) || (values.size - offset) % 3 != 0) return null
     if (offset == 11 && values[10] != "true") return null
     val replacement = if (offset >= 10) TextReplacementOptions(values[7], values[8], when (values[9]) {
         "true" -> true; "false" -> false; else -> return null
-    }, regex = offset == 11) else null
+    }, regex = if (offset == 12) when(values[10]) {
+        "true" -> true; "false" -> false; else -> return null
+    } else offset == 11, target = if (offset == 12) TextReplacementTarget.valueOf(values[11])
+        else TextReplacementTarget.TRANSLATION) else null
+    val names = if (offset == 8) {
+        val json = kotlinx.serialization.json.Json.parseToJsonElement(values[7]) as? kotlinx.serialization.json.JsonArray ?: return null
+        json.map { element ->
+            val name = element as? kotlinx.serialization.json.JsonPrimitive ?: return null
+            if (!name.isString) return null
+            name.content
+        }
+    } else null
     ManualTextBatch(CommandId(values[1]), LocalProjectRef(ProjectId(values[2]), ProjectInstanceId(values[3]),
         RecoveryGeneration(values[4].toLong())), values[5].toLong(), TextBatchChange.valueOf(values[6]),
-        values.drop(offset).chunked(3).map { TextBatchTarget(ItemId(it[0].toLong()), it[1].toInt(), ObjectFingerprint(it[2])) }, replacement)
+        values.drop(offset).chunked(3).map { TextBatchTarget(ItemId(it[0].toLong()), it[1].toInt(), ObjectFingerprint(it[2])) }, replacement, names)
 }.getOrNull()
 
 /** Large selections stay in app-private files; SavedStateHandle carries only their digest. */

@@ -23,6 +23,7 @@ class CompatibleTranslationModel(
     private val transport: CompatibleHttpTransport = CompatibleHttpTransport(),
     private val keys: ModelKeyPool = ModelKeyPool(settings),
     private val usage: UsageLedgerRecorder? = null,
+    private val profiles: suspend (ModelConfigurationRef) -> NativeModelProfile? = { null },
 ) : ConfiguredTranslationBackend {
     override suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse {
         var reference: ModelConfigurationRef? = null
@@ -33,10 +34,11 @@ class CompatibleTranslationModel(
             val config = settings.resolve(request.configuration)
             reference = config.reference
             require(config.reference == request.configuration)
+            val profile = profiles(request.configuration)
             selection = keys.select(request.configuration)
             val protocol = config.protocol.toModelProtocol()
             if (protocol != ModelProtocol.OPENAI_CHAT_COMPLETIONS) {
-                val result = completeProtocol(lease, request, config, options, protocol,
+                val result = completeProtocol(lease, request, config, profile, options, protocol,
                     selection?.credential.orEmpty())
                 withContext(NonCancellable) {
                     keys.success(config.reference, selection)
@@ -46,10 +48,12 @@ class CompatibleTranslationModel(
                 return result
             }
             val secret = selection?.credential.orEmpty()
-            val body = CompatibleTranslationProtocol.request(request, config.model, options)
-            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret)
-                .header("Accept", "application/json")
-                .post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+            val body = applyProfileRequestOverrides(
+                CompatibleTranslationProtocol.request(request, config.model, options), profile, protocol)
+            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).apply {
+                header("Accept", "application/json")
+                profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
+            }.post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
             currentCoroutineContext().ensureActive()
             val owner = runtime.snapshot().activeRun
             if (owner == null || owner.identity != request.run || owner.owner != RuntimeOwner.TRANSLATION ||
@@ -86,8 +90,10 @@ class CompatibleTranslationModel(
             return value
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (notStored: TranslationResponseNotStored) { throw notStored }
+        catch (local: InvalidModelNetworkSettings) { throw local }
+        catch (local: ModelNetworkSettingsUnavailable) { throw local }
         catch (classified: AgentModelFailure) {
-            reference?.let { keys.failure(it, selection, classified.kind) }
+            reference?.let { keys.failure(it, selection, classified.kind, classified.retryAfterMillis) }
             throw classified
         }
         catch (_: Exception) {
@@ -103,8 +109,8 @@ class CompatibleTranslationModel(
     }
 
     private suspend fun completeProtocol(lease: RunLease, request: TranslationModelRequest,
-        config: NativeModelSettings, options: RemoteTranslationOptions, protocol: ModelProtocol,
-        secret: String): TranslationModelResponse {
+        config: NativeModelSettings, profile: NativeModelProfile?, options: RemoteTranslationOptions,
+        protocol: ModelProtocol, secret: String): TranslationModelResponse {
         val protocolRequest = CompatibleTranslationProtocol.protocolRequest(request, config.model, options)
         val body = ModelProtocols.request(protocol, protocolRequest)
         if (TextProjectFingerprint.utf8(body).size > 2 * 1024 * 1024)
@@ -120,8 +126,10 @@ class CompatibleTranslationModel(
             throw CancellationException("Translation stopped")
         val response = try {
             ModelProtocolTransport(transport, CapabilityCatalog.EMPTY)
-                .complete(protocol, config, secret, protocolRequest, CapabilityRequirement.NONE)
+                .complete(protocol, config, secret, protocolRequest, CapabilityRequirement.NONE, profile)
         } catch (cancelled: CancellationException) { throw cancelled }
+        catch (local: InvalidModelNetworkSettings) { throw local }
+        catch (local: ModelNetworkSettingsUnavailable) { throw local }
         catch (classified: AgentModelFailure) {
             withContext(NonCancellable) { audit.received(handle, unknownRequestUsage(), classified.kind) }
             throw classified

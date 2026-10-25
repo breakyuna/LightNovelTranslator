@@ -48,7 +48,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         try {
             projects.open(ref)
             val current = db.agent().currentChat(ref.instanceId.value, ref.generation.value)
-            if (current != null) require(db.agent().unresolved(ref.instanceId.value, ref.generation.value, current.id) == null)
+            if (current != null) require(!hasUnresolved(ref, current.id))
             createChat(ref)
         } finally { runtime.endProjectWrite(write) }
     }
@@ -186,7 +186,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         val write = runtime.beginProjectWrite()
         try {
             projects.open(preview.ref)
-            require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, preview.chat.value) == null)
+            require(!hasUnresolved(preview.ref, preview.chat.value))
             transaction {
                 val (current, boundary) = contextPreview(preview.ref, preview.chat)
                 require(current == preview) { "Conversation changed" }
@@ -212,7 +212,7 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         val write = runtime.beginProjectWrite()
         try {
             projects.open(ref)
-            require(db.agent().unresolved(ref.instanceId.value, ref.generation.value, preview.context.chat.value) == null)
+            require(!hasUnresolved(ref, preview.context.chat.value))
             transaction {
                 val (current, boundary) = autoContextPreview(ref, preview.context.chat, preview.retainUserTurns)
                 require(current == preview) { "Conversation changed" }
@@ -320,9 +320,9 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
                 }
                 val (current, source) = branchPreview(preview.ref, preview.chat, preview.message) { coroutine.ensureActive() }
                 require(current == preview) { "Conversation changed" }
-                require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, preview.chat.value) == null)
+                require(!hasUnresolved(preview.ref, preview.chat.value))
                 db.agent().currentChat(preview.ref.instanceId.value, preview.ref.generation.value)?.let { selected ->
-                    require(db.agent().unresolved(preview.ref.instanceId.value, preview.ref.generation.value, selected.id) == null)
+                    require(!hasUnresolved(preview.ref, selected.id))
                 }
                 require(replacement == null || preview.editable)
                 val targetChat = createChat(preview.ref)
@@ -388,6 +388,16 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         projects.open(ref)
         db.agent().unresolved(ref.instanceId.value, ref.generation.value, chatId.value)?.let { verified(it, ref) }
     }
+    override suspend fun hasPending(ref: LocalProjectRef, chatId: ChatId): Boolean = io {
+        projects.open(ref)
+        hasUnresolved(ref, chatId.value)
+    }
+    private fun hasUnresolved(ref: LocalProjectRef, chat: String): Boolean =
+        db.agent().unresolved(ref.instanceId.value, ref.generation.value, chat) != null ||
+            db.itemProposals().unresolved(ref.instanceId.value, ref.generation.value, chat).isNotEmpty() ||
+            db.policyProposals().unresolved(ref.instanceId.value, ref.generation.value, chat).isNotEmpty() ||
+            db.pdfPageProposals().unresolved(ref.instanceId.value, ref.generation.value, chat).isNotEmpty() ||
+            db.assetImportProposals().unresolved(ref.instanceId.value, ref.generation.value, chat).isNotEmpty()
     override suspend fun prepare(lease: RunLease, ref: LocalProjectRef, itemId: ItemId, translation: String): TextApproval = io {
         require(translation.length <= 65_536); TextProjectFingerprint.utf8(translation)
         val chat = requireNotNull(lease.identity.chatId)
@@ -401,14 +411,21 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             val frozen = row.copy(digest = digest(row))
             currentCoroutineContext().ensureActive()
             transaction {
-                check(db.agent().unresolved(ref.instanceId.value, ref.generation.value, chat.value) == null) { "Approval already pending" }
+                check(!hasUnresolved(ref, chat.value)) { "Approval already pending" }
                 db.agent().insertApproval(frozen)
             }
             verified(frozen, ref)
         } finally { runtime.endOperation(operation) }
     }
     override suspend fun cancelPending(ref: LocalProjectRef, runId: RunId): Unit = io {
-        db.agent().cancelPending(ref.instanceId.value, ref.generation.value, runId.value)
+        transaction {
+            db.agent().cancelPending(ref.instanceId.value, ref.generation.value, runId.value)
+            db.itemProposals().cancel(ref.instanceId.value, ref.generation.value, runId.value)
+            db.policyProposals().cancel(ref.instanceId.value, ref.generation.value, runId.value)
+            db.pdfPageProposals().cancel(ref.instanceId.value, ref.generation.value, runId.value)
+            db.assetImportProposals().cancelUnclaimed(ref.instanceId.value, ref.generation.value, runId.value,
+                System.currentTimeMillis().coerceAtLeast(0))
+        }
         Unit
     }
     override suspend fun reject(ref: LocalProjectRef, id: ApprovalRequestId, digest: String): Unit = io {

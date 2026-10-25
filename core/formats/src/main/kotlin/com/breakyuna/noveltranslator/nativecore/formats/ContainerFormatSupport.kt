@@ -558,6 +558,35 @@ internal fun escapeXmlText(value: String): String {
     return output.toString()
 }
 
+/**
+ * XML attribute-value escaping that is safe for both quote styles. Whitespace that XML attribute
+ * normalization would collapse is emitted as a character reference so a bilingual attribute keeps
+ * its intended line break instead of silently becoming a space.
+ */
+internal fun escapeXmlAttribute(value: String): String {
+    val output = StringBuilder(value.length + 16)
+    var index = 0
+    while (index < value.length) {
+        val codePoint = value.codePointAt(index)
+        val width = Character.charCount(codePoint)
+        if (isValidXmlCodePoint(codePoint)) {
+            when (codePoint) {
+                '&'.code -> output.append("&amp;")
+                '<'.code -> output.append("&lt;")
+                '>'.code -> output.append("&gt;")
+                '"'.code -> output.append("&quot;")
+                '\''.code -> output.append("&apos;")
+                '\n'.code -> output.append("&#10;")
+                '\r'.code -> output.append("&#13;")
+                '\t'.code -> output.append("&#9;")
+                else -> output.appendCodePoint(codePoint)
+            }
+        }
+        index += width
+    }
+    return output.toString()
+}
+
 /** XML text used through the DOM, where the serializer escapes markup itself. */
 internal fun validXmlText(value: String): String {
     val output = StringBuilder(value.length)

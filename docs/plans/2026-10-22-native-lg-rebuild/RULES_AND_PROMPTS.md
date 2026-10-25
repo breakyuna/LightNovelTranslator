@@ -1,12 +1,10 @@
 # 工程规则、提示词与远程翻译流水线
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
-
-当前源码和验证边界见 [HANDOFF §3、§44](HANDOFF.md)。§44 开发当时的未构建状态已由 #158 覆盖（含 §51—101）；§102—107 的规则交换/模板库/替换增量仅在未提交工作区，不能继承 #158。真实供应商仍未验证。本切片不关闭 R12/R14/R33、完整规则交换、全校对告警或 S1/S2。
+当前实施、提交、CI 与设备证据统一见 [HANDOFF §2—3](HANDOFF.md)。下文按专题保留历史切片契约，旧轮次的“未提交/未构建”不覆盖当前交接；规则/提示词整策略 Agent 审批见文末新增契约。
 
 ## 工程事实与 v1/v2 边界
 
-历史规则切片使用 schema v2；当前新建工程使用 schema v5（v3 增加多资产/格式身份，v4 增加资产移除归档，v5 增加逐修订姓名快照），保持原 application_id、TXT 原始字节、条目身份、既有指纹/命令编码及旧库隔离；规则表沿用 v2 引入的 text_policy、policy_revisions 和 policy_receipts。独立应用 Room 当前为 v9；规则切片不新增 Room 版本，也不手写导出 schema。
+历史规则切片使用 schema v2；当前新建工程使用 schema v6（v3 多资产/格式身份、v4 资产移除归档、v5 姓名修订快照、v6 条目批量回执），保持原 application_id、TXT 原始字节、条目身份、既有指纹/命令编码及旧库隔离；规则表沿用 v2 引入的 text_policy、policy_revisions 和 policy_receipts。独立应用 Room 的版本/权威导出边界见 HANDOFF；规则的设备本地审批表通过非破坏性迁移增加，不手写 schema 导出。
 
 v1 工程可继续读取、人工编辑、导出和重导入；只读规则查询返回空规则，不改文件版本。首次规则写入由 ProjectWriteStore 在同一写事务中检查 v1 schema、增加规则表、初始化空策略并更新 user_version=2；规则、全局工程修订、历史和终局回执一并提交。取消/异常回滚升级和业务数据。被拒绝写入仍保存不可变拒绝回执，因此也会进入 v2；未来版本或未知 schema 拒绝，不破坏性清库。
 
@@ -77,3 +75,13 @@ HANDOFF §64 已把 RuleExchange/RulePreviewService 与原生预设 JSON 接入�
 §102 新增 LgRuleJsonCodec 读取 LG 质量规则数组、字符串键值表与 RPG 角色名称/昵称映射，稳定 ID 由匹配语义派生；§103 新增 RuleCsvCodec 五列 CSV 与 LgRuleXlsxCodec 首工作表五列读取/写出，规则页接入格式选择和系统 SAF 导入/导出。§104 新增模板库 JSON 文件导入（合并/更新/替换）、逐项差异和导出；§105 新增模板正文独立编辑、触屏上移/下移与草稿保护。§106/§107 另增校对全查询字面替换、正则模式与 JavaScript 替换字符串，详见 [PROOFREADING_QUERY](PROOFREADING_QUERY.md) / [EDITOR_TOOLS](EDITOR_TOOLS.md)。
 
 这些源码仅在工作区，未提交、未构建；尚未覆盖 LG 宽容坏 JSON 修复、非字符串键值转换、全部 Excel 变体、系统预置/完整 LG 模板语言和完整 JavaScript 正则兼容。姓名写回仍未实现，详见 HANDOFF §108。
+
+## Agent 的规则与提示词整策略审批
+
+`project_text_policy` 读取完整已保存策略、指纹和工程修订。`prepare_text_policy` 要求读取到的基准指纹与严格原生策略 JSON，编译校验规则后固化完整前后值，覆盖规则增删改、类型/标志、顺序和提示词内容/启用状态。无变化、过时基准、非法类型或模式不发布提案。
+
+`NativePolicyProposalStore` 在设备 Room 的 `native_policy_proposals` 保存正文、摘要、身份、轻量差异计数和消费时间，与单条/多条条目审批共用单 Chat 待决门禁。审阅页提供前后差异、位置/标志/提示词及全部规则查看；一次接受绑定完整策略，不把临时草稿作为执行内容。
+
+`NativeTextProjectStore.approvedPolicy` 核对真实 Agent 租约和持久 CONSUMED 绑定，再通过既有 ProjectWriteStore 策略事务写入；完整策略、全局修订、policy_revisions 和 policy_receipts 同时提交。任何全局修订或策略指纹冲突都会留下稳定拒绝回执。消费后先查询工程回执；旧执行已退出且没有回执时取消未提交意图，不自动重放。复制/导入的工程事实不提供设备本地执行授权。
+
+接受后，干净的规则草稿刷新到工程事实；未保存草稿保留原基线并按现有修订规则呈现冲突。`policy_proposal_status` 查询实际状态、回执、修订和结果指纹。该整策略入口不等于逐规则选择或独立对象部分接受；完整工作区范围仍以 HANDOFF 为准。

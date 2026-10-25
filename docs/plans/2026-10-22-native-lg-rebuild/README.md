@@ -1,6 +1,6 @@
 # LNT 原生 Android 全面重构计划
 
-规划日期：2026-10-22。当前实现与证据见 [HANDOFF §3](HANDOFF.md)：提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101 的远程 TXT 批翻、规则/提示词、质量检查/扫描/定位/草稿替换、多资产 `.lnt` v4、格式适配、模型协议/多密钥、持久用量账本、固定翻译任务与恢复、Agent 应用级执行、RGSS 与工作区核心。§102 起的工作区增量新增规则 JSON/CSV/XLSX、模板库交换/编辑排序、全查询及正则/JS 替换、姓名写回（`.lnt` v5）、Agent 队列/steer 持久化（Room v9—v13）、翻译任务裁决、模型费用、RGSS 数据文件、持久翻译队列、自动上下文压缩、PDF 适配器、诊断日志/应用备份、技能库与 More 页；已提交为 `b47178a`，Actions run 40132451221 的 test/lint/release 与签名校验成功。五协议/密钥池/用量账本、翻译规划/去重/重试/检查点、规则交换/预设、任务队列与自动压缩已有独立核心或部分接线，尚未完成全部生产接线。设备/视觉、真实供应商和 Room `2.json`—`13.json` schema 导出仍缺。完整 S1/S2、G1—G5 和当前范围验收保持开放；PR10（`.lg`/Pi 兼容）与 OP06（旧 LNT 数据迁移）已取消，98 个历史功能 ID 保留追溯，当前有效 96 项。
+规划日期：2026-10-22。当前实施、验证基线与剩余工作只见 [HANDOFF](HANDOFF.md)；按需追溯 [历史记录](HANDOFF_HISTORY.md)。本文件定义目标，不重复维护动态进度。
 
 本计划执行用户本次决定：彻底重构 LNT，包括 UI；完整实现 LG Termux 的产品功能；仅保留并改造 LNT 的 Koog Agent 框架。不是在旧阅读器上继续增加功能，也不是 React/WebView 或 Node 后端移植。
 
@@ -28,14 +28,14 @@
 | [前台模拟执行](FOREGROUND_TRANSLATION.md) | 应用级执行、前台确认、通知停止和界面重附着的源码契约 |
 | [校对查询与统计](PROOFREADING_QUERY.md) | 字面搜索、状态筛选、同快照计数和编辑窗口成员保留契约 |
 | [人工批量操作](MANUAL_BATCH.md) | 固定选择、显式确认、原子状态/清空写入与终局回执契约 |
-| [工程规则与提示词](RULES_AND_PROMPTS.md) | `.lnt` v5、四类规则、RE2/J 语法/预算、草稿与远程流水线；§102—122 规则交换/队列/压缩/PDF/诊断等已由 `b47178a` 覆盖 |
-| [远程 TXT 批翻](REMOTE_TRANSLATION.md) | 远程确认、严格输出、持久请求/Token 回执与 Room v5（v5 源码已由 #158 覆盖，schema 导出待补） |
+| [工程规则与提示词](RULES_AND_PROMPTS.md) | `.lnt` v7、四类规则、RE2/J 语法/预算、草稿与远程流水线；规则/提示词整策略审批与 U05—U08 分区已接静态源码，完整证据见 HANDOFF |
+| [远程 TXT 批翻](REMOTE_TRANSLATION.md) | 远程确认、严格输出、持久请求/Token 回执；应用级队列/恢复/成员裁决议程见 HANDOFF（schema 导出待补） |
 | [共享请求调度](MODEL_SCHEDULING.md) | FIFO、固定并发/RPM、停止检查与事实分离的用量汇总契约 |
 | [字幕纯文本核心](SUBTITLE_CODECS.md) | SRT/LRC/ASS/SSA 核心与工程适配桥；另有 VTT 适配器，完整格式验收待补 |
 | [RGSS 归档与脚本](RGSS_CODECS.md) | RGSSAD v1/v3、Marshal、Scripts、Ruby 字面量及 Data 字符串读写核心；设备/完整往返验收待补 |
 | [运行恢复切片](RUN_RECOVERY.md) | 持久执行记录、请求/提交回执核对与不自动重放边界 |
 | [TXT 翻译切片](TXT_TRANSLATION.md) | 本地模拟网关、批次事务、取消与真实模型接入边界 |
-| [原生 TXT 存储契约](NATIVE_STORAGE.md) | 历史 v1 TXT 基础、当前 v5 多资产扩展、实例索引、事务、快照、归档移除、姓名快照和验证边界 |
+| [原生 TXT 存储契约](NATIVE_STORAGE.md) | 历史 v1 TXT 基础、当前 v7 多资产扩展、实例索引、事务、快照、归档移除、姓名快照、条目/规则/PDF 审批审计和验证边界 |
 | [静态审查与构建交接](STATIC_REVIEW.md) | 新模块实际边界、运行原型说明、LG 消费链及 PC/CI 命令 |
 
 各文档不把拟实现能力登记成现有能力。后续进度只更新交接记录；架构变化修改对应设计，功能增减修改功能矩阵，避免多个状态表互相矛盾。

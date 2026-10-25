@@ -125,6 +125,7 @@ class KeyPoolTest {
         assertNull(RetryAfterHeader.parseMillis("0", 0))
         assertNull(RetryAfterHeader.parseMillis("-1", 0))
         assertNull(RetryAfterHeader.parseMillis("later", 0))
+        assertNull(RetryAfterHeader.parseMillis("\u0663\u0660", 0))
         assertNull(RetryAfterHeader.parseMillis(null, 0))
 
         val format = SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US).apply {

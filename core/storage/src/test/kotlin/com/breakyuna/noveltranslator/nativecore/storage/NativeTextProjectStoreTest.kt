@@ -318,4 +318,10 @@ class NativeTextProjectStoreTest {
     private suspend fun expect(reason: TextProjectException.Reason, block: suspend () -> Any?) {
         try { block(); fail("Expected $reason") } catch (error: TextProjectException) { assertEquals(reason, error.reason) }
     }
+    @Test fun txtExportPreservesTheOriginalLineSeparator() = runBlocking {
+        val project = create("one\r\ntwo")
+        val output = ByteArrayOutputStream()
+        store.exportTxt(project.ref) { output }
+        assertEquals("one\r\ntwo", output.toString("UTF-8"))
+    }
 }

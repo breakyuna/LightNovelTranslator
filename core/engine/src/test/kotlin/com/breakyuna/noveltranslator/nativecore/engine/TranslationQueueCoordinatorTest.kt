@@ -120,7 +120,7 @@ class TranslationQueueCoordinatorTest {
         val first = batch("batch-1", member(1))
 
         assertEquals(
-            TranslationTaskQueueState.FAILED,
+            TranslationTaskQueueState.NEEDS_REVIEW,
             (coordinator.recordFailureBatch(identity, first) as TranslationQueueResult.Applied).task.state,
         )
         assertNull("FAILED never dispatches automatically", coordinator.nextRunnable())
@@ -133,7 +133,7 @@ class TranslationQueueCoordinatorTest {
 
         val second = batch("batch-2", member(1, failure = ModelFailureKind.TIMEOUT))
         assertEquals(
-            TranslationTaskQueueState.FAILED,
+            TranslationTaskQueueState.NEEDS_REVIEW,
             (coordinator.recordFailureBatch(identity, second) as TranslationQueueResult.Applied).task.state,
         )
         assertEquals(
@@ -157,8 +157,23 @@ class TranslationQueueCoordinatorTest {
     }
 
     @Test
-    fun uncertainDispatchRequiresExplicitKeepOrTerminateAndNeverDispatches() = runBlocking {
+    fun aLateFailureSettlementCannotReplaceAPause() = runBlocking {
         val store = MemoryStore()
+        val coordinator = coordinator(store)
+        val task = spec(projectA, "run-late-failure")
+        coordinator.enqueue(task, task.run.commandId)
+        requireNotNull(coordinator.nextRunnable())
+        coordinator.markPaused(task.queueIdentity(), CommandId("pause-before-failure"))
+        val result = coordinator.recordFailureBatch(
+            task.queueIdentity(), batch("late-failure", member(1)), requireRunning = true)
+        assertEquals(TranslationQueueRejection.INVALID_TRANSITION, result.rejection())
+        val saved = store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!
+        assertEquals(TranslationTaskQueueState.PAUSED, saved.state)
+        assertTrue(saved.batches.isEmpty())
+    }
+
+    @Test
+    fun uncertainDispatchRequiresExplicitKeepOrTerminateAndNeverDispatches() = runBlocking {        val store = MemoryStore()
         val coordinator = coordinator(store)
         val task = spec(projectA, "run-uncertain")
         coordinator.enqueue(task, task.run.commandId)

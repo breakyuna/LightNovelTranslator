@@ -12,7 +12,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
-/** Native SQLite schema v5 with multi-asset, archived history and per-revision name snapshots. */
+/** Native SQLite schema v7 with multi-asset, archived history and approval receipts. */
 internal object NativeProjectDatabase {
     private val v1Schema = listOf(
         """CREATE TABLE project (
@@ -138,6 +138,50 @@ internal object NativeProjectDatabase {
         if (sql.startsWith("CREATE TABLE item_revisions (")) v5ItemRevisionsSchema else sql
     }
 
+    private const val approvedItemReceiptSchema = """CREATE TABLE approved_item_receipts (
+        instance_id TEXT NOT NULL, generation INTEGER NOT NULL, command_id TEXT NOT NULL,
+        binding TEXT NOT NULL, payload TEXT NOT NULL, selected TEXT NOT NULL, result TEXT NOT NULL, revision INTEGER NOT NULL,
+        PRIMARY KEY(instance_id,generation,command_id))"""
+
+    private const val approvedPdfPageReceiptSchema = """CREATE TABLE approved_pdf_page_receipts (
+        instance_id TEXT NOT NULL, generation INTEGER NOT NULL, command_id TEXT NOT NULL,
+        binding TEXT NOT NULL, asset_id INTEGER NOT NULL, payload TEXT NOT NULL, selected TEXT NOT NULL,
+        result TEXT NOT NULL, revision INTEGER NOT NULL,
+        PRIMARY KEY(instance_id,generation,command_id))"""
+
+    /** v8 adds a verifiable combined body/name receipt encoding; tables are unchanged. */
+    fun ensureV8(db: SQLiteDatabase) {
+        if (db.version >= 8) return
+        ensureV7(db)
+        transaction(db) {
+            validateSchema(db)
+            db.version = 8
+        }
+        validateSchema(db)
+    }
+
+    fun ensureV7(db: SQLiteDatabase) {
+        if (db.version >= 7) return
+        ensureV6(db)
+        transaction(db) {
+            validateSchema(db)
+            db.execSQL(approvedPdfPageReceiptSchema)
+            db.version = 7
+        }
+        validateSchema(db)
+    }
+
+    fun ensureV6(db: SQLiteDatabase) {
+        if (db.version >= 6) return
+        ensureV5(db)
+        transaction(db) {
+            validateSchema(db)
+            db.execSQL(approvedItemReceiptSchema)
+            db.version = 6
+        }
+        validateSchema(db)
+    }
+
     fun ensureV4(db: SQLiteDatabase) {
         if (db.version >= 4) return
         ensureV3(db)
@@ -194,7 +238,9 @@ internal object NativeProjectDatabase {
         2 -> v1Schema + policySchema
         3 -> v3Schema
         4 -> v4Schema
-        else -> v5Schema
+        5 -> v5Schema
+        6 -> v5Schema + approvedItemReceiptSchema
+        else -> v5Schema + approvedItemReceiptSchema + approvedPdfPageReceiptSchema
     }
 
     private fun initialPolicy(db: SQLiteDatabase) {
@@ -433,8 +479,9 @@ internal object NativeProjectDatabase {
             else -> listOf("project", "assets", "asset_chunks", "items", "write_receipts", "item_revisions",
                 "text_policy", "policy_revisions", "policy_receipts", "project_settings", "asset_receipts", "asset_revisions")
         }
-        // v5 adds columns to item_revisions only; the table list intentionally stays unchanged.
-        return base + if (version >= 4) listOf("archived_items") else emptyList()
+        return base + (if (version >= 4) listOf("archived_items") else emptyList()) +
+            (if (version >= 6) listOf("approved_item_receipts") else emptyList()) +
+            (if (version >= 7) listOf("approved_pdf_page_receipts") else emptyList())
     }
 
     private fun hasSequenceTable(db: SQLiteDatabase, schema: String): Boolean = db.rawQuery(

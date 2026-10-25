@@ -90,9 +90,10 @@ class AgentCompactionServiceTest {
     private class FakeGate : AgentCompactionGatePort {
         var calls = 0
         var block: AgentCompactionBlock? = null
+        var laterBlock: AgentCompactionBlock? = null
         override suspend fun blockedReason(ref: LocalProjectRef, chat: ChatId): AgentCompactionBlock? {
             calls++
-            return block
+            return if (calls > 1 && laterBlock != null) laterBlock else block
         }
     }
 
@@ -141,6 +142,27 @@ class AgentCompactionServiceTest {
         assertEquals(AgentCompactionResult.Skipped(AgentCompactionSkip.ACTIVE_TOOL_LOOP),
             loop.service.compact(ref, chat))
         assertEquals(0, loop.contexts.prepareCalls)
+    }
+
+    @Test fun userDisabledCompactionNeverReadsHistoryOrRequestsSummary() = runTest {
+        val fakes = Fakes(toolTurnHistory())
+        fakes.gate.block = AgentCompactionBlock.USER_DISABLED
+        assertEquals(AgentCompactionResult.Skipped(AgentCompactionSkip.USER_DISABLED),
+            fakes.service.compact(ref, chat))
+        assertEquals(0, fakes.conversation.reads)
+        assertEquals(0, fakes.contexts.prepareCalls)
+        assertEquals(0, fakes.summary.calls)
+        assertEquals(0, fakes.contexts.saveCalls)
+    }
+
+    @Test fun disablingAfterPreparationStillPreventsThePaidSummaryRequest() = runTest {
+        val fakes = Fakes(toolTurnHistory())
+        fakes.gate.laterBlock = AgentCompactionBlock.USER_DISABLED
+        assertEquals(AgentCompactionResult.Skipped(AgentCompactionSkip.USER_DISABLED),
+            fakes.service.compact(ref, chat))
+        assertEquals(1, fakes.contexts.prepareCalls)
+        assertEquals(0, fakes.summary.calls)
+        assertEquals(0, fakes.contexts.saveCalls)
     }
 
     @Test fun unresolvedToolPairInHistoryIsSkippedWithoutSummary() = runTest {

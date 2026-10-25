@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewState
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactRecord
 import kotlinx.coroutines.flow.StateFlow
 
 /** Conversation first. Local exercises and execution diagnostics are explicitly expandable. */
@@ -45,7 +46,13 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     loadHistory: (suspend (LocalProjectRef, ChatId, AgentMessageCursor?) -> AgentMessagePage)? = null,
     historyDetail: (suspend (LocalProjectRef, ChatId, String) -> AgentMessageDetail)? = null,
     prepareBranch: (suspend (LocalProjectRef, ChatId, MessageId) -> AgentBranchPreview)? = null,
-    createBranch: (suspend (AgentBranchPreview, CommandId, String?) -> Unit)? = null) {
+    createBranch: (suspend (AgentBranchPreview, CommandId, String?) -> Unit)? = null,
+    reviewItemProposal: ((ItemProposalSummary) -> Unit)? = null,
+    reviewPolicyProposal: ((PolicyApprovalSummary) -> Unit)? = null,
+    reviewPdfPageProposal: ((PdfPageProposalSummary) -> Unit)? = null,
+    reviewAssetImportProposal: ((AssetImportProposalSummary) -> Unit)? = null,
+    workspace: NativeWorkspaceActions? = null,
+    saveWorkspaceArtifact: (WorkspaceArtifactRecord) -> Unit = {}) {
     val ref = state.project!!.ref
     val ready = !state.busy && !state.agentLoadIncomplete && !state.runLoadIncomplete
     var showModel by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
@@ -56,8 +63,15 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     var showQueue by rememberSaveable(ref.instanceId.value, ref.generation.value, state.agentChatId?.value) { mutableStateOf(false) }
     var tools by rememberSaveable(ref.instanceId.value, ref.generation.value, state.agentChatId?.value) { mutableStateOf(false) }
     var runs by rememberSaveable(ref.instanceId.value, ref.generation.value) { mutableStateOf(false) }
+    var showWorkspace by rememberSaveable(ref.instanceId.value, ref.generation.value,
+        state.agentChatId?.value, state.agentRunId?.value) { mutableStateOf(false) }
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
     LaunchedEffect(interrupted) { if (interrupted) runs = true }
+    if (showWorkspace && workspace != null) NativeWorkspaceDialog(
+        ref = ref, revision = state.project!!.revision, chatId = state.agentChatId,
+        runId = state.agentRunId, actions = workspace,
+        dismiss = { showWorkspace = false }, saveArtifact = saveWorkspaceArtifact,
+    )
     if (showModel) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
         { showModel = false }, configure, fetchModels, cancel, configureProfile, fetchProfile)
     if (showQueue) state.agentQueue?.let {
@@ -97,6 +111,15 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
         }
     }
     Column(Modifier.fillMaxSize()) {
+        state.agentContextStatus?.let { status ->
+            Text(stringResource(when (status) {
+                com.breakyuna.noveltranslator.nativecore.engine.AgentContextStatus.CHECKING -> R.string.native_auto_context_checking
+                com.breakyuna.noveltranslator.nativecore.engine.AgentContextStatus.SUMMARIZING -> R.string.native_auto_context_summarizing
+                com.breakyuna.noveltranslator.nativecore.engine.AgentContextStatus.COMPACTED -> R.string.native_auto_context_saved
+                com.breakyuna.noveltranslator.nativecore.engine.AgentContextStatus.FAILED -> R.string.native_auto_context_failed
+            }), Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag("native-auto-context-status"),
+                style = MaterialTheme.typography.bodySmall)
+        }
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(R.string.native_agent), style = MaterialTheme.typography.titleLarge)
@@ -115,7 +138,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     }, enabled = state.agentInput.isBlank(), onClick = { showChats = false; selectChat(chat) }) }
                 }
             }
-            TextButton(onClick = newChat, enabled = ready && state.approval == null && state.agentInput.isBlank(), modifier = Modifier.weight(1f)) {
+            TextButton(onClick = newChat, enabled = ready && !state.hasAgentApproval && state.agentInput.isBlank(), modifier = Modifier.weight(1f)) {
                 Text(stringResource(R.string.native_agent_new_chat), maxLines = 2)
             }
         }
@@ -141,6 +164,34 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 }
             }
             state.approval?.let { approval -> item(key = "approval-" + approval.id.value) { NativeApprovalCard(approval, ready, allow, reject) } }
+            if (reviewItemProposal != null) items(state.itemProposals, key = { "proposal-" + it.id.value }) { proposal ->
+                OutlinedButton(onClick = { reviewItemProposal(proposal) }, enabled = ready,
+                    modifier = Modifier.fillMaxWidth().testTag("native-item-proposal-${proposal.id.value}")) {
+                    Text(stringResource(R.string.native_item_proposal_summary, proposal.count,
+                        stringResource(itemProposalStateLabel(proposal.state))))
+                }
+            }
+            if (reviewPolicyProposal != null) items(state.policyProposals, key = { "policy-proposal-" + it.id.value }) { proposal ->
+                OutlinedButton(onClick = { reviewPolicyProposal(proposal) }, enabled = ready,
+                    modifier = Modifier.fillMaxWidth().testTag("native-policy-proposal-${proposal.id.value}")) {
+                    Text(stringResource(R.string.native_policy_proposal_summary, stringResource(policyApprovalStateLabel(proposal.state))))
+                }
+            }
+            if (reviewPdfPageProposal != null) items(state.pdfPageProposals, key = { "pdf-proposal-" + it.id.value }) { proposal ->
+                OutlinedButton(onClick = { reviewPdfPageProposal(proposal) }, enabled = ready,
+                    modifier = Modifier.fillMaxWidth().testTag("native-pdf-proposal-${proposal.id.value}")) {
+                    Text(stringResource(R.string.native_pdf_proposal_summary, proposal.count,
+                        stringResource(pdfPageProposalStateLabel(proposal.state))))
+                }
+            }
+            if (reviewAssetImportProposal != null) items(state.assetImportProposals,
+                key = { "asset-import-proposal-" + it.id.value }) { proposal ->
+                OutlinedButton(onClick = { reviewAssetImportProposal(proposal) }, enabled = ready,
+                    modifier = Modifier.fillMaxWidth().testTag("native-asset-import-proposal-${proposal.id.value}")) {
+                    Text(stringResource(R.string.native_asset_import_summary, proposal.target.value,
+                        stringResource(assetImportProposalStateLabel(proposal.state))))
+                }
+            }
             items(state.agentResults, key = { "result-" + it.id }) { result ->
                 Text(stringResource(R.string.native_edit_row, result.row + 1) + " · " + stringResource(when (result.state) {
                     TextApprovalState.COMMITTED -> R.string.native_agent_result_saved
@@ -151,6 +202,12 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 }), style = MaterialTheme.typography.bodySmall)
             }
             if (state.busy) item(key = "working") { Text(stringResource(R.string.native_working), style = MaterialTheme.typography.bodySmall) }
+            if (workspace != null) item(key = "workspace-files") {
+                OutlinedButton(onClick = { showWorkspace = true }, enabled = ready,
+                    modifier = Modifier.fillMaxWidth().testTag("native-workspace-open")) {
+                    Text(stringResource(R.string.native_workspace_open))
+                }
+            }
             item(key = "open-editor") { TextButton(onClick = { navigate(NativePage.PROOFREADING) }, enabled = !state.busy || state.foregroundExecutionActive) { Text(stringResource(R.string.native_open_proofreading)) } }
             if (state.recentRuns.isNotEmpty()) item(key = "runs") {
                 Column {
@@ -163,7 +220,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     if (loadHistory != null) TextButton(onClick = { showHistory = true }, enabled = !state.busy) {
                         Text(stringResource(R.string.native_agent_full_history))
                     }
-                    if (prepareContext != null) TextButton(onClick = { showContext = true }, enabled = ready && state.approval == null) {
+                    if (prepareContext != null) TextButton(onClick = { showContext = true }, enabled = ready && !state.hasAgentApproval) {
                         Text(stringResource(R.string.native_context_title))
                     }
                     TextButton(onClick = { tools = !tools }, enabled = !state.busy) { Text(stringResource(R.string.native_agent_local_tools)) }
@@ -175,7 +232,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
             Column(Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (state.modelSettings == null) TextButton(onClick = { showModel = true }, enabled = !state.busy) { Text(stringResource(R.string.native_model_missing)) }
                 else Text(stringResource(R.string.native_model_remote_notice), style = MaterialTheme.typography.labelSmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                if (state.approval != null) Text(stringResource(R.string.native_agent_waiting_hint), style = MaterialTheme.typography.bodySmall)
+                if (state.hasAgentApproval) Text(stringResource(R.string.native_agent_waiting_hint), style = MaterialTheme.typography.bodySmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (loadSteerHistory != null) TextButton(onClick = { showSteerHistory = true }, enabled = !state.busy) {
                         Text(stringResource(R.string.native_steer_history))
@@ -184,20 +241,20 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         modifier = Modifier.testTag("native-agent-queue-open")) {
                         Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0))
                     }
-                    TextButton(onClick = queueInput, enabled = ready && state.approval == null && state.agentInput.isNotBlank(),
+                    TextButton(onClick = queueInput, enabled = ready && !state.hasAgentApproval && state.agentInput.isNotBlank(),
                         modifier = Modifier.testTag("native-agent-queue-add")) {
                         Text(stringResource(R.string.native_agent_queue_add))
                     }
                 }
                 if (state.foregroundAgentActive) TextButton(onClick = steer,
-                    enabled = state.agentInput.isNotBlank() && state.approval == null) {
+                    enabled = state.agentInput.isNotBlank() && !state.hasAgentApproval) {
                     Text(stringResource(R.string.native_agent_steer))
                 }
                 Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(state.agentInput, input, modifier = Modifier.weight(1f), minLines = 2, maxLines = 5,
-                        enabled = (ready || state.foregroundAgentActive) && state.approval == null, label = { Text(stringResource(R.string.native_agent_message)) })
+                        enabled = (ready || state.foregroundAgentActive) && !state.hasAgentApproval, label = { Text(stringResource(R.string.native_agent_message)) })
                     if (state.busy) Button(onClick = cancel) { Text(stringResource(R.string.native_agent_stop)) }
-                    else Button(onClick = send, enabled = ready && state.approval == null && state.modelSettings != null && state.agentInput.isNotBlank()) {
+                    else Button(onClick = send, enabled = ready && !state.hasAgentApproval && state.modelSettings != null && state.agentInput.isNotBlank()) {
                         Text(stringResource(R.string.native_agent_send))
                     }
                 }
@@ -242,7 +299,7 @@ private fun NativeLocalAgentTools(state: NativeProjectUiState, query: () -> Unit
         if (state.agentMessages.isNotEmpty()) OutlinedButton(onClick = query, enabled = ready) { Text(stringResource(R.string.native_agent_query)) }
         Text(stringResource(R.string.native_agent_prepare), style = MaterialTheme.typography.titleSmall)
         Box {
-            OutlinedButton(onClick = { expanded = true }, enabled = ready && state.approval == null && state.items.isNotEmpty()) {
+            OutlinedButton(onClick = { expanded = true }, enabled = ready && !state.hasAgentApproval && state.items.isNotEmpty()) {
                 Text(if (entry == null) stringResource(R.string.native_empty_items) else stringResource(R.string.native_edit_row, entry.row + 1))
             }
             DropdownMenu(expanded, { expanded = false }) {
@@ -250,9 +307,9 @@ private fun NativeLocalAgentTools(state: NativeProjectUiState, query: () -> Unit
                     onClick = { selected = row.id.value; expanded = false }) }
             }
         }
-        OutlinedTextField(draft, { if (it.length <= 65_536) draft = it }, enabled = ready && state.approval == null,
+        OutlinedTextField(draft, { if (it.length <= 65_536) draft = it }, enabled = ready && !state.hasAgentApproval,
             label = { Text(stringResource(R.string.native_translation)) }, modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 8)
-        OutlinedButton(onClick = { entry?.let { prepare(it.id.value.toString(), draft) } }, enabled = ready && state.approval == null && entry != null) {
+        OutlinedButton(onClick = { entry?.let { prepare(it.id.value.toString(), draft) } }, enabled = ready && !state.hasAgentApproval && entry != null) {
             Text(stringResource(R.string.native_agent_prepare))
         }
     }

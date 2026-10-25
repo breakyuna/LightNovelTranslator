@@ -163,7 +163,10 @@ internal object NativeImportValidator {
             }
             db.rawQuery("SELECT 1 FROM item_revisions r WHERE NOT EXISTS " +
                 "(SELECT 1 FROM $allItems i WHERE i.id=r.item_id) LIMIT 1", null).use { if (it.moveToFirst()) corrupt() }
-            validateItemRevisions(db, version, limits, project, chains, revised, ::charge, checkActive)
+            val approvedEvidence = if (version >= 6) ApprovedItemReceiptAudit.validate(db, project, budget, ::charge, checkActive)
+                else emptyMap()
+            if (version >= 7) ApprovedPdfPageReceiptAudit.validate(db, project, budget, ::charge, checkActive)
+            validateItemRevisions(db, version, limits, project, chains, revised, approvedEvidence, ::charge, checkActive)
             if (currentFingerprints.any { (id, fingerprint) -> chains[id] != fingerprint }) corrupt()
             db.rawQuery("SELECT instance_id, generation, command_id, digest, item_id, outcome, revision, committed_at FROM write_receipts", null).use { cursor ->
                 while (cursor.moveToNext()) {
@@ -174,9 +177,12 @@ internal object NativeImportValidator {
                     if (cursor.getLong(1) <= 0 || cursor.getLong(4) <= 0 || cursor.getLong(6) !in 0..project.second || cursor.getLong(7) < 0) corrupt()
                 }
             }
+            val groupException = if (version >= 6) " AND NOT EXISTS (SELECT 1 FROM approved_item_receipts a WHERE " +
+                "a.instance_id=r.instance_id AND a.generation=r.generation AND a.command_id=r.command_id)" else ""
             db.rawQuery("""SELECT 1 FROM item_revisions r LEFT JOIN write_receipts w ON
                 w.instance_id = r.instance_id AND w.generation = r.generation AND w.command_id = r.command_id
-                WHERE w.command_id IS NULL OR w.outcome != 'COMMITTED' OR w.item_id != r.item_id OR w.revision != r.revision LIMIT 1""", null).use {
+                WHERE (w.command_id IS NULL OR w.outcome != 'COMMITTED' OR w.item_id != r.item_id OR w.revision != r.revision)
+                $groupException LIMIT 1""", null).use {
                 if (it.moveToFirst()) corrupt()
             }
             db.rawQuery("""SELECT 1 FROM write_receipts w LEFT JOIN item_revisions r ON
@@ -189,6 +195,7 @@ internal object NativeImportValidator {
 
     private fun validateItemRevisions(db: SQLiteDatabase, version: Int, limits: TextProjectLimits,
         project: Pair<ProjectId, Long>, chains: HashMap<Long, ObjectFingerprint>, revised: MutableSet<Long>,
+        approvedEvidence: Map<Long, ApprovedItemRevisionEvidence>,
         charge: (Long) -> Unit, checkActive: () -> Unit) {
         val items = if (version >= 4) "(SELECT * FROM items UNION ALL SELECT * FROM archived_items)" else "items"
         val nameColumns = if (version >= 5) ", r.name_source, r.name_translation" else ""
@@ -209,6 +216,7 @@ internal object NativeImportValidator {
         }
         db.rawQuery(sql, null).use { cursor ->
             var revision = 0L
+            val seenApproved = HashSet<Long>()
             while (cursor.moveToNext()) {
                 checkActive()
                 val next = cursor.getLong(0)
@@ -251,6 +259,17 @@ internal object NativeImportValidator {
                 chains[itemId] = expected
                 revised.add(itemId)
                 boundedIdentity(cursor.getString(6)); boundedIdentity(cursor.getString(8))
+                val approved = approvedEvidence[revision]
+                if (approved != null) {
+                    if (!cursor.isNull(19) || snapshotSourceText == null || snapshotTranslationText == null ||
+                        approved.instance != cursor.getString(6) || approved.generation != cursor.getLong(7) ||
+                        approved.command != cursor.getString(8) || approved.item != itemId || approved.row != cursor.getInt(10) ||
+                        approved.committedAt != cursor.getLong(9) ||
+                        approved.asset != cursor.getLong(12) || approved.base.sha256 != cursor.getString(2) ||
+                        approved.after != expected) corrupt()
+                    seenApproved.add(revision)
+                    continue
+                }
                 if (cursor.isNull(19)) corrupt()
                 val ref = LocalProjectRef(project.first, ProjectInstanceId(cursor.getString(6)),
                     RecoveryGeneration(cursor.getLong(7)))
@@ -258,9 +277,12 @@ internal object NativeImportValidator {
                     ItemId(cursor.getLong(1)), revision - 1, ObjectFingerprint(cursor.getString(2)),
                     cursor.getString(4), status)
                 if (TextProjectFingerprint.command(intent) != cursor.getString(19) &&
+                    !(version >= 8 && snapshotTranslationText != null && snapshotTranslation != null &&
+                        ItemTextReplacement.commandDigest(intent, snapshotTranslation) == cursor.getString(19)) &&
                     !matchesNameIntent(cursor.getString(19), cursor.getString(8), ref, cursor.getLong(1), revision - 1,
                         ObjectFingerprint(cursor.getString(2)), snapshotTranslation, snapshotSource, version)) corrupt()
             }
+            if (seenApproved.size != approvedEvidence.size) corrupt()
         }
     }
 
@@ -365,6 +387,7 @@ internal object NativeImportValidator {
             if (!it.moveToFirst()) corrupt()
             val settings = ProjectSettingsCodec.decode(it.getString(0))
             if (settings.fingerprint().sha256 != it.getString(1)) corrupt()
+            ProjectPageTranslationPolicy(settings, NativeProjectDatabase.assetSummaries(db))
         }
         for ((table, columns) in listOf(
             "asset_receipts" to listOf("generation", "revision", "committed_at"),
@@ -380,7 +403,7 @@ internal object NativeImportValidator {
         requireTextBudget(db, "asset_receipts", "digest", 64)
         requireTextBudget(db, "asset_receipts", "outcome", 32)
         requireTextBudget(db, "asset_receipts", "kind", 32)
-        requireTextBudget(db, "asset_revisions", "payload", 131_072)
+        requireTextBudget(db, "asset_revisions", "payload", ProjectSettingsCodec.MAX_CHARS)
         var chars = 0L
         db.rawQuery("SELECT instance_id,generation,command_id,digest,outcome,revision,asset_id,kind,committed_at FROM asset_receipts", null).use {
             while (it.moveToNext()) {
@@ -404,7 +427,8 @@ internal object NativeImportValidator {
                 val payload = it.getString(3)
                 chars += payload.length
                 if (chars > maxChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
-                JsonObjectValue.parse(payload, JsonInputLimits(131_072, 64))
+                JsonObjectValue.parse(payload, JsonInputLimits(ProjectSettingsCodec.MAX_CHARS, 64))
+                if (it.getString(1) == AssetMutationKind.SETTINGS.name) ProjectSettingsCodec.decode(payload)
             }
         }
     }

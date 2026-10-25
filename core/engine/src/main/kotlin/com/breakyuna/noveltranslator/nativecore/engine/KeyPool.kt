@@ -214,7 +214,7 @@ object RetryAfterHeader {
     fun parseMillis(value: String?, nowMillis: Long = System.currentTimeMillis()): Long? {
         val raw = value?.trim().orEmpty()
         if (raw.isEmpty()) return null
-        if (raw.all { it.isDigit() }) {
+        if (raw.all { it in '0'..'9' }) {
             val seconds = raw.toLongOrNull() ?: return MAX_DELAY_MILLIS
             if (seconds <= 0) return null
             return if (seconds > MAX_DELAY_MILLIS / 1_000) MAX_DELAY_MILLIS else seconds * 1_000

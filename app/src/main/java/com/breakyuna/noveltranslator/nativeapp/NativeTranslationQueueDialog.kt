@@ -28,8 +28,9 @@ import com.breakyuna.noveltranslator.nativecore.domain.TranslationQueueSnapshot
 import kotlinx.coroutines.CancellationException
 
 /**
- * Read-only projection of the durable queue. Task lifecycle commands stay in the existing
- * foreground/task dialogs until they can bind the same command identity and disposition facts.
+ * Durable queue projection with explicit lifecycle commands. The caller may pass dedicated
+ * start/pause callbacks; when omitted they fall back to the state-aware [resume] callback so the
+ * existing application entry point keeps a working QUEUED start and RUNNING pause action.
  */
 @Composable
 internal fun NativeTranslationQueueDialog(
@@ -37,12 +38,16 @@ internal fun NativeTranslationQueueDialog(
     ref: LocalProjectRef,
     resume: (com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueIdentity) -> Unit,
     cancel: (com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueIdentity) -> Unit,
+    start: (com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueIdentity) -> Unit = resume,
+    pause: (com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueIdentity) -> Unit = resume,
+    review: ((com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueIdentity) -> Unit)? = null,
+    refreshKey: Int = 0,
     dismiss: () -> Unit,
 ) {
     var snapshot by remember(ref) { mutableStateOf<TranslationQueueSnapshot?>(null) }
     var refresh by remember(ref) { mutableIntStateOf(0) }
     var failed by remember(ref) { mutableStateOf(false) }
-    LaunchedEffect(ref, refresh) {
+    LaunchedEffect(ref, refresh, refreshKey) {
         try {
             snapshot = load(ref); failed = false
         } catch (cancelled: CancellationException) {
@@ -71,14 +76,35 @@ internal fun NativeTranslationQueueDialog(
                                     style = MaterialTheme.typography.labelSmall)
                                 androidx.compose.foundation.layout.Row(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    if (entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.PAUSED) {
-                                        TextButton(onClick = { resume(entry.task.identity) }) {
+                                    if (entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.QUEUED) {
+                                        TextButton(onClick = { start(entry.task.identity) },
+                                            modifier = Modifier.testTag("native-queue-start-${entry.spec.run.runId.value}")) {
                                             Text(stringResource(R.string.native_queue_resume))
                                         }
                                     }
-                                    if (entry.task.state != com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.RUNNING &&
-                                        !entry.task.state.terminal) {
-                                        TextButton(onClick = { cancel(entry.task.identity) }) {
+                                    if (entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.PAUSED) {
+                                        TextButton(onClick = { resume(entry.task.identity) },
+                                            modifier = Modifier.testTag("native-queue-resume-${entry.spec.run.runId.value}")) {
+                                            Text(stringResource(R.string.native_queue_resume))
+                                        }
+                                    }
+                                    if (entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.RUNNING) {
+                                        TextButton(onClick = { pause(entry.task.identity) },
+                                            modifier = Modifier.testTag("native-queue-pause-${entry.spec.run.runId.value}")) {
+                                            Text(stringResource(R.string.native_pause))
+                                        }
+                                    }
+                                    if (review != null && entry.task.batches.isNotEmpty() &&
+                                        (entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.NEEDS_REVIEW ||
+                                            entry.task.state == com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.FAILED)) {
+                                        TextButton(onClick = { review?.invoke(entry.task.identity) },
+                                            modifier = Modifier.testTag("native-queue-review-${entry.spec.run.runId.value}")) {
+                                            Text(stringResource(R.string.native_queue_review_failures))
+                                        }
+                                    }
+                                    if (!entry.task.state.terminal) {
+                                        TextButton(onClick = { cancel(entry.task.identity) },
+                                            modifier = Modifier.testTag("native-queue-cancel-${entry.spec.run.runId.value}")) {
                                             Text(stringResource(R.string.native_queue_cancel))
                                         }
                                     }

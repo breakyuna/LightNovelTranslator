@@ -1,9 +1,12 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelFailure
+import com.breakyuna.noveltranslator.nativecore.domain.InvalidModelNetworkSettings
 import com.breakyuna.noveltranslator.nativecore.domain.ModelFailureKind
+import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsUnavailable
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelEndpoint
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettings
+import com.breakyuna.noveltranslator.nativecore.domain.NativeModelProfile
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettingsValidation
 import java.util.Collections
 import kotlinx.coroutines.CancellationException
@@ -47,6 +50,7 @@ class ModelProtocolTransport(
         credential: String,
         request: ModelProtocolRequest,
         requirements: CapabilityRequirement = CapabilityRequirement.NONE,
+        profile: NativeModelProfile? = null,
     ): ModelProtocolResponse {
         NativeModelSettingsValidation.validateKey(credential)
         val effective = if (request.tools.isEmpty()) requirements else requirements.copy(tools = true)
@@ -55,11 +59,13 @@ class ModelProtocolTransport(
         if (effective.vision) {
             throw UnsupportedModelCapability(CapabilityFeature.VISION, CapabilityRejectionReason.UNSUPPORTED)
         }
-        capabilities.requireSupported(protocol, settings.model, effective)
-        val plan = plan(protocol, settings.endpoint, settings.model, credential, request)
+        (profile?.capabilityCatalog(protocol) ?: capabilities)
+            .requireSupported(protocol, settings.model, effective)
+        val plan = plan(protocol, settings.endpoint, settings.model, credential, request, profile)
         val http = try {
             Request.Builder().url(plan.url).apply {
                 plan.headers.forEach { (name, value) -> header(name, value) }
+                profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
             }.post(plan.body.toRequestBody(JSON_MEDIA_TYPE)).build()
         } catch (_: IllegalArgumentException) {
             throw AgentModelFailure(ModelFailureKind.CONTENT)
@@ -68,6 +74,10 @@ class ModelProtocolTransport(
             transport.execute(http)
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (local: InvalidModelNetworkSettings) {
+            throw local
+        } catch (local: ModelNetworkSettingsUnavailable) {
+            throw local
         } catch (classified: AgentModelFailure) {
             throw classified
         } catch (_: Exception) {
@@ -97,10 +107,11 @@ class ModelProtocolTransport(
         model: String,
         credential: String,
         request: ModelProtocolRequest,
+        profile: NativeModelProfile? = null,
     ): ModelHttpPlan {
         if (request.model != model) throw AgentModelFailure(ModelFailureKind.CONTENT)
         NativeModelSettingsValidation.validateKey(credential)
-        val body = ModelProtocols.request(protocol, request)
+        val body = applyProfileRequestOverrides(ModelProtocols.request(protocol, request), profile, protocol)
         return ModelHttpPlan(endpointFor(protocol, endpoint, model), headers(protocol, credential), body)
     }
 

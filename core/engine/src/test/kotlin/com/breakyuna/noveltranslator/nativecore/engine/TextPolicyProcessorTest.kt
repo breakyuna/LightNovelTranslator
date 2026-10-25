@@ -70,4 +70,10 @@ class TextPolicyProcessorTest {
         val empty = TextPolicyProcessor(ProjectTextPolicy(listOf(rule("clear", TextRuleKind.PRE_REPLACE, "source", ""))))
         rejects(InvalidTextRule.Reason.PROTECTION) { empty.prepare("source") }
     }
+    @Test fun nameOnlyTermsAreNotInjectedIntoBodyTranslation() {
+        val nameOnly = ProjectTextRule("name", TextRuleKind.TERM, "Alice", "艾莉丝", scope = TextRuleScope.NAME)
+        val both = ProjectTextRule("both", TextRuleKind.TERM, "Bob", "鲍勃", scope = TextRuleScope.BOTH)
+        val prepared = TextPolicyProcessor(ProjectTextPolicy(listOf(nameOnly, both))).prepare("Alice and Bob")
+        assertEquals(listOf("鲍勃"), prepared.terms.map { it.target })
+    }
 }

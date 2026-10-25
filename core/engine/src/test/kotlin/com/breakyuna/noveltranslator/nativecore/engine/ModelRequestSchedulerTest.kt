@@ -147,6 +147,36 @@ class ModelRequestSchedulerTest {
         runtime.finishRun(lease)
     }
 
+    @Test fun optionalLimitsProviderOverridesTheCallbackWithoutChangingDefaultBehaviour() = runTest {
+        val provider = object : ModelRequestLimitsProvider {
+            override suspend fun current(): ModelRequestLimits = ModelRequestLimits(1, 60)
+        }
+        val scheduler = ModelRequestScheduler({ ModelRequestLimits(16) }, { testScheduler.currentTime },
+            limitsProvider = provider)
+        scheduler.execute(configuration) { }
+        val waiting = async { scheduler.execute(configuration) { testScheduler.currentTime } }
+        runCurrent()
+        assertFalse(waiting.isCompleted)
+        advanceTimeBy(1000); runCurrent()
+        assertEquals(1000L, waiting.await())
+    }
+
+    @Test fun changingProviderLimitsForAnExistingResourceIsRejected() = runTest {
+        var current = ModelRequestLimits(1, 60)
+        val provider = object : ModelRequestLimitsProvider {
+            override suspend fun current(): ModelRequestLimits = current
+        }
+        val scheduler = ModelRequestScheduler({ ModelRequestLimits(16) }, { testScheduler.currentTime },
+            limitsProvider = provider)
+        scheduler.execute(configuration) { }
+        current = ModelRequestLimits(2, 60)
+        val failure = try {
+            scheduler.execute(configuration) { }
+            null
+        } catch (error: IllegalArgumentException) { error }
+        assertNotNull(failure)
+    }
+
     @Test fun agentSharesTheRatePoolAndStopPreventsItsQueuedTransportCall() = runTest {
         val scheduler = ModelRequestScheduler({ ModelRequestLimits(1, 60) }, { testScheduler.currentTime })
         scheduler.execute(configuration) { }

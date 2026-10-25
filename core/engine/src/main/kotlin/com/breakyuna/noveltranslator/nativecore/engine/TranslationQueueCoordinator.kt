@@ -13,8 +13,16 @@ class TranslationQueueDispatch(
     val task: TranslationQueuedTask get() = entry.task
     val identity: TranslationTaskQueueIdentity get() = entry.task.identity
 
+    /**
+     * The frozen spec with the latest audited [TranslationQueuedTask.executionRevision] applied.
+     * The admitted spec remains in [entry] so queue audit and receipts keep their original binding.
+     */
+    val executionSpec: TranslationTaskSpec
+        get() = entry.spec.copy(revision = entry.task.actionableRevision)
+
     override fun toString(): String =
-        "TranslationQueueDispatch(run=${spec.run.runId.value}, revision=${stored.snapshot.revision})"
+        "TranslationQueueDispatch(run=${spec.run.runId.value}, revision=${stored.snapshot.revision}, " +
+            "executionRevision=$executionSpec.revision)"
 }
 
 /**
@@ -46,7 +54,10 @@ class TranslationQueueRefused(
  *   slot is skipped without losing its sequence position;
  * - a QUEUED task is only dispatched when its failure facts are fully decided. FAILED and
  *   NEEDS_REVIEW never dispatch automatically, and a crash-restored RUNNING task is never
- *   re-dispatched; resume requires an explicit command;
+ *   re-dispatched; [recoverRunning] may only pause or stop it from durable evidence, while resume
+ *   requires an explicit command;
+ * - a newer project revision is adopted only through the audited
+ *   [revalidateRevision]/[refuseRevision] commands; the admitted task identity is never rewritten;
  * - command replay is delegated to the pure aggregate, so the same [CommandId] and payload is
  *   idempotent and a reused identity with a different payload is refused;
  * - no model call, project write, source text, translation, credential or HTTP header ever
@@ -154,6 +165,168 @@ class TranslationQueueCoordinator(
             apply(identity.ref) { it.queue.markFailed(identity) }
         }
 
+    /**
+     * Audited revision refresh after a narrow evidence port proved that the newer project revision
+     * belongs to earlier queue work, not to unobserved user edits. The task identity stays frozen;
+     * only the next execution revision advances.
+     */
+    suspend fun revalidateRevision(
+        identity: TranslationTaskQueueIdentity,
+        command: CommandId,
+        revision: Long,
+    ): TranslationQueueResult = MUTEX.withLock {
+        apply(identity.ref) { it.queue.revalidateRevision(identity, command, revision) }
+    }
+
+    /** Audited refusal of an unproven revision; stops the task at NEEDS_REVIEW without dispatch. */
+    suspend fun refuseRevision(
+        identity: TranslationTaskQueueIdentity,
+        command: CommandId,
+    ): TranslationQueueResult = MUTEX.withLock {
+        apply(identity.ref) { it.queue.refuseRevision(identity, command) }
+    }
+
+    /**
+     * Reconciles persisted RUNNING tasks after process restart. For each task the narrow
+     * [TranslationQueueRecoveryPort] returns durable run/task evidence; a proven-safe execution is
+     * moved to PAUSED (explicit resume still required), an uncertain or failed execution to
+     * NEEDS_REVIEW/FAILED. A live same-process execution is never touched and no model request,
+     * project write or new dispatch is performed here.
+     */
+    suspend fun recoverRunning(
+        recovery: TranslationQueueRecoveryPort,
+    ): List<TranslationQueueRecoveryResult> = MUTEX.withLock {
+        val running = store.list().flatMap { stored ->
+            stored.snapshot.queue.tasks.filter { it.state == TranslationTaskQueueState.RUNNING }
+                .map { stored to it }
+        }
+        if (running.isEmpty()) return@withLock emptyList()
+        val results = ArrayList<TranslationQueueRecoveryResult>(running.size)
+        for ((stored, task) in running) {
+            val dispatch = TranslationQueueDispatch(
+                stored,
+                requireNotNull(stored.snapshot.entry(task.identity)),
+            )
+            val evidence = try {
+                recovery.evidence(dispatch)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            val verdict = when {
+                task.batches.any { batch ->
+                    batch.members.any { member ->
+                        !member.committed && member.receipt == TranslationFailureReceipt.DISPATCHED_NO_RECEIPT
+                    }
+                } -> TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+                evidence == null -> TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+                else -> recoveryVerdict(evidence)
+            }
+            if (verdict == TranslationQueueRecoveryVerdict.LIVE) {
+                results.add(TranslationQueueRecoveryResult(verdict, task))
+                continue
+            }
+            val result = apply(task.identity.ref) { base ->
+                canRecover(task.identity, base)?.let { current ->
+                    when (verdict) {
+                        TranslationQueueRecoveryVerdict.PAUSED ->
+                            base.queue.recoverPaused(current.identity)
+                        TranslationQueueRecoveryVerdict.NEEDS_REVIEW ->
+                            base.queue.markNeedsReview(current.identity)
+                        TranslationQueueRecoveryVerdict.FAILED ->
+                            base.queue.markFailed(current.identity)
+                        TranslationQueueRecoveryVerdict.CANCELLED ->
+                            base.queue.cancel(current.identity,
+                                CommandId("queue-recover-cancel-${current.identity.run.commandId.value}"))
+                        else -> TranslationQueueResult.Unchanged(base, current)
+                    }
+                } ?: TranslationQueueResult.Unchanged(base, base.queue.task(task.identity))
+            }
+            results.add(TranslationQueueRecoveryResult(verdict, (result as? TranslationQueueResult.Applied)?.task
+                ?: (result as? TranslationQueueResult.Unchanged)?.task))
+        }
+        results
+    }
+
+    /** Returns the durable dispatch only while exactly this identity is globally RUNNING. */
+    suspend fun running(identity: TranslationTaskQueueIdentity): TranslationQueueDispatch? = MUTEX.withLock {
+        val stored = store.load(identity.ref) ?: return@withLock null
+        val entry = stored.snapshot.entry(identity) ?: return@withLock null
+        if (entry.task.state != TranslationTaskQueueState.RUNNING) return@withLock null
+        if (store.list().any { other ->
+                other.snapshot.ref != identity.ref &&
+                    other.snapshot.queue.tasks.any { it.state == TranslationTaskQueueState.RUNNING }
+            }
+        ) return@withLock null
+        TranslationQueueDispatch(stored, entry)
+    }
+
+    private fun canRecover(
+        identity: TranslationTaskQueueIdentity,
+        snapshot: TranslationQueueSnapshot,
+    ): TranslationQueuedTask? =
+        snapshot.queue.task(identity)?.takeIf { it.state == TranslationTaskQueueState.RUNNING }
+
+    private fun recoveryVerdict(evidence: TranslationQueueRecoveryEvidence): TranslationQueueRecoveryVerdict {
+        if (evidence.live) return TranslationQueueRecoveryVerdict.LIVE
+        val task = evidence.task
+        val run = evidence.run
+        // A journal that still says RUNNING/WAITING may belong to this process or to an
+        // unreconciled execution. Never rewrite it as paused; the caller must recover the journal
+        // first, otherwise an active paid request could be misclassified.
+        if (run?.state == StoredRunState.RUNNING || run?.state == StoredRunState.WAITING_APPROVAL) {
+            return TranslationQueueRecoveryVerdict.LIVE
+        }
+        if (task != null && task.unresolvedDispatches > 0) {
+            return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+        if (task?.stage == "NEEDS_REVIEW" || run?.needsReview == true ||
+            run?.stage == StoredRunStage.REQUESTING
+        ) {
+            return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+        if (task?.stage == "CANCELLED" || task?.stage == "FAILED") {
+            return TranslationQueueRecoveryVerdict.FAILED
+        }
+        if (task?.stage == "COMPLETE") {
+            // The queue outcome was not durably recorded. Completion must be reconstructed from
+            // target/receipt/usage evidence by the scheduler rather than guessed in recovery.
+            return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+        if (task == null && run == null) return TranslationQueueRecoveryVerdict.PAUSED
+        if (task != null && (task.stage == "COMMITTING" || task.stage == "MARKING_FAILURE")) {
+            // Without the task store's receipt reconciliation a commit is not proven safe to
+            // resume. Keep the facts for explicit review instead of replaying the commit.
+            return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+        if (run?.state == StoredRunState.CANCELLED) {
+            // An explicit stop/cancel must not be reclassified as a resumable pause. Keep the
+            // task stopped for an explicit terminate/replace decision.
+            return TranslationQueueRecoveryVerdict.FAILED
+        }
+        if (run?.state == StoredRunState.FAILED) {
+            // A classified run failure with an intact task checkpoint and no unresolved receipt is
+            // safe to pause; the user still has to resume explicitly. A missing or partially
+            // committing task stays FAILED for adjudication.
+            return if (task == null || task.stage == "READY" || task.stage == "RESPONSE_RECORDED") {
+                TranslationQueueRecoveryVerdict.PAUSED
+            } else {
+                TranslationQueueRecoveryVerdict.FAILED
+            }
+        }
+        if (task == null && run?.stage != StoredRunStage.ACCEPTED) {
+            // A run that crossed a request/response/commit boundary without any fixed-task
+            // evidence cannot be proven safe to replay.
+            return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+        return when (task?.stage) {
+            null, "READY", "RESPONSE_RECORDED", "COMMITTING", "MARKING_FAILURE" ->
+                TranslationQueueRecoveryVerdict.PAUSED
+            else -> TranslationQueueRecoveryVerdict.NEEDS_REVIEW
+        }
+    }
+
     /** Proven completion without skipped members; any skip is refused instead of reclassified. */
     suspend fun markCompleted(
         identity: TranslationTaskQueueIdentity,
@@ -186,8 +359,20 @@ class TranslationQueueCoordinator(
     suspend fun recordFailureBatch(
         identity: TranslationTaskQueueIdentity,
         batch: TranslationTaskFailureBatch,
+        /**
+         * Execution settlement requires the task to still be RUNNING. A user pause/cancel that won
+         * the race keeps its own state instead of being replaced by a late failure batch.
+         */
+        requireRunning: Boolean = false,
     ): TranslationQueueResult = MUTEX.withLock {
-        apply(identity.ref) { it.queue.recordFailure(identity, batch) }
+        apply(identity.ref) { snapshot ->
+            val current = snapshot.task(identity)
+            if (requireRunning && current?.state != TranslationTaskQueueState.RUNNING) {
+                TranslationQueueResult.Rejected(snapshot.queue, TranslationQueueRejection.INVALID_TRANSITION)
+            } else {
+                snapshot.queue.recordFailure(identity, batch)
+            }
+        }
     }
 
     suspend fun retryMembers(

@@ -199,6 +199,8 @@ class TextTranslationIntegrationTest {
                         instance_id,generation,command_id,committed_at FROM revisions_v5""")
                     db.execSQL("DROP TABLE revisions_v5")
                     db.execSQL("DROP TABLE archived_items")
+                    db.execSQL("DROP TABLE IF EXISTS approved_item_receipts")
+                    db.execSQL("DROP TABLE IF EXISTS approved_pdf_page_receipts")
                     db.version = 3
                 }
             } finally { db.setForeignKeyConstraintsEnabled(true) }

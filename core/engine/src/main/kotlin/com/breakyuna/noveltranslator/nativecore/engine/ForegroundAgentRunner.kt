@@ -21,10 +21,13 @@ data class ForegroundAgentRequest(
 }
 
 /** Presentation metadata; request acceptance is a persisted user message, not a paid dispatch. */
+enum class AgentContextStatus { CHECKING, SUMMARIZING, COMPACTED, FAILED }
+
 data class AgentExecutionProgress(
     val accepted: Boolean = false,
     val timelineRevision: Long = 0,
     val userMessageId: MessageId? = null,
+    val contextStatus: AgentContextStatus? = null,
 )
 
 enum class ForegroundAgentPhase {

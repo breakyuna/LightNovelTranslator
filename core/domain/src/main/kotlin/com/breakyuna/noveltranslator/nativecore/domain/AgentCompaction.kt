@@ -203,7 +203,7 @@ interface AgentAutoContextPort {
 }
 
 /** Host facts that forbid a context rewrite before any billable summary request is prepared. */
-enum class AgentCompactionBlock { PENDING_APPROVAL, ACTIVE_TOOL_LOOP, ACTIVE_RUN }
+enum class AgentCompactionBlock { PENDING_APPROVAL, ACTIVE_TOOL_LOOP, ACTIVE_RUN, USER_DISABLED }
 
 interface AgentCompactionGatePort {
     suspend fun blockedReason(ref: LocalProjectRef, chat: ChatId): AgentCompactionBlock?
@@ -211,7 +211,7 @@ interface AgentCompactionGatePort {
 
 enum class AgentCompactionSkip {
     BELOW_THRESHOLD, INSUFFICIENT_USER_TURNS, NO_SAFE_CUT, PENDING_TOOL_CALL, INVALID_HISTORY,
-    STALE_CONTEXT, PENDING_APPROVAL, ACTIVE_TOOL_LOOP, ACTIVE_RUN,
+    STALE_CONTEXT, PENDING_APPROVAL, ACTIVE_TOOL_LOOP, ACTIVE_RUN, USER_DISABLED,
 }
 
 enum class AgentCompactionFailure {

@@ -64,6 +64,72 @@ class TranslationTaskQueueTest {
     }
 
     @Test
+    fun revisionRevalidationIsAuditedWithoutRewritingTheFrozenIdentity() {
+        val task = identity(projectA, "run-revalidate", revision = 4)
+        val queued = TranslationTaskQueue.empty().enqueue(task).appliedQueue()
+        val refreshed = queued.revalidateRevision(task, CommandId("revalidate-1"), 9)
+        val refreshedTask = refreshed.appliedTask()
+
+        assertEquals(4L, refreshedTask.identity.revision)
+        assertEquals(9L, refreshedTask.executionRevision)
+        assertEquals(9L, refreshedTask.actionableRevision)
+        assertEquals(TranslationTaskCommandAction.REVALIDATE_REVISION, refreshedTask.commands.single().action)
+        assertTrue(
+            refreshed.queue.revalidateRevision(task, CommandId("revalidate-1"), 9) is
+                TranslationQueueResult.Duplicate,
+        )
+        assertEquals(
+            TranslationQueueRejection.COMMAND_CONFLICT,
+            refreshed.queue.revalidateRevision(task, CommandId("revalidate-1"), 10).rejection(),
+        )
+        assertEquals(
+            TranslationQueueRejection.INVALID_EVIDENCE,
+            refreshed.queue.revalidateRevision(task, CommandId("revalidate-back"), 5).rejection(),
+        )
+
+        val running = refreshed.queue.dispatchNext().appliedQueue()
+        assertEquals(TranslationTaskQueueState.RUNNING, running.task(task)!!.state)
+        val claimedRefresh = running.revalidateRevision(task, CommandId("revalidate-running"), 11)
+        assertEquals(11L, claimedRefresh.appliedTask().executionRevision)
+        assertEquals(TranslationTaskQueueState.RUNNING, claimedRefresh.appliedTask().state)
+        assertEquals(
+            TranslationTaskQueueRejection.INVALID_EVIDENCE,
+            running.revalidateRevision(task, CommandId("revalidate-back-while-running"), 8).rejection(),
+        )
+    }
+
+    @Test
+    fun revisionRefusalIsAuditedAndRequiresReviewWithoutReopeningFacts() {
+        val task = identity(projectA, "run-refuse", revision = 4)
+        val queued = TranslationTaskQueue.empty().enqueue(task).appliedQueue()
+        val refused = queued.refuseRevision(task, CommandId("refuse-1"))
+        val refusedTask = refused.appliedTask()
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, refusedTask.state)
+        assertEquals(TranslationTaskCommandAction.REFUSE_REVISION, refusedTask.commands.single().action)
+        assertEquals(4L, refusedTask.identity.revision)
+        assertTrue(
+            refused.queue.refuseRevision(task, CommandId("refuse-1")) is TranslationQueueResult.Duplicate,
+        )
+        assertTrue(refused.queue.recoverPaused(task) is TranslationQueueResult.Rejected)
+    }
+
+    @Test
+    fun restartRecoveryPausesOnlyRunningAndNeverActsAsAUserResume() {
+        val task = identity(projectA, "run-recovery", revision = 4)
+        val queued = TranslationTaskQueue.empty().enqueue(task).appliedQueue()
+        assertEquals(
+            TranslationQueueRejection.INVALID_TRANSITION,
+            queued.recoverPaused(task).rejection(),
+        )
+        val running = queued.dispatchNext().appliedQueue()
+        val paused = running.recoverPaused(task).appliedTask()
+        assertEquals(TranslationTaskQueueState.PAUSED, paused.state)
+        assertEquals(task, paused.identity)
+        assertTrue(paused.commands.isEmpty())
+        assertTrue(running.recoverPaused(task).queue.recoverPaused(task) is TranslationQueueResult.Unchanged)
+    }
+
+    @Test
     fun pauseResumeAndCancelRequireTheExactIdentityAndAUserCommand() {
         val task = identity(projectA, "run-lifecycle")
         val running = TranslationTaskQueue.empty()

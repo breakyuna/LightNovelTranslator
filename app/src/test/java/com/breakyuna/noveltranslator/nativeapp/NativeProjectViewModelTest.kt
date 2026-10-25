@@ -55,11 +55,14 @@ class NativeProjectViewModelTest {
         } finally { Dispatchers.resetMain() }
     }
 
-    private fun model(saved: SavedStateHandle, projects: TextProjectPort, runner: ForegroundTranslationRunner): Pair<ViewModelStore, NativeProjectViewModel> {
+    private fun model(saved: SavedStateHandle, projects: TextProjectPort,
+                      runner: ForegroundTranslationRunner,
+                      thumbnailSource: PdfPageThumbnailSource? = null): Pair<ViewModelStore, NativeProjectViewModel> {
         val store = ViewModelStore().also(stores::add)
         val provider = ViewModelProvider(store, object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : ViewModel> create(modelClass: Class<T>): T = NativeProjectViewModel(app, saved, projects, runner) as T
+            override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                NativeProjectViewModel(app, saved, projects, runner, pdfPageThumbnailSource = thumbnailSource) as T
         })
         return store to provider[NativeProjectViewModel::class.java]
     }
@@ -67,6 +70,82 @@ class NativeProjectViewModelTest {
     private fun request(project: TextProjectSummary, after: Long = 0) = ForegroundTranslationRequest(project.ref,
         RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("simulate")), graph.simulationConfiguration,
         project.revision, after)
+
+    @Test fun filesAndLogsReturnToTheirOriginPage() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("files-origin"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+
+            model.selectPage(NativePage.WORKBENCH)
+            model.openFiles()
+            model.state.first { !it.busy }
+            assertEquals(NativePage.FILES, model.state.value.page)
+            assertEquals(project.ref, model.state.value.project?.ref)
+            model.closeFiles()
+            assertEquals(NativePage.WORKBENCH, model.state.value.page)
+            assertEquals(project.ref, model.state.value.project?.ref)
+
+            model.openLogs()
+            assertEquals(NativePage.LOGS, model.state.value.page)
+            model.closeLogs()
+            assertEquals(NativePage.WORKBENCH, model.state.value.page)
+
+            model.selectPage(NativePage.MORE)
+            model.openFiles()
+            model.state.first { !it.busy }
+            model.closeFiles()
+            assertEquals(NativePage.MORE, model.state.value.page)
+        }
+    }
+
+    @Test fun pdfThumbnailRejectsTheLateResultAfterTheUserMovesToAnotherPage() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("pdf-thumbnail"), "fixture", RelativePath("source.txt"),
+                "source".toByteArray())
+            graph.projects.importAsset(AssetImportPlan(CommandId("pdf-thumbnail-import"), project.ref, 0,
+                RelativePath("book.pdf"), ProjectAssetFormat.PDF, "%PDF-thumbnail-fixture".toByteArray(),
+                (1..2).map { page ->
+                    AssetImportUnit(page - 1, page, "page $page", tag = "page:$page",
+                        extraField = """{"v":1,"page":$page,"decision":"keep","digest":"${"a".repeat(64)}"}""")
+                }))
+            val snapshot = graph.projects.open(project.ref)
+            val asset = snapshot.assets.single { it.format == ProjectAssetFormat.PDF }
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val firstStarted = CompletableDeferred<Unit>()
+            val secondStarted = CompletableDeferred<Unit>()
+            val firstBytes = CompletableDeferred<ByteArray>()
+            val secondBytes = CompletableDeferred<ByteArray>()
+            val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) + ByteArray(8)
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations,
+                PdfPageThumbnailSource { _, _, _, page ->
+                    if (page == 1) {
+                        firstStarted.complete(Unit)
+                        firstBytes.await()
+                    } else {
+                        secondStarted.complete(Unit)
+                        secondBytes.await()
+                    }
+                })
+            model.state.first { !it.busy && it.project?.ref == snapshot.ref &&
+                it.project?.revision == snapshot.revision && it.project?.assets?.any { current -> current == asset } == true }
+
+            val first = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 1) }
+            firstStarted.await()
+            val second = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 2) }
+            secondStarted.await()
+            firstBytes.complete(png)
+            val late = runCatching { first.await() }.exceptionOrNull()
+            assertTrue(late is TextProjectException)
+            assertEquals(TextProjectException.Reason.STALE_PAGE, (late as TextProjectException).reason)
+            secondBytes.complete(png)
+            assertTrue(second.await().contentEquals(png))
+        }
+    }
 
     @Test fun qualitySelectionBatchLeavesOtherRowsUntouchedAndInvalidatesTheOldIndex() = runBlocking {
         withTimeout(20_000) {
@@ -387,6 +466,65 @@ class NativeProjectViewModelTest {
             assertFalse(done.policyDraft!!.dirty); assertEquals(1L, done.project!!.revision)
             assertEquals(policy.fingerprint(), graph.projects.textPolicy(project.ref).fingerprint)
             assertNull(saved.get<ArrayList<String>>("native_policy_draft"))
+        }
+    }
+
+    @Test fun ruleSectionSelectionSurvivesPageNavigationAndRecreationWithoutSavingTheDraft() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("rules-section-ui"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf(
+                "native_ref" to arrayListOf(project.ref.projectId.value,
+                    project.ref.instanceId.value, project.ref.generation.value.toString()),
+                "native_page" to NativePage.RULES.name))
+            val (store, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy && it.policyDraft != null }
+            assertEquals(NativePage.RULES, first.state.value.page)
+            assertEquals(NativeRuleSection.GLOSSARY, first.state.value.rulesSection)
+            first.openRules(NativeRuleSection.PRE_REPLACE)
+            assertEquals(NativePage.RULES, first.state.value.page)
+            assertEquals(NativeRuleSection.PRE_REPLACE, first.state.value.rulesSection)
+            assertEquals("PRE_REPLACE", saved.get<String>("native_rules_section"))
+            first.changeTextPolicy(first.state.value.policyDraft!!.policy.changed(prompt = "draft"))
+            val command = first.state.value.policyDraft!!.command
+            first.selectRulesSection(NativeRuleSection.POST_REPLACE)
+            assertEquals(NativeRuleSection.POST_REPLACE, first.state.value.rulesSection)
+            assertTrue(first.state.value.policyDraft!!.dirty)
+            first.selectPage(NativePage.MORE)
+            assertEquals(NativePage.MORE, first.state.value.page)
+            assertEquals(NativeRuleSection.POST_REPLACE, first.state.value.rulesSection)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            first.selectPage(NativePage.RULES)
+            store.clear(); first.viewModelScope.coroutineContext.job.join()
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            restored.state.first { !it.busy && it.policyDraft != null }
+            assertEquals(NativePage.RULES, restored.state.value.page)
+            assertEquals(NativeRuleSection.POST_REPLACE, restored.state.value.rulesSection)
+            assertEquals(command, restored.state.value.policyDraft!!.command)
+            assertEquals("draft", restored.state.value.policyDraft!!.policy.prompt)
+            assertTrue(restored.state.value.policyDraft!!.dirty)
+        }
+    }
+
+    @Test fun anInvalidReplacementSaveKeepsTheDraftAndIdentifiesTheRule() = runBlocking {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("rules-invalid-ui"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy && it.policyDraft != null }
+            val baseline = model.state.value.policyDraft!!
+            model.changeTextPolicy(baseline.policy.changed(rules = listOf(
+                ProjectTextRule("bad", TextRuleKind.PRE_REPLACE, "(", "", regex = true))))
+            model.saveTextPolicy()
+            val rejected = model.state.first { it.policyInvalidRuleId == "bad" }
+            assertEquals(R.string.native_policy_invalid, rejected.error)
+            assertEquals("bad", rejected.policyInvalidRuleId)
+            assertTrue(rejected.policyDraft!!.dirty)
+            assertEquals("(", rejected.policyDraft!!.policy.rules.single().source)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            assertEquals(encodePolicyDraft(rejected.policyDraft!!), saved.get<ArrayList<String>>("native_policy_draft"))
         }
     }
 

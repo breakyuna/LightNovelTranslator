@@ -1,1 +1,10 @@
-<manifest />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <service
+            android:name="com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceInterpreterService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":workspace_interpreter"
+            android:stopWithTask="true" />
+    </application>
+</manifest>

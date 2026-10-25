@@ -86,6 +86,8 @@ class WorkspaceScriptLimits(
     val maxArtifacts: Int,
     val maxChangeBytes: Long,
     val maxArtifactBytes: Long,
+    val maxMaterialReadBytes: Long = 8L * 1024 * 1024,
+    val maxTotalMaterialReadBytes: Long = 64L * 1024 * 1024,
 ) {
     init {
         require(maxOutputBytes in 1..WorkspaceHardLimits.MAX_OUTPUT_BYTES)
@@ -94,6 +96,8 @@ class WorkspaceScriptLimits(
         require(maxArtifacts in 1..WorkspaceHardLimits.MAX_ARTIFACTS)
         require(maxChangeBytes in 1..WorkspaceHardLimits.MAX_CHANGE_BYTES)
         require(maxArtifactBytes in 1..WorkspaceHardLimits.MAX_ARTIFACT_BYTES)
+        require(maxMaterialReadBytes in 1..WorkspaceHardLimits.MAX_SINGLE_BYTES)
+        require(maxTotalMaterialReadBytes in maxMaterialReadBytes..WorkspaceHardLimits.MAX_TOTAL_BYTES)
     }
 
     companion object {
@@ -104,6 +108,8 @@ class WorkspaceScriptLimits(
             maxArtifacts = budget.maxArtifacts,
             maxChangeBytes = budget.maxChangeBytes,
             maxArtifactBytes = budget.maxArtifactBytes,
+            maxMaterialReadBytes = budget.maxMaterialBytes,
+            maxTotalMaterialReadBytes = budget.maxTotalMaterialBytes,
         )
     }
 }

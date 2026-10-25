@@ -31,6 +31,10 @@ object AppBackupPaths {
     const val PROMPT_TEMPLATES = "app/prompt-templates.json"
     const val RULE_PRESET_PREFIX = "app/rule-presets/"
     const val AGENT_CHAT_PREFIX = "app/agent-chats/"
+    const val APP_PREFERENCES = "app/preferences.json"
+    const val NETWORK_SETTINGS = "app/network-settings.json"
+    const val REQUEST_LIMITS = "app/request-limits.json"
+    const val LABORATORY_SETTINGS = "app/laboratory-settings.json"
 
     fun rulePreset(fileName: String): String = RULE_PRESET_PREFIX + fileName
     fun agentChat(relativeName: String): String = AGENT_CHAT_PREFIX + relativeName
@@ -42,6 +46,10 @@ enum class AppBackupEntryKind(val pathPrefix: String, val exactPath: String?) {
     PROMPT_TEMPLATES(AppBackupPaths.PROMPT_TEMPLATES, AppBackupPaths.PROMPT_TEMPLATES),
     RULE_PRESET(AppBackupPaths.RULE_PRESET_PREFIX, null),
     AGENT_CHAT_HISTORY(AppBackupPaths.AGENT_CHAT_PREFIX, null),
+    APP_PREFERENCES(AppBackupPaths.APP_PREFERENCES, AppBackupPaths.APP_PREFERENCES),
+    NETWORK_SETTINGS(AppBackupPaths.NETWORK_SETTINGS, AppBackupPaths.NETWORK_SETTINGS),
+    REQUEST_LIMITS(AppBackupPaths.REQUEST_LIMITS, AppBackupPaths.REQUEST_LIMITS),
+    LABORATORY_SETTINGS(AppBackupPaths.LABORATORY_SETTINGS, AppBackupPaths.LABORATORY_SETTINGS),
 }
 
 /**

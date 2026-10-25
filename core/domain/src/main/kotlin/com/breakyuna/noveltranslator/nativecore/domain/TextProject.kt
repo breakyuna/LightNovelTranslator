@@ -12,10 +12,11 @@ object NativeProjectFormat {
     const val EXTENSION = "lnt"
 
     /**
-     * v5 adds per-revision source/translated-name snapshots to item_revisions. The item table
-     * shape and the v4 archived_items layout are unchanged.
+     * v7 adds approval-bound PDF page decision receipts; v6 added approval-bound item batch
+     * receipts; v5 added per-revision source/translated-name snapshots to item_revisions. The
+     * item table shape and the v4 archived_items layout are unchanged.
      */
-    const val SCHEMA_VERSION = 5
+    const val SCHEMA_VERSION = 8
     const val APPLICATION_ID = 0x4c4e5431 // LNT1, independent of the filename.
 }
 

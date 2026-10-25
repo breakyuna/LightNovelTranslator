@@ -1,5 +1,11 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import com.breakyuna.noveltranslator.nativecore.domain.LaboratorySettings
+import com.breakyuna.noveltranslator.nativecore.domain.LaboratorySettingsCodec
+import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettings
+import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsCodec
+import com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimits
+import com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimitsCodec
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelProtocol
 import com.breakyuna.noveltranslator.nativecore.domain.PriceTable
 import com.breakyuna.noveltranslator.nativecore.domain.PriceTableCodec
@@ -8,7 +14,10 @@ import com.breakyuna.noveltranslator.nativecore.domain.PromptTemplateSet
 import com.breakyuna.noveltranslator.nativecore.domain.RulePreset
 import com.breakyuna.noveltranslator.nativecore.domain.RulePresetCodec
 import com.breakyuna.noveltranslator.nativecore.domain.TextProjectFingerprint
+import com.breakyuna.noveltranslator.nativecore.storage.NativeLaboratorySettingsStore
+import com.breakyuna.noveltranslator.nativecore.storage.NativeModelNetworkSettingsStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeModelSettingsStore
+import com.breakyuna.noveltranslator.nativecore.storage.NativeRequestLimitsStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativePriceTableStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativePromptTemplateStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeRulePresetStore
@@ -37,6 +46,10 @@ internal class NativeAppBackupDataPort(
     private val prices: NativePriceTableStore,
     private val templates: NativePromptTemplateStore,
     private val presets: NativeRulePresetStore,
+    private val preferences: NativeAppSettingsStore? = null,
+    private val network: NativeModelNetworkSettingsStore? = null,
+    private val limits: NativeRequestLimitsStore? = null,
+    private val laboratory: NativeLaboratorySettingsStore? = null,
 ) : AppBackupDataPort {
     override suspend fun exportEntries(): List<AppBackupEntry> {
         val result = ArrayList<AppBackupEntry>()
@@ -61,6 +74,31 @@ internal class NativeAppBackupDataPort(
             result += AppBackupEntry.bytes(AppBackupPaths.rulePreset("preset-$index.json"), AppBackupEntryKind.RULE_PRESET,
                 TextProjectFingerprint.utf8(RulePresetCodec.encode(preset)))
         }
+        preferences?.let { store ->
+            val value = store.snapshot()
+            val json = buildJsonObject {
+                put("schema", 1)
+                put("theme", value.themeMode.name)
+                put("automaticContextSummary", value.automaticContextSummary)
+                put("diagnosticsIncludeDetails", value.diagnosticsIncludeDetails)
+                put("language", value.language.name)
+                put("persona", value.appPersona)
+            }.toString()
+            result += AppBackupEntry.bytes(AppBackupPaths.APP_PREFERENCES, AppBackupEntryKind.APP_PREFERENCES,
+                TextProjectFingerprint.utf8(json))
+        }
+        network?.let { store ->
+            result += AppBackupEntry.bytes(AppBackupPaths.NETWORK_SETTINGS, AppBackupEntryKind.NETWORK_SETTINGS,
+                TextProjectFingerprint.utf8(ModelNetworkSettingsCodec.encode(store.load())))
+        }
+        limits?.let { store ->
+            result += AppBackupEntry.bytes(AppBackupPaths.REQUEST_LIMITS, AppBackupEntryKind.REQUEST_LIMITS,
+                TextProjectFingerprint.utf8(ModelRequestLimitsCodec.encode(store.load())))
+        }
+        laboratory?.let { store ->
+            result += AppBackupEntry.bytes(AppBackupPaths.LABORATORY_SETTINGS, AppBackupEntryKind.LABORATORY_SETTINGS,
+                TextProjectFingerprint.utf8(LaboratorySettingsCodec.encode(store.load())))
+        }
         return result
     }
 
@@ -68,6 +106,10 @@ internal class NativeAppBackupDataPort(
         var model: RestoredModel? = null
         var price: PriceTable? = null
         var restoredTemplates: PromptTemplateSet? = null
+        var restoredPreferences: NativeAppPreferences? = null
+        var restoredNetwork: ModelNetworkSettings? = null
+        var restoredLimits: ModelRequestLimits? = null
+        var restoredLaboratory: LaboratorySettings? = null
         val restoredPresets = ArrayList<RulePreset>()
         val seenPresets = HashSet<String>()
         for (entry in entries) {
@@ -113,11 +155,47 @@ internal class NativeAppBackupDataPort(
                 }
                 AppBackupEntryKind.AGENT_CHAT_HISTORY ->
                     throw IllegalArgumentException("Agent chat restore is not supported by this build")
+                AppBackupEntryKind.APP_PREFERENCES -> {
+                    require(restoredPreferences == null) { "Duplicate preferences" }
+                    require(preferences != null) { "Preferences are not available in this build" }
+                    val root = strictJson(text)
+                    require(root["schema"]?.jsonPrimitive?.int == 1) { "Unsupported preferences schema" }
+                    val theme = NativeThemeMode.parse(root["theme"]?.jsonPrimitive?.content)
+                    val language = NativeAppLanguage.parse(root["language"]?.jsonPrimitive?.content)
+                    restoredPreferences = NativeAppPreferences(
+                        themeMode = theme,
+                        automaticContextSummary = root["automaticContextSummary"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+                            ?: throw IllegalArgumentException("Missing automatic context flag"),
+                        diagnosticsIncludeDetails = root["diagnosticsIncludeDetails"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
+                            ?: throw IllegalArgumentException("Missing diagnostics flag"),
+                        language = language,
+                        appPersona = root["persona"]?.jsonPrimitive?.content.orEmpty(),
+                    )
+                }
+                AppBackupEntryKind.NETWORK_SETTINGS -> {
+                    require(restoredNetwork == null) { "Duplicate network settings" }
+                    require(network != null) { "Network settings are not available in this build" }
+                    restoredNetwork = ModelNetworkSettingsCodec.decode(text)
+                }
+                AppBackupEntryKind.REQUEST_LIMITS -> {
+                    require(restoredLimits == null) { "Duplicate request limits" }
+                    require(limits != null) { "Request limits are not available in this build" }
+                    restoredLimits = ModelRequestLimitsCodec.decode(text)
+                }
+                AppBackupEntryKind.LABORATORY_SETTINGS -> {
+                    require(restoredLaboratory == null) { "Duplicate laboratory settings" }
+                    require(laboratory != null) { "Laboratory settings are not available in this build" }
+                    restoredLaboratory = LaboratorySettingsCodec.decode(text)
+                }
             }
         }
         val fixedModel = model
         val fixedPrice = price
         val fixedTemplates = restoredTemplates
+        val fixedPreferences = restoredPreferences
+        val fixedNetwork = restoredNetwork
+        val fixedLimits = restoredLimits
+        val fixedLaboratory = restoredLaboratory
         return object : AppBackupRestoreSession {
             override suspend fun publish() {
                 fixedModel?.let { models.saveProfile(it.endpoint, it.model, it.protocol, emptyList()) }
@@ -129,6 +207,12 @@ internal class NativeAppBackupDataPort(
                 for (preset in restoredPresets) {
                     val existing = runCatching { presets.load(preset.id) }.getOrNull()
                     presets.save(preset, existing?.let(RulePresetCodec::fingerprint))
+                }
+                fixedPreferences?.let { requireNotNull(preferences).restore(it) }
+                fixedNetwork?.let { requireNotNull(network).save(it, this@NativeAppBackupDataPort.network?.fingerprint()) }
+                fixedLimits?.let { requireNotNull(limits).save(it, this@NativeAppBackupDataPort.limits?.fingerprint()) }
+                fixedLaboratory?.let {
+                    requireNotNull(laboratory).save(it, this@NativeAppBackupDataPort.laboratory?.fingerprint())
                 }
             }
         }

@@ -36,11 +36,12 @@ import kotlinx.serialization.json.put
  *   digests. Legacy/missing current metadata is rebuilt by re-extracting the original and
  *   matching row + source + name; a stale current locator fails closed instead of guessing.
  *
- * Scope boundary: a string that physically spans lines or uses triple quotes is scanned,
- * validated and preserved exactly, but is not offered as a unit. This covers LG's single-line
- * double-quoted extraction without risking a rewrite that would move trailing code between
- * lines. Single-quoted literals are scanned/preserved but not extracted (LG scans only double
- * quotes). Python blocks are preserved and never extracted. Name slots follow
+ * Scope boundary: single-line double-quoted literals and double- or single-quoted triple literals
+ * (including ones that physically span lines) are extracted. A rewritten triple literal is
+ * emitted as a normal double-quoted Ren'Py literal with `\n` escapes, so the target statement
+ * stays valid and no escape sequence from the source is reinterpreted. Raw triple literals keep
+ * literal backslashes when read and are rewritten with normal escaping only when a translation
+ * is applied. Python blocks are preserved and never extracted. Name slots follow
  * [FormatWriteOptions.writeTranslatedNames]: false writes the source name, true writes a
  * non-empty translated name with source fallback; the contract default is false.
  * Unlike LG's writer, a non-PROCESSED dialogue/string unit never substitutes its source into
@@ -65,12 +66,12 @@ class RenpyFormatAdapter : TextFormatAdapter {
             put("unsupported_statements", parsed.unsupportedStrings)
             put("unit_count", units.size)
         }.toString()
-        val warnings = if (parsed.multilineStrings > 0 || parsed.unsupportedStrings > 0) {
+        val warnings = if (parsed.unsupportedStrings > 0) {
             listOf(
                 FormatWarning(
                     code = "RENPY_UNSUPPORTED_STRING",
                     path = path.value,
-                    message = "Multiline or triple-quoted strings are preserved but not extracted",
+                    message = "Unsupported string syntax is preserved but not extracted",
                 ),
             )
         } else {
@@ -153,7 +154,8 @@ class RenpyFormatAdapter : TextFormatAdapter {
             if (!seenTargets.add(locator.target.row)) {
                 throw InvalidTransRenpyFormat(InvalidTransRenpyFormat.Reason.DUPLICATE_LOCATOR, unit.row)
             }
-            edits.add(RenpyLineEdit(line.start, line.contentEnd, locator.target.indent + replaced))
+            edits.add(RenpyLineEdit(line.start, locator.target.endOffset,
+                locator.target.indent + replaced))
         }
         if (edits.isEmpty()) return original
         return applyRenpyEdits(original, edits)
@@ -190,6 +192,7 @@ private class RenpyLiteralScan(
 private class RenpyStatement(
     val lineIndex: Int,
     val row: Int,
+    val endOffset: Int,
     val raw: String,
     val indent: String,
     val code: String,
@@ -220,6 +223,7 @@ private class RenpyHeader(
 
 private class RenpyStringScan(
     val covered: BooleanArray,
+    val multiLineEnd: Map<Int, Int>,
     val multilineStrings: Int,
 )
 
@@ -294,9 +298,12 @@ private fun parseRenpyScript(text: String): RenpyParsed {
                     text.substring(lines[next].start, lines[next].contentEnd),
                 )
                 if (candidate != null) break
-                val statement = parseRenpyStatement(text, lines[next], header.kind)
+                val statementEnd = stringScan.multiLineEnd[next] ?: next
+                val statement = parseRenpyStatement(text, lines, next, statementEnd, header.kind)
                 statements.add(statement)
                 if (statement.hasUnsupported) unsupportedStatements++
+                next = statementEnd + 1
+                continue
             }
             next++
         }
@@ -359,6 +366,7 @@ private fun splitRenpyLines(text: String): List<RenpyLine> {
  */
 private fun scanRenpyStrings(text: String, lines: List<RenpyLine>): RenpyStringScan {
     val covered = BooleanArray(lines.size)
+    val multiLineEnd = HashMap<Int, Int>()
     var multilineStrings = 0
     var lineIndex = 0
     while (lineIndex < lines.size) {
@@ -382,6 +390,8 @@ private fun scanRenpyStrings(text: String, lines: List<RenpyLine>): RenpyStringS
                 index++
                 continue
             }
+            val triple = index + 2 < text.length &&
+                text[index + 1] == current && text[index + 2] == current
             val close = findRenpyStringEnd(text, index, current)
                 ?: throw InvalidTransRenpyFormat(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING, line.row)
             if (close > line.contentEnd) {
@@ -391,6 +401,9 @@ private fun scanRenpyStrings(text: String, lines: List<RenpyLine>): RenpyStringS
                     covered[mark] = true
                     mark++
                 }
+                if (triple) {
+                    multiLineEnd[lineIndex] = endLine
+                }
                 multilineStrings++
                 nextLine = endLine
                 break
@@ -399,7 +412,7 @@ private fun scanRenpyStrings(text: String, lines: List<RenpyLine>): RenpyStringS
         }
         lineIndex = nextLine + 1
     }
-    return RenpyStringScan(covered, multilineStrings)
+    return RenpyStringScan(covered, multiLineEnd, multilineStrings)
 }
 
 private fun lineIndexForOffset(lines: List<RenpyLine>, offset: Int): Int {
@@ -419,14 +432,19 @@ private fun lineIndexForOffset(lines: List<RenpyLine>, offset: Int): Int {
 
 private fun parseRenpyStatement(
     text: String,
-    line: RenpyLine,
+    lines: List<RenpyLine>,
+    lineIndex: Int,
+    endLineIndex: Int,
     blockKind: RenpyBlockKind,
 ): RenpyStatement {
-    val raw = text.substring(line.start, line.contentEnd)
+    val line = lines[lineIndex]
+    val endOffset = lines[endLineIndex].contentEnd
+    val raw = text.substring(line.start, endOffset)
     if (raw.all { isRenpySpace(it) }) {
         return RenpyStatement(
-            lineIndex = line.row - 1,
+            lineIndex = lineIndex,
             row = line.row,
+            endOffset = endOffset,
             raw = raw,
             indent = "",
             code = "",
@@ -469,8 +487,9 @@ private fun parseRenpyStatement(
         strictKey
     }
     return RenpyStatement(
-        lineIndex = line.row - 1,
+        lineIndex = lineIndex,
         row = line.row,
+        endOffset = endOffset,
         raw = raw,
         indent = indent,
         code = code,
@@ -508,7 +527,26 @@ private fun scanRenpyLineLiterals(
             break
         }
         if (triple) {
-            unsupported = true
+            if (close - index < 6) {
+                unsupported = true
+                index = close
+                continue
+            }
+            val startCol = if (raw) index - 1 else index
+            val inner = code.substring(index + 3, close - 3)
+            val value = if (raw) {
+                normalizeRenpyTripleNewlines(inner)
+            } else {
+                unescapeRenpyTripleString(inner, row)
+            }
+            if (value.length > TransRenpyFormatBounds.MAX_UNIT_CHARS) {
+                throw InvalidTransRenpyFormat(InvalidTransRenpyFormat.Reason.LIMIT, row)
+            }
+            if (value.indexOf('\u0000') >= 0) {
+                throw InvalidTransRenpyFormat(InvalidTransRenpyFormat.Reason.INVALID_TEXT, row)
+            }
+            TransRenpyFormatBounds.strictUtf8(value)
+            literals.add(RenpyLiteral(startCol, close, raw, value))
             index = close
             continue
         }
@@ -1363,6 +1401,68 @@ private fun sha256Hex(value: String): String {
         val number = byte.toInt() and 255
         result.append(HEX_DIGITS[number ushr 4])
         result.append(HEX_DIGITS[number and 15])
+    }
+    return result.toString()
+}
+
+/** Normalize CRLF/CR inside a triple literal the way Ren'Py's lexer presents newlines. */
+private fun normalizeRenpyTripleNewlines(value: String): String {
+    if ('\r' !in value) return value
+    val result = StringBuilder(value.length)
+    var index = 0
+    while (index < value.length) {
+        val current = value[index]
+        if (current == '\r') {
+            result.append('\n')
+            if (index + 1 < value.length && value[index + 1] == '\n') index += 1
+        } else {
+            result.append(current)
+        }
+        index += 1
+    }
+    return result.toString()
+}
+
+/**
+ * Triple-quoted literals keep literal newlines and repeated spaces; only backslash escapes are
+ * decoded. A backslash-newline pair is a line continuation, as in Ren'Py's Python-compatible
+ * lexer, and is removed instead of becoming a space.
+ */
+private fun unescapeRenpyTripleString(raw: String, row: Int): String {
+    val value = normalizeRenpyTripleNewlines(raw)
+    val result = StringBuilder(value.length)
+    var index = 0
+    while (index < value.length) {
+        val current = value[index]
+        if (current != '\\' || index + 1 >= value.length) {
+            result.append(current)
+            index++
+            continue
+        }
+        val next = value[index + 1]
+        if (next == '\n') {
+            index += 2
+            continue
+        }
+        if (next == 'u') {
+            var end = index + 2
+            while (end < value.length && end < index + 6 && isHexDigit(value[end])) end++
+            if (end == index + 2) {
+                throw InvalidTransRenpyFormat(InvalidTransRenpyFormat.Reason.INVALID_ESCAPE, row)
+            }
+            result.append(value.substring(index + 2, end).toInt(16).toChar())
+            index = end
+            continue
+        }
+        val mapped = when (next) {
+            'n' -> "\n"
+            '{' -> "{{"
+            '[' -> "[["
+            '%' -> "%%"
+            else -> next.toString()
+        }
+        result.append(mapped)
+        index += 2
     }
     return result.toString()
 }

@@ -136,6 +136,22 @@ enum class TranslationTaskCommandAction {
     PAUSE,
     RESUME,
     CANCEL,
+
+    /**
+     * Refreshes a frozen task from [TranslationTaskQueueIdentity.revision] to a newer project
+     * revision after durable evidence proved that only earlier queue commits advanced it. The
+     * identity revision itself stays frozen so every earlier command and failure fact keeps its
+     * original binding; the executable revision lives in
+     * [TranslationQueuedTask.executionRevision].
+     */
+    REVALIDATE_REVISION,
+
+    /**
+     * Records that the execution revision could not be proven, then stops automatic dispatch at
+     * NEEDS_REVIEW. The command identity carries the observed revision for audit; no paid request
+     * is made and all failure facts remain.
+     */
+    REFUSE_REVISION,
     RETRY_MEMBERS,
     SKIP_MEMBERS,
     KEEP_ERROR,
@@ -148,8 +164,9 @@ enum class TranslationTaskCommandAction {
 /**
  * Auditable record of one applied user command. Batch decisions additionally bind the exact task,
  * batch, selected member IDs and a frozen copy of each selected member's failure facts. Lifecycle
- * commands carry no batch evidence, and [TranslationTaskCommandAction.TERMINATE_TASK] is
- * intentionally task-level because the terminal failure facts of every batch must survive it.
+ * and revision-revalidation commands carry no batch evidence, and
+ * [TranslationTaskCommandAction.TERMINATE_TASK] is intentionally task-level because the terminal
+ * failure facts of every batch must survive it.
  */
 class TranslationTaskCommandRecord internal constructor(
     val commandId: CommandId,
@@ -231,11 +248,19 @@ class TranslationQueuedTask internal constructor(
     val state: TranslationTaskQueueState,
     batches: List<TranslationTaskFailureBatch>,
     commands: List<TranslationTaskCommandRecord>,
+    /**
+     * Project revision observed by the last durable [TranslationTaskCommandAction.REVALIDATE_REVISION].
+     * Null means [identity] still carries the admitted revision. This never rewrites the frozen
+     * identity, so old commands remain bound to the revision at which the user issued them.
+     */
+    val executionRevision: Long? = null,
 ) {
     val batches: List<TranslationTaskFailureBatch> = frozenList(batches)
     val commands: List<TranslationTaskCommandRecord> = frozenList(commands)
     val decisions: List<TranslationTaskCommandRecord> =
         frozenList(this.commands.filter { it.action.adjudication })
+    /** Revision used for the next execution attempt; never silently replaces the admitted one. */
+    val actionableRevision: Long get() = executionRevision ?: identity.revision
 
     /**
      * Distinct members with an explicit skip decision, used by completion accounting and by the
@@ -248,6 +273,9 @@ class TranslationQueuedTask internal constructor(
 
     init {
         require(sequence >= 0) { "Invalid task sequence" }
+        require(executionRevision == null || executionRevision >= identity.revision) {
+            "An execution revision cannot move backwards"
+        }
         require(this.batches.size <= TranslationTaskQueueLimits.HARD_MAX_BATCHES) {
             "Task exceeds the hard failure batch bound"
         }
@@ -363,6 +391,7 @@ class TranslationQueuedTask internal constructor(
         state: TranslationTaskQueueState = this.state,
         batches: List<TranslationTaskFailureBatch> = this.batches,
         commands: List<TranslationTaskCommandRecord> = this.commands,
+        executionRevision: Long? = this.executionRevision,
     ): TranslationQueuedTask =
         TranslationQueuedTask(
             identity = identity,
@@ -370,11 +399,12 @@ class TranslationQueuedTask internal constructor(
             state = state,
             batches = batches,
             commands = commands,
+            executionRevision = executionRevision,
         )
 
     override fun toString(): String =
         "TranslationQueuedTask(run=${identity.run.runId.value}, sequence=$sequence, state=$state, " +
-            "batches=${batches.size}, commands=${commands.size})"
+            "batches=${batches.size}, commands=${commands.size}, actionRevision=$actionableRevision)"
 }
 
 /** Explicit bounds for a queue aggregate. The defaults are safety limits, not measured capacities. */
@@ -498,6 +528,9 @@ data class TranslationTaskCompletionFacts(
  *   members, and a member can have only one decision in a given batch. A new failure for a retried
  *   item must be a new batch after the previous batch was decided; an item cannot have two open
  *   batches and cannot be re-reported after a committed/terminal/final-error fact;
+ * - recording a failure batch always stops an undecided task at NEEDS_REVIEW (even for a known
+ *   received failure), because every member decision is explicit user intent. KEEP_ERROR settles
+ *   FAILED; RETRY/SKIP decisions return to QUEUED only after every uncommitted member is decided;
  * - a member with [TranslationFailureReceipt.DISPATCHED_NO_RECEIPT] cannot be retried or skipped; it
  *   can only be kept as an error or terminated after explicit user acknowledgement;
  * - a committed member cannot be retried or skipped, and a terminal failure member cannot be
@@ -509,15 +542,22 @@ data class TranslationTaskCompletionFacts(
  *   [TranslationTaskQueueState.COMPLETED_WITH_ERRORS].
  *
  * Transitions:
- * - QUEUED -> RUNNING | CANCELLED
+ * - QUEUED -> RUNNING | CANCELLED | NEEDS_REVIEW (audited revision refusal); a QUEUED task may
+ *   record an audited [TranslationTaskCommandAction.REVALIDATE_REVISION] without changing state
  * - RUNNING -> PAUSED | NEEDS_REVIEW | FAILED | COMPLETED | COMPLETED_WITH_ERRORS | CANCELLED
  * - PAUSED -> QUEUED | NEEDS_REVIEW | FAILED | CANCELLED
- * - NEEDS_REVIEW -> QUEUED (all members RETRY/SKIP) | FAILED | CANCELLED
- * - FAILED -> QUEUED (all members RETRY/SKIP) | CANCELLED
+ * - NEEDS_REVIEW -> QUEUED (all members RETRY/SKIP) | NEEDS_REVIEW (partial decisions) | FAILED
+ *   (KEEP_ERROR) | CANCELLED
+ * - FAILED -> QUEUED (all members RETRY/SKIP) | NEEDS_REVIEW (a further failure batch still needs
+ *   decisions) | CANCELLED
  * - COMPLETED, COMPLETED_WITH_ERRORS and CANCELLED are terminal; only an exact command replay
  *   returns Duplicate.
  *
- * FAILED is not terminal: it stops automatic execution and requires an explicit user command
+ * Restart recovery is not a user transition: [recoverPaused] moves only RUNNING to PAUSED when
+ * durable evidence proves no ambiguous dispatch, while [markNeedsReview]/[markFailed] retain the
+ * conservative stop for uncertain or failed executions. Recovery never dispatches by itself.
+ *
+ * NEEDS_REVIEW and FAILED both stop automatic execution and require an explicit user command
  * (retry/skip/keep/terminate). The caller remains responsible for stopping real work, persisting
  * this snapshot atomically and reconciling provider receipts; this class never authorizes a paid
  * dispatch by itself.
@@ -665,6 +705,136 @@ class TranslationTaskQueue private constructor(
             from = NON_TERMINAL_TRANSLATION_STATES,
             to = TranslationTaskQueueState.CANCELLED,
         )
+
+    /**
+     * Execution-level restart recovery: a persisted RUNNING task whose durable run/task evidence
+     * proves no ambiguous dispatch is moved to PAUSED. PAUSED keeps the project slot and still
+     * requires an explicit user resume; recovery never starts a paid request by itself. Replaying
+     * the same recovery on an already PAUSED task is idempotent.
+     */
+    fun recoverPaused(identity: TranslationTaskQueueIdentity): TranslationQueueResult {
+        val current = task(identity) ?: return missing(identity)
+        if (current.state == TranslationTaskQueueState.PAUSED) {
+            return TranslationQueueResult.Unchanged(this, current)
+        }
+        if (current.state.terminal) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.TERMINAL_STATE)
+        }
+        if (current.state != TranslationTaskQueueState.RUNNING) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_TRANSITION)
+        }
+        val updated = current.with(state = TranslationTaskQueueState.PAUSED)
+        return TranslationQueueResult.Applied(replace(updated), updated)
+    }
+
+    /**
+     * Audited revision refresh for a QUEUED or already-claimed RUNNING task. The caller must have
+     * proved through durable evidence that every advance after the admitted revision came from
+     * earlier queue work and not from user edits. Refreshing after the claim is safe because no
+     * request for this attempt has been dispatched yet. The frozen
+     * [TranslationQueuedTask.identity] is intentionally retained;
+     * [TranslationQueuedTask.executionRevision] records where the next attempt will execute.
+     */
+    fun revalidateRevision(
+        identity: TranslationTaskQueueIdentity,
+        commandId: CommandId,
+        revision: Long,
+    ): TranslationQueueResult {
+        val current = task(identity) ?: return missing(identity)
+        if (revision < identity.revision) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_EVIDENCE)
+        }
+        if (revision == identity.revision) {
+            return TranslationQueueResult.Unchanged(this, current)
+        }
+        val existing = current.command(commandId)
+        if (existing != null) {
+            return if (existing.action == TranslationTaskCommandAction.REVALIDATE_REVISION &&
+                current.executionRevision == revision
+            ) {
+                TranslationQueueResult.Duplicate(this, current, existing)
+            } else {
+                TranslationQueueResult.Rejected(this, TranslationQueueRejection.COMMAND_CONFLICT)
+            }
+        }
+        if (current.state.terminal) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.TERMINAL_STATE)
+        }
+        if (current.executionRevision != null && revision < current.executionRevision) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_EVIDENCE)
+        }
+        if (current.state != TranslationTaskQueueState.QUEUED &&
+            current.state != TranslationTaskQueueState.RUNNING
+        ) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_TRANSITION)
+        }
+        if (current.commands.size >= limits.maxCommandsPerTask) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.COMMAND_LIMIT)
+        }
+        if (current.executionRevision == revision) {
+            return TranslationQueueResult.Unchanged(this, current)
+        }
+        val record = TranslationTaskCommandRecord(
+            commandId = commandId,
+            task = identity,
+            action = TranslationTaskCommandAction.REVALIDATE_REVISION,
+            batchId = null,
+            memberIds = emptyList(),
+            evidence = emptyList(),
+        )
+        val updated = current.with(
+            commands = current.commands + record,
+            executionRevision = revision,
+        )
+        return TranslationQueueResult.Applied(replace(updated), updated)
+    }
+
+    /**
+     * Audited refusal for a revision that could not be proven safe. It records the user/execution
+     * command, stops automatic dispatch at NEEDS_REVIEW and keeps the frozen identity and every
+     * earlier command/failure fact. A terminal task is never reopened.
+     */
+    fun refuseRevision(
+        identity: TranslationTaskQueueIdentity,
+        commandId: CommandId,
+    ): TranslationQueueResult {
+        val current = task(identity) ?: return missing(identity)
+        val existing = current.command(commandId)
+        if (existing != null) {
+            return if (existing.action == TranslationTaskCommandAction.REFUSE_REVISION) {
+                TranslationQueueResult.Duplicate(this, current, existing)
+            } else {
+                TranslationQueueResult.Rejected(this, TranslationQueueRejection.COMMAND_CONFLICT)
+            }
+        }
+        if (current.state.terminal) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.TERMINAL_STATE)
+        }
+        if (current.state == TranslationTaskQueueState.NEEDS_REVIEW) {
+            return TranslationQueueResult.Unchanged(this, current)
+        }
+        if (current.state != TranslationTaskQueueState.RUNNING &&
+            current.state != TranslationTaskQueueState.QUEUED
+        ) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_TRANSITION)
+        }
+        if (current.commands.size >= limits.maxCommandsPerTask) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.COMMAND_LIMIT)
+        }
+        val record = TranslationTaskCommandRecord(
+            commandId = commandId,
+            task = identity,
+            action = TranslationTaskCommandAction.REFUSE_REVISION,
+            batchId = null,
+            memberIds = emptyList(),
+            evidence = emptyList(),
+        )
+        val updated = current.with(
+            state = TranslationTaskQueueState.NEEDS_REVIEW,
+            commands = current.commands + record,
+        )
+        return TranslationQueueResult.Applied(replace(updated), updated)
+    }
 
     /**
      * Execution-level stop for facts that forbid automatic continuation, such as an unreceipted
@@ -1090,7 +1260,9 @@ private fun stateFor(
     if (undecided.any { it.receipt == TranslationFailureReceipt.DISPATCHED_NO_RECEIPT }) {
         return TranslationTaskQueueState.NEEDS_REVIEW
     }
-    if (undecided.isNotEmpty()) return TranslationTaskQueueState.FAILED
+    // A known received failure still requires an explicit member decision. Only KEEP_ERROR is a
+    // task-level FAILED outcome; a partial decision set remains open in NEEDS_REVIEW.
+    if (undecided.isNotEmpty()) return TranslationTaskQueueState.NEEDS_REVIEW
     if (decisions.values.any { it == TranslationTaskCommandAction.KEEP_ERROR }) {
         return TranslationTaskQueueState.FAILED
     }

@@ -146,7 +146,7 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
         db.runs().recent(ref.instanceId.value, ref.generation.value, ref.projectId.value, limit).map { row ->
             val settled = if (row.state == "WAITING_APPROVAL") when (db.runs().approvalState(
                 row.instanceId, row.generation, row.projectId, row.chatId, row.runId)) {
-                "COMMITTED" -> row.copy(state = "SUCCEEDED")
+                "COMMITTED", "PARTIAL" -> row.copy(state = "SUCCEEDED")
                 "REJECTED", "CANCELLED" -> row.copy(state = "CANCELLED")
                 "CONFLICT" -> row.copy(state = "FAILED")
                 else -> row

@@ -164,7 +164,7 @@ class ForegroundTranslationRunner(
     fun pause(token: String): Boolean {
         val (session, snapshot) = synchronized(monitor) {
             val session = current?.takeIf { it.handle.token == token && !it.finished && !it.stopRequested &&
-                it.startFailure == null && it.handle.request.options != null && it.snapshot.progress != null &&
+                it.startFailure == null && it.handle.request.options != null &&
                 it.snapshot.phase in setOf(ForegroundTranslationPhase.RUNNING, ForegroundTranslationPhase.PAUSING) } ?: return false
             if (session.pauseRequested) return true
             if (!runtime.requestPause(session.lease)) return false

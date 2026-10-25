@@ -6,6 +6,8 @@
 
 本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义完整接线必须满足的恢复协议，不能视为现有端口的全部能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。单条 TXT 的审批 UI、持久存储和受控工程写入已有切片；完整多对象审批及 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约的全范围验收。
 
+新增条目批量适配器：`ItemChangeProposal` / `NativeItemProposalStore` / `ProjectWriteStore.approvedItems` 提供译文、姓名和状态的不可变多条提案、接受子集、固定冲突策略、Room 消费绑定与 `.lnt` 工程回执；隔离脚本经 `prepare_project_script` 直接准备条目提案。另有 NativePolicyProposalStore 的整策略规则/提示词审批，复用既有策略事务和回执。它们不实现通用所有对象的 ApprovalPersistencePort/ProjectWritePort；下文涉及“完整多对象未完成”仍包括逐规则独立选择/部分接受、文件/资产/PDF 等范围。存储与导入审计契约见 [NATIVE_STORAGE 的 v6 小节](NATIVE_STORAGE.md)，实际进度及验证边界仍只见 HANDOFF。
+
 ## 1. 实际代码与消费者
 
 | 位置 | 已实现的责任 | 当前消费者 |

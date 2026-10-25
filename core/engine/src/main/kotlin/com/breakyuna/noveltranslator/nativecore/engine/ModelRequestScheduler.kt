@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.ModelConfigurationRef
 import com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimits
+import com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimitsProvider
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -24,6 +25,15 @@ class ModelRequestScheduler(
     private val limits: (ModelConfigurationRef) -> ModelRequestLimits = { ModelRequestLimits() },
     private val nowMillis: () -> Long = { System.nanoTime() / 1_000_000 },
     private val resourceKey: (ModelConfigurationRef) -> String = { it.id },
+    /**
+     * Optional persisted application defaults. When set, its value replaces the
+     * per-configuration [limits] callback for every resource; when unset the
+     * historical callback/default is preserved exactly. A changed provider value
+     * for an existing pool is rejected instead of resetting its rate clock.
+     */
+    private val limitsProvider: ModelRequestLimitsProvider? = null,
+    /** Per-profile overrides take precedence over the application default. */
+    private val profileLimits: suspend (ModelConfigurationRef) -> ModelRequestLimits? = { null },
 ) {
     private class Pool(val limits: ModelRequestLimits, now: Long) {
         val queue = ArrayDeque<Any>()
@@ -40,6 +50,9 @@ class ModelRequestScheduler(
     suspend fun <T> execute(configuration: ModelConfigurationRef, block: suspend () -> T): T {
         currentCoroutineContext().ensureActive()
         val ticket = Any()
+        // A persisted provider must be read outside the scheduler mutex; the historical
+        // per-configuration callback remains inside it when no provider is configured.
+        val providedLimits = profileLimits(configuration) ?: limitsProvider?.current()
         val pool = mutex.withLock {
             // Configuration revisions are immutable request identities, not new rate budgets.
             // By default all revisions of one logical configuration share their resource clock.
@@ -47,7 +60,7 @@ class ModelRequestScheduler(
             require(key.isNotBlank())
             // Bound process metadata without evicting an existing rate clock and granting a new burst.
             require(pools.containsKey(key) || pools.size < 256) { "Too many model configurations" }
-            val resolvedLimits = limits(configuration)
+            val resolvedLimits = providedLimits ?: limits(configuration)
             val value = pools.getOrPut(key) { Pool(resolvedLimits, nowMillis()) }
             require(value.limits == resolvedLimits) { "Model resource limits changed" }
             require(value.queue.size < 256) { "Model request queue is full" }

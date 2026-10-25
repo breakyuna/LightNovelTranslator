@@ -14,14 +14,19 @@ class TextProofreadingInspector(private val policy: ProjectTextPolicy, private v
         }
     }
     fun inspect(source: String, translation: String, status: TextItemStatus,
-        options: TextProofreadingOptions = TextProofreadingOptions()): TextProofreadingResult {
+        options: TextProofreadingOptions = TextProofreadingOptions(),
+        nameSource: List<String> = emptyList(), nameTranslation: List<String> = emptyList()): TextProofreadingResult {
         require(source.length <= 65_536 && translation.length <= 65_536)
         for (text in listOf(source, translation)) { require('\u0000' !in text); TextProjectFingerprint.utf8(text) }
+        require(nameSource.size <= 32 && nameTranslation.size <= 32)
+        nameSource.forEach { require(it.length <= 4_096 && '\u0000' !in it); TextProjectFingerprint.utf8(it) }
+        nameTranslation.forEach { require(it.length <= 4_096 && '\u0000' !in it); TextProjectFingerprint.utf8(it) }
         checkActive()
         val processor = this.processor
         val codes = mutableSetOf<TextWarningCode>()
         val missing = mutableListOf<String>()
-        fun result(evaluated: Boolean) = TextProofreadingResult(codes, missing, evaluated, policy.fingerprint(), options)
+        val hits = linkedMapOf<String, Int>()
+        fun result(evaluated: Boolean) = TextProofreadingResult(codes, missing, evaluated, policy.fingerprint(), options, hits)
         if (status != TextItemStatus.PROCESSED || translation.isBlank()) return result(false)
         val prepared = processor.prepareProofreading(source)
         val left = processor.proofreadingSource(prepared)
@@ -37,8 +42,28 @@ class TextProofreadingInspector(private val policy: ProjectTextPolicy, private v
         for (compiled in terms) {
             checkActive()
             val rule = compiled.rule
-            if (compiled.pattern.matcher(TextPolicyProcessor.BoundedSequence(source, prepared.budget)).find() &&
-                !contains(translation, rule.target, !rule.caseSensitive, prepared.budget)) missing.add(rule.id)
+            val bodyHit = rule.scope != TextRuleScope.NAME &&
+                count(compiled, source, prepared.budget).also { if (it > 0) hits[rule.id] = it } > 0
+            if (bodyHit && !contains(translation, rule.target, !rule.caseSensitive, prepared.budget))
+                missing.add(rule.id)
+            if (rule.scope != TextRuleScope.BODY) {
+                val sources = if (nameSource.isEmpty()) emptyList() else nameSource
+                val translations = if (nameTranslation.isEmpty()) nameSource else nameTranslation
+                var nameOccurrences = 0
+                var nameMissing = false
+                for ((index, name) in sources.withIndex()) {
+                    val occurrences = count(compiled, name, prepared.budget)
+                    nameOccurrences += occurrences
+                    if (occurrences > 0) {
+                        val translated = translations.getOrNull(index).orEmpty()
+                        if (!contains(translated, rule.target, !rule.caseSensitive, prepared.budget)) nameMissing = true
+                    }
+                }
+                if (nameOccurrences > 0) {
+                    hits[rule.id] = (hits[rule.id] ?: 0) + nameOccurrences
+                    if (nameMissing && rule.id !in missing) missing.add(rule.id)
+                }
+            }
         }
         if (missing.isNotEmpty()) codes.add(TextWarningCode.GLOSSARY)
         checkActive()
@@ -75,6 +100,16 @@ class TextProofreadingInspector(private val policy: ProjectTextPolicy, private v
         val a = characters(left); val b = characters(right)
         val intersection = a.count { it in b }
         return intersection.toDouble() / (a.size + b.size - intersection) > 0.8
+    }
+
+    private fun count(compiled: com.breakyuna.noveltranslator.nativecore.engine.CompiledTextRule,
+        text: String, budget: TextPolicyProcessor.RuleBudget): Int {
+        val matcher = compiled.pattern.matcher(TextPolicyProcessor.BoundedSequence(text, budget))
+        var count = 0
+        while (matcher.find()) {
+            if (++count > 65_537) throw InvalidTextRule(compiled.rule.id, InvalidTextRule.Reason.LIMIT)
+        }
+        return count
     }
 
     /** KMP keeps long repetitive drafts cancellable; platform substring scans have no work hook. */

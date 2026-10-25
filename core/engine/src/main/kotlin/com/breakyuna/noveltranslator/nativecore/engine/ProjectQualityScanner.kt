@@ -49,8 +49,9 @@ class ProjectQualityScanner(private val projects: TextProjectPort, private val p
                 characters += item.source.length.toLong() + item.translation.length
                 if (characters > limits.characters) limit()
                 if (!matches(item, query)) continue
-                val result = inspector.inspect(item.source, item.translation, item.status, options)
-                entries += result.codes.size + result.missingTermRuleIds.size
+                val result = inspector.inspect(item.source, item.translation, item.status, options,
+                    item.metadata.nameSource.orEmpty(), item.metadata.nameTranslation.orEmpty())
+                entries += result.codes.size + result.missingTermRuleIds.size + result.termHits.size
                 if (entries > limits.resultEntries) limit()
                 facts.add(TextQualityFact(item.id, item.fingerprint, result))
             }

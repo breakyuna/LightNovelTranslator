@@ -1,137 +1,35 @@
-# LightNovelTranslator Agent 工作规范
+# LightNovelTranslator 协作规则
 
-本文件适用于整个仓库，是唯一的根级指令文件（仓库当前没有子目录 `AGENTS.md`、`CLAUDE.md`、`.cursorrules` 或 `opencode.json`）。所有 Agent 在分析、修改、审查或交付代码前必须遵守。用户当前指令优先；判断现状以代码和构建脚本为准，不能把目标设计写成已实现事实。
+适用于整个仓库，用户当前指令优先。只加载与本次任务有关的资料；本文件已在对话提供时不重复读取。
 
-## 1. 项目定位
+## 项目与范围
 
-2026-10-22 用户决定全面重构：以 LG Termux 的完整功能为目标，重做原生 Android UI 和业务实现，仅保留并改造 LNT 的 Koog Agent 接入框架。新产品以工程和 Agent 工作流为中心：
+以 LG Termux 完整业务能力为目标重做原生 Android 产品，仅保留并改造 Koog Agent 框架。以 Project / Asset / Item 或 PDFPage / Rules / AgentChat / Runs 为中心；新业务不接回旧 AppViewModel、Book/Edition、书架或阅读器主链路。
 
-```text
-Project（工程）
-├── Asset（固化原稿与格式身份）
-├── Item / PDFPage（翻译、校对和写回定位）
-├── Rules / Prompts / Revisions（规则、提示词和提交事实）
-└── AgentChat / Runs（Koog 编排、工作区、审批与任务）
-```
+原生工程使用 `.lnt`，应用运行记录使用独立 Room；保留各自升级与备份恢复。旧 LNT 数据迁移、`.lg` 交换、Pi 历史转换已取消，不新增对应实现或验收要求。旧用户数据不得删除。
 
-工程首页、打开工程默认进入 Agent、完整功能范围和 Koog 保留清单，以 [原生 LG 重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md) 为准。旧书架、阅读器、章节/Edition 模型、翻译引擎和 UI 均进入替换范围，不再要求保留旧首页、导航或视觉体系。
+## 操作与验证
 
-当前保留大量旧阅读平台源码作为迁移来源，MainActivity 已在源码中改接 nativeapp 原生工程入口（用户已确认本轮 TXT 手工切片的 CI/设备检查通过，边界见 HANDOFF §22）；`README.md`、2026-08-25 设计及 2026-10-19 计划用于理解现状和数据迁移，不约束新产品定位。`REFACTOR_REPORT.md` 是历史快照。计划编写不自动启动产品重构，按用户当前授权范围执行；旧数据仍不得因重构直接删除；用户已于 2026-10-24 决定当前开发阶段不需要旧 LNT 数据迁移，R36 移出当前路线图，不得再新增迁移器或把旧库读取作为交付门槛。
+- 开始先看 `git status --short --branch`，保护既有修改；“检查/审核/仅确认”保持只读，只要求计划时不实现。
+- **本机是 Android/Termux，禁止任何 Gradle、构建、测试、Lint，以及单文件 Kotlin 编译替代验证。** 本地只做静态检查；构建测试交由 PC/已授权 CI。发现真实 GradleDaemon 时按本机约定停止，不杀其他进程。
+- 未明确授权，不提交、推送、建 PR、合并、触发 Actions、发布或真实付费调用；推送目标分支须已明确，不默认 main。禁止 reset --hard、checkout --、clean 等破坏性操作。
+- 修改后执行 `git diff --check`、工作区状态和冲突标记检查；改动范围保持聚焦。
+- 汇报实际变化、验证及限制，注明“静态审查，未实际构建”；引用 CI 必须核对其提交。CI 全绿不替代设备、视觉、供应商和完整格式验收；截图必须实际查看。
 
-## 2. 构建、测试与验证命令
+## 实现底线
 
-- 工具链：AGP 9.1.1、**Kotlin 2.3.10、KSP 2.3.10、Java 17 字节码**（Koog 的 Android 产物要求）、Gradle 9.3.1 wrapper、version catalog（`gradle/libs.versions.toml`）。`settings.gradle.kts` 设置 `FAIL_ON_PROJECT_REPOS`：**不得在模块构建脚本里写 `repositories {}`**，新增依赖一律加进 version catalog。
-- catalog 里有大量未使用的历史依赖声明（firebase、camera、retrofit、coil 等）。用前先确认 `app/build.gradle.kts` 是否真的引入，不要假设存在即可用。
-- SDK：`minSdk 24`、`targetSdk 36`、`compileSdk 36 (minorApiLevel 1)`。ML Kit GenAI 要求 API 26+，已用 `tools:overrideLibrary` 放行 merger，**所有 GenAI 调用点必须守卫 `Build.VERSION.SDK_INT >= 26` 与 feature 可用性**。`versionCode` 在 CI 取 `GITHUB_RUN_NUMBER`，本地为 7。
-- **Android 14+（API 34）正则地雷**：`java.util.regex` 在 API 34 切到 ICU 实现。`core/text/TextProtectionRules` 已对 `(?U)` 做编译兜底；新增正则代码禁止裸用 ICU 不兼容的内联标志，必要时同样 try/catch 兜底。Robolectric 跑 JVM 正则**测不出**这类问题，必须真机验证。
-- **命名分组按名取值为 API 26**：`match.groups[name]` 底层调 `Matcher.start(String)`，minSdk 24 下 lint 直接报错。一律用 `namedGroupIndexes(pattern)` 预解析成组序号再按序号取（core/quality 与 core/text 各有一份实现）。
-- **其他 Kotlin 2.3 实测地雷**（`kotlinx.coroutines.CoroutineContext` 是 HIDDEN 弃用 typealias 要用 `kotlin.coroutines` 版、`resumeWithException` 是 stdlib 扩展需 import、`createTempDir` 是 ERROR 级弃用、`toList()` 对 0/1 元素不可变等）：完整清单见 `docs/plans/2026-10-19-build-and-ci-playbook.md`，写代码前必读。
-- **测试纪律**：新增测试必须落地后可运行才算数；禁构建期间用 Gradle 缓存里的 `kotlin-compiler-embeddable` 做单文件编译 + JUnit 运行验证。测试期望依据用户目标、适用的设计与机器契约；先确认旧 KDoc/文档是否已被新计划替代，失败时先判定“测试错还是实现错”。
-- **【最高优先级】本机禁止运行任何 gradle / 构建 / 测试 / lint 命令**：开发设备是 Android/Termux，内存与 CPU 撑不起 Gradle 守护进程 + Kotlin 编译 + Robolectric 的并发负载，并行 agent 同时构建会拖垮整机。所有 Agent（含 subagent）**只做静态验证**（`rg` / `read` / 符号核对 / 人工推演），验证结论必须注明"静态审查，未实际构建"。构建与测试由 CI（push 到 `main` / `beta` 或 `workflow_dispatch`）或用户在 PC 上执行；不得因为"没跑构建"而假装跑过，也不得为了跑构建而杀掉他人进程。若发现本机已有 gradle/java 守护进程在跑，先 `pkill -f GradleDaemon` 停掉再继续静态工作。
-- **CI**：`test/lint/release` 三个并行 job；测试已配 `maxParallelForks`（勿改回单 fork）；artifact 名不能含 `/`。
-- 本地标准命令（仅限 CI 或 PC 环境执行，本机禁跑）：
+- 新链路为 UI → 应用服务 → 核心/存储；Agent 与手动操作共用 ProjectWriteStore，写入核对工程身份、修订与对象指纹，审批绑定实际差异；参数无损验证类型、整数性和范围。
+- 所有模型调用/重试走统一网关与调度器。暂停/取消后不发起新付费请求，恢复不重放旧授权；逐批保留已提交事实，用量按回执记录，非瞬时错误不盲重试。
+- 凭据只经凭据端口读取，禁止写入日志、提示词、异常、源码或测试。外部路径/归档/链接需边界校验；Debug 默认关闭。
+- 新 UI 使用五语 Android 资源；状态 key 包含实际工程/会话/资产/运行身份；大列表用稳定 key，主线程不做重 IO。
+- 依赖使用 version catalog，不在模块添加 repositories；存储变更同步版本、非破坏性迁移及权威 schema 导出。
 
-```bash
-./gradlew testDebugUnitTest lintDebug assembleDebug
-```
+## 按任务读取
 
-- 跑单个测试类：
+文档目录：[`docs/DOCUMENTATION.md`](docs/DOCUMENTATION.md)，只查目录后选择相关资料，不批量通读。
 
-```bash
-./gradlew testDebugUnitTest --tests "com.breakyuna.noveltranslator.core.translation.TranslationProtocolTest"
-```
-
-- CI（`.github/workflows/android.yml`）：push 到 `main` / `beta` 或 `workflow_dispatch` 触发，执行 `./gradlew testDebugUnitTest lintDebug assembleRelease`，需要 4 个签名 Secrets；本地打签名 Release 需提供 `ANDROID_KEYSTORE_PATH` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` 环境变量。
-- 单元测试在 JVM 执行：Android 模块的相关用例使用 Robolectric，domain/engine 使用纯 JVM 测试；Android 测试任务需要 Android SDK，无需真机。**本机（Termux/Android 开发设备）禁止执行任何构建与测试**，理由见上文；静态审查（`rg`/`read`/符号核对）是唯一的本地验证手段，汇报时如实说明"未构建验证"。
-- 截图测试：Roborazzi，用 `captureRoboImage(filePath = "src/test/screenshots/...")` 显式指定路径，产物在 `app/src/test/screenshots/`。改动 UI 后用 `./gradlew recordRoborazziDebug` 重新录制（同样只在 CI/PC 执行）。新增截图测试沿用现有 `@RunWith(RobolectricTestRunner)` + `@GraphicsMode(NATIVE)` + `@Config(qualifiers = Pixel8, sdk = [35])` 配置。
-- `app/src/test` 下的 `ExampleUnitTest` / `ExampleRobolectricTest` 是模板遗留，不代表真实覆盖。
-
-## 3. 旧实现代码地图（迁移来源）
-
-下图描述重构前的实际布局，不是新架构约束。新模块职责见重构计划中的 `ARCHITECTURE.md`；源码迁移时同步更新本节，不能把目标目录当成已存在实现。
-
-```text
-app/src/main/java/com/breakyuna/noveltranslator/
-├── core/
-│   ├── agent/          # AgentToolHost（21 个全流程工具 + 文本协议调度）、章节识别、术语抽取
-│   │   └── koog/       # Koog 编排：会话、PromptExecutor 桥接（原生 tools + 文本协议双通道）、
-│   │                   # 协议解析加固（全角归一化/变体标签/宽容 JSON/疑似调用/熔断）、持久化
-│   ├── book/           # BookFileManager（正文/封面/文件唯一管理者）、BookImporter
-│   ├── exporter/       # EditionExporter
-│   ├── llm/            # LlmGateway（所有 LLM 调用唯一入口）、LlmClient、RetryPolicy、TokenCalculator、TranslationPrompts
-│   ├── crash/         # CrashReporter（崩溃落盘 + last-crash 读取，重启不丢）
-│   ├── logger/         # 脱敏系统日志（内存 Flow + jsonl 落盘轮转 + 导出）
-│   ├── parser/         # TXT / EPUB 解析
-│   ├── sample/         # 示例数据
-│   ├── security/       # ApiKeyCipher（Key 加解密边界）
-│   └── translation/    # BookTranslationEngine、TranslationProtocol、ContextEngine、QA、ScopePlanner、FailurePolicy
-├── data/
-│   ├── db/             # AppDatabase、DAO（ReaderPlatformDao、ApiProviderDao 等）
-│   ├── model/          # Entity、领域模型、轻量查询投影
-│   └── repository/     # BookPlatformRepository 等数据边界
-└── ui/
-    ├── adaptive/、components/apple/（旧视觉组件，按新 UI 计划替换）、theme/
-    ├── i18n/           # AppStrings（Kotlin 实现，见 §4）
-    ├── navigation/     # AppDestination、TopLevelDestination、AppBottomBar、AppNavigationRail、AppNavigation
-    ├── screens/        # bookshelf、history、reader、workspace、tasks、settings
-    └── viewmodel/      # AppViewModel（旧阅读平台 ViewModel）
-```
-
-新增 `core/domain`、`core/engine`、`core/agent`、`core/storage`、`core/formats`、`core/workspace` 模块，包名使用 `com.breakyuna.noveltranslator.nativecore`。domain/engine 为 Kotlin/JVM，其余为 Android Library。实际进度唯一记录在 HANDOFF §3；提交 `b47178a` 的 Actions run 40132451221 已通过 test/lint/release 与签名校验，覆盖 §102—§122；`77daf74` 的 #158 仅覆盖至 §101。storage 当前 `.lnt` 为 v5（v4 多资产/归档移除，v5 逐修订姓名快照），独立应用 Room 为 v13（v5 模型协议/多密钥、v6 用量账本、v7 固定翻译任务、v8 响应/提交暂存、v9 Agent 输入队列/steer 持久化、v10 翻译任务人工终止裁决回执、v11 逐条成员裁决、v12 手动上下文摘要与切点、v13 历史分支命令回执），保留 v1→v13 升级链；`2.json`—`13.json` 权威导出仍未生成。已有修订/事务回执和快照；formats 已有 Markdown、VTT、字幕桥接、JSON、TRANS、RenPy、EPUB、XLSX、MV/MZ、RGSS 归档/Marshal/Scripts/Data 字符串核心及 PDFBox-Android 页级 PDF 适配器与工程服务，仍有未移植分支，不能据此宣称全格式验收。workspace 已有路径/预算/材料/changes/审批/脚本端口、文件适配器、QuickJS 引擎/脚本目录/宿主桥、文件技能库与 Web Fetch 公网策略核心，尚未接入 Agent 工具、隔离 Service 和生产审批/apply。
-
-新入口位于 `app/.../nativeapp`：NativeAppGraph 装配共享网关/调度/运行协调器、存储及格式服务；NativeProjectViewModel 管理工程/资产、草稿、分页与系统文件结果；NativeProjectApp 提供工程首页与 Agent、工作台、校对、更多四个原生主页面（规则、模型、设置、诊断、应用备份、技能、翻译队列等以页面/对话框承载），使用五语 Android 资源。已接线的远程 TXT 批翻、前台执行/通知停止、规则流水线、质量检查/筛选、单条草稿替换、多资产追加和按资产导出均有 #158 CI。Koog 对话、SSE、单条审批及中断核对已有 CI；§78 已把远程 Agent 对话接应用级执行器/前台 Service 与同进程界面重附着（#158 覆盖）。当前工作区新增姓名写回（`.lnt` v5 + 姓名对话框）、Agent 暂存输入队列/steer 持久化（Room v9）、翻译任务裁决、模型费用、RGSS 数据文件、持久翻译队列与顺序执行、自动上下文压缩、PDF 适配器、诊断日志、应用数据备份、技能库、More 页/主题及 Web Fetch 策略；这些增量已提交并由 `b47178a` / run 40132451221 覆盖。翻译队列跨工程续排、真实工作区/脚本工具、OAuth/搜索/MCP、PDF 页决策 UI 等仍开放。五协议/密钥池/用量账本、翻译规划/去重/重试/检查点及规则交换/预设已有独立核心或部分生产接线。TXT 手工设备确认仅限 HANDOFF §22；新增真机/视觉/供应商验收仍缺。旧用户文件及旧库未删除；旧 LNT 数据迁移已移出当前范围，旧主链路退役、完整工作区、复杂格式/兼容与全量验收保持开放。
-
-理解旧行为时追踪 UI → AppViewModel → Repository / DAO → Engine / BookFileManager。新链路按 UI → 应用服务 → 业务核心/存储端口组织，Agent 与手动操作共用写入口，不再向旧 `AppViewModel` 继续集中新业务。用 `rg` 定位实际调用链。
-
-## 4. 仓库特有约定（最容易踩的坑）
-
-- **国际化迁移**：旧 UI 使用 `AppStrings` / `ChineseStrings` / `EnglishStrings`，维护旧链路时保持两种语言完整。新 Compose UI 按 `UI_SPEC.md` 迁至 Android 字符串资源，最终覆盖 LG 的中、英、日、韩、德五种语言；不要同时维护两套新文案权威来源。
-- **导航全面重做**：新工程首页、Agent、工作台、校对和全部管理页面按 `UI_SPEC.md` 实现。手机和平板共用路由定义并保留等价功能，不再冻结书架/历史/任务/设置的旧顺序。
-- **旧 Room 库与新存储分开**：旧库 `light_novel_translation_platform.db` 当前为 v6，`app/schemas/` 仅作历史只读参考；当前不要求旧库迁移验证，不能直接清库或当成新 `.lnt` 存储。LNT 原生工程统一使用 `.lnt`，由专用 SQLite 适配器管理独立版本与迁移；用户已取消 `.lg` 工程导入/导出及 Pi 会话历史转换；不新增对应入口、适配器、依赖或验收要求。原生 `.lnt` 版本升级、备份恢复与 Koog 自身历史/恢复仍保留。新应用记录使用独立 Room schema；当前 NativeAppDatabase 源码为 v13，保留 v1→v13 迁移链（v5 增加模型协议与多密钥，v6 增加与请求回执同事务的持久用量账本，v7 增加固定翻译任务/目标与恢复检查点，v8 增加有效响应与最终译文暂存，v9 增加 Agent 输入队列/草稿与 steer 运行/尝试持久化，v10 增加翻译任务终止裁决回执，v11 增加逐条成员裁决，v12 增加上下文摘要与切点，v13 增加历史分支回执），源码已由 Actions run 40132451221 覆盖至 v13；`.lnt` v5 与 `2.json`—`13.json` 导出及设备升级仍待补。2.json/3.json/4.json/5.json/6.json/7.json/8.json/9.json/10.json/11.json/12.json/13.json 权威导出仍待 PC/CI KSP 生成并审阅（保留 1.json，不手写），v5—v13 设备升级仍待验证。改各自 Entity/schema 时同步版本、迁移注册、DAO/投影和导出 schema。不要复活旧阅读平台主链路，也不要用破坏性迁移绕过数据转换。
-- 若未来处理旧书籍文件，仍由 `BookFileManager` 定位，禁止绕过它清理源数据；当前不要求旧数据迁移。新原稿、工作区和产物按重构计划分配唯一文件拥有者。不得把大段正文或二进制塞进 UI 状态；请求日志列表只查轻量投影，完整正文按 ID 延迟加载。
-- `remember` / `rememberSaveable` 的 key 必须包含实际依赖的 Project / Chat / Asset / Run 身份，维护旧页面时也包含 Book / Edition 身份，防止切换对象复用旧状态。
-- 大列表必须用 `LazyColumn` / `LazyRow` / `LazyVerticalGrid` 并提供稳定唯一 key；不得在 Composable 或主线程做图片解码、整本文件读取、EPUB 解析、数据库循环和网络请求；高频 Flow（进度、任务状态、日志）只在可见时订阅，避免整页无条件重组。页面切换动画保持短促（现有 NavHost 用 90/70ms fade）。
-- 旧书架交互不是新 UI 的保留要求。新工程和技能排序、触屏替代操作、编辑草稿、焦点及返回行为按新 UI 验收；迁移期间不要误报旧页面行为已实现。
-
-## 5. 翻译与安全不变量
-
-- 新翻译以工程条目、资产和 PDF 页为边界，规划、并发、前文、去重和重试对齐 LG，不继续套用旧小说的固定章节串行和 1–5 章配置。
-- 所有模型调用和重试走新统一模型网关与调度器，禁止 UI 或 Koog 适配器另建付费请求旁路。区分网络、超时、限流、服务端、认证、上下文溢出、截断、解析和内容失败；非瞬时错误不得盲目重试。
-- 逐批提交有效译文；后续失败或取消保留已提交事实。Token、缓存、思考、输出与请求次数按实际回执累计，估算与未知值明确区分。
-- 暂停/取消后不得再发起付费请求；恢复从已持久化边界继续。
-- 新响应协议必须保留条目/页面稳定身份、姓名和格式定位，校对规则与失败分类对齐 LG；旧 Chapter/Segment 协议只作历史参考，不进入新链路。
-- 术语与材料处理覆盖用户选定的完整工程范围，结果绑定正确 Project/Chat；不保留“默认取第一个工程”等歧义行为。
-- Agent 付费/写入参数必须无损验证类型、整数性和范围；审批绑定实际差异与工程身份，模型文案中的确认要求不能代替执行层授权。
-- API Key 经新凭据存储端口读取，旧 `ApiKeyCipher` 仅作隔离的历史参考；禁止把 Key、Authorization Header、签名密钥写进日志、提示词、异常、Debug 数据、源码、测试或提交信息。对外部文件名、压缩包路径、工作区链接与图片标记做边界校验，防目录穿越。
-- Debug 默认关闭，只记录开启后的新请求；关闭时仍保留轻量状态、Token、费用、错误分类和失败摘要。Debug 数据可能含小说正文，UI 需提醒谨慎分享。
-- 新修改统一通过 `ProjectWriteStore` 及工程修订/对象指纹检查；保留已提交事实与可审计回执。旧 `SegmentRevision` 只作历史参考，不成为新工程模型。
-
-## 6. 工作方式与交付边界
-
-1. 本次全面重构先读 `docs/plans/2026-10-22-native-lg-rebuild/README.md`、对应专题与交接记录，再核对实际实现；维护旧代码历史参考时再查旧 README 和设计。
-2. `git status --short --branch` 检查工作区；现有修改可能属于用户或其他 Agent，不得覆盖、回退或顺手整理。
-3. 按用户授权的整体重构范围完成必要架构和 UI 替换；不把行数最少当目标，也不做计划外重命名、格式化或旁支改造。只要求计划时不启动产品实现。
-4. 除非用户明确要求，不提交、不推送、不强推、不建 PR、不合并、不触发 Actions。禁止 `git reset --hard`、`git checkout --`、`git clean` 等破坏性命令。用户要求提交时，提交信息说明真实行为和可靠性影响；要求推送时先确认目标分支，不得默认推 `main`。
-5. 交付前至少执行：`git diff --check`、`git status --short --branch`、冲突标记检查 `rg -n "^(<<<<<<<|=======|>>>>>>>)" . -g '!**/build/**'`，并按改动范围跑对应测试/Lint/构建。
-6. **未实际执行成功的验证，不得声称"编译通过""测试通过""APK 可用"。**
-
-## 7. 汇报要求
-
-交付时简要说明：用户可见行为变化；根因与关键实现决策；改动的主要模块；实际执行了哪些验证及结果（未执行的如实说明）；是否提交/推送/触发 Actions（没有就明说）；仍存在的真实限制或需实机验证的交互，不用"应该没问题"敷衍。
-
-## 8. 重构计划与历史索引
-
-当前目标入口：[2026-10-22 原生 LG 全面重构计划](docs/plans/2026-10-22-native-lg-rebuild/README.md)。实际进度只记入同目录 `HANDOFF.md`。
-
-以下 2026-10-19 文档保留为旧阅读平台重构的历史材料，部分状态已经过时，使用时必须核对当前代码：
-
-| 文档 | 内容 |
-|---|---|
-| `2026-10-19-master-refactor-plan.md` | 主计划、任务分工与执行状态、剩余 backlog |
-| `2026-10-19-build-and-ci-playbook.md` | **实战手册**：Kotlin 2.3/AGP 9/CI 全部实测地雷、CI 结构与耗时数据、测试纪律 |
-| `2026-10-19-architecture-overview.md` | 现役架构总览（模块地图/执行流/配置矩阵） |
-| `lg-parity-gap-analysis.md` | 与 LinguaGacha 的功能对标差距分析 |
-| `2026-10-19-agent-layer-review.md` | Koog Agent 层 API 核实与测试覆盖 |
-| `2026-10-19-build-readiness-checklist.md` | 首次构建验证预案（javap 实证） |
-
-规划基线分支为 `refactor/translation-agent-2026-10`，后续开始前重新核对。CI 的 test/lint/release 全绿是交付必要条件；新产品还必须完成计划规定的数据兼容、格式闭环、真机交互、视觉及后台恢复验收，不能仅凭 CI 全绿判定完整重构完成。
+- 查进度/继续重构：先定位 [`HANDOFF.md`](docs/plans/2026-10-22-native-lg-rebuild/HANDOFF.md) §2—§4；历史细节仅按需查 HANDOFF_HISTORY.md，不通读归档。唯一进度记录是 HANDOFF，不把计划或测试数量当完成证明。
+- 改产品范围/架构：按需读同目录 README、ARCHITECTURE、FEATURE_MATRIX、IMPLEMENTATION_PLAN；做 UI 时读 UI_SPEC。
+- 改代码：读 [`ENGINEERING_GUIDE.md`](docs/ENGINEERING_GUIDE.md) 相关小节；Kotlin/Android/构建问题再查 `docs/plans/2026-10-19-build-and-ci-playbook.md`。API 24 命名分组、API 34 正则及 GenAI API 26 守卫需特别核对。
+- 专题契约按文件名定位；旧根 README、REFACTOR_REPORT、2026-08/10-19 设计只作历史参考，不约束新产品定位。
+- 仅更新文档或回答局部问题，无需读取全部计划、工程手册或交接历史。实际进度变化只更新 HANDOFF；根规则不重复维护提交、CI、schema 版本和功能清单。

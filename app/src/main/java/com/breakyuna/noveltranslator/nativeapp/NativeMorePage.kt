@@ -8,17 +8,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Spellcheck
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,6 +41,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -51,7 +58,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextProjectSummary
 @Composable
 internal fun NativeMorePage(
     state: NativeProjectUiState,
-    onRules: () -> Unit,
+    onRules: (NativeRuleSection) -> Unit,
     onModels: () -> Unit,
     onSettings: () -> Unit,
     onAppearance: () -> Unit,
@@ -64,6 +71,10 @@ internal fun NativeMorePage(
     cleanup: () -> Unit,
     refresh: () -> Unit,
     refreshStorage: () -> Unit,
+    onAgentSettings: (() -> Unit)? = null,
+    onAppSettings: (() -> Unit)? = null,
+    onExpertSettings: (() -> Unit)? = null,
+    onFiles: (() -> Unit)? = null,
 ) {
     val project = state.project
     LaunchedEffect(project?.ref) { refreshStorage() }
@@ -79,13 +90,9 @@ internal fun NativeMorePage(
             }
         }
         item(key = "rules") {
-            MoreEntry(
-                icon = Icons.Default.Description,
-                title = stringResource(R.string.native_more_rules),
-                description = stringResource(R.string.native_more_rules_description),
+            RulesCard(
                 enabled = project != null && !state.busy,
-                onClick = onRules,
-                tag = "native-more-rules",
+                onRules = onRules,
             )
         }
         item(key = "models") {
@@ -109,7 +116,7 @@ internal fun NativeMorePage(
                     tag = "native-more-settings",
                 )
             }
-            item(key = "storage") { StorageCard(project, state, cleanup, refresh, refreshStorage) }
+            item(key = "storage") { StorageCard(project, state, cleanup, refresh, refreshStorage, onFiles) }
         }
         item(key = "appearance") {
             MoreEntry(
@@ -119,6 +126,36 @@ internal fun NativeMorePage(
                 enabled = !state.busy,
                 onClick = onAppearance,
                 tag = "native-more-appearance",
+            )
+        }
+        if (onAppSettings != null) item(key = "app-settings") {
+            MoreEntry(
+                icon = Icons.Default.Settings,
+                title = stringResource(R.string.native_more_app_settings),
+                description = stringResource(R.string.native_more_app_settings_description),
+                enabled = !state.busy,
+                onClick = onAppSettings,
+                tag = "native-more-app-settings",
+            )
+        }
+        if (onExpertSettings != null) item(key = "expert-settings") {
+            MoreEntry(
+                icon = Icons.Default.Settings,
+                title = stringResource(R.string.native_more_expert_settings),
+                description = stringResource(R.string.native_more_expert_settings_description),
+                enabled = !state.busy,
+                onClick = onExpertSettings,
+                tag = "native-more-expert-settings",
+            )
+        }
+        if (onAgentSettings != null) item(key = "agent-settings") {
+            MoreEntry(
+                icon = Icons.Default.Settings,
+                title = stringResource(R.string.native_agent_settings),
+                description = stringResource(R.string.native_auto_context_title),
+                enabled = !state.busy,
+                onClick = onAgentSettings,
+                tag = "native-more-agent-settings",
             )
         }
         item(key = "notifications") {
@@ -232,6 +269,44 @@ internal fun NativeThemeDialog(
 }
 
 @Composable
+private fun RulesCard(
+    enabled: Boolean,
+    onRules: (NativeRuleSection) -> Unit,
+) {
+    Card(Modifier.fillMaxWidth().testTag("native-more-rules")) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Description, null)
+                Text(stringResource(R.string.native_more_rules), style = MaterialTheme.typography.titleMedium)
+            }
+            Text(stringResource(R.string.native_more_rules_description), style = MaterialTheme.typography.bodySmall)
+            NativeRuleSection.entries.forEach { section ->
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(enabled = enabled) { onRules(section) }
+                        .testTag("native-more-rules-${section.slug}")
+                        .padding(vertical = 12.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(section.icon(), null, Modifier.size(20.dp))
+                    Text(stringResource(section.title()), style = MaterialTheme.typography.bodyLarge)
+                }
+            }
+        }
+    }
+}
+
+private fun NativeRuleSection.icon(): ImageVector = when (this) {
+    NativeRuleSection.GLOSSARY -> Icons.Default.MenuBook
+    NativeRuleSection.TEXT_PRESERVE -> Icons.Default.Spellcheck
+    NativeRuleSection.PRE_REPLACE -> Icons.Default.Translate
+    NativeRuleSection.POST_REPLACE -> Icons.Default.Sync
+    NativeRuleSection.PROMPTS -> Icons.Default.EditNote
+}
+
+@Composable
 private fun MoreEntry(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     title: String,
@@ -257,6 +332,7 @@ private fun StorageCard(
     cleanup: () -> Unit,
     refresh: () -> Unit,
     refreshStorage: () -> Unit,
+    onFiles: (() -> Unit)?,
 ) {
     val context = LocalContext.current
     val canManage = !state.busy && state.editor == null && state.manualBatch == null
@@ -274,11 +350,13 @@ private fun StorageCard(
             Text(stringResource(R.string.native_item_count, project.itemCount), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(R.string.native_more_revision, project.revision), style = MaterialTheme.typography.bodySmall)
             Text(stringResource(R.string.native_more_assets, project.assets.size), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_more_instance,
-                project.ref.instanceId.value, project.ref.generation.value), style = MaterialTheme.typography.bodySmall)
             state.storageBytes?.let {
                 Text(stringResource(R.string.native_more_storage_used,
                     android.text.format.Formatter.formatFileSize(context, it)), style = MaterialTheme.typography.bodySmall)
+            }
+            if (onFiles != null) OutlinedButton(onClick = onFiles, enabled = canManage,
+                modifier = Modifier.testTag("native-more-storage-open")) {
+                Text(stringResource(R.string.native_files_title))
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = cleanup, enabled = canManage) {

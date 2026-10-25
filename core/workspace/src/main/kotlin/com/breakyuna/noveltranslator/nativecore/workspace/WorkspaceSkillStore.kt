@@ -153,7 +153,7 @@ class WorkspaceSkillStore(
     private val builtIns: WorkspaceSkillResourceSource? = null,
     private val policy: PathPolicy = PathPolicy.DEFAULT,
     canonicalizer: (File) -> String = { it.canonicalPath },
-) : WorkspaceSkillCatalog, WorkspaceSkillDocumentPort {
+) : WorkspaceSkillCatalog, WorkspaceSkillDocumentPort, WorkspaceSkillFilePort {
     constructor(
         userRoot: File,
         builtInRoot: File,
@@ -213,6 +213,173 @@ class WorkspaceSkillStore(
     }
 
     override suspend fun read(id: WorkspaceSkillId, maxChars: Int): String? = readContent(id, maxChars)
+
+    override suspend fun files(id: WorkspaceSkillId): List<WorkspaceSkillFile> {
+        validateSkillPath(id, policy)
+        val record = record(id) ?: throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.NOT_FOUND, id)
+        return when (record.summary.source) {
+            WorkspaceSkillSource.BUILT_IN -> builtIns?.files(id).orEmpty()
+            WorkspaceSkillSource.USER -> synchronized(lock) {
+                val directory = resolveUserDirectory(id.value)
+                if (!directory.isDirectory) throw WorkspaceSkillStoreException(
+                    WorkspaceSkillStoreException.Reason.NOT_FOUND, id)
+                val result = ArrayList<WorkspaceSkillFile>()
+                collectFiles(id, directory, "", result, 0L)
+                workspaceFrozenList(result.sortedBy { it.path.value })
+            }
+        }
+    }
+
+    override suspend fun readFile(id: WorkspaceSkillId, relativePath: String,
+        maxBytes: Int): ByteArray? {
+        require(maxBytes in 1..WorkspaceSkillLimits.MAX_CONTENT_BYTES) { "Invalid skill file limit" }
+        validateSkillPath(id, policy)
+        val record = record(id) ?: return null
+        val logical = "${id.value}/$relativePath"
+        if (relativePath.isBlank() || relativePath.startsWith("/") || '\\' in relativePath ||
+            relativePath.any(Char::isISOControl) || relativePath == METADATA_FILE) return null
+        val parsed = try { policy.parse(logical) } catch (_: InvalidWorkspacePath) { return null }
+        if (parsed.value != logical || pathSegments(parsed.value).any { it == ".." || it == "." }) return null
+        return when (record.summary.source) {
+            WorkspaceSkillSource.BUILT_IN -> builtIns?.readFile(id, relativePath, maxBytes)
+            WorkspaceSkillSource.USER -> {
+                val file = try { resolveUserFile(id.value, relativePath) }
+                catch (_: WorkspaceSkillStoreException) { return null }
+                if (!file.isFile || !isWithin(file.canonicalFile) ||
+                    !file.canonicalPath.startsWith(resolveUserDirectory(id.value).canonicalPath + File.separator)) return null
+                if (file.length() > maxBytes) throw WorkspaceSkillStoreException(
+                    WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+                try {
+                    FileInputStream(file).use { readSkillBytesBounded(it, maxBytes, id) }
+                } catch (failure: WorkspaceSkillStoreException) { throw failure }
+                catch (_: Exception) { throw WorkspaceSkillStoreException(
+                    WorkspaceSkillStoreException.Reason.IO_FAILED, id) }
+            }
+        }
+    }
+
+    /** Resource CAS is separate from SKILL.md/metadata CAS. Execution callers hold the runtime
+     * skill-write lease, so a running script cannot observe half of a package edit. */
+    suspend fun writeResource(id: WorkspaceSkillId, path: String, text: String,
+        expectedSkill: WorkspaceDigest, expectedSha256: String?): WorkspaceSkillFile = synchronized(lock) {
+        val existing = userRecord(validatedId(id)) ?: throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.READ_ONLY, id)
+        ensureFingerprint(existing, expectedSkill, id)
+        val target = resourceTarget(id, path)
+        checkResourceVersion(id, target, expectedSha256)
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        // Reject malformed surrogate input instead of silently writing replacement characters.
+        require(decodeUtf8(bytes) == text) { "Invalid resource text" }
+        if (bytes.size > WorkspaceSkillLimits.MAX_CONTENT_BYTES) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+        val listed = ArrayList<WorkspaceSkillFile>()
+        val total = collectFiles(id, resolveUserDirectory(id.value), "", listed, 0L)
+        if ((expectedSha256 == null && listed.size >= MAX_FILES_PER_SKILL) ||
+            total - (if (target.isFile) target.length() else 0L) + bytes.size > WorkspaceSkillLimits.MAX_TOTAL_BYTES)
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+        val parent = requireNotNull(target.parentFile)
+        if (!parent.isDirectory && !parent.mkdirs()) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.IO_FAILED, id)
+        // Resolve again after directory creation, preserving canonical root checks.
+        writeFileAtomic(resourceTarget(id, path), bytes, id)
+        WorkspaceSkillFile(WorkspacePath(id.value + "/" + path), bytes.size.toLong(), sha256Hex(bytes), true)
+    }
+
+    suspend fun deleteResource(id: WorkspaceSkillId, path: String, expectedSkill: WorkspaceDigest,
+        expectedSha256: String) = synchronized(lock) {
+        val existing = userRecord(validatedId(id)) ?: throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.READ_ONLY, id)
+        ensureFingerprint(existing, expectedSkill, id)
+        val target = resourceTarget(id, path)
+        checkResourceVersion(id, target, expectedSha256)
+        if (!target.delete()) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.IO_FAILED, id)
+    }
+
+    suspend fun renameResource(id: WorkspaceSkillId, path: String, destination: String,
+        expectedSkill: WorkspaceDigest, expectedSha256: String) = synchronized(lock) {
+        val existing = userRecord(validatedId(id)) ?: throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.READ_ONLY, id)
+        ensureFingerprint(existing, expectedSkill, id)
+        val source = resourceTarget(id, path)
+        val target = resourceTarget(id, destination)
+        checkResourceVersion(id, source, expectedSha256)
+        checkResourceVersion(id, target, null)
+        val parent = requireNotNull(target.parentFile)
+        if (!parent.isDirectory && !parent.mkdirs()) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.IO_FAILED, id)
+        if (!source.renameTo(resourceTarget(id, destination))) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.IO_FAILED, id)
+    }
+
+    private fun resourceTarget(id: WorkspaceSkillId, path: String): File {
+        val parsed = try { policy.parse(id.value + "/" + path) }
+        catch (_: InvalidWorkspacePath) { throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id) }
+        if (path.isBlank() || path.startsWith("/") || '\\' in path || path.any(Char::isISOControl) ||
+            parsed.value != id.value + "/" + path || pathSegments(path).any { it in setOf(".", "..", METADATA_FILE) } ||
+            path == CONTENT_FILE || !isTextFile(path)) throw WorkspaceSkillStoreException(
+                WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id)
+        val target = resolveUserFile(id.value, path)
+        val directory = resolveUserDirectory(id.value)
+        if (!target.canonicalPath.startsWith(directory.canonicalPath + File.separator))
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id)
+        return target
+    }
+
+    private fun checkResourceVersion(id: WorkspaceSkillId, file: File, expected: String?) {
+        if (expected == null) {
+            if (file.exists()) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.ALREADY_EXISTS, id)
+        } else {
+            requireSha256Hex(expected)
+            if (!file.isFile) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.NOT_FOUND, id)
+            val bytes = FileInputStream(file).use { readSkillBytesBounded(it, WorkspaceSkillLimits.MAX_CONTENT_BYTES, id) }
+            if (sha256Hex(bytes) != expected) throw WorkspaceSkillStoreException(
+                WorkspaceSkillStoreException.Reason.STALE_FINGERPRINT, id)
+        }
+    }
+
+    private fun collectFiles(id: WorkspaceSkillId, directory: File, prefix: String,
+        result: MutableList<WorkspaceSkillFile>, total: Long, depth: Int = 0,
+        visited: MutableSet<String> = HashSet()): Long {
+        if (depth > 16 || visited.size >= 256 || !visited.add(directory.canonicalPath))
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id)
+        if (result.size >= MAX_FILES_PER_SKILL) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+        var bytes = total
+        val children = directory.listFiles() ?: return bytes
+        for (child in children.sortedBy { it.name }) {
+            if (child.name == METADATA_FILE) continue
+            if (!isWithin(child.canonicalFile) ||
+                !child.canonicalPath.startsWith(resolveUserDirectory(id.value).canonicalPath + File.separator))
+                throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id)
+            if (child.isDirectory) {
+                bytes = collectFiles(id, child, "$prefix${child.name}/", result, bytes, depth + 1, visited)
+                if (bytes > WorkspaceSkillLimits.MAX_TOTAL_BYTES) throw WorkspaceSkillStoreException(
+                    WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+                continue
+            }
+            if (!child.isFile) continue
+            if (result.size >= MAX_FILES_PER_SKILL) throw WorkspaceSkillStoreException(
+                WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+            if (child.length() > WorkspaceSkillLimits.MAX_CONTENT_BYTES) throw WorkspaceSkillStoreException(
+                WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+            bytes += child.length()
+            if (bytes > WorkspaceSkillLimits.MAX_TOTAL_BYTES) throw WorkspaceSkillStoreException(
+                WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
+            val content = FileInputStream(child).use { readSkillBytesBounded(it,
+                WorkspaceSkillLimits.MAX_CONTENT_BYTES, id) }
+            val path = prefix + child.name
+            result += WorkspaceSkillFile(WorkspacePath(id.value + "/" + path), content.size.toLong(),
+                sha256Hex(content), isTextFile(path))
+        }
+        return bytes
+    }
+
+    private fun isTextFile(path: String): Boolean =
+        path.substringAfterLast('.', "").lowercase() in TEXT_EXTENSIONS
+
+    private fun pathSegments(value: String): List<String> = value.split('/')
 
     override suspend fun create(draft: WorkspaceSkillDraft): WorkspaceSkillRecord = synchronized(lock) {
         val rawId = validatedId(draft.id)
@@ -334,7 +501,10 @@ class WorkspaceSkillStore(
         transform: (WorkspaceSkillSummary) -> WorkspaceSkillSummary,
     ): WorkspaceSkillRecord = synchronized(lock) {
         val rawId = validatedId(id)
-        val existing = requireUserRecord(id, rawId, builtIn)
+        val user = userRecord(rawId)
+        val existing = user ?: builtIn?.let { builtInPreferences(it) }
+            ?: throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.NOT_FOUND, id)
+        if (user == null && checkName) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.READ_ONLY, id)
         ensureFingerprint(existing, expectedFingerprint, id)
         val summary = try {
             transform(existing.summary)
@@ -344,8 +514,36 @@ class WorkspaceSkillStore(
         if (checkName) {
             ensureNameAvailable(userRecords().filter { it.summary.id != id }, summary)
         }
-        writeFileAtomic(resolveUserFile(rawId, METADATA_FILE), WorkspaceSkillMetadataCodec.encode(summary), id)
+        if (user == null) {
+            val bytes = buildJsonObject {
+                put("enabled", summary.enabled)
+                put("order", summary.order)
+            }.toString().toByteArray(Charsets.UTF_8)
+            writeFileAtomic(builtInPreferenceFile(id), bytes, id)
+        } else writeFileAtomic(resolveUserFile(rawId, METADATA_FILE), WorkspaceSkillMetadataCodec.encode(summary), id)
         recordOf(summary)
+    }
+
+    private fun builtInPreferenceFile(id: WorkspaceSkillId): File {
+        validatedId(id)
+        val file = File(baseDirectory, id.value + ".builtin-settings.json").canonicalFile
+        if (!isWithin(file)) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.PATH_ESCAPE, id)
+        return file
+    }
+
+    private fun builtInPreferences(record: WorkspaceSkillRecord): WorkspaceSkillRecord {
+        val file = builtInPreferenceFile(record.summary.id)
+        if (!file.exists()) return record
+        val bytes = FileInputStream(file).use { readSkillBytesBounded(it, 1024, record.summary.id) }
+        val values = JsonObjectValue.parse(decodeUtf8(bytes), JsonInputLimits(1024, 4)).json
+        if (values.keys != setOf("enabled", "order")) throw WorkspaceSkillStoreException(
+            WorkspaceSkillStoreException.Reason.INVALID_METADATA, record.summary.id)
+        val enabled = (values["enabled"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+            ?: throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, record.summary.id)
+        val order = (values["order"] as? JsonPrimitive)?.takeIf { !it.isString }?.intOrNull
+            ?: throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, record.summary.id)
+        if (order < 0) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, record.summary.id)
+        return recordOf(record.summary.withEnabled(enabled).withOrder(order))
     }
 
     private fun requireUserRecord(
@@ -437,11 +635,11 @@ class WorkspaceSkillStore(
 
     private suspend fun builtInRecords(): List<WorkspaceSkillRecord> =
         builtIns?.list()?.map { resource ->
-            WorkspaceSkillMetadataCodec.decodeMetadata(
+            synchronized(lock) { builtInPreferences(WorkspaceSkillMetadataCodec.decodeMetadata(
                 metadata = resource.metadataBytes,
                 id = resource.id,
                 source = WorkspaceSkillSource.BUILT_IN,
-            )
+            )) }
         } ?: emptyList()
 
     private suspend fun builtInRecord(id: WorkspaceSkillId): WorkspaceSkillRecord? =
@@ -579,6 +777,10 @@ class WorkspaceSkillStore(
     }
 
     companion object {
+        private const val MAX_FILES_PER_SKILL = 256
+        private val TEXT_EXTENSIONS = setOf("md", "txt", "json", "jsonl", "yaml", "yml", "js", "mjs", "ts",
+            "py", "rb", "css", "html", "htm", "xml", "csv", "toml", "ini")
+
         private val SKILL_COMPARATOR = compareBy<WorkspaceSkillRecord>(
             { it.summary.order },
             { it.summary.conflictNameKey },

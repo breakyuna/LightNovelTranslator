@@ -54,7 +54,7 @@ class TextPolicyProcessor(policy: ProjectTextPolicy, private val checkActive: ()
         val budget = RuleBudget(checkActive)
         val spans = protectionSpans(source, budget)
         val terms = mutableListOf<TranslationTerm>()
-        for (rule in compiled.filter { it.rule.kind == TextRuleKind.TERM }) {
+        for (rule in compiled.filter { it.rule.kind == TextRuleKind.TERM && it.rule.scope != TextRuleScope.NAME }) {
             checkActive()
             if (find(matcher(rule, source, budget), rule))
                 terms.add(TranslationTerm(rule.rule.source, rule.rule.target, rule.rule.note))

@@ -9,6 +9,9 @@ class TranslatorApplication : Application() {
     val nativeGraph: NativeAppGraph by lazy { NativeAppGraph(this) }
     override fun onCreate() {
         super.onCreate()
+        // Isolated script services use a disposable UID without app files/permissions. They
+        // must not initialize PDF resources, disk loggers, crash files or the application graph.
+        if (android.os.Process.myUid() != applicationInfo.uid) return
         // PDFBox-Android reads its CMap/font metadata from assets and must be initialized once
         // before the first PDF import; the binary adapter itself has no Context parameter.
         com.breakyuna.noveltranslator.nativecore.formats.PdfBoxRuntime.initialize(this)

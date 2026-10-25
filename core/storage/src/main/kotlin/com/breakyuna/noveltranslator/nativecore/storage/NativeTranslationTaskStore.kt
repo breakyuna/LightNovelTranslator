@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.nativecore.storage
 
 import android.content.Context
+import android.database.Cursor
 import androidx.room.*
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import java.util.concurrent.Callable
@@ -44,7 +45,11 @@ internal interface NativeTranslationTaskDao {
 /** Fixed membership and payload, with project receipts as the authority after a crash. */
 class NativeTranslationTaskStore(context: Context, private val projects: TextProjectPort,
     private val runtime: RuntimePort,
-    private val retryRecovery: TranslationRetryRecoveryPolicy? = null) : TranslationTaskPort, TranslationTaskReviewPort, TranslationTaskRetryPort {
+    private val retryRecovery: TranslationRetryRecoveryPolicy? = null,
+    private val ledger: UsageLedgerReadPort? = null,
+) : TranslationTaskPort, TranslationTaskReviewPort, TranslationTaskRetryPort, TranslationTaskOutcomePort,
+    TranslationTaskFailureEvidencePort, TranslationTaskFailureAdjudicationPort,
+    TranslationTaskRetrySelectionPort, TranslationTaskSkipSelectionPort {
     private val db = NativeAppDatabase.open(context)
     private val retryCheckpoints = NativeTranslationRetryCheckpointStore(context, runtime)
     private fun key(run: RunIdentity) = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(
@@ -72,14 +77,17 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                 return@withContext TranslationTaskProgress(old.revision, old.committed, old.requests, decode(old.specification).revision)
             }
             require(!resuming) { "Missing original task" }
-            val enabled = (projects as? ProjectAssetPort)?.assets(spec.ref)?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
+            val assetPort = projects as? ProjectAssetPort
+            val assets = assetPort?.assets(spec.ref)
+            val enabled = assets?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
+            val pagePolicy = assetPort?.let { ProjectPageTranslationPolicy(it.projectSettings(spec.ref), requireNotNull(assets)) }
             val targets = ArrayList<NativeTranslationTargetRow>()
             var cursor = spec.afterId
             do {
                 currentCoroutineContext().ensureActive()
                 val page = projects.items(spec.ref, spec.revision, cursor, if (spec.wholeProject) 100 else spec.pageSize)
                 page.items.filter { spec.options.startMode.accepts(it.status) && it.source.isNotBlank() &&
-                    (enabled == null || it.assetId in enabled) }.forEach {
+                    (enabled == null || it.assetId in enabled) && pagePolicy?.accepts(it) != false }.forEach {
                     targets.add(NativeTranslationTargetRow(id, it.id.value, it.fingerprint.sha256, false))
                 }
                 require(targets.size <= 100_000)
@@ -224,8 +232,12 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
     }
     override suspend fun finished(lease: RunLease): Unit = withContext(Dispatchers.IO) {
         transaction {
-            val row = row(lease); require(row.stage == "READY" && db.translationTasks().remaining(row.id) == 0)
-            check(db.translationTasks().update(row.copy(stage = "COMPLETE")) == 1)
+            val row = row(lease); require(row.stage == "READY")
+            // A manual/partial retry may have no eligible target left while explicitly skipped
+            // ERROR rows remain unfinished. Publish COMPLETE only when every target row is done;
+            // otherwise keep READY for the queue scheduler's committed/skipped/receipt proof.
+            val remaining = db.translationTasks().remaining(row.id)
+            check(db.translationTasks().update(row.copy(stage = if (remaining == 0) "COMPLETE" else "READY")) == 1)
         }
     }
     override suspend fun resume(ref: LocalProjectRef, run: RunIdentity): TranslationTaskSpec = withContext(Dispatchers.IO) {
@@ -260,6 +272,520 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             transaction { reviewRow(ref, run) }
         } finally { runtime.endProjectWrite(write) }
     }
+
+    /**
+     * Completion evidence is read from persisted targets, the task's proven committed count, the
+     * queue's explicit skip set and the usage ledger. No in-memory progress or synthetic ACTUAL is
+     * used. A skip must name an actual unfinished target of this task, otherwise the caller stops
+     * for review instead of inflating completion.
+     */
+    override suspend fun outcome(ref: LocalProjectRef, run: RunIdentity,
+        skippedItemIds: Set<ItemId>): TranslationTaskOutcomeEvidence = withContext(Dispatchers.IO) {
+        val facts = transaction {
+            val row = requireNotNull(db.translationTasks().find(key(run)))
+            val spec = decode(row.specification)
+            require(spec.ref == ref && spec.run == run)
+            val target = db.translationTasks().count(row.id)
+            val skipped = if (skippedItemIds.isEmpty()) 0 else {
+                val selected = db.translationTasks().selected(row.id, skippedItemIds.map { it.value })
+                require(selected.size == skippedItemIds.size && selected.none { it.done })
+                selected.size
+            }
+            val unresolved = db.translationRequests().unresolved(ref.instanceId.value, ref.generation.value,
+                ref.projectId.value, run.runId.value, run.commandId.value)
+            OutcomeFacts(row.stage, target, row.committed, skipped, unresolved)
+        }
+        val usage = ledger?.summary(UsageLedgerQuery(ref = ref, run = run))
+        val unresolvedDispatches = Math.addExact(facts.unresolved.toLong(), usage?.unresolved ?: 0L)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val usageSource = if (usage == null) UsageSource.UNKNOWN
+        else usage.totals.usageSource(usage.unresolved)
+        TranslationTaskOutcomeEvidence(
+            stage = facts.stage,
+            targetItems = facts.target,
+            committedItems = facts.committed,
+            skippedItems = facts.skipped,
+            receiptedItems = facts.committed,
+            unresolvedDispatches = unresolvedDispatches,
+            usage = usageSource,
+        )
+    }
+
+    private data class OutcomeFacts(
+        val stage: String,
+        val target: Int,
+        val committed: Int,
+        val skipped: Int,
+        val unresolved: Int,
+    )
+
+    private data class MemberReceipt(
+        val state: String,
+        val failure: String?,
+        val usage: String?,
+    )
+
+    /**
+     * Bounded durable failure facts for one fixed task. Only persisted target rows, the current
+     * project item fingerprint/status and request audit receipts are read; no source or
+     * translation body is loaded into the result.
+     */
+    override suspend fun failures(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        after: Long,
+    ): TranslationTaskFailureEvidence = withContext(Dispatchers.IO) {
+        require(after >= 0)
+        val write = runtime.beginProjectWrite()
+        try {
+            val projectRevision = projects.open(ref).revision
+            val id = key(run)
+            val row = requireNotNull(db.translationTasks().find(id))
+            val spec = decode(row.specification)
+            require(spec.ref == ref && spec.run == run) { "Failure evidence belongs to another task" }
+            val page = db.translationTasks().targetPage(id, after)
+            val examined = page.take(TranslationTaskFailureBatch.MAX_MEMBERS)
+            val items = examined.associate { target ->
+                val item = projects.item(ref, ItemId(target.itemId))?.item ?: throw TranslationTaskNeedsReview()
+                require(item.fingerprint.sha256 == target.fingerprint) { "Target fingerprint changed" }
+                target.itemId to item
+            }
+            val receipts = latestReceipts(ref, run, examined.map { it.itemId })
+            val members = examined.mapNotNull { target ->
+                failureMember(target, items.getValue(target.itemId), receipts[target.itemId])
+            }
+            val next = if (page.size > TranslationTaskFailureBatch.MAX_MEMBERS) examined.last().itemId else null
+            TranslationTaskFailureEvidence(reviewRow(ref, run), projectRevision, members, next)
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    override suspend fun failureMembers(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        itemIds: List<ItemId>,
+    ): List<TranslationFailureMember> = withContext(Dispatchers.IO) {
+        require(itemIds.isNotEmpty() && itemIds.size <= TranslationTaskFailureBatch.MAX_MEMBERS &&
+            itemIds.distinct().size == itemIds.size)
+        val write = runtime.beginProjectWrite()
+        try {
+            projects.open(ref)
+            val id = key(run)
+            val row = requireNotNull(db.translationTasks().find(id))
+            val spec = decode(row.specification)
+            require(spec.ref == ref && spec.run == run) { "Failure evidence belongs to another task" }
+            val targets = db.translationTasks().selected(id, itemIds.map { it.value })
+            require(targets.size == itemIds.size) { "Selected member is not a task target" }
+            val items = targets.associate { target ->
+                val item = projects.item(ref, ItemId(target.itemId))?.item ?: throw TranslationTaskNeedsReview()
+                require(item.fingerprint.sha256 == target.fingerprint) { "Target fingerprint changed" }
+                target.itemId to item
+            }
+            val receipts = latestReceipts(ref, run, targets.map { it.itemId })
+            targets.mapNotNull { target ->
+                failureMember(target, items.getValue(target.itemId), receipts[target.itemId])
+            }.sortedBy { it.itemId.value }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    /**
+     * Records one explicit user decision on the SAME fixed task. Selection evidence is rebuilt
+     * from the target rows, current project fingerprints and request audit, then compared with the
+     * queue batch copy. No new Run/task and no retry-budget replenishment is performed.
+     */
+    override suspend fun recordFailureDecision(
+        evidence: TranslationTaskFailureEvidence,
+        batchId: TranslationTaskFailureBatchId,
+        action: TranslationTaskCommandAction,
+        members: List<TranslationFailureMember>,
+        command: CommandId,
+    ): TranslationTaskFailureDecisionReceipt = withContext(Dispatchers.IO) {
+        require(action.adjudication) { "Not a member adjudication action" }
+        require(members.size in 1..TranslationTaskFailureBatch.MAX_MEMBERS &&
+            members.map { it.itemId }.distinct().size == members.size)
+        val review = evidence.review
+        val ordered = members.sortedBy { it.itemId.value }
+        val write = runtime.beginProjectWrite()
+        try {
+            val project = projects.open(review.ref)
+            val id = key(review.run)
+            val row = requireNotNull(db.translationTasks().find(id))
+            val spec = decode(row.specification)
+            require(spec.ref == review.ref && spec.run == review.run) { "Failure decision belongs to another task" }
+            val taskAction = "${action.name}:${batchId.value}"
+            val digest = failureDecisionDigest(batchId, action, ordered)
+            val replay = db.translationTaskDecisions().find(command.value)
+            if (replay != null) {
+                require(replay.task == id && replay.action == taskAction && replay.fingerprint == digest) {
+                    "Failure decision command conflict"
+                }
+                return@withContext TranslationTaskFailureDecisionReceipt(
+                    command, action, batchId, ordered.map { it.itemId }, 0)
+            }
+            require(project.revision == evidence.projectRevision) { "Project revision changed" }
+            val current = reviewRow(review.ref, review.run)
+            require(current == review) { "Task review changed" }
+            require(current.stage in FAILURE_DECISION_STAGES) { "Task is not awaiting a failure decision" }
+            require(action == TranslationTaskCommandAction.KEEP_ERROR || current.unresolvedRequests == 0) {
+                "An unresolved dispatch cannot be retried or skipped"
+            }
+            val targets = db.translationTasks().selected(id, ordered.map { it.itemId.value }).associateBy { it.itemId }
+            require(targets.size == ordered.size) { "Selected member is not a task target" }
+            val prior = db.translationTaskDecisions().selected(id, ordered.map { it.itemId.value })
+                .associateBy { it.itemId }
+            val items = ordered.associate { member ->
+                val target = targets.getValue(member.itemId)
+                require(!target.done && target.fingerprint == member.fingerprint.sha256) {
+                    "Target or fingerprint changed"
+                }
+                val item = projects.item(review.ref, member.itemId)?.item ?: throw TranslationTaskNeedsReview()
+                require(item.fingerprint == member.fingerprint) { "Project item fingerprint changed" }
+                member.itemId to item
+            }
+            val receipts = latestReceipts(review.ref, review.run, ordered.map { it.itemId.value })
+            val fresh = ordered.mapNotNull { member ->
+                failureMember(targets.getValue(member.itemId), items.getValue(member.itemId),
+                    receipts[member.itemId])
+            }.sortedBy { it.itemId.value }
+            require(fresh == ordered) { "Failure evidence changed" }
+            for (member in ordered) {
+                val previous = prior[member.itemId]
+                when (action) {
+                    TranslationTaskCommandAction.RETRY_MEMBERS -> {
+                        require(!member.committed && !member.terminal) { "Member is not retryable" }
+                        require(member.receipt != TranslationFailureReceipt.DISPATCHED_NO_RECEIPT) {
+                            "An unreceipted dispatch cannot be retried"
+                        }
+                        require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
+                            "Member already has a final decision"
+                        }
+                    }
+                    TranslationTaskCommandAction.SKIP_MEMBERS -> {
+                        require(!member.committed) { "Committed member cannot be skipped" }
+                        require(member.receipt != TranslationFailureReceipt.DISPATCHED_NO_RECEIPT) {
+                            "An unreceipted dispatch cannot be skipped"
+                        }
+                        require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
+                            "Member already has a final decision"
+                        }
+                    }
+                    TranslationTaskCommandAction.KEEP_ERROR -> {
+                        require(!member.committed) { "Committed member cannot be kept as an error" }
+                        require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
+                            "Member already has a final decision"
+                        }
+                    }
+                    else -> throw IllegalArgumentException("Not a member adjudication action")
+                }
+            }
+            transaction {
+                require(reviewRow(review.ref, review.run) == review) { "Task review changed" }
+                val currentTargets = db.translationTasks().selected(id, ordered.map { it.itemId.value })
+                    .associateBy { it.itemId }
+                require(currentTargets.size == ordered.size)
+                val currentPrior = db.translationTaskDecisions().selected(id, ordered.map { it.itemId.value })
+                    .associateBy { it.itemId }
+                for (member in ordered) {
+                    val target = currentTargets.getValue(member.itemId)
+                    require(!target.done && target.fingerprint == member.fingerprint.sha256)
+                    val previous = currentPrior[member.itemId]
+                    require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
+                        "Member decision changed"
+                    }
+                }
+                db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(
+                    command.value, id, taskAction, digest, review.stage, review.revision,
+                    review.committed, review.remaining, review.requests, review.unresolvedRequests))
+                for (member in ordered) {
+                    val previous = currentPrior[member.itemId]
+                    if (previous == null) {
+                        db.translationTaskDecisions().members(listOf(NativeTranslationMemberDecisionRow(
+                            id, member.itemId.value, command.value, action.name,
+                            member.fingerprint.sha256, evidence.projectRevision)))
+                    } else if (previous.action == RETRY_MEMBER_ACTION) {
+                        db.openHelper.writableDatabase.execSQL(
+                            "UPDATE native_translation_member_decisions SET command=?, action=?, revision=? " +
+                                "WHERE task=? AND itemId=? AND action=?",
+                            arrayOf<Any?>(command.value, action.name, evidence.projectRevision,
+                                id, member.itemId.value, RETRY_MEMBER_ACTION),
+                        )
+                    }
+                }
+                val settled = requireNotNull(db.translationTasks().find(id))
+                val remaining = db.translationTasks().remaining(id)
+                val nextStage = when (action) {
+                    TranslationTaskCommandAction.RETRY_MEMBERS -> "READY"
+                    TranslationTaskCommandAction.KEEP_ERROR -> "FAILED"
+                    TranslationTaskCommandAction.SKIP_MEMBERS ->
+                        // Explicit skips stay as unfinished target rows. READY lets the queue
+                        // scheduler continue the remaining targets (or finalize from exact
+                        // committed+skipped evidence) without a second review round.
+                        "READY"
+                    else -> settled.stage
+                }
+                if (nextStage != settled.stage) {
+                    check(db.translationTasks().update(settled.copy(stage = nextStage)) == 1)
+                }
+            }
+            TranslationTaskFailureDecisionReceipt(
+                command = command,
+                action = action,
+                batchId = batchId,
+                memberIds = ordered.map { it.itemId },
+                retryBudget = 0,
+            )
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    /**
+     * Finalizes the SAME fixed task after the queue proved every target is either committed or in
+     * the exact skip set. It refuses a stale/foreign skip, an unresolved dispatch or unknown usage;
+     * it never invents an ACTUAL receipt for a request that has none.
+     */
+    override suspend fun completeWithErrors(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        skippedItemIds: Set<ItemId>,
+        command: CommandId,
+    ): Unit = withContext(Dispatchers.IO) {
+        val ordered = skippedItemIds.sortedBy { it.value }
+        // Below SQLite's common 999 bind-parameter limit; larger skip sets fail closed instead of
+        // issuing a query that could silently mix projects.
+        require(ordered.size <= 900) { "Too many skipped members for one completion proof" }
+        val write = runtime.beginProjectWrite()
+        try {
+            val project = projects.open(ref)
+            val id = key(run)
+            val row = requireNotNull(db.translationTasks().find(id))
+            val spec = decode(row.specification)
+            require(spec.ref == ref && spec.run == run) { "Completion belongs to another task" }
+            require(project.revision >= row.revision) { "Project revision regressed" }
+            val action = if (ordered.isEmpty()) COMPLETE_ACTION else COMPLETED_WITH_ERRORS_ACTION
+            val digest = completionDigest(ref, run, row, ordered)
+            val replay = db.translationTaskDecisions().find(command.value)
+            if (replay != null) {
+                require(replay.task == id && replay.action == action && replay.fingerprint == digest) {
+                    "Completion command conflict"
+                }
+                return@withContext
+            }
+            require(row.stage !in setOf("COMPLETE", "CANCELLED")) { "Task is already terminal" }
+            val targetCount = db.translationTasks().count(id)
+            val remaining = db.translationTasks().remaining(id)
+            val skippedTargets = if (ordered.isEmpty()) emptyList() else
+                db.translationTasks().selected(id, ordered.map { it.value })
+            require(skippedTargets.size == ordered.size) { "Skipped member is not a task target" }
+            require(skippedTargets.none { it.done }) { "Committed target cannot be skipped" }
+            val memberDecisions = if (ordered.isEmpty()) emptyMap() else db.translationTaskDecisions()
+                .selected(id, ordered.map { it.value }).associateBy { it.itemId }
+            require(ordered.all { itemId ->
+                val target = skippedTargets.first { it.itemId == itemId.value }
+                val decision = memberDecisions[itemId.value]
+                decision?.action == SKIP_MEMBER_ACTION && decision.fingerprint == target.fingerprint
+            }) { "Skipped member has no durable skip decision" }
+            require(remaining == ordered.size) { "Unfinished targets remain unaccounted" }
+            require(targetCount - remaining == row.committed) { "Committed target count changed" }
+            val unresolved = db.translationRequests().unresolved(ref.instanceId.value, ref.generation.value,
+                ref.projectId.value, run.runId.value, run.commandId.value)
+            require(unresolved == 0) { "An unresolved dispatch forbids completion" }
+            val usage = ledger?.summary(UsageLedgerQuery(ref = ref, run = run))
+            require(usage != null && usage.totals.usageSource(usage.unresolved) != UsageSource.UNKNOWN) {
+                "Unknown usage forbids completion"
+            }
+            transaction {
+                val current = requireNotNull(db.translationTasks().find(id))
+                require(current.stage !in setOf("COMPLETE", "CANCELLED"))
+                require(db.translationTasks().remaining(id) == ordered.size)
+                require(db.translationTasks().count(id) - ordered.size == current.committed)
+                db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(
+                    command.value, id, action, digest, current.stage, current.revision,
+                    current.committed, ordered.size, current.requests, unresolved))
+                check(db.translationTasks().update(current.copy(stage = "COMPLETE")) == 1)
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    /**
+     * Explicit same-task retry selection read by the execution service. Only durable RETRY member
+     * decisions for still-unfinished ERROR targets are returned; a changed fingerprint refuses the
+     * selection instead of silently translating a different object.
+     */
+    override suspend fun retrySelection(lease: RunLease): Set<ItemId> = withContext(Dispatchers.IO) {
+        val active = runtime.snapshot().activeRun
+        require(active != null && active.identity == lease.identity &&
+            active.owner == RuntimeOwner.TRANSLATION) { "No matching translation lease" }
+        val id = key(lease.identity)
+        val row = requireNotNull(db.translationTasks().find(id))
+        val spec = decode(row.specification)
+        require(spec.run == lease.identity && spec.ref.projectId == lease.identity.projectId)
+        val decisions = ArrayList<Pair<Long, String>>()
+        db.openHelper.readableDatabase.query(
+            "SELECT itemId,fingerprint FROM native_translation_member_decisions " +
+                "WHERE task=? AND action=? ORDER BY itemId LIMIT ?",
+            arrayOf<Any?>(id, RETRY_MEMBER_ACTION, TranslationTaskFailureBatch.MAX_MEMBERS),
+        ).use { cursor ->
+            while (cursor.moveToNext()) decisions.add(cursor.getLong(0) to cursor.getString(1))
+        }
+        if (decisions.isEmpty()) return@withContext emptySet()
+        val targets = db.translationTasks().selected(id, decisions.map { it.first }).associateBy { it.itemId }
+        require(targets.size == decisions.size) { "Retry member is not a task target" }
+        val selected = LinkedHashSet<ItemId>()
+        for ((itemId, fingerprint) in decisions) {
+            val target = targets.getValue(itemId)
+            if (target.done) continue
+            require(target.fingerprint == fingerprint) { "Retry target fingerprint changed" }
+            val item = projects.item(spec.ref, ItemId(itemId))?.item ?: throw TranslationTaskNeedsReview()
+            require(item.fingerprint.sha256 == target.fingerprint) { "Project item fingerprint changed" }
+            if (item.status == TextItemStatus.ERROR) selected.add(item.id)
+        }
+        selected
+    }
+
+    /**
+     * Explicit skip decisions for the active lease. Skipped targets stay unfinished for completion
+     * evidence but must not be requested again when a queue resume continues other members.
+     */
+    override suspend fun skipSelection(lease: RunLease): Set<ItemId> = withContext(Dispatchers.IO) {
+        val active = runtime.snapshot().activeRun
+        require(active != null && active.identity == lease.identity &&
+            active.owner == RuntimeOwner.TRANSLATION) { "No matching translation lease" }
+        val id = key(lease.identity)
+        val row = requireNotNull(db.translationTasks().find(id))
+        val spec = decode(row.specification)
+        require(spec.run == lease.identity && spec.ref.projectId == lease.identity.projectId)
+        val decisions = ArrayList<Pair<Long, String>>()
+        db.openHelper.readableDatabase.query(
+            "SELECT itemId,fingerprint FROM native_translation_member_decisions " +
+                "WHERE task=? AND action=? ORDER BY itemId LIMIT ?",
+            arrayOf<Any?>(id, SKIP_MEMBER_ACTION, TranslationTaskFailureBatch.MAX_MEMBERS),
+        ).use { cursor ->
+            while (cursor.moveToNext()) decisions.add(cursor.getLong(0) to cursor.getString(1))
+        }
+        if (decisions.isEmpty()) return@withContext emptySet()
+        val targets = db.translationTasks().selected(id, decisions.map { it.first }).associateBy { it.itemId }
+        require(targets.size == decisions.size) { "Skipped member is not a task target" }
+        val selected = LinkedHashSet<ItemId>()
+        for ((itemId, fingerprint) in decisions) {
+            val target = targets.getValue(itemId)
+            if (target.done) continue
+            require(target.fingerprint == fingerprint) { "Skipped target fingerprint changed" }
+            val item = projects.item(spec.ref, ItemId(itemId))?.item ?: throw TranslationTaskNeedsReview()
+            require(item.fingerprint.sha256 == target.fingerprint) { "Project item fingerprint changed" }
+            if (item.status == TextItemStatus.ERROR) selected.add(item.id)
+        }
+        selected
+    }
+
+    private fun latestReceipts(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        itemIds: List<Long>,
+    ): Map<Long, MemberReceipt> {
+        if (itemIds.isEmpty()) return emptyMap()
+        val placeholders = itemIds.joinToString(",") { "?" }
+        val sql = "SELECT i.itemId,r.state,r.failure,r.usage " +
+            "FROM native_translation_requests r " +
+            "INNER JOIN native_translation_request_inputs i ON i.attemptId=r.attemptId " +
+            "WHERE r.instanceId=? AND r.generation=? AND r.projectId=? AND r.runId=? AND r.commandId=? " +
+            "AND i.itemId IN ($placeholders) ORDER BY i.itemId,r.rowid"
+        val args = ArrayList<Any?>(5 + itemIds.size)
+        args.add(ref.instanceId.value); args.add(ref.generation.value); args.add(ref.projectId.value)
+        args.add(run.runId.value); args.add(run.commandId.value); args.addAll(itemIds)
+        val result = LinkedHashMap<Long, MemberReceipt>()
+        db.openHelper.readableDatabase.query(sql, args.toTypedArray()).use { cursor: Cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                result[id] = MemberReceipt(
+                    state = cursor.getString(1),
+                    failure = if (cursor.isNull(2)) null else cursor.getString(2),
+                    usage = if (cursor.isNull(3)) null else cursor.getString(3),
+                )
+            }
+        }
+        return result
+    }
+
+    private fun failureMember(
+        target: NativeTranslationTargetRow,
+        item: TextProjectItem,
+        receipt: MemberReceipt?,
+    ): TranslationFailureMember? {
+        val state = receipt?.state
+        // Item failures are persisted as ERROR rows. An unresolved dispatch is also member-level
+        // evidence even if the item row is still NONE. A received run-level failure without an
+        // ERROR marker is not turned into a member decision.
+        val failed = item.status == TextItemStatus.ERROR || state == "DISPATCHED"
+        if (!failed) return null
+        // A committed target without a received response cannot be reported as failure evidence;
+        // it is either a normal success or an unproven/late state that must stay for review.
+        if (target.done && state != "RECEIVED") return null
+        val failure = receipt?.failure?.let { ModelFailureKind.valueOf(it) } ?: ModelFailureKind.UNKNOWN
+        val received = state == "RECEIVED"
+        val usage = if (received) receipt?.usage?.let {
+            usageCertainty(TranslationUsageCodec.decode(it))
+        } ?: UsageSource.UNKNOWN else UsageSource.UNKNOWN
+        return TranslationFailureMember(
+            itemId = item.id,
+            fingerprint = item.fingerprint,
+            failure = failure,
+            receipt = when {
+                received -> TranslationFailureReceipt.RECEIVED
+                state == "DISPATCHED" -> TranslationFailureReceipt.DISPATCHED_NO_RECEIPT
+                else -> TranslationFailureReceipt.NOT_DISPATCHED
+            },
+            usage = usage,
+            committed = target.done,
+            terminal = !target.done && received && failure in TERMINAL_ITEM_FAILURES,
+        )
+    }
+
+    private fun usageCertainty(usage: RequestUsage): UsageSource {
+        val metrics = listOf(usage.input, usage.cacheRead, usage.cacheWrite, usage.thinking, usage.output)
+        return when {
+            metrics.any { it.tokens == null || it.source == UsageSource.UNKNOWN } -> UsageSource.UNKNOWN
+            metrics.any { it.source == UsageSource.ESTIMATED } -> UsageSource.ESTIMATED
+            else -> UsageSource.ACTUAL
+        }
+    }
+
+    private fun failureDecisionDigest(
+        batchId: TranslationTaskFailureBatchId,
+        action: TranslationTaskCommandAction,
+        members: List<TranslationFailureMember>,
+    ): String = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(JsonArray(
+        listOf(
+            JsonPrimitive(action.name), JsonPrimitive(batchId.value), JsonPrimitive(0),
+        ) + members.flatMap { member ->
+            listOf(
+                JsonPrimitive(member.itemId.value), JsonPrimitive(member.fingerprint.sha256),
+                JsonPrimitive(member.failure.name), JsonPrimitive(member.receipt.name),
+                JsonPrimitive(member.usage.name), JsonPrimitive(member.committed),
+                JsonPrimitive(member.terminal),
+            )
+        },
+    ).toString()))
+
+    private fun completionDigest(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        row: NativeTranslationTaskRow,
+        skipped: List<ItemId>,
+    ): String = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(JsonArray(
+        listOf(
+            JsonPrimitive(ref.projectId.value), JsonPrimitive(ref.instanceId.value),
+            JsonPrimitive(ref.generation.value), JsonPrimitive(run.runId.value),
+            JsonPrimitive(run.commandId.value), JsonPrimitive(row.revision),
+            JsonPrimitive(row.committed), JsonPrimitive(row.requests),
+        ) + skipped.map { JsonPrimitive(it.value) },
+    ).toString()))
+
+    private fun skipDecisionCount(task: String): Int =
+        db.openHelper.readableDatabase.query(
+            "SELECT COUNT(*) FROM native_translation_member_decisions WHERE task=? AND action=?",
+            arrayOf<Any?>(task, SKIP_MEMBER_ACTION),
+        ).use { cursor ->
+            require(cursor.moveToFirst())
+            cursor.getInt(0)
+        }
 
     private fun reviewRow(ref: LocalProjectRef, run: RunIdentity): TranslationTaskReview {
         val row = requireNotNull(db.translationTasks().find(key(run)))
@@ -350,11 +876,14 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             require(db.translationTaskDecisions().selected(original.id, ordered.map { it.id.value }).isEmpty()) {
                 "Member already decided"
             }
-            val enabled = (projects as? ProjectAssetPort)?.assets(review.ref)?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
+            val assetPort = projects as? ProjectAssetPort
+            val assets = assetPort?.assets(review.ref)
+            val enabled = assets?.filter { it.enabled }?.mapTo(HashSet()) { it.id }
+            val pagePolicy = assetPort?.let { ProjectPageTranslationPolicy(it.projectSettings(review.ref), requireNotNull(assets)) }
             ordered.forEach { evidence ->
                 val current = projects.item(review.ref, evidence.id)?.item ?: throw TranslationTaskNeedsReview()
                 require(current.status == TextItemStatus.ERROR && current.fingerprint == evidence.fingerprint &&
-                    current.source.isNotBlank() && (enabled == null || current.assetId in enabled))
+                    current.source.isNotBlank() && (enabled == null || current.assetId in enabled) && pagePolicy?.accepts(current) != false)
             }
             // A new explicit paid authorization gets its own immutable target set and retry budget.
             // The original checkpoint and all failure/usage facts stay untouched.
@@ -647,3 +1176,21 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
     }
     suspend fun close(): Unit = withContext(Dispatchers.IO) { db.close() }
 }
+
+/** Fixed-task stages that may accept an explicit member decision. */
+private val FAILURE_DECISION_STAGES = setOf("FAILED", "NEEDS_REVIEW", "READY")
+
+/** Item failures that no automatic retry may replay; an explicit skip/keep/terminate remains. */
+private val TERMINAL_ITEM_FAILURES = setOf(
+    ModelFailureKind.PARSING,
+    ModelFailureKind.TRUNCATED,
+    ModelFailureKind.CONTENT,
+    ModelFailureKind.CONTENT_FILTERED,
+    ModelFailureKind.CONTEXT_OVERFLOW,
+    ModelFailureKind.EMPTY_RESPONSE,
+)
+
+private const val RETRY_MEMBER_ACTION = "RETRY_MEMBERS"
+private const val SKIP_MEMBER_ACTION = "SKIP_MEMBERS"
+private const val COMPLETE_ACTION = "COMPLETE"
+private const val COMPLETED_WITH_ERRORS_ACTION = "COMPLETED_WITH_ERRORS"

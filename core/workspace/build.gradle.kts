@@ -11,6 +11,8 @@ android {
   }
   defaultConfig {
     minSdk = libs.versions.androidMinSdk.get().toInt()
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    consumerProguardFiles("consumer-rules.pro")
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -35,6 +37,11 @@ kotlin {
 
 dependencies {
   api(project(":core:domain"))
+  implementation(libs.okhttp)
   implementation(libs.quickjs.android)
+  implementation(libs.kotlinx.coroutines.core)
   testImplementation(libs.junit)
+  androidTestImplementation(libs.androidx.junit)
+  androidTestImplementation(libs.androidx.runner)
+  androidTestImplementation(libs.androidx.core)
 }

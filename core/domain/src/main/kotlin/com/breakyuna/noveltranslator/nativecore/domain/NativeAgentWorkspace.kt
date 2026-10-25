@@ -20,6 +20,7 @@ interface NativeAgentWorkspacePort {
     suspend fun messages(ref: LocalProjectRef, chatId: ChatId): List<AgentChatLine>
     suspend fun append(ref: LocalProjectRef, chatId: ChatId, role: String, text: String)
     suspend fun pending(ref: LocalProjectRef, chatId: ChatId): TextApproval?
+    suspend fun hasPending(ref: LocalProjectRef, chatId: ChatId): Boolean = pending(ref, chatId) != null
     suspend fun prepare(lease: RunLease, ref: LocalProjectRef, itemId: ItemId, translation: String): TextApproval
     suspend fun cancelPending(ref: LocalProjectRef, runId: RunId)
     suspend fun reject(ref: LocalProjectRef, id: ApprovalRequestId, digest: String)

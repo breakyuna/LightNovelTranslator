@@ -1,0 +1,14 @@
+{
+  "name": "text-preserve",
+  "description": "扫描保护规则表达式，返回完整计数、逐文件分布和定位证据。",
+  "enabled": false,
+  "order": 400,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "rules",
+    "analysis"
+  ],
+  "contentSha256": "105167281e154b3dcf4385e1d1c31eb45d77cf0229f10928384252d88c8ab2ea"
+}

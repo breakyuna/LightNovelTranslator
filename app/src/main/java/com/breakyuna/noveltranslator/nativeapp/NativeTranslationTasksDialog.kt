@@ -26,7 +26,8 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     terminate: (suspend (TranslationTaskReview, CommandId) -> Unit)? = null,
     loadMembers: (suspend (LocalProjectRef, RunIdentity, Long) -> TranslationTaskMemberPage)? = null,
     prepareRetry: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> NativeTranslationResumePreview)? = null,
-    keepErrors: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> Unit)? = null) {
+    keepErrors: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> Unit)? = null,
+    queueManagedRuns: Set<String> = emptySet()) {
     var tasks by remember(ref) { mutableStateOf<List<TranslationTaskSummary>?>(null) }
     var cursor by remember(ref) { mutableStateOf<Long?>(null) }
     var loading by remember(ref) { mutableStateOf(false) }
@@ -115,7 +116,10 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
                         if (task.stage == "NEEDS_REVIEW") Text(stringResource(R.string.native_tasks_review),
                             Modifier.testTag("native-task-uncertain-${task.run.commandId.value}"))
                         if (task.stage == "CANCELLED") Text(stringResource(R.string.native_tasks_terminated))
-                        if (task.stage != "COMPLETE" && inspectReview != null && terminate != null)
+                        val queueManaged = task.run.runId.value in queueManagedRuns
+                        if (queueManaged) Text(stringResource(R.string.native_tasks_queue_managed),
+                            style = MaterialTheme.typography.bodySmall)
+                        if (!queueManaged && task.stage != "COMPLETE" && inspectReview != null && terminate != null)
                             TextButton(enabled = !checking && !task.active, onClick = {
                                 checking = true; review = false
                                 scope.launch {
@@ -128,7 +132,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
                                     finally { checking = false }
                                 }
                             }) { Text(stringResource(R.string.native_tasks_review_title)) }
-                        if (task.stage !in setOf("COMPLETE", "CANCELLED", "FAILED", "NEEDS_REVIEW")) TextButton(onClick = {
+                        if (!queueManaged && task.stage !in setOf("COMPLETE", "CANCELLED", "FAILED", "NEEDS_REVIEW")) TextButton(onClick = {
                             checking = true; review = false
                             scope.launch {
                                 try { confirmation = inspect(ref, task.run) }

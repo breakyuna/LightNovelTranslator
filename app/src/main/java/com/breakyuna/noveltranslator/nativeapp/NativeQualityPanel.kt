@@ -80,6 +80,7 @@ private fun QualityFilterDialog(view: TextQualitySelection, dismiss: () -> Unit,
     var outcome by rememberSaveable(view.index.ref, view.index.revision) { mutableStateOf(view.filter.outcome.name) }
     var code by rememberSaveable(view.index.ref, view.index.revision) { mutableStateOf(view.filter.warning?.name) }
     var term by rememberSaveable(view.index.ref, view.index.revision) { mutableStateOf(view.filter.termRuleId) }
+    var termMatched by rememberSaveable(view.index.ref, view.index.revision) { mutableStateOf(view.filter.termMatched) }
     QualityDialog(dismiss) {
         Text(stringResource(R.string.native_quality_filter), style = MaterialTheme.typography.titleLarge)
         LazyColumn(Modifier.weight(1f).testTag("native-quality-filter-list")) {
@@ -91,25 +92,35 @@ private fun QualityFilterDialog(view: TextQualitySelection, dismiss: () -> Unit,
                     TextQualityOutcome.ANY_WARNING -> view.index.evaluatedCount - view.index.cleanCount
                 }
                 QualityChoice(stringResource(item.label()) + " ($count)", outcome == item.name && code == null) {
-                    outcome = item.name; code = null; term = null
+                    outcome = item.name; code = null; term = null; termMatched = null
                 }
             }
             items(TextWarningCode.entries, key = { "warning:" + it.name }) { warning ->
                 QualityChoice(stringResource(warning.qualityLabel()) + " (${view.index.warningCounts[warning] ?: 0})", code == warning.name) {
-                    outcome = TextQualityOutcome.ANY_WARNING.name; code = warning.name; term = null
+                    outcome = TextQualityOutcome.ANY_WARNING.name; code = warning.name; term = null; termMatched = null
                 }
             }
             item { HorizontalDivider(); Text(stringResource(R.string.native_quality_term_filter)) }
-            item { QualityChoice(stringResource(R.string.native_quality_all_terms), term == null) { term = null } }
-            items(view.index.missingTermCounts.entries.toList(), key = { "term:" + it.key }) { entry ->
-                QualityChoice(entry.key + " (${entry.value})", term == entry.key) {
-                    term = entry.key; outcome = TextQualityOutcome.ANY_WARNING.name; code = TextWarningCode.GLOSSARY.name
+            item { QualityChoice(stringResource(R.string.native_quality_all_terms), term == null) {
+                term = null; termMatched = null
+            } }
+            items(view.index.missingTermCounts.entries.toList(), key = { "missing-term:" + it.key }) { entry ->
+                QualityChoice(entry.key + " · " + stringResource(R.string.native_quality_term_missing_count, entry.value),
+                    term == entry.key && termMatched != true) {
+                    term = entry.key; termMatched = null; outcome = TextQualityOutcome.ANY_WARNING.name
+                    code = TextWarningCode.GLOSSARY.name
+                }
+            }
+            items(view.index.termHitCounts.entries.toList(), key = { "hit-term:" + it.key }) { entry ->
+                QualityChoice(entry.key + " · " + stringResource(R.string.native_quality_term_hit_count, entry.value),
+                    term == entry.key && termMatched == true) {
+                    term = entry.key; termMatched = true; outcome = TextQualityOutcome.ALL.name; code = null
                 }
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
-            TextButton(onClick = { apply(TextQualityFilter(TextQualityOutcome.valueOf(outcome), code?.let(TextWarningCode::valueOf), term)) },
+            TextButton(onClick = { apply(TextQualityFilter(TextQualityOutcome.valueOf(outcome), code?.let(TextWarningCode::valueOf), term, termMatched)) },
                 modifier = Modifier.testTag("native-quality-filter-apply")) { Text(stringResource(R.string.native_quality_apply_filter)) }
         }
     }

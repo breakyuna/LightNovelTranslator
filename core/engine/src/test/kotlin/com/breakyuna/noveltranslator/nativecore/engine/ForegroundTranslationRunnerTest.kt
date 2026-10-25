@@ -139,6 +139,21 @@ class ForegroundTranslationRunnerTest {
         assertNull(runtime.snapshot().activeRun)
     }
 
+    @Test fun pauseIsAvailableBeforeTheFirstProgressCallback() = runTest {
+        val runtime = RuntimeCoordinator(); val journal = Journal()
+        val entered = CompletableDeferred<Unit>()
+        val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,
+            translate = { _, _, _, _ -> entered.await(); progress() })
+        val handle = runner.prepare(request().copy(options = RemoteTranslationOptions("en")))
+        runner.foregroundStarted(handle.token); runCurrent()
+        entered.complete(Unit)
+        assertNull(runner.state.value!!.progress)
+        assertTrue(runner.pause(handle.token)); runCurrent()
+        try { handle.await(); fail() } catch (_: ForegroundTranslationPaused) { }
+        assertEquals(listOf(StoredRunState.PAUSED), journal.terminals)
+        assertNull(runtime.snapshot().activeRun)
+    }
+
     @Test fun reservationAndJournalPrecedeForegroundGateAndNoWorkStartsForAnUnknownToken() = runTest {
         val runtime = RuntimeCoordinator(); val journal = Journal(); var calls = 0
         val runner = ForegroundTranslationRunner(runtime, DurableRunExecutor(runtime, journal), this,

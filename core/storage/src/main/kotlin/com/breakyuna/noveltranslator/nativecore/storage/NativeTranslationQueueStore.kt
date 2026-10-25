@@ -27,10 +27,11 @@ import kotlinx.serialization.json.put
  * batches, command records, sequence and timestamps. It never stores a source text, a translation,
  * a prompt body, a credential or an HTTP header.
  *
- * Missing means a new queue. A corrupt, foreign, oversized, truncated or unknown-version file
- * throws [TranslationQueueCorrupt] and is never treated as empty, so admitted tasks cannot vanish
- * silently. Writes compare revision and payload fingerprint, and only return after AtomicFile has
- * published the new document.
+ * Current schema is v2 (audited execution revision per task). Version 1 documents are still read
+ * non-destructively and upgraded on the next compare-and-set write. Missing means a new queue. A
+ * corrupt, foreign, oversized, truncated or unknown-version file throws [TranslationQueueCorrupt]
+ * and is never treated as empty, so admitted tasks cannot vanish silently. Writes compare revision
+ * and payload fingerprint, and only return after AtomicFile has published the new document.
  */
 class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort {
     private val directory = File(context.applicationContext.filesDir, DIRECTORY)
@@ -98,7 +99,7 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
                 File(target.path + ".bak").delete()
                 File(target.path + ".new").delete()
             }
-            val body = payload(next)
+            val body = payload(next, CURRENT_VERSION)
             val fingerprint = fingerprint(body)
             val document = buildJsonObject {
                 body.forEach { (key, value) -> put(key, value) }
@@ -195,7 +196,8 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
     private fun decodeStrict(text: String, expected: LocalProjectRef?): StoredTranslationQueue {
         val root = JsonObjectValue.parse(text, JsonInputLimits(MAX_BYTES, MAX_DEPTH)).json
         require(root.keys == ROOT_KEYS)
-        require(number(root, "version") == 1L)
+        val version = number(root, "version")
+        require(version in LEGACY_VERSION..CURRENT_VERSION)
         val scope = array(root, "scope")
         require(scope.size == 3)
         val ref = LocalProjectRef(
@@ -213,7 +215,7 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
             maxBatchesPerTask = bounded(limitsNode, "batches", TranslationTaskQueueLimits.HARD_MAX_BATCHES),
             maxCommandsPerTask = bounded(limitsNode, "commands", TranslationTaskQueueLimits.HARD_MAX_COMMANDS),
         )
-        val decoded = array(root, "tasks").map(::decodeTask)
+        val decoded = array(root, "tasks").map { decodeTask(it, version) }
         require(decoded.size <= limits.maxTasks)
         require(number(root, "next_sequence") == decoded.size.toLong()) {
             "Translation queue lost its admitted task tail"
@@ -227,13 +229,13 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
             metas = decoded.map { it.second },
         )
         val stored = ObjectFingerprint(string(root, "fingerprint"))
-        require(stored == fingerprint(payload(snapshot))) { "Translation queue fingerprint mismatch" }
+        require(stored == fingerprint(payload(snapshot, version))) { "Translation queue fingerprint mismatch" }
         return StoredTranslationQueue(snapshot, stored)
     }
 
-    private fun decodeTask(value: JsonElement): Pair<TranslationQueuedTaskFacts, TranslationQueueTaskMeta> {
+    private fun decodeTask(value: JsonElement, version: Long): Pair<TranslationQueuedTaskFacts, TranslationQueueTaskMeta> {
         val row = value as? JsonObject ?: invalid()
-        require(row.keys == TASK_KEYS)
+        require(row.keys == if (version == LEGACY_VERSION) TASK_KEYS_V1 else TASK_KEYS)
         val sequence = number(row, "sequence")
         val spec = decodeSpec(obj(row, "spec"))
         val state = TranslationTaskQueueState.valueOf(string(row, "state"))
@@ -241,7 +243,8 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
         val updated = number(row, "updated")
         val batches = array(row, "batches").map(::decodeBatch)
         val commands = array(row, "commands").map(::decodeCommand)
-        val facts = TranslationQueuedTaskFacts(spec, sequence, state, batches, commands)
+        val executionRevision = if (version == LEGACY_VERSION) null else nullableNumber(row, "execution_revision")
+        val facts = TranslationQueuedTaskFacts(spec, sequence, state, batches, commands, executionRevision)
         return facts to TranslationQueueTaskMeta(enqueued, updated)
     }
 
@@ -317,8 +320,8 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
         )
     }
 
-    private fun payload(snapshot: TranslationQueueSnapshot): JsonObject = buildJsonObject {
-        put("version", 1)
+    private fun payload(snapshot: TranslationQueueSnapshot, version: Long): JsonObject = buildJsonObject {
+        put("version", version)
         put(
             "scope",
             JsonArray(
@@ -350,6 +353,9 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
                         put("state", entry.task.state.name)
                         put("enqueued", entry.meta.enqueuedAtMillis)
                         put("updated", entry.meta.updatedAtMillis)
+                        if (version >= CURRENT_VERSION) {
+                            put("execution_revision", entry.task.executionRevision?.let { JsonPrimitive(it) } ?: JsonNull)
+                        }
                         put("batches", JsonArray(entry.task.batches.map(::encodeBatch)))
                         put("commands", JsonArray(entry.task.commands.map(::encodeCommand)))
                     }
@@ -426,6 +432,11 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
         return if (value is JsonNull) null else stringValue(value)
     }
 
+    private fun nullableNumber(row: JsonObject, key: String): Long? {
+        val value = row[key] ?: invalid()
+        return if (value is JsonNull) null else numberValue(value)
+    }
+
     private fun number(row: JsonObject, key: String): Long = numberValue(row[key] ?: invalid())
 
     private fun numberValue(value: JsonElement): Long {
@@ -461,6 +472,10 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
         const val MAX_DEPTH = 16
         const val MAX_FILES = 4_096
 
+        /** v2 adds the audited execution revision; v1 documents remain readable. */
+        const val CURRENT_VERSION = 2L
+        const val LEGACY_VERSION = 1L
+
         private const val DIRECTORY = "native_translation_queues"
         private const val SUFFIX = ".json"
         private val mutex = Mutex()
@@ -470,6 +485,9 @@ class NativeTranslationQueueStore(context: Context) : TranslationQueueStorePort 
         )
         private val LIMIT_KEYS = setOf("tasks", "batches", "commands")
         private val TASK_KEYS = setOf(
+            "sequence", "spec", "state", "enqueued", "updated", "execution_revision", "batches", "commands",
+        )
+        private val TASK_KEYS_V1 = setOf(
             "sequence", "spec", "state", "enqueued", "updated", "batches", "commands",
         )
         private val BATCH_KEYS = setOf("id", "members")

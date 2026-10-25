@@ -145,6 +145,140 @@ class MarkdownV2AdapterTest {
         assertEquals(source, adapter.write(source, document.units, FormatWriteOptions()))
     }
 
+    @Test fun inlineCodeLinksImagesHtmlAndAutolinksAreMaskedThenRestoredExactly() {
+        val source = "Use `println(\"x\")` with [docs](https://example.com/a) and " +
+            "![cover](img/a.png), then <span class=\"k\">high</span> " +
+            "<https://auto.example>.\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        val masked = unit.source
+
+        assertEquals(TextItemStatus.NONE, unit.status)
+        assertTrue(masked.contains("⟦LNT_MD_"))
+        assertTrue(masked.contains("docs"))
+        assertTrue(masked.contains("cover"))
+        assertTrue(masked.contains("high"))
+        for (raw in listOf("println", "https://example.com/a", "img/a.png",
+            "<span", "</span>", "<https://auto.example>")) {
+            assertTrue("Masked source leaked $raw", raw !in masked)
+        }
+
+        val translation = masked
+            .replace("Use", "使用")
+            .replace("with", "搭配")
+            .replace("docs", "文档")
+            .replace("cover", "封面")
+            .replace("then", "然后")
+            .replace("high", "高亮")
+        val expected = source
+            .replace("Use", "使用")
+            .replace("with", "搭配")
+            .replace("docs", "文档")
+            .replace("cover", "封面")
+            .replace("then", "然后")
+            .replace("high", "高亮")
+        assertEquals(expected, adapter.write(source, listOf(translated(unit, translation)),
+            FormatWriteOptions()))
+    }
+
+    @Test fun emphasisDelimiterRunsAreProtectedWhileInnerTextIsTranslatable() {
+        val source = "This is **bold**, *italic*, __strong__, _em_, and ~~gone~~.\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals(TextItemStatus.NONE, unit.status)
+        assertTrue(unit.source.contains("bold"))
+        assertTrue(unit.source.contains("italic"))
+        assertTrue(unit.source.contains("strong"))
+        assertTrue(unit.source.contains("gone"))
+        assertTrue("**" !in unit.source)
+        assertTrue("*italic*" !in unit.source)
+        assertTrue("~~" !in unit.source)
+
+        val translation = unit.source
+            .replace("bold", "粗体")
+            .replace("italic", "斜体")
+            .replace("strong", "强壮")
+            .replace("em", "强调")
+            .replace("gone", "删除")
+        val expected = "This is **粗体**, *斜体*, __强壮__, _强调_, and ~~删除~~.\n"
+        assertEquals(expected, adapter.write(source, listOf(translated(unit, translation)),
+            FormatWriteOptions()))
+    }
+
+    @Test fun cjkAdjacentUnderscoreEmphasisIsProtected() {
+        val source = "这是_重点_内容。\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals(TextItemStatus.NONE, unit.status)
+        assertTrue("_重点_" !in unit.source)
+        assertTrue(unit.source.contains("重点"))
+        val translation = unit.source.replace("重点", "关键")
+        assertEquals("这是_关键_内容。\n",
+            adapter.write(source, listOf(translated(unit, translation)), FormatWriteOptions()))
+    }
+
+    @Test fun nestedListItemsKeepTheirMarkersAndTranslateIndependently() {
+        val source = "- outer\n  - inner\n- last\n"
+        val document = adapter.read(source, path)
+        assertEquals(listOf(1, 2, 3), document.units.map { it.row })
+        assertEquals(listOf("outer", "inner", "last"), document.units.map { it.source })
+        val units = document.units.map { unit ->
+            when (unit.source) {
+                "outer" -> translated(unit, "外层")
+                "inner" -> translated(unit, "内层")
+                else -> translated(unit, "最后")
+            }
+        }
+        assertEquals("- 外层\n  - 内层\n- 最后\n",
+            adapter.write(source, units, FormatWriteOptions()))
+    }
+
+    @Test fun unclosedInlineConstructsKeepTheBlockVerbatim() {
+        val sources = listOf(
+            "A `unclosed code\n",
+            "A [link](https://example.com\n",
+            "A [link][ref\n",
+            "A ![alt](img/a.png\n",
+            "A ![alt\n",
+            "A <span class=\"x\"\n",
+            "A <https://example.com\n",
+            "A <mailto:reader@example.com\n",
+        )
+        for (source in sources) {
+            val document = adapter.read(source, path)
+            val unit = document.units.single()
+            assertEquals(source.removeSuffix("\n"), unit.source)
+            assertEquals(TextItemStatus.RULE_SKIPPED, unit.status)
+            assertEquals(source, adapter.write(source, listOf(translated(unit, "不应写入")),
+                FormatWriteOptions()))
+        }
+    }
+
+    @Test fun unmatchedEmphasisMarkerIsRestoredInsteadOfDropped() {
+        val source = "**unclosed and text\n"
+        val document = adapter.read(source, path)
+        val unit = document.units.single()
+        assertEquals(TextItemStatus.NONE, unit.status)
+        assertTrue("**" !in unit.source)
+        assertTrue(unit.source.contains("unclosed"))
+        val translation = unit.source.replace("unclosed", "未闭合").replace("text", "文本")
+        assertEquals("**未闭合 and 文本\n",
+            adapter.write(source, listOf(translated(unit, translation)), FormatWriteOptions()))
+    }
+
+    @Test fun missingOrDuplicatedPlaceholdersFailClosed() {
+        val source = "A [link](https://example.com) and `code`.\n"
+        val unit = adapter.read(source, path).units.single()
+        rejects(InvalidMarkdownV2.Reason.TEXT) {
+            adapter.write(source, listOf(translated(unit, "A link and code.")),
+                FormatWriteOptions())
+        }
+        rejects(InvalidMarkdownV2.Reason.TEXT) {
+            adapter.write(source, listOf(translated(unit, unit.source + unit.source)),
+                FormatWriteOptions())
+        }
+    }
+
     @Test fun readRejectsNulAndMalformedUnicode() {
         rejects(InvalidMarkdownV2.Reason.TEXT) { adapter.read("a\u0000b", path) }
         rejects(InvalidMarkdownV2.Reason.TEXT) { adapter.read("\uD800", path) }

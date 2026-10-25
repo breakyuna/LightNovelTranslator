@@ -8,6 +8,8 @@ import com.breakyuna.noveltranslator.nativecore.domain.FormatWriteOptions
 import com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat
 import com.breakyuna.noveltranslator.nativecore.domain.RelativePath
 import com.breakyuna.noveltranslator.nativecore.domain.TextItemStatus
+import java.io.ByteArrayInputStream
+import java.util.zip.ZipInputStream
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -27,8 +29,10 @@ import kotlinx.serialization.json.put
  * `data` JSON files, `js/plugins.js` and `js/plugins` scripts for the translation service. This adapter
  * implements that container variant directly: it reads those members with their archive paths as
  * tags and copies every other member (images, audio, core scripts, encrypted media) untouched.
- * EVB expansion, directory walking, media decryption and `System.json` encryption flags remain
- * preparation concerns outside this format core.
+ * A generic `.zip` picked from storage is promoted here by [RpgMakerArchiveSniffer] when the
+ * archive contains `data/System.json` (optionally below `www/`); entry names still pass the
+ * shared zip-slip validation. EVB expansion, directory walking, media decryption and `System.json`
+ * encryption flags remain preparation concerns outside this format core.
  */
 class RpgMakerMvMzAdapter : BinaryFormatAdapter {
     override val format: ProjectAssetFormat = ProjectAssetFormat.RPGMAKER_MV_MZ
@@ -506,6 +510,52 @@ class RpgMakerMvMzAdapter : BinaryFormatAdapter {
     private class BlockText(val text: String, val indent: Int)
     private class PendingBlock(val key: BlockKey, val javascript: Boolean, val group: List<FormatUnit>)
     private class TextReplacement(val start: Int, val end: Int, val text: String)
+}
+
+/**
+ * Bounded content probe for importing an RPG Maker MV/MZ project archive whose file name does not
+ * end in a dedicated game extension (most commonly `game.zip`). It only looks for the canonical
+ * `data/System.json` member, validates every name it sees with the same zip-slip rules as the
+ * adapter, and never returns data. The full archive is read and validated again by
+ * [RpgMakerMvMzAdapter.read] after the format has been selected.
+ */
+internal object RpgMakerArchiveSniffer {
+    fun matches(bytes: ByteArray): Boolean {
+        if (!hasZipSignature(bytes)) return false
+        if (bytes.size > ContainerLimits.MAX_INPUT_BYTES) return false
+        var count = 0
+        try {
+            ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
+                while (true) {
+                    val entry = zip.nextEntry ?: break
+                    count += 1
+                    if (count > ContainerLimits.MAX_ENTRIES) return false
+                    val rawName = entry.name ?: return false
+                    val name = try {
+                        validateArchiveName(rawName)
+                    } catch (_: FormatContainerException) {
+                        return false
+                    }
+                    if (name.endsWith("data/System.json")) {
+                        val prefix = name.removeSuffix("data/System.json")
+                        if (prefix.isEmpty() || prefix.endsWith("/")) return true
+                    }
+                    zip.closeEntry()
+                }
+            }
+        } catch (_: Exception) {
+            return false
+        }
+        return false
+    }
+
+    private fun hasZipSignature(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        if (bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte()) return false
+        val third = bytes[2].toInt() and 0xFF
+        val fourth = bytes[3].toInt() and 0xFF
+        return (third == 3 && fourth == 4) || (third == 5 && fourth == 6)
+    }
 }
 
 /** Bounded unit accumulator shared by all RPG Maker extraction paths. */

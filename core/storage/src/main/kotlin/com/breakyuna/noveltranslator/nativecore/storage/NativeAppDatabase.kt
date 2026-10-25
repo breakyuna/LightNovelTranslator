@@ -34,13 +34,18 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v13. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class, NativeAgentInputQueueRow::class, NativeAgentInputDraftRow::class, NativeAgentSteerRunRow::class, NativeAgentSteerAttemptRow::class, NativeTranslationTaskDecisionRow::class, NativeTranslationMemberDecisionRow::class, NativeAgentContextRow::class, NativeAgentBranchRow::class], version = 13, exportSchema = true)
+/** Independent app store v17. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeModelProfileRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class, NativeAgentInputQueueRow::class, NativeAgentInputDraftRow::class, NativeAgentSteerRunRow::class, NativeAgentSteerAttemptRow::class, NativeTranslationTaskDecisionRow::class, NativeTranslationMemberDecisionRow::class, NativeAgentContextRow::class, NativeAgentBranchRow::class, NativeItemProposalRow::class, NativeItemProposalMemberRow::class, NativePolicyProposalRow::class, NativePdfPageProposalRow::class, NativePdfPageProposalPageRow::class, NativeAssetImportProposalRow::class], version = 18, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun instances(): ProjectInstanceDao
+    abstract fun policyProposals(): NativePolicyProposalDao
+    abstract fun itemProposals(): NativeItemProposalDao
+    abstract fun pdfPageProposals(): NativePdfPageProposalDao
+    abstract fun assetImportProposals(): NativeAssetImportProposalDao
     abstract fun agent(): NativeAgentDao
     abstract fun agentInput(): NativeAgentInputDao
     abstract fun models(): NativeModelSettingsDao
+    abstract fun profiles(): NativeModelProfileDao
     abstract fun runs(): NativeRunDao
     abstract fun translationRequests(): NativeTranslationRequestDao
     abstract fun usage(): NativeUsageReceiptDao
@@ -49,6 +54,61 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun translationResponses(): NativeTranslationResponseDao
 
     companion object {
+        // Early development v17 databases may predate either of these additive tables.
+        // A new version is essential: changing 16->17 alone never repairs an existing v17.
+        // Reuse idempotent DDL so current profiles/proposals and all older facts survive.
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_16_17.migrate(db)
+            }
+        }
+
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val hasProfileId = db.query("PRAGMA table_info(native_model_settings)").use { columns ->
+                    val nameColumn = columns.getColumnIndexOrThrow("name")
+                    var found = false
+                    while (columns.moveToNext()) {
+                        if (columns.getString(nameColumn) == "profileId") found = true
+                    }
+                    found
+                }
+                if (!hasProfileId) {
+                    db.execSQL("ALTER TABLE native_model_settings ADD COLUMN profileId TEXT NOT NULL DEFAULT 'native-remote-model'")
+                }
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_model_profiles (profileId TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, purpose TEXT NOT NULL, groupName TEXT NOT NULL, orderIndex INTEGER NOT NULL, enabled INTEGER NOT NULL, concurrency INTEGER, requestsPerMinute INTEGER, tools INTEGER, vision INTEGER, reasoning INTEGER, contextWindowTokens INTEGER, maxOutputTokens INTEGER, temperature REAL, topP REAL, generationMaxOutputTokens INTEGER, reasoningEffort TEXT, serviceTier TEXT, extraHeaders TEXT NOT NULL DEFAULT '{}', extraBody TEXT, selectedTranslation INTEGER NOT NULL, selectedAgent INTEGER NOT NULL, revision INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_asset_import_proposals (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, revision INTEGER NOT NULL, artifactRunId TEXT NOT NULL, artifactId TEXT NOT NULL, artifactPath TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL, targetPath TEXT NOT NULL, enabled INTEGER NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, binding TEXT, claimedAt INTEGER, receiptStatus TEXT, receiptRevision INTEGER, receiptAssetId INTEGER, receiptAt INTEGER, settledAt INTEGER, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_asset_import_proposals_commandId ON native_asset_import_proposals(commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_asset_import_proposals_instanceId_generation_chatId ON native_asset_import_proposals(instanceId,generation,chatId)")
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_pdf_page_proposals (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, revision INTEGER NOT NULL, assetId INTEGER NOT NULL, sha256 TEXT NOT NULL, pageCount INTEGER NOT NULL, policy TEXT NOT NULL, digest TEXT NOT NULL, count INTEGER NOT NULL, state TEXT NOT NULL, selected TEXT, binding TEXT, result TEXT, consumedAt INTEGER, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_pdf_page_proposals_commandId ON native_pdf_page_proposals(commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_pdf_page_proposals_instanceId_generation_chatId ON native_pdf_page_proposals(instanceId,generation,chatId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_pdf_page_proposal_pages (proposalId TEXT NOT NULL, page INTEGER NOT NULL, position INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(proposalId,page))")
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_policy_proposals (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, revision INTEGER NOT NULL, digest TEXT NOT NULL, beforeText TEXT NOT NULL, afterText TEXT NOT NULL, added INTEGER NOT NULL, updated INTEGER NOT NULL, deleted INTEGER NOT NULL, reordered INTEGER NOT NULL, promptChanged INTEGER NOT NULL, state TEXT NOT NULL, createdAt INTEGER NOT NULL, consumedAt INTEGER)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_policy_proposals_commandId ON native_policy_proposals(commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_policy_proposals_instanceId_generation_chatId ON native_policy_proposals(instanceId,generation,chatId)")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_item_proposals (id TEXT NOT NULL PRIMARY KEY, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, commandId TEXT NOT NULL, revision INTEGER NOT NULL, policy TEXT NOT NULL, digest TEXT NOT NULL, count INTEGER NOT NULL, state TEXT NOT NULL, selected TEXT, binding TEXT, consumedAt INTEGER, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_item_proposals_commandId ON native_item_proposals(commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_item_proposals_instanceId_generation_chatId ON native_item_proposals(instanceId,generation,chatId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_item_proposal_members (proposalId TEXT NOT NULL, itemId INTEGER NOT NULL, position INTEGER NOT NULL, rowIndex INTEGER NOT NULL, assetId INTEGER NOT NULL, textChanged INTEGER NOT NULL, namesChanged INTEGER NOT NULL, statusChanged INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(proposalId,itemId))")
+            }
+        }
+
         val MIGRATION_12_13 = object : Migration(12, 13) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_branches (command TEXT NOT NULL PRIMARY KEY, sourceChat TEXT NOT NULL, targetChat TEXT NOT NULL, message TEXT NOT NULL, digest TEXT NOT NULL)")
@@ -153,6 +213,6 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
             context.applicationContext,
             NativeAppDatabase::class.java,
             "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).build()
+        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18).build()
     }
 }

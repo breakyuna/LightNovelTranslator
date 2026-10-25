@@ -32,7 +32,7 @@ class TranslationFailureAdjudicationTest {
 
         var queue = runningQueue()
         queue = queue.recordFailure(task, first).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
         queue = queue.recordFailure(task, second).appliedQueue()
         assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
 
@@ -72,7 +72,7 @@ class TranslationFailureAdjudicationTest {
             listOf(ItemId(3)),
         )
         val afterKeep = keptResult.appliedQueue().task(task)!!
-        assertEquals(TranslationTaskQueueState.FAILED, afterKeep.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, afterKeep.state)
         assertEquals(
             TranslationTaskCommandAction.KEEP_ERROR,
             afterKeep.decision(second.id, ItemId(3))!!.action,
@@ -93,7 +93,7 @@ class TranslationFailureAdjudicationTest {
             member(3, committed = true),
         )
         val queue = runningQueue().recordFailure(task, mixed).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
         assertEquals(
             TranslationQueueRejection.COMMITTED_MEMBER,
             queue.recordFailure(task, batch("mixed-again", member(3))).rejection(),
@@ -106,7 +106,7 @@ class TranslationFailureAdjudicationTest {
             listOf(ItemId(1)),
         ).appliedQueue()
         val current = afterFix.task(task)!!
-        assertEquals(TranslationTaskQueueState.FAILED, current.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, current.state)
         assertEquals(listOf(ItemId(1)), current.decisionsFor(mixed.id).single().memberIds)
         assertNull(current.decision(mixed.id, ItemId(2)))
         assertNull(current.decision(mixed.id, ItemId(3)))
@@ -235,7 +235,7 @@ class TranslationFailureAdjudicationTest {
             failure.id,
             listOf(ItemId(1)),
         ).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
 
         queue = queue.retryMembers(
             task,
@@ -331,7 +331,7 @@ class TranslationFailureAdjudicationTest {
             member(2),
         )
         var queue = runningQueue().recordFailure(task, failure).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
         assertEquals(
             TranslationQueueRejection.TERMINAL_FAILURE,
             queue.retryMembers(
@@ -355,7 +355,7 @@ class TranslationFailureAdjudicationTest {
             failure.id,
             listOf(ItemId(1)),
         ).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
 
         queue = queue.keepError(
             task,
@@ -489,7 +489,7 @@ class TranslationFailureAdjudicationTest {
 
         val unknown = batch("batch-unknown", member(2, usage = UsageSource.UNKNOWN))
         var retried = runningQueue().recordFailure(task, unknown).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, retried.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, retried.task(task)!!.state)
         retried = retried.retryMembers(
             task,
             CommandId("retry-unknown"),
@@ -601,7 +601,7 @@ class TranslationFailureAdjudicationTest {
     fun completionRetainsBatchesAndDecisionsAndReleasesTheProjectSlot() {
         val failure = batch("batch-complete", member(1), member(2))
         var queue = runningQueue().recordFailure(task, failure).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
         assertEquals(
             TranslationQueueRejection.INVALID_TRANSITION,
             queue.complete(task, completion(2)).rejection(),
@@ -613,7 +613,7 @@ class TranslationFailureAdjudicationTest {
             failure.id,
             listOf(ItemId(1)),
         ).appliedQueue()
-        assertEquals(TranslationTaskQueueState.FAILED, queue.task(task)!!.state)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, queue.task(task)!!.state)
         queue = queue.retryMembers(
             task,
             CommandId("retry-complete-2"),

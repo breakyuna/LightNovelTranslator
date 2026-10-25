@@ -124,6 +124,50 @@ class XlsxFormatAdapterTest {
         }
     }
 
+    @Test fun richTextAndFormulaCellsArePreservedAndNotExtracted() {
+        val shared = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+            "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" " +
+            "count=\"3\" uniqueCount=\"3\">" +
+            "<si><t>Hello</t></si>" +
+            "<si><r><rPr><b/></rPr><t>Bold</t></r><r><t> Plain</t></r></si>" +
+            "<si><t>Base</t><rPh sb=\"0\" eb=\"4\"><t>Yomi</t></rPh></si></sst>"
+        val sheet = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+            "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+            "<sheetData><row r=\"1\">" +
+            "<c r=\"A1\" t=\"s\"><v>0</v></c>" +
+            "<c r=\"B1\" t=\"s\"><v>1</v></c>" +
+            "<c r=\"C1\" t=\"str\"><f>CONCAT(\"a\",\"b\")</f><v>ab</v></c>" +
+            "<c r=\"D1\" t=\"inlineStr\"><is><r><rPr><i/></rPr><t>Italic</t></r>" +
+            "<r><t> tail</t></r></is></c>" +
+            "<c r=\"E1\" t=\"inlineStr\"><is><t>Simple</t></is></c>" +
+            "<c r=\"F1\" t=\"s\"><v>2</v></c>" +
+            "</row></sheetData></worksheet>"
+        val original = xlsx(sheet = sheet, shared = shared)
+        val document = adapter.read(original, path)
+        assertEquals(listOf("Hello", "Simple"), document.units.map { it.source })
+        assertTrue(document.warnings.any { it.code == "xlsx.rich_text_skipped" })
+        assertArrayEquals(original, adapter.write(original, document.units, FormatWriteOptions()))
+
+        val output = adapter.write(original, translated(document, mapOf(
+            "Sheet1!A1" to "Bonjour",
+            "Sheet1!E1" to "Simple traduit",
+        )), FormatWriteOptions())
+        val result = FormatArchiveFixtures.unzip(output)
+        val sharedOut = FormatArchiveFixtures.text(result.getValue("xl/sharedStrings.xml"))
+        assertTrue(sharedOut.contains("Bold"))
+        assertTrue(sharedOut.contains("Plain"))
+        assertTrue(sharedOut.contains("Yomi"))
+        assertTrue(sharedOut.contains("<rPr>"))
+        assertTrue(sharedOut.contains("Bonjour"))
+        val sheetOut = FormatArchiveFixtures.text(result.getValue("xl/worksheets/sheet1.xml"))
+        assertTrue(sheetOut.contains("Italic"))
+        assertTrue(sheetOut.contains("tail"))
+        assertTrue(sheetOut.contains("CONCAT("))
+        assertTrue(sheetOut.contains("Simple traduit"))
+        assertEquals(listOf("Bonjour", "Simple traduit"),
+            adapter.read(output, path).units.map { it.source })
+    }
+
     @Test fun outOfRangeSharedStringIndexIsAWarningAndInlineCellsStillRead() {
         val sheet = SHEET.replace("<c r=\"A1\" t=\"s\"><v>0</v></c>",
             "<c r=\"A1\" t=\"s\"><v>99</v></c>")

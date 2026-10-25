@@ -16,15 +16,10 @@ import java.util.concurrent.atomic.AtomicReference
  * and print. File, process and network globals are deleted from the context before user code
  * runs, and every host call is re-authorized by [WorkspaceScriptHostSession].
  *
- * Cancellation and deadlines are polled on the supervising thread. QuickJS exposes no interrupt
- * handler in the `app.cash.quickjs` binding, so a tight JS loop cannot be stopped cooperatively:
- * the adapter interrupts the worker, waits briefly, then closes the native context and throws
- * [WorkspaceScriptTimeoutException] / [CancellationException]. A late result is never reported
- * as success. Closing a context while native code is executing is a best-effort teardown (the
- * binding is documented as not thread safe); a hard native hang can still leave an abandoned
- * daemon thread. This is the known limit of the current engine and the reason an isolated
- * process is still required for the production workspace. The binding also exposes no heap
- * limit or module loader, so JavaScript memory is only bounded by process policy.
+ * This in-process adapter is for cooperative fixtures only. Production uses
+ * [IsolatedWorkspaceScriptEngine]. QuickJS exposes no interrupt handler in this binding, so a
+ * tight loop can leave an abandoned daemon thread. A native context is closed only by its
+ * owning interpreter thread; closing it concurrently with evaluation can crash the process.
  *
  * The engine has no Node modules, `require`, `process`, `fs`, timers or async task queue; a
  * script is a single synchronous top-level body. Its return value is an integral exit code in
@@ -32,8 +27,8 @@ import java.util.concurrent.atomic.AtomicReference
  *
  * [execute] blocks the calling thread while the worker runs, so callers must invoke it off the
  * UI thread. Host ports invoked by the bridge must complete synchronously and honor the request
- * deadline themselves; the supervising thread can stop JS but cannot cancel a blocked file or
- * network call inside a host port.
+ * deadline themselves; the supervising thread can reject late results but cannot forcibly stop
+ * JS or a blocked host port. Use the isolated adapter for production execution.
  */
 class QuickJsWorkspaceScriptEngine(
     private val sources: WorkspaceScriptSourcePort,
@@ -144,6 +139,7 @@ class QuickJsWorkspaceScriptEngine(
                 context.set(quickJs)
                 session.checkActive()
                 bindHost(quickJs, request, session)
+                quickJs.evaluate("globalThis.__lntInvocation = " + WorkspaceInvocationJson.encode(request), "lnt-invocation.js")
                 quickJs.evaluate(HOST_PRELUDE, "lnt-workspace-host.js")
                 session.checkActive()
                 sourceStarted = true
@@ -183,12 +179,12 @@ class QuickJsWorkspaceScriptEngine(
             if (latch.await(pollIntervalMillis, TimeUnit.MILLISECONDS)) break
             if (request.cancellation.isCancelled) {
                 session.markAborted(WorkspaceScriptHostSession.AbortReason.CANCELLED)
-                abort(worker, { closeContext() }, latch)
+                abort(worker, latch)
                 throw CancellationException("Workspace run cancelled")
             }
             if (clock.nowMillis() > request.deadlineAtMillis) {
                 session.markAborted(WorkspaceScriptHostSession.AbortReason.TIMED_OUT)
-                abort(worker, { closeContext() }, latch)
+                abort(worker, latch)
                 throw WorkspaceScriptTimeoutException(WorkspaceRunStage.SCRIPT)
             }
         }
@@ -217,7 +213,7 @@ class QuickJsWorkspaceScriptEngine(
         return finished.result ?: session.failureResult()
     }
 
-    private fun abort(worker: Thread, closeContext: () -> Unit, latch: CountDownLatch) {
+    private fun abort(worker: Thread, latch: CountDownLatch) {
         worker.interrupt()
         if (shutdownGraceMillis > 0) {
             try {
@@ -226,7 +222,6 @@ class QuickJsWorkspaceScriptEngine(
                 Thread.currentThread().interrupt()
             }
         }
-        if (latch.count > 0L) closeContext()
     }
 
     private fun bindHost(
@@ -234,6 +229,7 @@ class QuickJsWorkspaceScriptEngine(
         request: WorkspaceScriptRequest,
         session: WorkspaceScriptHostSession,
     ) {
+        quickJs.set("__lntUnicode", LgUnicodeHost::class.java, WorkspaceUnicodeHost())
         quickJs.set("__lntHost", LgCoreHost::class.java, CoreHost(session))
         if (WorkspaceCapability.SEARCH in request.grantedCapabilities) {
             quickJs.set("__lntSearch", LgSearchHost::class.java, SearchHost(session))
@@ -256,6 +252,11 @@ class QuickJsWorkspaceScriptEngine(
         val failure: Throwable?,
         val finishedAtMillis: Long,
     )
+
+    interface LgUnicodeHost {
+        fun normalize(text: String, form: String): String
+        fun segments(text: String): String
+    }
 
     internal interface LgCoreHost {
         fun readMaterial(id: String): String
@@ -310,24 +311,39 @@ class QuickJsWorkspaceScriptEngine(
          * Installs `lg` and removes ambient globals. It is evaluated once per context before the
          * user source. Keep this string free of host paths and material content.
          */
-        private val HOST_PRELUDE: String = """
+        internal val HOST_PRELUDE: String = """
             (function () {
               "use strict";
               var host = __lntHost;
+              var unicodeHost = __lntUnicode;
               var searchHost = typeof __lntSearch === "undefined" ? null : __lntSearch;
               var fetchHost = typeof __lntFetch === "undefined" ? null : __lntFetch;
               var printHost = typeof __lntPrint === "undefined" ? null : __lntPrint;
+              var invocation = typeof __lntInvocation === "undefined" ? { arguments: {}, materials: [] } : __lntInvocation;
+              for (var m = 0; m < invocation.materials.length; m++) Object.freeze(invocation.materials[m]);
               function toJson(value) {
                 var text = JSON.stringify(value);
                 if (typeof text !== "string") throw new TypeError("workspace value is not JSON");
                 return text;
               }
               var api = {
+                arguments: Object.freeze(invocation.arguments),
+                materials: Object.freeze(invocation.materials),
                 readMaterial: function (id) { return host.readMaterial(String(id)); },
                 log: function (message) { host.log(String(message)); },
                 emitChange: function (change) { host.emitChange(toJson(change)); },
                 emitArtifact: function (artifact) { host.emitArtifact(toJson(artifact)); }
               };
+              api.unicode = Object.freeze({
+                normalize: function (text, form) {
+                  if (typeof text !== "string" || typeof form !== "string") throw new TypeError("Expected text and form");
+                  return unicodeHost.normalize(text, form);
+                },
+                segments: function (text) {
+                  if (typeof text !== "string") throw new TypeError("Expected text");
+                  return JSON.parse(unicodeHost.segments(text));
+                }
+              });
               if (searchHost !== null) {
                 api.search = function (query, maxResults) {
                   if (typeof maxResults !== "number" || !isFinite(maxResults) ||
@@ -358,10 +374,12 @@ class QuickJsWorkspaceScriptEngine(
               for (var i = 0; i < blocked.length; i++) {
                 try { delete globalThis[blocked[i]]; } catch (ignored) { }
               }
+              try { delete globalThis.__lntUnicode; } catch (ignored) { }
               try { delete globalThis.__lntHost; } catch (ignored) { }
               try { delete globalThis.__lntSearch; } catch (ignored) { }
               try { delete globalThis.__lntFetch; } catch (ignored) { }
               try { delete globalThis.__lntPrint; } catch (ignored) { }
+              try { delete globalThis.__lntInvocation; } catch (ignored) { }
             })();
         """.trimIndent()
     }

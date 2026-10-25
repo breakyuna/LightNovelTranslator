@@ -39,4 +39,18 @@ class ProjectTextPolicyTest {
         assertNotEquals(first, ProjectPolicyEdit(CommandId("command"), ref, 3, base, policy).digest())
         assertNotEquals(first, ProjectPolicyEdit(CommandId("command"), ref, 2, base, ProjectTextPolicy()).digest())
     }
+    @Test fun termScopeRoundTripsAndDefaultPayloadFingerprintStaysStable() {
+        val body = ProjectTextRule("id", TextRuleKind.TERM, "source", "target")
+        val legacy = ProjectTextPolicyCodec.encode(ProjectTextPolicy(listOf(body)))
+        assertFalse(legacy.contains("\"scope\""))
+        assertEquals(TextRuleScope.BODY, ProjectTextPolicyCodec.decode(legacy).rules.single().scope)
+        for (scope in listOf(TextRuleScope.NAME, TextRuleScope.BOTH)) {
+            val policy = ProjectTextPolicy(listOf(body.copy(scope = scope)))
+            assertEquals(scope, ProjectTextPolicyCodec.decode(ProjectTextPolicyCodec.encode(policy)).rules.single().scope)
+        }
+        try {
+            ProjectTextRule("bad", TextRuleKind.PROTECT, "x", scope = TextRuleScope.NAME)
+            fail("Non-term rule accepted a name scope")
+        } catch (_: IllegalArgumentException) { }
+    }
 }

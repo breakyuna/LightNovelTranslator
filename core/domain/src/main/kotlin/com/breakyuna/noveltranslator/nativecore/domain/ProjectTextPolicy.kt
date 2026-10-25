@@ -4,15 +4,22 @@ import kotlinx.serialization.json.*
 
 enum class TextRuleKind { TERM, PROTECT, PRE_REPLACE, POST_REPLACE }
 
+/** TERM rules can apply to the body, item names, or both. Other kinds are body-only. */
+enum class TextRuleScope { BODY, NAME, BOTH }
+
 /** Stable rule identity and ordering are project facts. Rule contents never enter diagnostics. */
 data class ProjectTextRule(val id: String, val kind: TextRuleKind, val source: String,
     val target: String = "", val note: String = "", val enabled: Boolean = true,
-    val regex: Boolean = false, val caseSensitive: Boolean = true) {
+    val regex: Boolean = false, val caseSensitive: Boolean = true,
+    val scope: TextRuleScope = TextRuleScope.BODY) {
     init {
         require(id.isNotBlank() && id.length <= 128 && id.none(Char::isISOControl))
         TextProjectFingerprint.utf8(id)
         require(source.isNotBlank() && source.length <= 4096 && target.length <= 4096 && note.length <= 2048)
         require(kind != TextRuleKind.TERM || !regex)
+        require(kind == TextRuleKind.TERM || scope == TextRuleScope.BODY) {
+            "Only term rules can target names"
+        }
         for (text in listOf(source, target, note)) {
             require('\u0000' !in text); TextProjectFingerprint.utf8(text)
         }
@@ -44,6 +51,8 @@ object ProjectTextPolicyCodec {
         put("rules", JsonArray(policy.rules.map { rule -> buildJsonObject {
             put("id", rule.id); put("kind", rule.kind.name); put("source", rule.source); put("target", rule.target)
             put("note", rule.note); put("enabled", rule.enabled); put("regex", rule.regex); put("case_sensitive", rule.caseSensitive)
+            // Omit the default so existing v1 payload fingerprints stay byte-identical.
+            if (rule.scope != TextRuleScope.BODY) put("scope", rule.scope.name)
         } }))
     }.toString().also { require(it.length <= MAX_CHARS) }
 
@@ -56,9 +65,12 @@ object ProjectTextPolicyCodec {
         require(rules.size <= 256)
         return ProjectTextPolicy(rules.map { element ->
             val rule = element.jsonObject
-            require(rule.keys == setOf("id", "kind", "source", "target", "note", "enabled", "regex", "case_sensitive"))
+            require(rule.keys == setOf("id", "kind", "source", "target", "note", "enabled", "regex", "case_sensitive") ||
+                rule.keys == setOf("id", "kind", "source", "target", "note", "enabled", "regex", "case_sensitive", "scope"))
+            val scope = rule["scope"]?.let { TextRuleScope.valueOf(string(rule, "scope")) } ?: TextRuleScope.BODY
             ProjectTextRule(string(rule, "id"), TextRuleKind.valueOf(string(rule, "kind")), string(rule, "source"),
-                string(rule, "target"), string(rule, "note"), boolean(rule, "enabled"), boolean(rule, "regex"), boolean(rule, "case_sensitive"))
+                string(rule, "target"), string(rule, "note"), boolean(rule, "enabled"), boolean(rule, "regex"),
+                boolean(rule, "case_sensitive"), scope)
         }, string(root, "prompt"), boolean(root, "prompt_enabled"))
     }
     private fun string(value: JsonObject, key: String): String {

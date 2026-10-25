@@ -13,6 +13,10 @@ import kotlinx.coroutines.launch
  * Service lifetime only; execution remains owned by the application runner.
  * Commands and the observer scope run on the same dispatcher (the Service main thread).
  * Platform effects are callbacks so delayed/stale Intent and StateFlow conflation are testable.
+ *
+ * Pause/stop only drive the application runner. The application-level queue scheduler observes
+ * the same terminal state and records the durable queue outcome even when no Activity/ViewModel
+ * is attached, so notification actions cannot leave a RUNNING queue task behind.
  */
 internal class NativeTranslationHost(
     private val runner: ForegroundTranslationRunner,

@@ -83,4 +83,10 @@ enum class ModelFailureKind {
 }
 
 /** Sanitized classification only; raw provider errors may contain credentials/body. */
-class AgentModelFailure(val kind: ModelFailureKind) : Exception("Agent model request failed: $kind")
+class AgentModelFailure(
+    val kind: ModelFailureKind,
+    /** Parsed HTTP Retry-After delay when the provider supplied one; never a response body. */
+    val retryAfterMillis: Long? = null,
+) : Exception("Agent model request failed: $kind") {
+    init { require(retryAfterMillis == null || retryAfterMillis >= 0) { "Invalid retry delay" } }
+}

@@ -161,7 +161,7 @@ class NativeUsageLedgerStore(context: Context) : UsageLedgerReadPort {
                 model(db, request.configuration), "DISPATCHED", null, null, null))
         }
         private fun model(db: NativeAppDatabase, configuration: ModelConfigurationRef): String? =
-            if (configuration.id == "native-remote-model") db.models().find(configuration.revision)?.model else null
+            db.models().find(configuration.revision)?.takeIf { it.profileId == configuration.id }?.model
 
         fun dispatchedAgent(db: NativeAppDatabase, attempt: String) {
             // A pre-v6 prepared request may have no ledger metadata. Do not invent scope or config.

@@ -1,0 +1,14 @@
+{
+  "name": "writing-guide",
+  "description": "创作、翻译、译名选择及译文审校的写作参考指南。",
+  "enabled": true,
+  "order": 0,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "writing",
+    "translation"
+  ],
+  "contentSha256": "d42d82ed46c1fc81a760ca8608773da3bd193339b4400442228e76b65cda1278"
+}

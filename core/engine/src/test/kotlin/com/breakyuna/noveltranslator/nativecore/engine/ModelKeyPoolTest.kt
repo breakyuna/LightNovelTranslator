@@ -114,6 +114,22 @@ class ModelKeyPoolTest {
         assertEquals(ModelFailureKind.UNKNOWN, rejected?.kind)
     }
 
+    @Test fun retryAfterFromTransportExtendsTheSharedKeyCooldown() = runBlocking {
+        var saved: ModelKeyPoolState? = null
+        val disk = object : ModelKeyStatePort {
+            override suspend fun read(configuration: ModelConfigurationRef) = saved
+            override suspend fun write(state: ModelKeyPoolState) { saved = state }
+        }
+        val pool = ModelKeyPool(settings, disk)
+        val selection = requireNotNull(pool.select(reference))
+        val before = System.currentTimeMillis()
+        pool.failure(reference, selection, ModelFailureKind.RATE_LIMIT, retryAfterMillis = 90_000)
+        val after = System.currentTimeMillis()
+        val until = requireNotNull(saved).keys.first().cooldownUntilMillis
+        assertTrue(until >= before + 90_000)
+        assertTrue(until <= after + 90_000)
+    }
+
     @Test fun emptyCredentialListIsExplicitNoAuthNotCooling() = runBlocking {
         val noAuth = object : NativeModelSettingsPort {
             override suspend fun current(): NativeModelSettings? = null

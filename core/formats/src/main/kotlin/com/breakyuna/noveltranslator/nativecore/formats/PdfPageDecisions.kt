@@ -30,6 +30,7 @@ internal enum class PdfPageDecision(val wire: String) {
 internal class PdfPageBinding(
     val page: Int,
     val decision: PdfPageDecision,
+    val digest: String,
 )
 
 /**
@@ -69,6 +70,8 @@ internal object PdfPageCodec {
         } catch (_: IllegalArgumentException) {
             throw PdfFormatException(PdfFormatException.Reason.BINDING)
         }
+        if (root["v"] != JsonPrimitive(1))
+            throw PdfFormatException(PdfFormatException.Reason.BINDING)
         val pagePrimitive = root["page"] as? JsonPrimitive
             ?: throw PdfFormatException(PdfFormatException.Reason.BINDING)
         if (pagePrimitive.isString) throw PdfFormatException(PdfFormatException.Reason.BINDING)
@@ -95,7 +98,7 @@ internal object PdfPageCodec {
         if (digest.length != DIGEST_CHARS || digest.any { it !in HEX }) {
             throw PdfFormatException(PdfFormatException.Reason.BINDING, page)
         }
-        return PdfPageBinding(page, decision)
+        return PdfPageBinding(page, decision, digest)
     }
 }
 
@@ -178,4 +181,21 @@ internal object PdfPagePlan {
     }
 
     private class BoundUnit(val binding: PdfPageBinding, val unit: FormatUnit)
+}
+
+/** Export projection only: historical item metadata/fingerprints remain untouched. */
+internal fun applyPdfPagePolicy(
+    asset: com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetSummary,
+    policy: com.breakyuna.noveltranslator.nativecore.domain.PdfAssetPagePolicy?,
+    units: List<FormatUnit>,
+): List<FormatUnit> {
+    if (policy == null) return units
+    require(policy.matches(asset))
+    return units.map { unit ->
+        val binding = PdfPageCodec.decode(unit, policy.decisions.length)
+        val mode = policy.mode(binding.page)
+        if (mode == null) unit else FormatUnit(unit.row, unit.source, unit.translation, unit.status,
+            unit.tag, unit.nameSource, unit.nameTranslation,
+            PdfPageCodec.encode(binding.page, PdfPageDecision.valueOf(mode.name), binding.digest), unit.skipInternalFilter)
+    }
 }

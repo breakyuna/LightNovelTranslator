@@ -48,4 +48,12 @@ interface RunProgressRecorder {
     fun waitingForApproval()
     /** Record the actual approval result, including non-throwing conflict/cancellation. */
     fun approvalResult(state: TextApprovalState)
+    fun itemProposalResult(state: ItemProposalState) = approvalResult(when (state) {
+        ItemProposalState.COMMITTED, ItemProposalState.PARTIAL -> TextApprovalState.COMMITTED
+        ItemProposalState.CONFLICT -> TextApprovalState.CONFLICT
+        ItemProposalState.REJECTED -> TextApprovalState.REJECTED
+        ItemProposalState.CANCELLED -> TextApprovalState.CANCELLED
+        ItemProposalState.PENDING -> TextApprovalState.PENDING
+        ItemProposalState.CONSUMED -> TextApprovalState.CONSUMED
+    })
 }

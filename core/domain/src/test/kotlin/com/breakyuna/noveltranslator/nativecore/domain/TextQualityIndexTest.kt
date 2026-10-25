@@ -7,8 +7,9 @@ class TextQualityIndexTest {
     private val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
     private val fp = ObjectFingerprint("a".repeat(64))
     private val options = TextProofreadingOptions()
-    private fun fact(id: Long, evaluated: Boolean = true, codes: List<TextWarningCode> = emptyList(), terms: List<String> = emptyList()) =
-        TextQualityFact(ItemId(id), fp, TextProofreadingResult(codes, terms, evaluated, fp, options))
+    private fun fact(id: Long, evaluated: Boolean = true, codes: List<TextWarningCode> = emptyList(),
+        terms: List<String> = emptyList(), hits: Map<String, Int> = emptyMap()) =
+        TextQualityFact(ItemId(id), fp, TextProofreadingResult(codes, terms, evaluated, fp, options, hits))
     private fun index(facts: List<TextQualityFact>) = TextQualityIndex(ref, 2, TextItemQuery(), options, fp, facts, facts.size)
 
     @Test fun skippedRowsAreDistinctFromCleanRowsAndMultipleWarningsCountOncePerType() {
@@ -20,6 +21,17 @@ class TextQualityIndexTest {
         assertEquals(listOf(ItemId(2)), index.select(TextQualityFilter(TextQualityOutcome.NO_WARNING)).ids)
         assertEquals(listOf(ItemId(3)), index.select(TextQualityFilter(TextQualityOutcome.ANY_WARNING, TextWarningCode.GLOSSARY, "t")).ids)
     }
+    @Test fun positiveTermHitsSelectMatchingItemsAndAggregateOccurrences() {
+        val index = index(listOf(fact(1, hits = mapOf("t" to 2)), fact(2, hits = mapOf("t" to 1)),
+            fact(3, codes = listOf(TextWarningCode.GLOSSARY), terms = listOf("t"))))
+        assertEquals(3, index.termHitCounts["t"])
+        assertEquals(2, index.termHitItemCounts["t"])
+        assertEquals(listOf(ItemId(1), ItemId(2)),
+            index.select(TextQualityFilter(TextQualityOutcome.ALL, termRuleId = "t", termMatched = true)).ids)
+        assertEquals(listOf(ItemId(3)),
+            index.select(TextQualityFilter(TextQualityOutcome.ANY_WARNING, termRuleId = "t")).ids)
+    }
+
     @Test fun sourceListsAreCopiedAndCursorWindowsRemainStrictlyOrderedAndBounded() {
         val source = arrayListOf(fact(1), fact(4), fact(9))
         val index = index(source); source.clear()

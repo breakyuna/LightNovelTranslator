@@ -25,7 +25,7 @@ internal typealias NativeRemoteTranslationAction = (LocalProjectRef, Long, Model
 internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismiss: () -> Unit,
     start: NativeRemoteTranslationAction, queue: NativeRemoteTranslationAction? = null) {
     val project = remember { requireNotNull(state.project) }
-    val model = remember { requireNotNull(state.modelSettings) }
+    val model = remember { requireNotNull(state.translationModelSettings) }
     var target by rememberSaveable(project.ref) { mutableStateOf(project.settings?.targetLanguage.orEmpty()) }
     var source by rememberSaveable(project.ref) { mutableStateOf(project.settings?.sourceLanguage?.ifBlank { "auto" } ?: "auto") }
     var instructions by rememberSaveable(project.ref) { mutableStateOf("") }

@@ -38,7 +38,17 @@ class PdfFormatException(
         /** Page text could not be extracted from an otherwise loadable document. */
         EXTRACT,
 
+        /** An original page could not be rasterized or encoded as a bounded PNG. */
+        RENDER,
+
         /** No Unicode-capable font could represent the replacement text. */
         FONT,
+
+        /**
+         * A page-changing write would detach document structure the page-copy writer cannot
+         * rebuild, currently interactive form fields and embedded files. The caller must leave the
+         * original asset untouched instead of exporting a silently broken catalog.
+         */
+        UNSUPPORTED,
     }
 }

@@ -9,6 +9,31 @@ class NativeManualBatchStateTest {
     private val batch = ManualTextBatch(CommandId("batch"), ref, 7, TextBatchChange.CLEAR_AND_RESET,
         listOf(TextBatchTarget(ItemId(41), 40, ObjectFingerprint("a".repeat(64)))))
 
+    @Test fun nameAssignmentArrayIncludingEmptySlotsRestoresExactly() {
+        val assignment = ManualTextBatch(CommandId("assign"), ref, 7, TextBatchChange.ASSIGN_NAMES,
+            batch.targets, nameAssignment = listOf("first", "", "third"))
+        val encoded = encodeManualBatch(assignment)
+        assertEquals("5", encoded[0])
+        val restored = requireNotNull(decodeManualBatch(encoded))
+        assertEquals(assignment.nameAssignment, restored.nameAssignment)
+        assertEquals(assignment.digest(), restored.digest())
+        assertNull(decodeManualBatch(encoded.toMutableList().apply { this[7] = "[7]" }))
+    }
+
+    @Test fun nameTargetsRestoreWithoutChangingTheBoundDigestOrRegexMode() {
+        for (target in listOf(TextReplacementTarget.NAMES, TextReplacementTarget.BOTH)) {
+            val command = ManualTextBatch(CommandId("name-target"), ref, 7, TextBatchChange.REPLACE_TRANSLATION,
+                batch.targets, TextReplacementOptions("old", "new", regex = true, target = target))
+            val encoded = encodeManualBatch(command)
+            assertEquals("4", encoded[0])
+            val restored = requireNotNull(decodeManualBatch(encoded))
+            assertEquals(command.digest(), restored.digest())
+            assertEquals(target, restored.replacement!!.target)
+            assertTrue(restored.replacement!!.regex)
+            assertNull(decodeManualBatch(encoded.toMutableList().apply { this[11] = "unknown" }))
+        }
+    }
+
     @Test fun savedMetadataRestoresTheExactCommandIdentityAndImmutablePayload() {
         val encoded = encodeManualBatch(batch)
         val decoded = requireNotNull(decodeManualBatch(encoded))

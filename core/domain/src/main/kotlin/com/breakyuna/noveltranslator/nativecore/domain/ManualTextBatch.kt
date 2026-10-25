@@ -5,7 +5,7 @@ import kotlinx.serialization.json.*
 enum class TextBatchChange(val status: TextItemStatus, val clearsTranslation: Boolean = false) {
     MARK_UNPROCESSED(TextItemStatus.NONE), MARK_PROCESSED(TextItemStatus.PROCESSED),
     EXCLUDE(TextItemStatus.EXCLUDED), CLEAR_AND_RESET(TextItemStatus.NONE, true),
-    REPLACE_TRANSLATION(TextItemStatus.PROCESSED),
+    REPLACE_TRANSLATION(TextItemStatus.PROCESSED), ASSIGN_NAMES(TextItemStatus.NONE),
 }
 
 data class TextBatchTarget(val id: ItemId, val row: Int, val fingerprint: ObjectFingerprint) {
@@ -17,23 +17,30 @@ class ManualTextBatch(
     val commandId: CommandId, val ref: LocalProjectRef, val expectedRevision: Long,
     val change: TextBatchChange, targets: List<TextBatchTarget>,
     val replacement: TextReplacementOptions? = null,
+    nameAssignment: List<String>? = null,
 ) {
+    val nameAssignment: List<String>? = nameAssignment?.let { java.util.Collections.unmodifiableList(ArrayList(it)) }
     val targets: List<TextBatchTarget> = java.util.Collections.unmodifiableList(ArrayList(targets))
     init {
         require(expectedRevision >= 0 && this.targets.size in 1..MAX_TARGETS)
         require(commandId.value.length <= 2048)
         require((change == TextBatchChange.REPLACE_TRANSLATION) == (replacement != null))
+        require((change == TextBatchChange.ASSIGN_NAMES) == (this.nameAssignment != null))
+        this.nameAssignment?.let { ManualNameEdit(commandId, ref, this.targets.first().id, expectedRevision,
+            this.targets.first().fingerprint, it) }
         require(this.targets.zipWithNext().all { (a, b) -> a.id.value < b.id.value })
     }
     private val digestValue: String by lazy { TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(buildJsonObject {
-        put("version", when { replacement == null -> "manual-batch-v1"; replacement.regex -> "manual-batch-v3"; else -> "manual-batch-v2" })
+        put("version", when { this@ManualTextBatch.nameAssignment != null -> "manual-batch-v5"; replacement != null && replacement.target != TextReplacementTarget.TRANSLATION -> "manual-batch-v4"; replacement == null -> "manual-batch-v1"; replacement.regex -> "manual-batch-v3"; else -> "manual-batch-v2" })
         put("command", commandId.value); put("project", ref.projectId.value)
         put("instance", ref.instanceId.value); put("generation", ref.generation.value)
         put("revision", expectedRevision); put("change", change.name)
         replacement?.let {
             put("find", it.find); put("replacement", it.replacement); put("case_sensitive", it.caseSensitive)
             if (it.regex) put("regex", true)
+            if (it.target != TextReplacementTarget.TRANSLATION) put("target", it.target.name)
         }
+        this@ManualTextBatch.nameAssignment?.let { put("name_assignment", JsonArray(it.map { name -> JsonPrimitive(name) })) }
         put("targets", buildJsonArray { this@ManualTextBatch.targets.forEach { target -> add(buildJsonObject {
             put("id", target.id.value); put("row", target.row); put("fingerprint", target.fingerprint.sha256)
         }) } })
@@ -63,6 +70,10 @@ data class ManualBatchReceipt(
 
 /** Query selection is frozen before confirmation; the commit never reruns the query. */
 interface QueryManualBatchPort {
+    suspend fun prepareNameAssignmentBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, names: List<String>, quality: TextQualitySelection? = null): ManualTextBatch? =
+        throw UnsupportedOperationException("Name assignment unavailable")
+
     /** Translation replacement with explicit mode; status and original source are preserved. */
     suspend fun prepareReplacementBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, options: TextReplacementOptions, quality: TextQualitySelection? = null): ManualTextBatch? =

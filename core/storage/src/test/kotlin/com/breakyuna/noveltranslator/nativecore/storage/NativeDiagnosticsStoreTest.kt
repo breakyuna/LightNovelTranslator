@@ -170,4 +170,47 @@ class NativeDiagnosticsStoreTest {
         store.append(NativeDiagnosticLevel.INFO, "CLEAR", "three")
         assertEquals(1, store.query(limit = 10).entries.size)
     }
+
+    @Test fun filtersAndTextFreeCategoriesAreBounded() = runBlocking {
+        val store = store(temporary.newFolder("filters"))
+        store.append(NativeDiagnosticLevel.INFO, "MODEL", "model one")
+        now += 1
+        store.append(NativeDiagnosticLevel.ERROR, "MODEL", "model two")
+        now += 1
+        store.append(NativeDiagnosticLevel.ERROR, "AGENT", "agent one")
+        now += 1
+        store.append(NativeDiagnosticLevel.WARN, "AGENT", "agent two")
+
+        assertEquals(listOf("AGENT", "MODEL"), store.categories())
+        assertTrue(store.categories().none { it.contains("one") || it.contains("two") })
+
+        val errors = store.query(limit = 10, level = NativeDiagnosticLevel.ERROR)
+        assertEquals(listOf("agent one", "model two"), errors.entries.map { it.message })
+        val agentErrors = store.query(limit = 10, level = NativeDiagnosticLevel.ERROR, category = "AGENT")
+        assertEquals(listOf("agent one"), agentErrors.entries.map { it.message })
+
+        val firstPage = store.query(limit = 1, level = NativeDiagnosticLevel.ERROR, category = "MODEL")
+        assertEquals(listOf("model two"), firstPage.entries.map { it.message })
+        assertNull(firstPage.nextCursor)
+        val agentPage = store.query(limit = 1, category = "AGENT")
+        assertEquals(listOf("agent two"), agentPage.entries.map { it.message })
+        val older = store.query(limit = 1, cursor = requireNotNull(agentPage.nextCursor), category = "AGENT")
+        assertEquals(listOf("agent one"), older.entries.map { it.message })
+    }
+
+    @Test fun runtimeDetailOptInOnlyAffectsNewRecords() = runBlocking {
+        val store = store(temporary.newFolder("runtime-detail"))
+        val before = store.append(NativeDiagnosticLevel.INFO, "DEBUG", "before", detail = "old body")
+        assertNull(store.read(before.id)!!.detail)
+
+        store.setIncludeDetails(true)
+        assertTrue(store.includeDetails)
+        val after = store.append(NativeDiagnosticLevel.INFO, "DEBUG", "after", detail = "new body")
+        assertEquals("new body", store.read(after.id)!!.detail)
+        assertNull(store.read(before.id)!!.detail)
+
+        store.setIncludeDetails(false)
+        val off = store.append(NativeDiagnosticLevel.INFO, "DEBUG", "off", detail = "dropped")
+        assertNull(store.read(off.id)!!.detail)
+    }
 }

@@ -172,7 +172,7 @@ for name in sorted(MODULES):
         require(not re.search(r'\bTODO\s*\(', body), f'{source}: executable TODO')
         require(kotlin_delimiters_balanced(body),
                 f'{source.relative_to(ROOT)}: unbalanced Kotlin delimiters')
-    for source in sorted(directory.glob('src/test/**/*.kt')):
+    for source in sorted(directory.glob('src/test/**/*.kt')) + sorted(directory.glob('src/androidTest/**/*.kt')):
         body = source.read_text()
         require(kotlin_delimiters_balanced(body),
                 f'{source.relative_to(ROOT)}: unbalanced Kotlin delimiters')
@@ -199,7 +199,8 @@ declared = {name: set() for name in MODULES}
 sources_by_module = {}
 for name in MODULES:
     sources = sorted((ROOT / 'core' / name).glob('src/main/**/*.kt')) + \
-        sorted((ROOT / 'core' / name).glob('src/test/**/*.kt'))
+        sorted((ROOT / 'core' / name).glob('src/test/**/*.kt')) + \
+        sorted((ROOT / 'core' / name).glob('src/androidTest/**/*.kt'))
     sources_by_module[name] = sources
     for source in sources:
         body = source.read_text()

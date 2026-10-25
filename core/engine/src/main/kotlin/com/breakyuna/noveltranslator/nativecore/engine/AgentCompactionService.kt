@@ -104,6 +104,7 @@ class AgentCompactionService(
         AgentCompactionBlock.PENDING_APPROVAL -> AgentCompactionSkip.PENDING_APPROVAL
         AgentCompactionBlock.ACTIVE_TOOL_LOOP -> AgentCompactionSkip.ACTIVE_TOOL_LOOP
         AgentCompactionBlock.ACTIVE_RUN -> AgentCompactionSkip.ACTIVE_RUN
+        AgentCompactionBlock.USER_DISABLED -> AgentCompactionSkip.USER_DISABLED
     }
 
     private fun AgentCompactionRefusal.toSkip(): AgentCompactionSkip = when (this) {

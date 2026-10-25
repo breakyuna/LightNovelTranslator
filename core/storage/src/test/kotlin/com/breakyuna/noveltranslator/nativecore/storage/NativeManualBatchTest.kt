@@ -41,6 +41,95 @@ class NativeManualBatchTest {
             item.revision, item.item.fingerprint, "saved-$id", TextItemStatus.PROCESSED)).status)
     }
 
+    @Test fun fileInventoryReportsHistoryTimeAndMissingSourceWithoutReadingBodies() = runBlocking {
+        val project = create()
+        val initial = store.fileInventory(project.ref, project.revision)
+        assertEquals(AssetSourceAvailability.PRESENT, initial.entries.single().source)
+        assertNull(initial.entries.single().updatedAtMillis)
+        edit(project.ref, 1)
+        val revision = store.open(project.ref).revision
+        val changed = store.fileInventory(project.ref, revision)
+        assertTrue(requireNotNull(changed.entries.single().updatedAtMillis) > 0)
+        try { store.fileInventory(project.ref, project.revision); fail("Accepted stale inventory") }
+        catch (error: TextProjectException) { assertEquals(TextProjectException.Reason.STALE_PAGE, error.reason) }
+        val file = File(context.filesDir, "native_projects/${project.ref.instanceId.value}/project.lnt")
+        NativeProjectDatabase.open(file, writable = true).use { db ->
+            db.execSQL("DELETE FROM asset_chunks WHERE asset_id=1")
+        }
+        assertEquals(AssetSourceAvailability.INCOMPLETE,
+            store.fileInventory(project.ref, revision).entries.single().source)
+    }
+
+    @Test fun assigningAndClearingNamesIsAtomicReplayableAndRoundTrips() = runBlocking {
+        val project = create()
+        edit(project.ref, 1)
+        var revision = store.open(project.ref).revision
+        val names = mutableListOf("first", "second")
+        val assignment = requireNotNull(store.prepareNameAssignmentBatch(CommandId("assign-names"), project.ref,
+            revision, TextItemQuery(), names))
+        names.clear()
+        assertEquals(listOf("first", "second"), assignment.nameAssignment)
+        assertEquals(3, assignment.targets.size)
+        val receipt = store.editBatch(assignment)
+        assertEquals(revision + 3, receipt.revision)
+        assertEquals(receipt, store.editBatch(assignment))
+        assertEquals("saved-1", store.item(project.ref, ItemId(1))!!.item.translation)
+        assertEquals(listOf("first", "second"), store.item(project.ref, ItemId(3))!!.item.metadata.nameTranslation)
+        revision = receipt.revision
+        val clear = requireNotNull(store.prepareNameAssignmentBatch(CommandId("clear-names"), project.ref,
+            revision, TextItemQuery(), emptyList()))
+        store.editBatch(clear)
+        assertEquals(emptyList<String>(), store.item(project.ref, ItemId(1))!!.item.metadata.nameTranslation)
+        assertNull(store.prepareNameAssignmentBatch(CommandId("clear-noop"), project.ref,
+            store.open(project.ref).revision, TextItemQuery(), emptyList()))
+        val output = ByteArrayOutputStream(); store.saveProject(project.ref) { output }
+        val restored = store.importProject(CommandId("import-assigned-names")) { ByteArrayInputStream(output.toByteArray()) }
+        assertEquals("saved-1", store.item(restored.ref, ItemId(1))!!.item.translation)
+        assertEquals(emptyList<String>(), store.item(restored.ref, ItemId(3))!!.item.metadata.nameTranslation)
+    }
+
+    @Test fun bodyAndNameReplacementSharesOneRevisionAndSurvivesExportImport() = runBlocking {
+        val project = create()
+        edit(project.ref, 1)
+        val first = store.item(project.ref, ItemId(1))!!
+        store.editName(ManualNameEdit(CommandId("seed-names"), project.ref, ItemId(1), first.revision,
+            first.item.fingerprint, listOf("saved-name", "saved-other"), listOf("source-name", "source-other")))
+        val revision = store.open(project.ref).revision
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("body-and-names"), project.ref,
+            revision, TextItemQuery(), TextReplacementOptions("saved", "final", target = TextReplacementTarget.BOTH)))
+        assertEquals(listOf(ItemId(1)), batch.targets.map { it.id })
+        val receipt = store.editBatch(batch)
+        assertEquals(revision + 1, receipt.revision)
+        val changed = store.item(project.ref, ItemId(1))!!.item
+        assertEquals("final-1", changed.translation)
+        assertEquals(listOf("final-name", "final-other"), changed.metadata.nameTranslation)
+        assertEquals(listOf("source-name", "source-other"), changed.metadata.nameSource)
+        assertEquals(TextItemStatus.PROCESSED, changed.status)
+        assertEquals(receipt, store.editBatch(batch))
+        val output = ByteArrayOutputStream(); store.saveProject(project.ref) { output }
+        val imported = store.importProject(CommandId("import-body-names")) { ByteArrayInputStream(output.toByteArray()) }
+        val restored = store.item(imported.ref, ItemId(1))!!.item
+        assertEquals(changed.translation, restored.translation)
+        assertEquals(changed.metadata.nameTranslation, restored.metadata.nameTranslation)
+        assertEquals(changed.fingerprint, restored.fingerprint)
+    }
+
+    @Test fun namesOnlyReplacementPreservesBodyAndDoesNotSelectNamelessRows() = runBlocking {
+        val project = create()
+        edit(project.ref, 1)
+        val first = store.item(project.ref, ItemId(1))!!
+        store.editName(ManualNameEdit(CommandId("names-only-seed"), project.ref, ItemId(1), first.revision,
+            first.item.fingerprint, listOf("saved-name")))
+        val revision = store.open(project.ref).revision
+        val batch = requireNotNull(store.prepareReplacementBatch(CommandId("names-only"), project.ref,
+            revision, TextItemQuery(), TextReplacementOptions("saved", "final", target = TextReplacementTarget.NAMES)))
+        assertEquals(1, batch.targets.size)
+        store.editBatch(batch)
+        val changed = store.item(project.ref, ItemId(1))!!.item
+        assertEquals("saved-1", changed.translation)
+        assertEquals(listOf("final-name"), changed.metadata.nameTranslation)
+    }
+
     @Test fun preparationDoesNotWriteAndStatusBatchPreservesTextAndReplaysWithoutReapplying() = runBlocking {
         val project = create(); edit(project.ref, 1)
         val batch = prepare(project)

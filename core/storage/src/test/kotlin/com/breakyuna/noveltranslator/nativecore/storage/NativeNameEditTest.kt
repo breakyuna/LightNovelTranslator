@@ -447,6 +447,8 @@ class NativeNameEditTest {
                         SELECT revision,item_id,previous_fingerprint,fingerprint,translation,status,
                         instance_id,generation,command_id,committed_at FROM revisions_v5""")
                     db.execSQL("DROP TABLE revisions_v5")
+                    db.execSQL("DROP TABLE IF EXISTS approved_item_receipts")
+                    db.execSQL("DROP TABLE IF EXISTS approved_pdf_page_receipts")
                     db.version = 4
                 }
             } finally { db.setForeignKeyConstraintsEnabled(true) }

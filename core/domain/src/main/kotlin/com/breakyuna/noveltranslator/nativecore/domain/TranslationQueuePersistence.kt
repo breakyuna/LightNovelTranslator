@@ -36,12 +36,16 @@ class TranslationQueuedTaskFacts(
     val state: TranslationTaskQueueState,
     batches: List<TranslationTaskFailureBatch>,
     commands: List<TranslationTaskCommandFacts>,
+    val executionRevision: Long? = null,
 ) {
     val batches: List<TranslationTaskFailureBatch> = frozenList(batches)
     val commands: List<TranslationTaskCommandFacts> = frozenList(commands)
 
     init {
         require(sequence >= 0) { "Invalid translation task sequence" }
+        require(executionRevision == null || executionRevision >= spec.revision) {
+            "Invalid translation execution revision"
+        }
     }
 
     val identity: TranslationTaskQueueIdentity get() = spec.queueIdentity()
@@ -232,6 +236,7 @@ class TranslationQueueSnapshot private constructor(
                     state = facts.state,
                     batches = facts.batches,
                     commands = commands,
+                    executionRevision = facts.executionRevision,
                 )
             }
             val queue = TranslationTaskQueue.restore(limits, restored, tasks.size.toLong())

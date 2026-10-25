@@ -126,6 +126,7 @@ class NativeDiagnosticsLimits(
 
     companion object {
         const val MAX_PAGE_SIZE = 200
+        const val MAX_CATEGORIES = 64
     }
 }
 
@@ -139,8 +140,9 @@ class NativeDiagnosticsLimits(
  * concurrent callers cannot interleave bytes or observe a half-rotated directory.
  *
  * Security boundary: every message and detail passes [NativeDiagnosticRedaction] before it
- * reaches disk. Detail text is dropped unless [includeDetails] is enabled, which is the
- * default. This store must never be handed prompts, model response bodies, source text or
+ * reaches disk. Detail text is dropped unless [includeDetails] is enabled; the default is
+ * off and the application setting only affects records appended after an explicit opt-in.
+ * This store must never be handed prompts, model response bodies, source text or
  * credentials; redaction is a final safety net, not permission to log that material.
  *
  * All methods perform blocking file IO on [Dispatchers.IO]. [export] flushes but does not
@@ -150,11 +152,25 @@ class NativeDiagnosticsStore(
     private val directory: File,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val limits: NativeDiagnosticsLimits = NativeDiagnosticsLimits(),
-    private val includeDetails: Boolean = false,
+    includeDetails: Boolean = false,
     private val idGenerator: () -> String = { UUID.randomUUID().toString() },
 ) {
+    @Volatile
+    private var detailsEnabled: Boolean = includeDetails
     private var nextSequence = 0L
     private var storeId: String? = null
+
+    /** Reflects the current opt-in; changing it never rewrites existing records. */
+    val includeDetails: Boolean get() = detailsEnabled
+
+    /**
+     * Explicit app-settings opt-in for new records. Existing records keep whatever detail
+     * they already stored, and disabling never deletes them. The caller is responsible for
+     * warning that a detail may contain sensitive body-adjacent text.
+     */
+    fun setIncludeDetails(enabled: Boolean) {
+        detailsEnabled = enabled
+    }
 
     suspend fun append(
         level: NativeDiagnosticLevel,
@@ -165,7 +181,7 @@ class NativeDiagnosticsStore(
         val safeCategory = normalizeCategory(category)
         val safeMessage = NativeDiagnosticRedaction.singleLine(message, limits.maxMessageChars)
         require(safeMessage.isNotBlank()) { "Diagnostic message is empty" }
-        val safeDetail = if (includeDetails && detail != null) {
+        val safeDetail = if (detailsEnabled && detail != null) {
             NativeDiagnosticRedaction.detail(detail, limits.maxDetailChars)
         } else {
             null
@@ -188,15 +204,29 @@ class NativeDiagnosticsStore(
         }
     }
 
-    /** Newest-first page. A foreign, stale or cleared cursor is rejected, never guessed. */
-    suspend fun query(limit: Int = 50, cursor: NativeDiagnosticCursor? = null): NativeDiagnosticPage =
+    /**
+     * Newest-first page with optional level/category filters. A foreign, stale or cleared
+     * cursor is rejected, never guessed; the caller must reload from the newest record.
+     * Category names are already validated identifiers and never contain record bodies.
+     */
+    suspend fun query(
+        limit: Int = 50,
+        cursor: NativeDiagnosticCursor? = null,
+        level: NativeDiagnosticLevel? = null,
+        category: String? = null,
+    ): NativeDiagnosticPage =
         withContext(Dispatchers.IO) {
             require(limit in 1..NativeDiagnosticsLimits.MAX_PAGE_SIZE) { "Invalid page size" }
+            val safeCategory = category?.let { normalizeCategory(it) }
             synchronized(PROCESS_LOCK) {
                     ensureDirectory()
                 val currentStoreId = ensureStoreId()
                 require(cursor == null || cursor.storeId == currentStoreId) { "Stale diagnostics cursor" }
                 val records = readAllRecords().sortedByDescending { it.sequence }
+                    .filter { record ->
+                        (level == null || record.level == level) &&
+                            (safeCategory == null || record.category == safeCategory)
+                    }
                 val remaining = if (cursor == null) records else records.filter { it.sequence < cursor.beforeSequence }
                 val visible = remaining.take(limit).map { it.summary() }
                 val next = if (remaining.size > limit && visible.isNotEmpty()) {
@@ -207,6 +237,20 @@ class NativeDiagnosticsStore(
                 NativeDiagnosticPage(visible, next)
             }
         }
+
+    /**
+     * Bounded, text-free category identifiers for the filter menu. It never returns message,
+     * detail, prompt or source content.
+     */
+    suspend fun categories(): List<String> = withContext(Dispatchers.IO) {
+        synchronized(PROCESS_LOCK) {
+            ensureDirectory()
+            ensureStoreId()
+            repairActiveFile()
+            readAllRecords().map { it.category }.distinct().sorted()
+                .take(NativeDiagnosticsLimits.MAX_CATEGORIES)
+        }
+    }
 
     suspend fun read(id: String): NativeDiagnosticRecord? = withContext(Dispatchers.IO) {
         val safeId = normalizeId(id)

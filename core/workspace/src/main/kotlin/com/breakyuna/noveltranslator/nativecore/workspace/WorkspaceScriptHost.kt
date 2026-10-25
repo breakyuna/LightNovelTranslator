@@ -72,8 +72,9 @@ class WorkspaceScriptEngineUnavailable(cause: Throwable? = null) :
 }
 
 /**
- * All state and authorization for one bridge session. It is confined to the interpreter thread;
- * the supervising thread only reads the abort flag and the final result after the worker joins.
+ * All state and authorization for one bridge session. Calls must be serialized, either by the
+ * interpreter thread or the isolated adapter's host gate. Results are collected only after the
+ * interpreter completes; a cancelled adapter revokes callbacks and discards their output.
  *
  * Every capability-gated host request goes through [WorkspaceHostPolicy]. Output is decoded by
  * [WorkspaceScriptResultCodec] and a malformed or over-limit emit is never turned into success:
@@ -100,6 +101,8 @@ internal class WorkspaceScriptHostSession(
     private val logs = ArrayList<WorkspaceLogLine>()
     private val changes = ArrayList<WorkspaceChange>()
     private val artifacts = ArrayList<WorkspaceArtifactDraft>()
+    private var fetchCalls = 0
+    private var reservedFetchBytes = 0L
     private var outputBytes: Long = 0
     private var invalidOutput: Boolean = false
     private var truncated: Boolean = false
@@ -295,7 +298,18 @@ internal class WorkspaceScriptHostSession(
             cancellation = request.cancellation,
             maxBytes = hostRequest.maxBytes,
         )
-        val outcome = runWorkspacePort { port.fetch(fetchRequest) }
+        if (fetchCalls >= 8 || reservedFetchBytes + maxBytes > request.limits.maxOutputBytes)
+            throw WorkspaceScriptHostLimitExceeded(WorkspaceScriptHostLimitExceeded.Limit.FETCH_BYTES)
+        fetchCalls++
+        reservedFetchBytes += maxBytes
+        // The Binder/QuickJS callback is synchronous. Unlike material reads, network IO
+        // genuinely suspends; await it rather than leaving an orphaned coroutine running.
+        val outcome = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeout((request.deadlineAtMillis - clock.nowMillis()).coerceAtLeast(1)) {
+                port.fetch(fetchRequest)
+            }
+        }
+        checkActive()
         return when (outcome) {
             is WorkspaceFetchOutcome.Fetched -> {
                 val json = WorkspaceBridgeJson.fetched(outcome.document)

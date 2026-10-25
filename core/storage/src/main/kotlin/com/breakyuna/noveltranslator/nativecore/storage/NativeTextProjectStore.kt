@@ -9,6 +9,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.nio.charset.CharacterCodingException
 import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -27,7 +28,8 @@ import kotlinx.serialization.json.int
 /**
  * Concrete IO adapter for the native TXT workspace. Inject the application's single
  * RuntimePort; manual writes cannot run alongside an Agent/translation run. Each operation
- * opens/closes its project connection. Room owns only local instance registrations.
+ * opens/closes its project connection. Room owns local instance registrations and device-local
+ * approval bindings; neither authority is imported from a .lnt file.
  *
  * Read helpers open the project read-write on purpose: SQLite can only roll back a hot journal
  * on a writable connection, so keeping writes recoverable matters more than avoiding the write
@@ -39,7 +41,7 @@ class NativeTextProjectStore(
     private val runtime: RuntimePort,
     private val limits: TextProjectLimits = TextProjectLimits(),
     private val importLimits: NativeImportLimits = NativeImportLimits(),
-) : TextProjectPort, TranslationCommitPort, ProjectTextPolicyPort, TextItemNavigationPort, ProjectAssetPort, TranslationContextPort, TranslationReusePort, TranslationFailurePort, QueryManualBatchPort, ProjectNamePort {
+) : TextProjectPort, TranslationCommitPort, ProjectTextPolicyPort, TextItemNavigationPort, ProjectAssetPort, TranslationContextPort, TranslationReusePort, TranslationFailurePort, QueryManualBatchPort, ProjectNamePort, PdfPageReadPort, ProjectFileInventoryPort {
     private val io = Dispatchers.IO
     private val context = context.applicationContext
     private val app = NativeAppDatabase.open(this.context)
@@ -141,6 +143,48 @@ class NativeTextProjectStore(
         project(command.ref) { db -> NativeProjectDatabase.transaction(db) {
             NativeProjectDatabase.summary(db, command.ref)
             ProjectWriteStore.checkedPolicyReceipt(db, command)
+        } }
+    }
+
+    override suspend fun pdfPage(ref: LocalProjectRef, revision: Long, asset: ProjectAssetSummary, page: Int): TextProjectItem = operation {
+        require(revision >= 0 && asset.format == ProjectAssetFormat.PDF && page in 1..asset.itemCount)
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val current = summary.assets.firstOrNull { it.id == asset.id }
+                ?: fail(TextProjectException.Reason.STALE_PAGE)
+            if (current.format != asset.format || current.sha256 != asset.sha256 || current.itemCount != asset.itemCount)
+                fail(TextProjectException.Reason.STALE_PAGE)
+            db.rawQuery("SELECT ${itemColumns(db)} FROM items WHERE asset_id=? AND row_index=? ORDER BY id LIMIT 2",
+                arrayOf(asset.id.toString(), page.toString())).use { cursor ->
+                if (!cursor.moveToFirst()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                val result = NativeProjectDatabase.item(cursor, db.version)
+                if (cursor.moveToNext() || result.metadata.tag != "page:$page") fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                result
+            }
+        } }
+    }
+
+    /** Page decisions only; the caller never receives extracted source text during approval prep. */
+    internal suspend fun pdfPageDecisions(ref: LocalProjectRef, revision: Long, asset: ProjectAssetSummary,
+                                         pages: List<Int>): Map<Int, PdfPageMode> = operation {
+        require(revision >= 0 && asset.format == ProjectAssetFormat.PDF &&
+            pages.size in 1..PdfPageChangeProposal.MAX_PAGES && pages.toSet().size == pages.size &&
+            pages.all { it in 1..asset.itemCount })
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val current = summary.assets.firstOrNull { it.id == asset.id }
+                ?: fail(TextProjectException.Reason.STALE_PAGE)
+            if (current.format != asset.format || current.sha256 != asset.sha256 || current.itemCount != asset.itemCount)
+                fail(TextProjectException.Reason.STALE_PAGE)
+            pages.sorted().associateWith { page ->
+                db.rawQuery("SELECT tag,extra_field FROM items WHERE asset_id=? AND row_index=? ORDER BY id LIMIT 2",
+                    arrayOf(asset.id.toString(), page.toString())).use { cursor ->
+                    if (!cursor.moveToFirst() || cursor.moveToNext()) fail(TextProjectException.Reason.CORRUPT_PROJECT)
+                    PdfPageDecisionBinding.mode(page, cursor.getString(0), cursor.getString(1))
+                }
+            }
         } }
     }
 
@@ -400,6 +444,39 @@ class NativeTextProjectStore(
     private fun itemColumns(db: SQLiteDatabase): String =
         if (db.version >= 3) NativeProjectDatabase.ITEM_COLUMNS else NativeProjectDatabase.ITEM_COLUMNS_V2
 
+    override suspend fun fileInventory(ref: LocalProjectRef, revision: Long): ProjectFileInventory = operation {
+        val coroutine = currentCoroutineContext()
+        project(ref) { db -> NativeProjectDatabase.transaction(db) {
+            val summary = NativeProjectDatabase.summary(db, ref)
+            if (summary.revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
+            val updated = HashMap<Long, Long>()
+            db.rawQuery("""SELECT i.asset_id,MAX(r.committed_at) FROM item_revisions r
+                JOIN items i ON i.id=r.item_id GROUP BY i.asset_id""", null).use { rows ->
+                while (rows.moveToNext()) { coroutine.ensureActive(); updated[rows.getLong(0)] = rows.getLong(1) }
+            }
+            if (db.version >= 3) db.rawQuery("SELECT asset_id,MAX(committed_at) FROM asset_revisions WHERE asset_id IS NOT NULL GROUP BY asset_id", null).use { rows ->
+                while (rows.moveToNext()) {
+                    coroutine.ensureActive()
+                    val id = rows.getLong(0)
+                    updated[id] = maxOf(updated[id] ?: 0L, rows.getLong(1))
+                }
+            }
+            val entries = summary.assets.map { asset ->
+                coroutine.ensureActive()
+                val present = db.rawQuery("SELECT COUNT(*),MIN(part),MAX(part),COALESCE(SUM(length(data)),0) FROM asset_chunks WHERE asset_id=?",
+                    arrayOf(asset.id.toString())).use { row ->
+                    check(row.moveToFirst())
+                    val count = row.getLong(0)
+                    row.getLong(3) == asset.originalSize &&
+                        (if (count == 0L) asset.originalSize == 0L else row.getLong(1) == 0L && row.getLong(2) == count - 1)
+                }
+                AssetFileInventory(asset.id, updated[asset.id],
+                    if (present) AssetSourceAvailability.PRESENT else AssetSourceAvailability.INCOMPLETE)
+            }
+            ProjectFileInventory(ref, revision, entries)
+        } }
+    }
+
     override suspend fun edit(command: ManualTextEdit): ManualEditReceipt = operation {
         if (command.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         TextProjectFingerprint.utf8(command.translation)
@@ -440,7 +517,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         window: TextItemWindow, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change != TextBatchChange.REPLACE_TRANSLATION)
+        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
         require(revision >= 0 && window.ids.size <= limits.maxPageSize)
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             val summary = NativeProjectDatabase.summary(db, ref)
@@ -454,7 +531,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareQualityBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         selection: TextQualitySelection, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change != TextBatchChange.REPLACE_TRANSLATION)
+        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
         if (selection.index.ref != ref || selection.index.revision != revision)
             fail(TextProjectException.Reason.STALE_PAGE)
         require(selection.ids.size <= limits.maxItems)
@@ -482,7 +559,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareQueryBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change != TextBatchChange.REPLACE_TRANSLATION)
+        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
         require(revision >= 0)
         val coroutine = currentCoroutineContext()
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
@@ -504,8 +581,17 @@ class NativeTextProjectStore(
         } }
     }
 
+    override suspend fun prepareNameAssignmentBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, names: List<String>, quality: TextQualitySelection?): ManualTextBatch? =
+        prepareTextChanges(commandId, ref, revision, query, null, names.toList(), quality)
+
     override suspend fun prepareReplacementBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
-        query: TextItemQuery, options: TextReplacementOptions, quality: TextQualitySelection?): ManualTextBatch? = operation {
+        query: TextItemQuery, options: TextReplacementOptions, quality: TextQualitySelection?): ManualTextBatch? =
+        prepareTextChanges(commandId, ref, revision, query, options, null, quality)
+
+    private suspend fun prepareTextChanges(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, options: TextReplacementOptions?, assignment: List<String>?,
+        quality: TextQualitySelection?): ManualTextBatch? = operation {
         require(revision >= 0)
         if (quality != null && (quality.index.ref != ref || quality.index.revision != revision || quality.index.query != query))
             fail(TextProjectException.Reason.STALE_PAGE)
@@ -514,20 +600,22 @@ class NativeTextProjectStore(
             if (NativeProjectDatabase.summary(db, ref).revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
             val (where, arguments) = queryPredicate(query)
             val targets = ArrayList<TextBatchTarget>()
-            fun consider(id: ItemId, row: Int, fingerprint: ObjectFingerprint, translation: String) {
+            fun consider(id: ItemId, row: Int, fingerprint: ObjectFingerprint, translation: String, names: String?) {
                 coroutine.ensureActive()
-                val replaced = LiteralTextReplacement.preview(translation, options) { coroutine.ensureActive() }
-                if (replaced.text.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                val oldNames = NativeProjectDatabase.decodeNames(names)
+                val replaced = if (assignment != null) ItemReplacementPreview(translation, assignment, oldNames.orEmpty() != assignment)
+                    else ItemTextReplacement.preview(translation, oldNames, requireNotNull(options)) { coroutine.ensureActive() }
+                if (replaced.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                 if (replaced.changed) {
                     if (targets.size >= limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                     targets.add(TextBatchTarget(id, row, fingerprint))
                 }
             }
             if (quality == null) {
-                db.rawQuery("SELECT id,row_index,fingerprint,translation FROM items WHERE $where ORDER BY id",
+                db.rawQuery("SELECT id,row_index,fingerprint,translation,${if (db.version >= 3) "name_translation" else "NULL"} FROM items WHERE $where ORDER BY id",
                     arguments.toTypedArray()).use { cursor ->
                     while (cursor.moveToNext()) consider(ItemId(cursor.getLong(0)), cursor.getInt(1),
-                        ObjectFingerprint(cursor.getString(2)), cursor.getString(3))
+                        ObjectFingerprint(cursor.getString(2)), cursor.getString(3), if (cursor.isNull(4)) null else cursor.getString(4))
                 }
             } else {
                 require(quality.ids.size <= limits.maxItems)
@@ -535,16 +623,17 @@ class NativeTextProjectStore(
                     coroutine.ensureActive()
                     val fact = quality.index.fact(id) ?: fail(TextProjectException.Reason.STALE_PAGE)
                     if (!quality.filter.matches(fact)) fail(TextProjectException.Reason.STALE_PAGE)
-                    db.rawQuery("SELECT row_index,fingerprint,translation FROM items WHERE id=? AND $where",
+                    db.rawQuery("SELECT row_index,fingerprint,translation,${if (db.version >= 3) "name_translation" else "NULL"} FROM items WHERE id=? AND $where",
                         (listOf(id.value.toString()) + arguments).toTypedArray()).use { cursor ->
                         if (!cursor.moveToFirst() || cursor.getString(1) != fact.fingerprint.sha256)
                             fail(TextProjectException.Reason.STALE_PAGE)
-                        consider(id, cursor.getInt(0), fact.fingerprint, cursor.getString(2))
+                        consider(id, cursor.getInt(0), fact.fingerprint, cursor.getString(2), if (cursor.isNull(3)) null else cursor.getString(3))
                     }
                 }
             }
-            if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision, TextBatchChange.REPLACE_TRANSLATION,
-                targets.sortedBy { it.id.value }, options)
+            if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision,
+                if (assignment == null) TextBatchChange.REPLACE_TRANSLATION else TextBatchChange.ASSIGN_NAMES,
+                targets.sortedBy { it.id.value }, options, assignment)
         } }
     }
 
@@ -554,9 +643,87 @@ class NativeTextProjectStore(
         withWriteLease {
             project(command.ref) { db ->
                 NativeProjectDatabase.summary(db, command.ref)
+                if (command.nameAssignment != null || (command.replacement?.target != null && command.replacement.target != TextReplacementTarget.TRANSLATION))
+                    NativeProjectDatabase.ensureV8(db)
                 ProjectWriteStore.editBatch(db, command, limits.maxItemChars) { coroutine.ensureActive() }
             }
         }
+    }
+
+    internal suspend fun approvedPolicy(lease: RunLease, proposal: PolicyChangeProposal): PolicyEditReceipt = operation {
+        require(lease.identity.projectId == proposal.ref.projectId && lease.identity.chatId == proposal.chat &&
+            lease.identity.runId == proposal.run && lease.identity.commandId == proposal.command &&
+            runtime.snapshot().activeRun?.owner == RuntimeOwner.AGENT)
+        val row = requireNotNull(app.policyProposals().find(proposal.id.value))
+        require(row.state == "CONSUMED" && row.consumedAt != null && row.digest == proposal.digest.sha256)
+        require(row.instanceId == proposal.ref.instanceId.value && row.generation == proposal.ref.generation.value &&
+            row.projectId == proposal.ref.projectId.value && row.chatId == proposal.chat.value &&
+            row.runId == proposal.run.value && row.commandId == proposal.command.value && row.revision == proposal.revision)
+        val coroutine = currentCoroutineContext()
+        TextRuleValidation.validate(proposal.after) { coroutine.ensureActive() }
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(proposal.ref) { db ->
+                NativeProjectDatabase.summary(db, proposal.ref)
+                ProjectWriteStore.editPolicy(db, proposal.intent()) { coroutine.ensureActive() }
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    internal suspend fun approvedItemsReceipt(proposal: ItemChangeProposal, selected: Set<ItemId>): ItemProposalReceipt? = operation {
+        project(proposal.ref) { db ->
+            NativeProjectDatabase.summary(db, proposal.ref)
+            ProjectWriteStore.approvedItemsReceipt(db, proposal, selected)
+        }
+    }
+
+    internal suspend fun approvedItems(lease: RunLease, proposal: ItemChangeProposal, selected: Set<ItemId>): ItemProposalReceipt = operation {
+        require(lease.identity.projectId == proposal.ref.projectId && lease.identity.chatId == proposal.chat &&
+            lease.identity.runId == proposal.run && lease.identity.commandId == proposal.command &&
+            runtime.snapshot().activeRun?.owner == RuntimeOwner.AGENT)
+        val row = requireNotNull(app.itemProposals().find(proposal.id.value))
+        require(row.state == "CONSUMED" && row.digest == proposal.digest.sha256 && row.binding == proposal.binding(selected).sha256)
+        require(row.instanceId == proposal.ref.instanceId.value && row.generation == proposal.ref.generation.value &&
+            row.projectId == proposal.ref.projectId.value && row.chatId == proposal.chat.value &&
+            row.runId == proposal.run.value && row.commandId == proposal.command.value && row.revision == proposal.revision)
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(proposal.ref) { db ->
+                NativeProjectDatabase.summary(db, proposal.ref)
+                ProjectWriteStore.approvedItems(db, proposal, selected) { coroutine.ensureActive() }
+            }
+        } finally { runtime.endProjectWrite(write) }
+    }
+
+    internal suspend fun approvedPdfPageReceipt(proposal: PdfPageChangeProposal, selected: Set<Int>): PdfPageProposalReceipt? = operation {
+        project(proposal.ref) { db ->
+            NativeProjectDatabase.summary(db, proposal.ref)
+            ProjectWriteStore.approvedPdfPagesReceipt(db, proposal, selected)
+        }
+    }
+
+    internal suspend fun approvedPdfPages(lease: RunLease, proposal: PdfPageChangeProposal,
+                                          selected: Set<Int>): PdfPageProposalReceipt = operation {
+        require(lease.identity.projectId == proposal.ref.projectId && lease.identity.chatId == proposal.chat &&
+            lease.identity.runId == proposal.run && lease.identity.commandId == proposal.command &&
+            runtime.snapshot().activeRun?.owner == RuntimeOwner.AGENT)
+        val row = requireNotNull(app.pdfPageProposals().find(proposal.id.value))
+        require(row.state in setOf("PENDING", "CONSUMED") && row.digest == proposal.digest.sha256)
+        require(row.binding == proposal.binding(selected).sha256 &&
+            PdfPageChangeProposalCodec.selection(requireNotNull(row.selected)) == selected)
+        require(row.instanceId == proposal.ref.instanceId.value && row.generation == proposal.ref.generation.value &&
+            row.projectId == proposal.ref.projectId.value && row.chatId == proposal.chat.value &&
+            row.runId == proposal.run.value && row.commandId == proposal.command.value && row.revision == proposal.revision &&
+            row.assetId == proposal.assetId && row.sha256 == proposal.assetSha256 && row.pageCount == proposal.pageCount)
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(proposal.ref) { db ->
+                NativeProjectDatabase.summary(db, proposal.ref)
+                ProjectWriteStore.approvedPdfPages(db, proposal, selected) { coroutine.ensureActive() }
+            }
+        } finally { runtime.endProjectWrite(write) }
     }
 
     internal suspend fun approvedReceipt(command: ManualTextEdit): ManualEditReceipt? = operation {
@@ -677,27 +844,44 @@ class NativeTextProjectStore(
         val coroutine = currentCoroutineContext()
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             NativeProjectDatabase.summary(db, ref)
-            FileOutputStream(output).use { file ->
-                val buffered = file.buffered()
-                db.rawQuery("SELECT ${itemColumns(db)} FROM items " +
-                    "WHERE asset_id IN (SELECT id FROM assets WHERE file_type = 'TXT') ORDER BY row_index, id", null).use { cursor ->
-                    var first = true
-                    while (cursor.moveToNext()) {
-                        coroutine.ensureActive()
-                        val item = NativeProjectDatabase.item(cursor, db.version)
-                        if (!first) buffered.write('\n'.code)
-                        first = false
-                        val translation = if (item.status == TextItemStatus.PROCESSED) item.translation else item.source
-                        val text = when {
-                            !bilingual || (deduplicateSame && item.source == translation) -> translation
-                            translation.isEmpty() -> item.source
-                            else -> item.source + "\n" + translation
+            val originalPrefix = db.rawQuery(
+                "SELECT data FROM asset_chunks WHERE asset_id = " +
+                    "(SELECT id FROM assets WHERE file_type = 'TXT' ORDER BY ordinal, id LIMIT 1) ORDER BY part LIMIT 1",
+                null,
+            ).use { cursor -> if (cursor.moveToFirst()) cursor.getBlob(0).copyOf(minOf(cursor.getBlob(0).size, 65_536)) else ByteArray(0) }
+            fun write(encoding: TxtExportEncoding) {
+                FileOutputStream(output).use { file ->
+                    val buffered = file.buffered()
+                    buffered.write(encoding.bom)
+                    val newline = encoding.encode(encoding.newline)
+                    db.rawQuery("SELECT ${itemColumns(db)} FROM items " +
+                        "WHERE asset_id IN (SELECT id FROM assets WHERE file_type = 'TXT') ORDER BY row_index, id", null).use { cursor ->
+                        var first = true
+                        while (cursor.moveToNext()) {
+                            coroutine.ensureActive()
+                            val item = NativeProjectDatabase.item(cursor, db.version)
+                            if (!first) buffered.write(newline)
+                            first = false
+                            val translation = if (item.status == TextItemStatus.PROCESSED) item.translation else item.source
+                            val text = when {
+                                !bilingual || (deduplicateSame && item.source == translation) -> translation
+                                translation.isEmpty() -> item.source
+                                else -> item.source + encoding.newline + translation
+                            }
+                            buffered.write(encoding.encode(text))
                         }
-                        buffered.write(TextProjectFingerprint.utf8(text))
                     }
+                    buffered.flush()
+                    file.fd.sync()
                 }
-                buffered.flush()
-                file.fd.sync()
+            }
+            val detected = TxtExportEncoding.detect(originalPrefix)
+            try {
+                write(detected)
+            } catch (_: CharacterCodingException) {
+                // The translation introduced a character the original charset cannot encode;
+                // publish a complete UTF-8 export instead of a partially encoded file.
+                write(detected.fallbackUtf8())
             }
         } }
         deliver(output, destination)

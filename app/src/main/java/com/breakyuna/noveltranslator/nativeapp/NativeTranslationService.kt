@@ -98,7 +98,7 @@ class NativeTranslationService : Service() {
             .setOngoing(true).setOnlyAlertOnce(true).setCategory(NotificationCompat.CATEGORY_PROGRESS)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(android.R.drawable.ic_media_pause, getString(R.string.native_agent_stop), stop)
-        if (snapshot.request.options != null && snapshot.progress != null && snapshot.phase == ForegroundTranslationPhase.RUNNING)
+        if (snapshot.request.options != null && snapshot.phase == ForegroundTranslationPhase.RUNNING)
             builder.addAction(android.R.drawable.ic_media_pause, getString(R.string.native_pause), pause)
         return builder.build()
     }

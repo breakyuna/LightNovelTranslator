@@ -1,10 +1,6 @@
 # 原生 TXT 存储契约
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—122 已提交为 `b47178a`，Actions run 40132451221 的 test/lint/release 与签名校验成功。新增设备/视觉、真实供应商与 Room 2—13 schema 导出仍待补齐。
-
-当前应用库边界：持久执行记录、中断核对、Room v4 远程请求元数据、v5 模型协议/多密钥、v6 用量账本、v7 固定翻译任务和 v8 响应/提交暂存、v9 Agent 输入队列/steer、v10 任务终止、v11 成员裁决、v12 手动摘要、v13 历史分支；2—13.json 权威导出仍未生成。当前基线见 [HANDOFF §3](HANDOFF.md)，契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
-
-当前验证边界见 [HANDOFF §3](HANDOFF.md)：Actions #158 已覆盖原生存储、模拟批次、单条审批和 Room v1→v8 运行迁移源码；v9—v13 为未构建工作区增量，2—13.json 权威导出、真实设备升级/故障及完整恢复仍待补。
+当前进度、CI、源码版本及验证边界统一见 [HANDOFF §2—3](HANDOFF.md)。下文保留首个 TXT 切片的历史契约；新增批量条目审批审计见文末 v6 小节，PDF 页审批回执见 v7 小节。源码版本与非破坏性迁移以 NativeProjectDatabase / NativeAppDatabase 为准，不能把旧切片验证当成新增能力的运行证据。
 
 本文说明首个 `.lnt` TXT 切片的源码边界。实施进度、实际验证和未完成项只记入 [HANDOFF](HANDOFF.md)；TXT 存储基线已有指定提交的 CI 证据；新增导入/恢复与 nativeapp 接线的用户 CI/真机确认见 HANDOFF §22，不表示完成 S1 验收。
 
@@ -12,9 +8,9 @@
 
 - 原生文件为 SQLite `.lnt`，`application_id = 0x4c4e5431`（LNT1），`user_version = 1`，对象/命令指纹编码版本为 1。打开时检查标识、版本与 SQLite 头部格式版本字节（18/19 必须为 1 = 回滚日志；2 = WAL 直接拒绝）。未来版本、WAL 与外来格式直接拒绝，不自动升级或清库。
   不能改用 `PRAGMA journal_mode` 断言：Android 每次可写打开都会把连接日志模式设成平台默认（AOSP 为 `TRUNCATE`），而 `DELETE/TRUNCATE/PERSIST` 不写进文件头，只有 WAL 持久化。快照保证的是"不是 WAL、经 ATTACH 逻辑复制"，不是某个连接的 rollback 子模式。
-- 以下描述历史单 TXT v1 切片；当前为多资产 v5，包含 v2 规则表、v3 资产/设置扩展、v4 归档移除及 v5 姓名快照，不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
+- 以下描述历史单 TXT v1 切片；当前源码为多资产 v7，包含 v2 规则表、v3 资产/设置扩展、v4 归档移除、v5 姓名快照、v6 审批条目批次回执及 v7 PDF 页审批回执，不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
 - 私有工程位于 `filesDir/native_projects/<本机生成的 UUID>/project.lnt`。路径不使用工程名称或外部文件名；逻辑资产路径经 `RelativePath` 验证，实际文件访问拒绝符号链接改写。
-- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v13：v1→v2 Agent 记录、v2→v3 执行表、v3→v4 请求元数据、v4→v5 协议/多密钥、v5→v6 用量账本、v6→v7 固定翻译任务、v7→v8 响应/提交暂存、v8→v9 Agent 输入队列/steer、v9→v10 任务终止、v10→v11 成员裁决、v11→v12 手动摘要、v12→v13 历史分支；v9—v13 为工作区增量，2—13.json 导出与设备升级待补，见 RUN_RECOVERY），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
+- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v16：v1→v2 Agent 记录、v2→v3 执行表、v3→v4 请求元数据、v4→v5 协议/多密钥、v5→v6 用量账本、v6→v7 固定翻译任务、v7→v8 响应/提交暂存、v8→v9 Agent 输入队列/steer、v9→v10 任务终止、v10→v11 成员裁决、v11→v12 手动摘要、v12→v13 历史分支、v13→v14 批量条目提案与成员、v14→v15 规则/提示词提案、v15→v16 PDF 页提案与成员；导出/升级验证边界见 HANDOFF），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
 - 原稿使用 `raw-v1` 原始字节分块，单块最多 64 KiB，保存原始长度及 SHA-256；不是 Zstd，也不冒充 LG schema。外部工程转换已取消，仅维护原生 `.lnt`。
 
 ## 2. Schema 与端口
@@ -80,7 +76,7 @@
 
 ## 6. 原生导入、复制、恢复与交付边界
 
-外部导入先有界复制并关闭来源流，再只读校验自有 staging 副本。默认导入文件上限 256 MiB、历史行上限 200,000、指纹校验累计字符预算 64 Mi；TXT 条目/文本仍受 TextProjectLimits 约束。检查 SQLite 标识/头部、精确 v1—v5 表及索引定义、quick_check/外键、整数类型、原稿块顺序/大小/摘要、条目指纹、完整修订链、回执与修订对应关系和自增高水位。未知 schema 对象拒绝，不经复制静默丢弃。当前校验器支持本实现 v1—v5 及对应修订链，不支持 LG 文件改后缀导入；本段其余预算与校验以实际 NativeImportValidator 为准。
+外部导入先有界复制并关闭来源流，再只读校验自有 staging 副本。默认导入文件上限 256 MiB、历史行上限 200,000、指纹校验累计字符预算 64 Mi；TXT 条目/文本仍受 TextProjectLimits 约束。检查 SQLite 标识/头部、精确 v1—v6 表及索引定义、quick_check/外键、整数类型、原稿块顺序/大小/摘要、条目指纹、完整修订链、回执与修订对应关系和自增高水位。未知 schema 对象拒绝，不经复制静默丢弃。当前校验器支持本实现 v1—v6 及对应修订链，不支持 LG 文件改后缀导入；本段其余预算与校验以实际 NativeImportValidator 为准。
 
 导入保留来源工程身份与历史事实，另建本地 UUID 和初始代际 1；导入历史不提供当前实例的可执行授权。创建命令和来源摘要实现重放去重，复制显式生成独立实例。registration.json 位于私有工程目录，由本机创建，最多 16 KiB；扫描限制 4096 个目录，逐个报告失败，忽略 staging，不删除异常目录。它不包含外部来源权限或自动重放指令。
 
@@ -98,11 +94,11 @@ nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支�
 
 §24 切片引入 NativeAgentStore 与应用 Room v2（当前源码应用库为 v13，v1→v8 迁移源码已由 #158 覆盖，v9—v13 为工作区增量，2—13.json 导出与新版本设备升级仍待补）：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不改变工程 schema（当时 v1）和旧阅读库；Room 2—13.json 尚缺，后续 PC/CI 生成审阅；v1→v8 运行迁移源码已由 #158 覆盖，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。
 
-## v3 多资产扩展基础（当前 schema v5）
+## v3 多资产扩展基础
 
 `NativeProjectFormat.SCHEMA_VERSION` 当前为 5。v3 引入 assets 顺序/启用/格式元数据，items 增加 asset/slot/tag/name/extra_field/skip_internal_filter 及扩展状态；project_settings、asset_receipts、asset_revisions 参与修订与校验；v4 增加 archived_items 与资产移除归档；v5 给 item_revisions 增加 name_source/name_translation 快照。ProjectAssetPort 提供追加/删除/重排/重置/设置/读回/导出，写入仍经写租约和命令回执；工作台已接追加及按资产导出，其余端口不等于完整管理 UI。旧版本升级在需要 v3 资产操作时经 ensureV3、v4 移除时经 ensureV4、姓名写事务前经 ensureV5 升级；旧读取/编辑仍有版本感知路径，不声称只要打开就强制升级。以下旧 v1 表结构是历史基础，当前 schema 以 NativeProjectDatabase/NativeImportValidator 为准。
 
-## v4 资产移除归档（当前 schema v5）
+## v4 资产移除归档
 
 HANDOFF §58 将原生 `.lnt` 新建版本升至 4；§110 升至 5 并增加逐修订姓名快照，二者均在未提交工作区。archived_items 保留被移除条目完整文本/格式身份与指纹，item_revisions/回执保持不变；资产移除在同事务归档后删除活动资产和原始字节。快照包含归档；导入按活动/归档联合身份验证修订链、移除关系与高水位。活动加归档累计仍受工程条目上限约束。旧 v1/v2/v3 只在移除需要时事务升级，不要求只读打开就迁移。归档不参加翻译/统计/普通导出，外部源文件不触碰，暂未提供归档恢复 UI。源码未构建、未设备验证。
 
@@ -120,4 +116,33 @@ NativeTranslationTaskStore 实现 TranslationTaskReviewPort，按固定工程实
 
 显式错误成员重试见 HANDOFF §114：有界读取原任务目标，按当前修订/ERROR 状态/指纹重新固定所选成员；新 Run、新预算和 RETRY_ERRORS 裁决关联在 Room v10 同事务建立。未知派发拒绝，原任务事实与成功条目不变，准备不自动付费执行。
 
-Room 当前工作区已到 v13：v10 任务终止、v11 逐条成员决策、v12 手动上下文摘要、v13 历史分支；v9—v13 尚未构建验证，#158 不覆盖这些增量。翻译队列使用独立私有 AtomicFile，不新增 Room 表。
+Room 当前源码已到 v16：v10 任务终止、v11 逐条成员决策、v12 手动上下文摘要、v13 历史分支、v14 批量条目提案、v15 规则/提示词提案、v16 PDF 页提案；v9—v16 尚未构建验证，#158 不覆盖这些增量。翻译队列使用独立私有 AtomicFile（当前快照 v2，审计执行修订），不新增 Room 表。
+
+## v6 审批条目批次与原生审计
+
+`approved_item_receipts` 按实例/代际/命令保存绑定摘要、不可变提案正文、用户所选成员、实际接受/拒绝集合、修订及提交时间。v5→v6 只增加该表，不重写既有正文、姓名快照或回执。创建和逻辑快照包含全部 v6 表。
+
+`NativeItemProposalStore` 在应用 Room 的 `native_item_proposals` / `native_item_proposal_members` 保存待决正文和轻量投影，一次消费与所选集合/绑定/时间同事务。`NativeTextProjectStore.approvedItems` 核对真实 Agent 租约和设备本地 CONSUMED 绑定后进入 ProjectWriteStore；后者在单个工程事务内校验修订/指纹、写入译文/姓名/状态、保存逐条修订与完整结果。允许部分接受的策略在准备时固定；用户未选或发生冲突的成员属于最终拒绝集合，不会利用旧命令稍后补写。
+
+外部导入按正文重新计算绑定，检查所选/接受/拒绝集合、原值/新值指纹、实际修订/时间及完整修订链；缺失或篡改审计会拒绝发布。导入审计只保留事实，不生成 Room 授权。复制/恢复后的不同实例/代际不能复用旧批准。消费后缺少工程回执且旧执行者已经退出时记未提交终止；读取不确定则保留 CONSUMED，不自动重放。
+
+条目提案不等于通用文件/规则/提示词/资产/PDF 写入口。当前实现与验证证据仍只记 HANDOFF。
+
+## v7 PDF 页审批与原生审计
+
+`approved_pdf_page_receipts` 按实例/代际/命令保存绑定摘要、资产 ID、不可变页决策正文、用户所选页码、实际接受/拒绝集合、修订及提交时间。v6→v7 只增加该表；创建和逻辑快照包含全部 v7 表。工程写回仍在单个事务内校验工程修订、资产 ID/SHA/页数、逐页 before 决策，写入 `project_settings`、SETTINGS 修订与通用 asset receipt，并同时写审批回执；`REJECT_BATCH` 在任一选中页冲突时整批拒绝，`ACCEPT_INDEPENDENT_OBJECTS` 只提交仍未变化的选中页。
+
+Room `native_pdf_page_proposals` / `native_pdf_page_proposal_pages` 保存页级提案、绑定、所选集合、一次消费结果和轻量投影；正文只有页决策码，不含 PDF 原文。审批消费与工程提交不跨库持有事务：先查工程回执，再消费 Room；旧执行者退出后只核对不重放，复制/恢复后的实例/代际不能复用旧批准。权威 Room `16.json` 尚未由 KSP 导出。
+
+## 规则/提示词审批的存储边界
+
+Room `native_policy_proposals` 固定完整前后策略、实例/代际/Chat/Run/command、摘要、变更计数和一次消费时间；轻量列表不查询正文。工程写回仍使用既有 text_policy / policy_revisions / policy_receipts，不引入第二个策略写入者或新的 `.lnt` 回执编码。审批消费与工程提交不跨库持有事务；恢复仅核对已提交回执，不重放旧授权。
+
+
+### PDF 页处置设置
+
+PDF 页覆盖保存在现有 `project_settings` 中，不修改 `items.extra_field` 或历史指纹，不新增 SQL schema。设置 JSON codec v2 增加 `pdf_pages`：每项严格包含 `asset`（正整数资产 ID）、`sha256`（固定原稿摘要）、`decisions`（每原始页一字符，`-` 沿用导入、`k` 保留、`o` 移除、`t` 翻译）。没有覆盖时仍生成原 v1 编码，保留旧指纹与历史回执。预算为单 PDF 5000 页、最多 1000 个策略/总 100000 页、JSON 1 Mi 字符；这些是资源边界，尚非设备性能结论。
+
+设置保存沿用写租约、全局预期修订、SETTINGS 修订及命令回执，验证当前资产的类型/摘要/条目数。已删除资产的设置保留为无效历史，不应用于其他资产；资产 ID 采用 AUTOINCREMENT，重新导入不继承原决策。备份/副本/导入保留设置，导入同时校验活动绑定与历史 SETTINGS payload。普通语言/姓名设置保存保留 PDF 策略。
+
+翻译任务冻结、规划执行及显式失败重试共用 ProjectPageTranslationPolicy，KEEP/OMIT 不进入目标；沿用导入时读取原页决策。已暂停任务的续跑仍核对固定工程修订，设置变化不重放旧授权。导出以固定修订读取设置与条目，只临时投影 PDF 页 extraField（保留提取来源 digest），输出前再次核对工程修订。空白/扫描页设为翻译不自动 OCR；仍需保存非空译文，缺译文拒绝导出。重排文本不保留被替换页的图形/原版式，真实 PDF 输出及设备效果待验收。

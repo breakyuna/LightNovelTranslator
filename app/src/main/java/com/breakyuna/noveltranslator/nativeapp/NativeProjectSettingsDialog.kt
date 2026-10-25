@@ -30,7 +30,7 @@ internal fun NativeProjectSettingsDialog(state: NativeProjectUiState, close: () 
     var names by rememberSaveable(project.ref) { mutableStateOf(initial.writeTranslatedNames) }
     val command = rememberSaveable(project.ref, target, source, deduplicate, names) { UUID.randomUUID().toString() }
     val settings = remember(target, source, deduplicate, names) {
-        runCatching { ProjectSettings(target, source, deduplicate, names, initial.promptEnabled) }.getOrNull()
+        runCatching { ProjectSettings(target, source, deduplicate, names, initial.promptEnabled, initial.pdfPages) }.getOrNull()
     }
     var submitted by remember(project.ref) { mutableStateOf<NativeProjectSettingsChange?>(null) }
     val current = state.project
