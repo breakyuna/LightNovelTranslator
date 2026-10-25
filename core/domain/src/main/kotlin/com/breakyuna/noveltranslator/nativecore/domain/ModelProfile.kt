@@ -201,7 +201,7 @@ interface NativeModelProfilePort {
     suspend fun copy(id: String, name: String): NativeModelProfile =
         throw UnsupportedOperationException("Profile copy is not implemented")
 
-    suspend fun delete(id: String) = throw UnsupportedOperationException("Profile deletion is not implemented")
+    suspend fun delete(id: String): Unit = throw UnsupportedOperationException("Profile deletion is not implemented")
 
     /** Moves one position inside the same group; the store keeps a stable total order. */
     suspend fun move(id: String, offset: Int): List<NativeModelProfile> =

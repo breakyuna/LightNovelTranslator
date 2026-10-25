@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.nativecore.domain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 
 /**
  * Application-scoped laboratory switches that have a real next-run consumer.
@@ -15,6 +16,11 @@ data class LaboratorySettings(
     val duplicateSourceDeduplication: Boolean = false,
 ) {
     fun saved(): LaboratorySettings = copy()
+
+    companion object {
+        /** Baseline used when no saved override exists or the file is unreadable. */
+        val DEFAULT = LaboratorySettings()
+    }
 }
 
 interface LaboratorySettingsProvider {
@@ -51,7 +57,7 @@ object LaboratorySettingsCodec {
     }
 
     fun fingerprint(settings: LaboratorySettings): String =
-        TextProjectFingerprint.utf8(encode(settings))
+        TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(encode(settings)))
 
     fun decode(text: String): LaboratorySettings {
         if (text.length > MAX_CHARS) throw InvalidLaboratorySettings()
