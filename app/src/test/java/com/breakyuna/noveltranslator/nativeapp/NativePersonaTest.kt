@@ -40,6 +40,7 @@ class NativePersonaTest {
 
     @After fun cleanup() = runBlocking {
         try { graph?.close() } finally { preferences.edit().clear().commit() }
+        Unit
     }
 
     @Test fun personaIsBoundedTrimmedAndPersistedAcrossStoreInstances() {

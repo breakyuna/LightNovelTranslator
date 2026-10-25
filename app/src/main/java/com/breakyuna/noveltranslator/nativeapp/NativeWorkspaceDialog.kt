@@ -16,6 +16,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -31,6 +32,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.ChatId
 import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
@@ -299,30 +301,42 @@ private fun NativeWorkspaceArtifactImport(ref: LocalProjectRef, revision: Long,
     var failed by remember(ref, revision, artifact.runId, artifact.id) { mutableStateOf(false) }
     val command = remember(ref, revision, artifact.runId, artifact.id, path) { CommandId(UUID.randomUUID().toString()) }
     val scope = rememberCoroutineScope()
-    AlertDialog(onDismissRequest = { if (!busy) close() },
-        title = { Text(stringResource(R.string.native_workspace_import)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    // A plain Dialog plus an explicitly sized Surface avoids the AlertDialog measure loop seen
+    // under Robolectric while keeping the same confirm/dismiss semantics.
+    Dialog(onDismissRequest = { if (!busy) close() }) {
+        Surface(Modifier.fillMaxWidth().padding(24.dp), tonalElevation = 6.dp) {
+            Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.native_workspace_import),
+                    style = MaterialTheme.typography.titleLarge)
                 Text(stringResource(R.string.native_workspace_import_notice))
                 Text(stringResource(R.string.native_workspace_revision, revision))
                 Text(artifact.path.value)
                 Text(stringResource(R.string.native_workspace_size, artifact.sizeBytes))
-                Text(stringResource(R.string.native_workspace_digest, artifact.sha256), style = MaterialTheme.typography.labelSmall)
+                Text(stringResource(R.string.native_workspace_digest, artifact.sha256),
+                    style = MaterialTheme.typography.labelSmall)
                 OutlinedTextField(path, { path = it.take(512) }, enabled = !busy,
-                    label = { Text(stringResource(R.string.native_workspace_import_path)) }, modifier = Modifier.fillMaxWidth())
-                if (failed) Text(stringResource(R.string.native_workspace_import_error), color = MaterialTheme.colorScheme.error)
+                    label = { Text(stringResource(R.string.native_workspace_import_path)) },
+                    modifier = Modifier.fillMaxWidth())
+                if (failed) Text(stringResource(R.string.native_workspace_import_error),
+                    color = MaterialTheme.colorScheme.error)
                 if (busy) CircularProgressIndicator()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(enabled = !busy, onClick = close) {
+                        Text(stringResource(R.string.native_cancel))
+                    }
+                    TextButton(modifier = Modifier.testTag("native-workspace-import-confirm"),
+                        enabled = !busy && path.isNotBlank(), onClick = {
+                            busy = true; failed = false
+                            scope.launch {
+                                try { apply(ref, revision, artifact, path, command); close() }
+                                catch (cancelled: CancellationException) { throw cancelled }
+                                catch (_: Exception) { failed = true }
+                                finally { busy = false }
+                            }
+                        }) { Text(stringResource(R.string.native_workspace_import)) }
+                }
             }
-        },
-        confirmButton = { TextButton(modifier = Modifier.testTag("native-workspace-import-confirm"),
-            enabled = !busy && path.isNotBlank(), onClick = {
-            busy = true; failed = false
-            scope.launch {
-                try { apply(ref, revision, artifact, path, command); close() }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { failed = true }
-                finally { busy = false }
-            }
-        }) { Text(stringResource(R.string.native_workspace_import)) } },
-        dismissButton = { TextButton(enabled = !busy, onClick = close) { Text(stringResource(R.string.native_cancel)) } })
+        }
+    }
 }

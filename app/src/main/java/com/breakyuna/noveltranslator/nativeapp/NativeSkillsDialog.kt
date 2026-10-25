@@ -84,19 +84,6 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
         content = ""
         editorError = null
         saving = false
-        if (record != null) scope.launch {
-            val target = record.summary.id
-            try {
-                val text = actions.read(target).orEmpty()
-                if (selected?.summary?.id == target) content = text
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                if (selected?.summary?.id == target) {
-                    editorError = nativeSkillEditorError(IllegalStateException("Skill body could not be read"))
-                }
-            }
-        }
     }
     suspend fun mutate(block: suspend () -> Unit) {
         val failure = try {
@@ -110,6 +97,21 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
         if (failure != null) failed = true
     }
     LaunchedEffect(Unit) { reload() }
+    val selectedSkillId = selected?.summary?.id
+    LaunchedEffect(selectedSkillId) {
+        val record = selected ?: return@LaunchedEffect
+        val target = record.summary.id
+        try {
+            val text = actions.read(target).orEmpty()
+            if (selected?.summary?.id == target) content = text
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            if (selected?.summary?.id == target) {
+                editorError = nativeSkillEditorError(IllegalStateException("Skill body could not be read"))
+            }
+        }
+    }
 
     deleteConfirm?.let { fixed ->
         AlertDialog(onDismissRequest = { deleteConfirm = null },
