@@ -870,7 +870,7 @@ class WorkspaceArtifactStore(
             "id", "path", "media_type", "kind", "size_bytes", "sha256",
         )
         private val PROTECTED_AREAS = setOf(
-            "sources", "datasets", "reference", "uploads", "work", "artifacts",
+            "sources", "datasets", "reference", "uploads", "artifacts",
         )
         private val PROTECTED_NAMES = setOf(
             "material-manifest.json", STORE_METADATA, RUN_METADATA,
