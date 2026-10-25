@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
@@ -23,16 +22,16 @@ internal fun NativeDialogSurface(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
 ) {
-    Surface(modifier.fillMaxWidth().heightIn(max = 560.dp),
+    Surface(modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-        Column {
-            Box(Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp)) {
+        Column(Modifier.padding(vertical = 8.dp)) {
+            Box(Modifier.padding(start = 24.dp, end = 24.dp, top = 16.dp)) {
                 ProvideTextStyle(MaterialTheme.typography.headlineSmall, title)
             }
-            Box(Modifier.weight(1f, fill = false).padding(horizontal = 24.dp, vertical = 16.dp)) {
+            Box(Modifier.padding(horizontal = 24.dp, vertical = 12.dp)) {
                 ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
             }
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp),
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
                 horizontalArrangement = Arrangement.End) {
                 dismissButton?.invoke()
                 confirmButton()
