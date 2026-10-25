@@ -31,6 +31,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.ChatId
 import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
@@ -114,7 +115,7 @@ internal fun NativeWorkspaceDialog(
             preview != null -> preview = null
             else -> dismiss()
         }
-    }) {
+    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         val importingArtifact = importing
         if (importingArtifact != null) {
             NativeWorkspaceArtifactImport(ref, revision, importingArtifact, requireNotNull(actions.importArtifact),

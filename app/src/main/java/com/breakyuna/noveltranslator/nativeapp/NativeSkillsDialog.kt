@@ -32,6 +32,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillLimits
@@ -124,7 +125,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
             selected != null || creating -> { selected = null; creating = false }
             else -> dismiss()
         }
-    }) {
+    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         deleteConfirm?.let { fixed ->
             NativeDialogSurface(
                 title = { Text(stringResource(R.string.native_skills_delete)) },
