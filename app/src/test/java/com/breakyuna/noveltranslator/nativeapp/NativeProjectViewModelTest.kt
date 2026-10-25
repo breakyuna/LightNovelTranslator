@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -50,8 +51,7 @@ class NativeProjectViewModelTest {
         try {
             stores.forEach { it.clear() }
             owner.cancelAndJoin()
-            graph.agentStore.close(); graph.agentInputs.close(); graph.modelSettings.close(); graph.translationAudit.close(); graph.runStore.close(); graph.projects.close()
-            graph.runtime.close()
+            graph.close()
         } finally { Dispatchers.resetMain() }
     }
 
@@ -134,16 +134,18 @@ class NativeProjectViewModelTest {
             model.state.first { !it.busy && it.project?.ref == snapshot.ref &&
                 it.project?.revision == snapshot.revision && it.project?.assets?.any { current -> current == asset } == true }
 
-            val first = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 1) }
-            firstStarted.await()
-            val second = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 2) }
-            secondStarted.await()
-            firstBytes.complete(png)
-            val late = runCatching { first.await() }.exceptionOrNull()
-            assertTrue(late is TextProjectException)
-            assertEquals(TextProjectException.Reason.STALE_PAGE, (late as TextProjectException).reason)
-            secondBytes.complete(png)
-            assertTrue(second.await().contentEquals(png))
+            supervisorScope {
+                val first = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 1) }
+                firstStarted.await()
+                val second = async { model.pdfPageThumbnail(snapshot.ref, snapshot.revision, asset, 2) }
+                secondStarted.await()
+                firstBytes.complete(png)
+                val late = runCatching { first.await() }.exceptionOrNull()
+                assertTrue(late is TextProjectException)
+                assertEquals(TextProjectException.Reason.STALE_PAGE, (late as TextProjectException).reason)
+                secondBytes.complete(png)
+                assertTrue(second.await().contentEquals(png))
+            }
         }
     }
 

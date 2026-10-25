@@ -176,7 +176,7 @@ class NativePdfPageProposalStoreTest {
         val current = projects.open(ref)
         val manual = current.settings!!.withPdfPages(listOf(PdfAssetPagePolicy(asset.id, asset.sha256, "o--")))
         assertEquals(AssetMutationStatus.COMMITTED,
-            projects.editProjectSettings(CommandId("manual-pages"), ref, current.revision, manual))
+            projects.editProjectSettings(CommandId("manual-pages"), ref, current.revision, manual).status)
         assertEquals(PdfPageProposalState.PARTIAL, accept(view, setOf(1, 2)))
         val receipt = proposals.receipt(view)!!
         assertEquals(listOf(2), receipt.accepted)

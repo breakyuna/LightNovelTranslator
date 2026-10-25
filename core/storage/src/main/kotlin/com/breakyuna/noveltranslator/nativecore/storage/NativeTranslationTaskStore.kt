@@ -290,7 +290,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             val target = db.translationTasks().count(row.id)
             val skipped = if (skippedItemIds.isEmpty()) 0 else {
                 val selected = db.translationTasks().selected(row.id, skippedItemIds.map { it.value })
-                require(selected.size == skippedItemIds.size && selected.none { it.done })
+                require(selected.size == skippedItemIds.size)
                 selected.size
             }
             val unresolved = db.translationRequests().unresolved(ref.instanceId.value, ref.generation.value,
@@ -436,7 +436,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                 .associateBy { it.itemId }
             val items = ordered.associate { member ->
                 val target = targets.getValue(member.itemId.value)
-                require(!target.done && target.fingerprint == member.fingerprint.sha256) {
+                require(target.fingerprint == member.fingerprint.sha256) {
                     "Target or fingerprint changed"
                 }
                 val item = projects.item(review.ref, member.itemId)?.item ?: throw TranslationTaskNeedsReview()
@@ -488,7 +488,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                     .associateBy { it.itemId }
                 for (member in ordered) {
                     val target = currentTargets.getValue(member.itemId.value)
-                    require(!target.done && target.fingerprint == member.fingerprint.sha256)
+                    require(target.fingerprint == member.fingerprint.sha256)
                     val previous = currentPrior[member.itemId.value]
                     require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
                         "Member decision changed"
@@ -513,13 +513,12 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                     }
                 }
                 val settled = requireNotNull(db.translationTasks().find(id))
-                val remaining = db.translationTasks().remaining(id)
                 val nextStage = when (action) {
                     TranslationTaskCommandAction.RETRY_MEMBERS -> "READY"
                     TranslationTaskCommandAction.KEEP_ERROR -> "FAILED"
                     TranslationTaskCommandAction.SKIP_MEMBERS ->
-                        // Explicit skips stay as unfinished target rows. READY lets the queue
-                        // scheduler continue the remaining targets (or finalize from exact
+                        // Settled ERROR targets are skipped by durable decisions. READY lets the
+                        // queue scheduler continue the remaining targets (or finalize from exact
                         // committed+skipped evidence) without a second review round.
                         "READY"
                     else -> settled.stage
@@ -572,11 +571,9 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             }
             require(row.stage !in setOf("COMPLETE", "CANCELLED")) { "Task is already terminal" }
             val targetCount = db.translationTasks().count(id)
-            val remaining = db.translationTasks().remaining(id)
             val skippedTargets = if (ordered.isEmpty()) emptyList() else
                 db.translationTasks().selected(id, ordered.map { it.value })
             require(skippedTargets.size == ordered.size) { "Skipped member is not a task target" }
-            require(skippedTargets.none { it.done }) { "Committed target cannot be skipped" }
             val memberDecisions = if (ordered.isEmpty()) emptyMap() else db.translationTaskDecisions()
                 .selected(id, ordered.map { it.value }).associateBy { it.itemId }
             require(ordered.all { itemId ->
@@ -584,8 +581,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                 val decision = memberDecisions[itemId.value]
                 decision?.action == SKIP_MEMBER_ACTION && decision.fingerprint == target.fingerprint
             }) { "Skipped member has no durable skip decision" }
-            require(remaining == ordered.size) { "Unfinished targets remain unaccounted" }
-            require(targetCount - remaining == row.committed) { "Committed target count changed" }
+            require(targetCount - ordered.size == row.committed) { "Committed target count changed" }
             val unresolved = db.translationRequests().unresolved(ref.instanceId.value, ref.generation.value,
                 ref.projectId.value, run.runId.value, run.commandId.value)
             require(unresolved == 0) { "An unresolved dispatch forbids completion" }
@@ -596,7 +592,6 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             transaction {
                 val current = requireNotNull(db.translationTasks().find(id))
                 require(current.stage !in setOf("COMPLETE", "CANCELLED"))
-                require(db.translationTasks().remaining(id) == ordered.size)
                 require(db.translationTasks().count(id) - ordered.size == current.committed)
                 db.translationTaskDecisions().insert(NativeTranslationTaskDecisionRow(
                     command.value, id, action, digest, current.stage, current.revision,
@@ -633,7 +628,6 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         val selected = LinkedHashSet<ItemId>()
         for ((itemId, fingerprint) in decisions) {
             val target = targets.getValue(itemId)
-            if (target.done) continue
             require(target.fingerprint == fingerprint) { "Retry target fingerprint changed" }
             val item = projects.item(spec.ref, ItemId(itemId))?.item ?: throw TranslationTaskNeedsReview()
             require(item.fingerprint.sha256 == target.fingerprint) { "Project item fingerprint changed" }
@@ -668,7 +662,6 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         val selected = LinkedHashSet<ItemId>()
         for ((itemId, fingerprint) in decisions) {
             val target = targets.getValue(itemId)
-            if (target.done) continue
             require(target.fingerprint == fingerprint) { "Skipped target fingerprint changed" }
             val item = projects.item(spec.ref, ItemId(itemId))?.item ?: throw TranslationTaskNeedsReview()
             require(item.fingerprint.sha256 == target.fingerprint) { "Project item fingerprint changed" }
@@ -717,9 +710,6 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         // ERROR marker is not turned into a member decision.
         val failed = item.status == TextItemStatus.ERROR || state == "DISPATCHED"
         if (!failed) return null
-        // A committed target without a received response cannot be reported as failure evidence;
-        // it is either a normal success or an unproven/late state that must stay for review.
-        if (target.done && state != "RECEIVED") return null
         val failure = receipt?.failure?.let { ModelFailureKind.valueOf(it) } ?: ModelFailureKind.UNKNOWN
         val received = state == "RECEIVED"
         val usage = if (received) receipt?.usage?.let {
@@ -735,8 +725,10 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                 else -> TranslationFailureReceipt.NOT_DISPATCHED
             },
             usage = usage,
-            committed = target.done,
-            terminal = !target.done && received && failure in TERMINAL_ITEM_FAILURES,
+            // Settlement (done) also covers an ERROR marker; only a successful output commit
+            // counts as committed for adjudication.
+            committed = false,
+            terminal = received && failure in TERMINAL_ITEM_FAILURES,
         )
     }
 
@@ -1017,7 +1009,6 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
         if (row.stage !in setOf("READY", "RESPONSE_RECORDED")) return
         val saved = retryCheckpoints.readReserved(spec.ref, spec.run, spec.configuration) ?: return
         val active = saved.active ?: return
-        if (saved.terminalFailure != null) return
         require(saved.initialAdditional == spec.options.additionalRequestsPerBatch)
         val receipt = db.translationRequests().find(requireNotNull(saved.attempt).value) ?: return
         if (!NativeTranslationAuditStore.matches(receipt, spec.ref, spec.run) || receipt.state != "RECEIVED" ||
@@ -1145,11 +1136,10 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             val settledItems = items.associateWith { id ->
                 projects.item(ref, ItemId(id))?.item ?: throw TranslationTaskNeedsReview()
             }
-            val markingFailure = row.stage == "MARKING_FAILURE"
             transaction {
-                // An ERROR marker is a settlement, not a successful commit: the target stays
-                // unfinished so it still needs an explicit skip/retry decision.
-                if (!markingFailure) check(db.translationTasks().done(row.id, items) == items.size)
+                // An ERROR marker is a settled target: it is not a successful commit, but it must
+                // not be requested again without an explicit retry decision.
+                check(db.translationTasks().done(row.id, items) == items.size)
                 settledItems.forEach { (id, item) ->
                     db.translationTasks().setFingerprint(row.id, id, item.fingerprint.sha256)
                 }

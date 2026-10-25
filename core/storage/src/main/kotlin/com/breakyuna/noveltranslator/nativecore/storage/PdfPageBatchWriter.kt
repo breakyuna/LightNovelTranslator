@@ -139,7 +139,7 @@ internal object PdfPageBatchWriter {
         policy?.mode(page)?.let { return it }
         return db.rawQuery("SELECT tag,extra_field FROM items WHERE asset_id=? AND row_index=?",
             arrayOf(proposal.assetId.toString(), page.toString())).use { cursor ->
-            require(cursor.moveToFirst() && !cursor.moveToNext()) { "PDF page missing" }
+            require(cursor.moveToFirst() && cursor.count == 1) { "PDF page missing" }
             PdfPageDecisionBinding.mode(page, cursor.getString(0), cursor.getString(1))
         }
     }

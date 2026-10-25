@@ -32,12 +32,14 @@ class NativePersonaTest {
     private val preferences
         get() = context.getSharedPreferences("native_app_settings", Context.MODE_PRIVATE)
 
+    private var graph: NativeAppGraph? = null
+
     @Before fun setup() {
         preferences.edit().clear().commit()
     }
 
-    @After fun cleanup() {
-        preferences.edit().clear().commit()
+    @After fun cleanup() = runBlocking {
+        try { graph?.close() } finally { preferences.edit().clear().commit() }
     }
 
     @Test fun personaIsBoundedTrimmedAndPersistedAcrossStoreInstances() {
@@ -68,7 +70,7 @@ class NativePersonaTest {
         val persona = "PERSONA-ONLY-" + UUID.randomUUID()
         NativeAppSettingsStore(context).saveAppPersona(persona)
         val app = context as TranslatorApplication
-        val graph = app.nativeGraph
+        val graph = app.nativeGraph.also { this.graph = it }
         val project = graph.projects.createTxt(CommandId("persona-scope"), "persona-scope-" + UUID.randomUUID(),
             RelativePath("source.txt"), "source line".toByteArray())
         val policy = graph.projects.textPolicy(project.ref).policy

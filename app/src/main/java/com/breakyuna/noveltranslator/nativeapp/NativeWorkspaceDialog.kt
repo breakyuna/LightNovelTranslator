@@ -106,9 +106,13 @@ internal fun NativeWorkspaceDialog(
     }
 
     var importing by remember(ref, revision, chatId, runId) { mutableStateOf<WorkspaceArtifactRecord?>(null) }
-    importing?.let { artifact ->
-        NativeWorkspaceArtifactImport(ref, revision, artifact, requireNotNull(actions.importArtifact),
+    // A second Dialog window can keep the Robolectric/Compose idling loop busy forever. Render
+    // the import confirmation as the only dialog while it is open, then return to the list.
+    val importingArtifact = importing
+    if (importingArtifact != null) {
+        NativeWorkspaceArtifactImport(ref, revision, importingArtifact, requireNotNull(actions.importArtifact),
             close = { importing = null })
+        return
     }
     preview?.let { target -> when (target) {
         is WorkspacePreviewTarget.Material -> NativeWorkspacePreview(

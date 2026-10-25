@@ -403,7 +403,8 @@ class NativeModelSettingsStore(context: Context, private val runtime: RuntimePor
         profileMutex.withLock {
             ensureProfilesLocked()
             val target = requireNotNull(db.profiles().find(id)) { "Unknown model profile" }
-            if (!target.enabled || !selectedPurposes(target).contains(purpose)) throw InvalidModelProfile()
+            if (!target.enabled || !ModelProfilePurpose.valueOf(target.purpose).serves(purpose))
+                throw InvalidModelProfile()
             val rows = db.profiles().list()
             transaction {
                 rows.forEach { row ->

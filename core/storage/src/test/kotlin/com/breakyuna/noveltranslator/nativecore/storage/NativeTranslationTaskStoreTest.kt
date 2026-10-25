@@ -36,8 +36,8 @@ class NativeTranslationTaskStoreTest {
         tasks = NativeTranslationTaskStore(context, projects, runtime, DefaultTranslationRetryRecoveryPolicy, ledger)
     }
     @After fun cleanup() = runBlocking { tasks.close(); projects.close(); runtime.close() }
-    private suspend fun spec(): TranslationTaskSpec {
-        val project = projects.createTxt(CommandId("create"), "test", RelativePath("test.txt"), "one\ntwo\nthree".toByteArray())
+    private suspend fun spec(source: String = "one\ntwo\nthree"): TranslationTaskSpec {
+        val project = projects.createTxt(CommandId("create"), "test", RelativePath("test.txt"), source.toByteArray())
         return TranslationTaskSpec(project.ref, RunIdentity(project.ref.projectId, null, RunId("run"), CommandId("command")),
             ModelConfigurationRef("fixture", 1), 0, 0, 40, true, RemoteTranslationOptions("en", startMode = TranslationStartMode.RESET))
     }
@@ -1036,7 +1036,8 @@ class NativeTranslationTaskStoreTest {
             assertEquals(UsageSource.ACTUAL, receivedFact.usage)
             assertTrue(receivedFact.terminal)
             assertTrue(evidence.members.none { it.committed })
-            assertEquals(items.map { it.fingerprint }, evidence.members.map { it.fingerprint })
+            assertEquals(projects.readPage(original.ref).items.map { it.fingerprint },
+                evidence.members.map { it.fingerprint })
         } finally { audit.close() }
     }
 
@@ -1158,7 +1159,7 @@ class NativeTranslationTaskStoreTest {
     }
 
     @Test fun unknownLedgerUsageCannotFinalizeCompletedWithErrors() = runBlocking {
-        val original = spec()
+        val original = spec("one")
         val item = failSingleTarget(original).second
         val evidence = tasks.failures(original.ref, original.run, 0L)
         tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-unknown-ledger"),
@@ -1178,7 +1179,7 @@ class NativeTranslationTaskStoreTest {
     }
 
     @Test fun completionRefusesAnUnresolvedDispatch() = runBlocking {
-        val original = spec()
+        val original = spec("one")
         val item = failSingleTarget(original, uncertain = true).second
         val evidence = tasks.failures(original.ref, original.run, 0L)
         tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-uncertain-complete"),

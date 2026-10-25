@@ -126,6 +126,7 @@ class CompatibleHttpTransportNetworkSettingsTest {
         }
         val transport = CompatibleHttpTransport(fixtureClient(), provider)
         assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { transport.execute(request()) } }
+        Unit
     }
 
     @Test fun retryAfterIsCarriedOnTheClassifiedFailure() = runBlocking {

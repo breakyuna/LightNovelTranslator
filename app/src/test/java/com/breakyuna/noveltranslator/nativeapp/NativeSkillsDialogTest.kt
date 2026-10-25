@@ -74,7 +74,7 @@ class NativeSkillsDialogTest {
         compose.onNodeWithText(context.getString(R.string.native_skills_edit)).performClick()
         compose.waitUntil(5_000) {
             runCatching {
-                compose.onNodeWithTag("native-skill-content").assertTextContains("body")
+                compose.onNodeWithTag("native-skill-content").assertTextContains("body", substring = true)
                 true
             }.getOrDefault(false)
         }

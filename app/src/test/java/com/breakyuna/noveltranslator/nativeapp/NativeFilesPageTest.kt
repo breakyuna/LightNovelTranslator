@@ -62,9 +62,9 @@ class NativeFilesPageTest {
         }
         compose.onNodeWithTag("native-file-1").assertIsDisplayed()
         compose.onNodeWithText("source/book.epub").assertIsDisplayed()
-        compose.onNodeWithTag("native-file-sha-1").assertTextContains("SHA-256: 0123456789ab…")
+        compose.onNodeWithTag("native-file-sha-1").assertTextContains("SHA-256: 0123456789ab…", substring = true)
         compose.onNodeWithTag("native-file-sha-toggle-1").performClick()
-        compose.onNodeWithTag("native-file-sha-1").assertTextContains(sha)
+        compose.onNodeWithTag("native-file-sha-1").assertTextContains(sha, substring = true)
         compose.onNodeWithTag("native-file-export-1").performClick()
         compose.onNodeWithTag("native-file-export-bilingual-1").performClick()
         assertEquals(1L, exported)

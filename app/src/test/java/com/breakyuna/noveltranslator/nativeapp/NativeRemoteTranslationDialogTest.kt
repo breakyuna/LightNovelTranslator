@@ -29,7 +29,8 @@ class NativeRemoteTranslationDialogTest {
         project = TextProjectSummary(ref, "fixture", 12, RelativePath("source.txt"), 1),
         items = listOf(ItemPreview(ItemId(1), 0, "source", "", TextItemStatus.NONE)),
         itemStatistics = TextItemStatistics(1, 0, 0, 1),
-        modelSettings = NativeModelSettings(config, "http://localhost:1234/v1", "fixture-model", false))
+        modelSettings = NativeModelSettings(config, "http://localhost:1234/v1", "fixture-model", false),
+        translationModelSettings = NativeModelSettings(config, "http://localhost:1234/v1", "fixture-model", false))
 
     @Test fun draftsAndCancellationDoNotStartRemoteCalls() {
         var starts = 0; var closed = false
@@ -59,7 +60,7 @@ class NativeRemoteTranslationDialogTest {
 
     @Test fun missingModelDoesNotOfferRemoteTranslation() {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            Proofreading(state().copy(modelSettings = null), {}, {}, {}, {}, remoteTranslation = { _, _, _, _, _ -> fail("Started without model") })
+            Proofreading(state().copy(modelSettings = null, translationModelSettings = null), {}, {}, {}, {}, remoteTranslation = { _, _, _, _, _ -> fail("Started without model") })
         } } }
         compose.onNodeWithText(context.getString(R.string.native_remote_translate)).assertIsNotEnabled()
     }

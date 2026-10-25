@@ -51,11 +51,13 @@ class NativeAppGraphSettingsTest {
         File(limitsFile.path + ".bak").delete()
     }
 
-    @After fun cleanup() {
+    @After fun cleanup() = kotlinx.coroutines.runBlocking {
+        try { graph.close() } finally {
         networkFile.delete()
         File(networkFile.path + ".bak").delete()
         limitsFile.delete()
         File(limitsFile.path + ".bak").delete()
+        }
     }
 
     @Test fun corruptNetworkStateFailsClosedInsteadOfDirectlyConnecting() = runBlocking {

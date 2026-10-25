@@ -91,9 +91,7 @@ class NativeSettingsViewModelTest {
         try {
             stores.forEach { it.clear() }
             app.getSharedPreferences("native_app_settings", android.content.Context.MODE_PRIVATE).edit().clear().commit()
-            graph.agentStore.close(); graph.agentInputs.close(); graph.modelSettings.close()
-            graph.translationAudit.close(); graph.runStore.close(); graph.projects.close()
-            graph.runtime.close()
+            graph.close()
         } finally {
             Locale.setDefault(previousLocale)
             Dispatchers.resetMain()

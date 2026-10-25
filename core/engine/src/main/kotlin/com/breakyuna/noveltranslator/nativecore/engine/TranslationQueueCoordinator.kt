@@ -303,7 +303,7 @@ class TranslationQueueCoordinator(
         if (run?.state == StoredRunState.CANCELLED) {
             // An explicit stop/cancel must not be reclassified as a resumable pause. Keep the
             // task stopped for an explicit terminate/replace decision.
-            return TranslationQueueRecoveryVerdict.FAILED
+            return TranslationQueueRecoveryVerdict.CANCELLED
         }
         if (run?.state == StoredRunState.FAILED) {
             // A classified run failure with an intact task checkpoint and no unresolved receipt is

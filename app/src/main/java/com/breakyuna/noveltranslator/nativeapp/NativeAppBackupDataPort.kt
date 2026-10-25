@@ -82,7 +82,6 @@ internal class NativeAppBackupDataPort(
                 put("automaticContextSummary", value.automaticContextSummary)
                 put("diagnosticsIncludeDetails", value.diagnosticsIncludeDetails)
                 put("language", value.language.name)
-                put("persona", value.appPersona)
             }.toString()
             result += AppBackupEntry.bytes(AppBackupPaths.APP_PREFERENCES, AppBackupEntryKind.APP_PREFERENCES,
                 TextProjectFingerprint.utf8(json))
@@ -169,7 +168,8 @@ internal class NativeAppBackupDataPort(
                         diagnosticsIncludeDetails = root["diagnosticsIncludeDetails"]?.jsonPrimitive?.content?.toBooleanStrictOrNull()
                             ?: throw IllegalArgumentException("Missing diagnostics flag"),
                         language = language,
-                        appPersona = root["persona"]?.jsonPrimitive?.content.orEmpty(),
+                        // Persona is intentionally not part of the backup; keep the current value.
+                        appPersona = preferences.appPersona(),
                     )
                 }
                 AppBackupEntryKind.NETWORK_SETTINGS -> {

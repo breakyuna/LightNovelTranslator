@@ -33,6 +33,7 @@ import com.breakyuna.noveltranslator.nativecore.formats.NativeFormatAdapters
 import com.breakyuna.noveltranslator.nativecore.formats.ProjectFormatService
 import com.breakyuna.noveltranslator.nativecore.storage.backup.NativeProjectBackupService
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
@@ -244,4 +245,29 @@ class NativeAppGraph(context: Context) {
         runtime = runtime,
         startService = { token -> NativeTranslationService.start(context.applicationContext, token) },
     )
+    /**
+     * Releases every Room/file owner and cancels application-scoped work. Production keeps the
+     * graph for the process lifetime; tests close it between cases so SQLite connections and
+     * coroutine scopes never accumulate across Robolectric tests.
+     */
+    internal suspend fun close() {
+        executionScope.cancel()
+        val usage = usageLedger as? com.breakyuna.noveltranslator.nativecore.storage.NativeUsageLedgerStore
+        listOf<suspend () -> Unit>(
+            { itemProposals.close() },
+            { policyProposals.close() },
+            { pdfPageProposals.close() },
+            { assetImportProposals.close() },
+            { translationTasks.close() },
+            { usage?.close() },
+            { translationAudit.close() },
+            { agentStore.close() },
+            { agentInputs.close() },
+            { modelSettings.close() },
+            { runStore.close() },
+            { projects.close() },
+        ).forEach { closer -> runCatching { closer() } }
+        runtime.close()
+    }
+
 }

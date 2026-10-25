@@ -46,8 +46,9 @@ class NativeQualityPanelTest {
         var selected: TextQualityFilter? = null
         compose.setContent { NativeTheme { Surface { NativeQualityPanel(state(), NativeQualityActions({}, { selected = it }, {})) } } }
         compose.onNodeWithTag("native-quality-filter").performClick()
-        compose.onNodeWithTag("native-quality-filter-list").performScrollToNode(hasText("term (1)"))
-        compose.onNodeWithText("term (1)").performClick()
+        val termLabel = "term · " + context.getString(R.string.native_quality_term_missing_count, 1)
+        compose.onNodeWithTag("native-quality-filter-list").performScrollToNode(hasText(termLabel))
+        compose.onNodeWithText(termLabel).performClick()
         assertNull(selected)
         compose.onNodeWithTag("native-quality-filter-apply").performClick()
         assertEquals(TextQualityFilter(TextQualityOutcome.ANY_WARNING, TextWarningCode.GLOSSARY, "term"), selected)

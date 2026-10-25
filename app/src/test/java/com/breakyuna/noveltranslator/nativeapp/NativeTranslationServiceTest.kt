@@ -41,8 +41,7 @@ class NativeTranslationServiceTest {
             assertNull(graph.runtime.snapshot().activeRun)
         } finally {
             controller.destroy()
-            runBlocking { graph.agentStore.close(); graph.agentInputs.close(); graph.modelSettings.close(); graph.runStore.close(); graph.projects.close() }
-            graph.runtime.close()
+            runBlocking { graph.close() }
         }
     }
 }

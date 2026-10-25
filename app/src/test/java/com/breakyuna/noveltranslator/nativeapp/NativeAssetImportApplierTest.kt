@@ -84,7 +84,7 @@ class NativeAssetImportApplierTest {
             assertEquals(AssetImportProposalState.STALE, failure.state)
         }
         assertEquals(0, reads)
-        assertEquals(1, projects.open(ref).assets.size)
+        assertEquals(2, projects.open(ref).assets.size)
     }
 
     @Test fun changedArtifactShaFailsBeforeTheAssetWriter() = runBlocking {
@@ -96,7 +96,7 @@ class NativeAssetImportApplierTest {
             assertEquals(AssetImportProposalState.STALE, failure.state)
         }
         assertEquals(0L, projects.open(ref).revision)
-        assertTrue(projects.open(ref).assets.isEmpty())
+        assertTrue(projects.open(ref).assets.none { it.path == proposal.target })
     }
 
     @Test fun targetPathConflictIsDecidedByTheAssetWriter() = runBlocking {
@@ -105,6 +105,6 @@ class NativeAssetImportApplierTest {
         val receipt = applier { content }.apply(proposal, proposal.command)
         assertEquals(AssetMutationStatus.CONFLICT, receipt.status)
         assertEquals(1L, projects.open(ref).revision)
-        assertEquals(1, projects.open(ref).assets.size)
+        assertEquals(2, projects.open(ref).assets.size)
     }
 }

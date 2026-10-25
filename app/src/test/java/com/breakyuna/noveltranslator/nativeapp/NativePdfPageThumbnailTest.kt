@@ -11,6 +11,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextProjectException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.supervisorScope
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -27,6 +28,7 @@ class NativePdfPageThumbnailTest {
     private fun key(page: Int) = PdfPageThumbnailKey(ref, 5, asset.id, asset.sha256, page)
 
     @Test fun newerPageRejectsTheOlderLateResult() = runBlocking {
+        supervisorScope {
         val firstStarted = CompletableDeferred<Unit>()
         val secondStarted = CompletableDeferred<Unit>()
         val firstBytes = CompletableDeferred<ByteArray>()
@@ -51,9 +53,11 @@ class NativePdfPageThumbnailTest {
         secondBytes.complete(png)
         assertTrue(second.await().contentEquals(png))
         assertNotNull(loader.cached(key(2)))
+        }
     }
 
     @Test fun assetOrRevisionChangeRejectsTheLateResult() = runBlocking {
+        supervisorScope {
         val current = AtomicBoolean(true)
         val started = CompletableDeferred<Unit>()
         val pending = CompletableDeferred<ByteArray>()
@@ -68,6 +72,7 @@ class NativePdfPageThumbnailTest {
 
         assertStale(runCatching { request.await() }.exceptionOrNull())
         assertNull(loader.cached(key(1)))
+        }
     }
 
     @Test fun cacheIsBoundedAndAccessOrdered() = runBlocking {
