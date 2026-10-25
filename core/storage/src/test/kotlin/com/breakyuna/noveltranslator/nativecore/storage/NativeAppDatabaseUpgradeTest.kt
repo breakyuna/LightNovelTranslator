@@ -44,14 +44,15 @@ class NativeAppDatabaseUpgradeTest {
     }
 
     private fun upgradeV17(dropProfiles: Boolean, dropImports: Boolean) {
-        NativeAppDatabase.open(context).use { room ->
-            val db = room.openHelper.writableDatabase
+        val initial = NativeAppDatabase.open(context)
+        try {
+            val db = initial.openHelper.writableDatabase
             db.execSQL("INSERT INTO native_agent_contexts VALUES ('instance',1,'chat','boundary',7,'keep summary','digest',3)")
             db.execSQL("""INSERT INTO native_model_profiles
                 (profileId,name,kind,purpose,groupName,orderIndex,enabled,extraHeaders,
                  selectedTranslation,selectedAgent,revision)
                 VALUES ('profile','Keep profile','CUSTOM','BOTH','',0,1,'{}',1,1,1)""")
-        }
+        } finally { initial.close() }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null,
             SQLiteDatabase.OPEN_READWRITE).use { db ->
             if (dropProfiles) db.execSQL("DROP TABLE native_model_profiles")
@@ -60,8 +61,9 @@ class NativeAppDatabaseUpgradeTest {
             // version upgrade must run before checking the current generated identity hash.
             db.version = 17
         }
-        NativeAppDatabase.open(context).use { room ->
-            val db = room.openHelper.writableDatabase
+        val upgraded = NativeAppDatabase.open(context)
+        try {
+            val db = upgraded.openHelper.writableDatabase
             assertEquals(18, db.version)
             db.query("SELECT summary FROM native_agent_contexts WHERE chatId='chat'").use {
                 check(it.moveToFirst())
@@ -78,6 +80,6 @@ class NativeAppDatabaseUpgradeTest {
                 check(it.moveToFirst())
                 assertEquals(0L, it.getLong(0))
             }
-        }
+        } finally { upgraded.close() }
     }
 }

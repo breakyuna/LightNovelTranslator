@@ -27,7 +27,7 @@ class NativeAssetImportProposalStoreTest {
     private lateinit var applier: RecordingApplier
     private lateinit var store: NativeAssetImportProposalStore
     private lateinit var ref: LocalProjectRef
-    private lateinit var chat: ChatId
+    private var chat: ChatId by kotlin.properties.Delegates.notNull()
     private var sequence = 0
     private val artifactBytes = "prepared artifact".toByteArray()
 

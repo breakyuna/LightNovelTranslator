@@ -30,7 +30,7 @@ class NativeItemProposalStoreTest {
     private lateinit var agent: NativeAgentStore
     private lateinit var proposals: NativeItemProposalStore
     private lateinit var ref: LocalProjectRef
-    private lateinit var chat: ChatId
+    private var chat: ChatId by kotlin.properties.Delegates.notNull()
     private var sequence = 0
 
     @Before fun setup() = runBlocking {

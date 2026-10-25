@@ -12,6 +12,23 @@
 
 ## 2. 源码与验证基线
 
+### 2026-10-25 Actions #181 修复与未完成测试盘点
+
+- 最新已核对提交为 `40f6dd3fb93a599170513c6421369edf4239ca64`；[Actions #181 / 40197516389](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40197516389) 的 Release 构建/签名/APK 上传与 Lint 通过，test 失败。以下旧基线和“未提交增量”描述是历史验证边界；当前上述提交已包含产品增量，但没有完整测试通过证据。
+- 本轮未提交修复：`NativeAgentStoreTest` 使用实际的 `AgentModelRequest.history`；四个提案存储测试的 `ChatId` 改为 `Delegates.notNull()`，避免 value class 的非法 `lateinit`；`NativeAppDatabaseUpgradeTest` 用 `try/finally` 关闭 Room；PDF 页请求、选择和回执解码的非法类型/未知 decision 统一抛出 `IllegalArgumentException`，保留原拒绝规则。扩展现有非法参数表，新增选择/回执畸形输入回归源码，并让参数表断言携带具体 JSON。
+- 已下载并检查 #181 失败日志和全部测试 XML：formats 307/307、agent 36/36、domain 228/229；唯一报告失败为 PDF decision 异常类型不一致。storage 单元测试在编译阶段中断，不能把缺少 XML 当作通过。
+- 按全部测试源码的 `@Test` 静态盘点，#181 没有结果的单元测试为 app 887、engine 329、storage 329、workspace 109，合计 1654 项、202 个源码文件；另有 app 3 项及 workspace 9 项设备测试，当前 CI 不执行 `androidTest`。这些数量用于定位缺失证据，不代表已运行或已通过。
+- 对所有单元/设备测试扫描 value class `lateinit`、Room `use`、旧请求属性、显式工程导入、停用/占位标记与 JUnit 入口；593 处显式工程导入除生成的 `R` 外均能静态定位，157 处 app 测试资源引用均有定义；未发现 `@Ignore`、`@Disabled`、`TODO()` 或 `NotImplementedError` 测试占位。检查存储迁移版本断言及对应 `ensureV2`—`ensureV8` 路径，保留按写入能力升级的版本期望。扫描不覆盖全部类型推断、Compose 语义、协程时序或设备行为，不构成编译通过证明。
+- 本轮仅静态审查，未实际构建，未运行测试/Lint，未提交、推送或触发 Actions。后续需 PC/已授权 CI 完整执行既有三个 job，再单独执行设备测试；#181 的绿色 Release/Lint 不覆盖本轮工作区修复。
+
+### 2026-10-25 CI 尽量收齐全部测试失败
+
+- 单元测试 Gradle 命令添加 `--continue`：某模块测试/测试编译失败后，继续运行依赖正常的其他模块，保留失败退出码与 `always()` 报告上传，不使用忽略失败。编译失败及其依赖测试仍无法执行，不能保证每轮都有全部用例结果。
+- 新增与 test/lint/release 无依赖的 API 35 x86_64 模拟器矩阵作业，分别执行 app 与 workspace 的全部 `connectedDebugAndroidTest`；矩阵 `fail-fast: false`，一边失败不取消另一边，各自始终上传设备测试及构建计时报告。覆盖此前 CI 未纳入的 12 项设备测试；模拟器不代替真机/供应商验收。
+- 以上为工作流源码修改，静态审查，未实际构建，未触发 Actions；模拟器启动、QuickJS x86_64 原生库、设备测试 APK 编译和运行仍需首轮 CI 证明。超时、基础设施故障、手动/新运行取消及公共依赖编译失败仍可能阻止完成所有测试。
+
+### 历史基线与产品增量记录
+
 - 本次审查修复：四个网络/限流 JSON 编解码与存储文件补齐 primitive `put` 扩展导入；profile extra-body 禁止覆盖 Responses `instructions` 和 Gemini `systemInstruction`，补对应拒绝回归用例源码。静态审查，未实际构建，未运行测试/Lint。
 
 - 分支：`refactor/translation-agent-2026-10`。最新已提交基线 `d20c76f`，[Actions 40133193304](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40133193304) test/lint/release 全绿；2026-10-25 代码复核时通过 `gh run view` 再次确认 `head_sha=d20c76f602a591698c4cea9f2477da6982f546b2`，三个 job 均为 success；该提交的 Room 仍为 v13，不能覆盖工作区 v14—v18。

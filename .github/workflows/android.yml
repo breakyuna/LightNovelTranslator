@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 三个 job 并行：测试/检查各自只编译自己需要的变体，墙钟时间 = max(各 job) 而非求和。
-  # 当前仅由仓库分支 push / workflow_dispatch 触发，三个 job 都允许写回各分支缓存。
+  # 单元测试、两个设备测试矩阵作业、Lint、Release 独立执行。
+  # 当前仅由仓库分支 push / workflow_dispatch 触发，各 job 允许写回分支缓存。
   # setup-gradle 默认对非默认分支只读；显式开启写入，避免开发分支持续冷构建。
   # Robolectric 的 android-all 下载独立缓存在 ~/.m2/repository。
   test:
@@ -54,8 +54,9 @@ jobs:
       - name: Check native rebuild module boundaries
         run: python3 tools/rebuild/check_structure.py
 
+      # 任务失败后继续执行依赖正常的其他模块；最终仍以非零退出码报告失败。
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest :core:domain:test :core:engine:test --profile -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew testDebugUnitTest :core:domain:test :core:engine:test --continue --profile -Pkotlin.compiler.execution.strategy=daemon
 
       # 测试失败也保留已下载的依赖，后续修复无需重新下载。
       - name: Save Robolectric android-all jars
@@ -79,6 +80,66 @@ jobs:
             app/src/test/screenshots/native-*.png
             build/reports/profile/
           if-no-files-found: ignore
+          retention-days: 7
+
+  device-test:
+    name: device-test (${{ matrix.label }}, API 35)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # 一个模块失败不取消另一个模块的模拟器测试。
+      fail-fast: false
+      matrix:
+        include:
+          - label: app
+            task: :app:connectedDebugAndroidTest
+            report-root: app/build
+          - label: workspace
+            task: :core:workspace:connectedDebugAndroidTest
+            report-root: core/workspace/build
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: false
+
+      - name: Ensure Gradle wrapper is executable
+        run: chmod +x gradlew
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Device tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: ./gradlew ${{ matrix.task }} --continue --profile -Pkotlin.compiler.execution.strategy=daemon
+
+      - name: Upload device test and build timing reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-test-reports-${{ matrix.label }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ matrix.report-root }}/outputs/androidTest-results/
+            ${{ matrix.report-root }}/reports/androidTests/
+            build/reports/profile/
+          if-no-files-found: warn
           retention-days: 7
 
   lint:

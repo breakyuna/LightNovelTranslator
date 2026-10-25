@@ -19,8 +19,33 @@ class PdfPageChangeProposalTest {
             """{"pages":[{"page":1,"decision":"KEEP"},{"page":1,"decision":"OMIT"}]}""",
             """{"pages":[{"page":1,"decision":"KEEP","source":"text"}]}""",
             """{"pages":[]}""",
+            """{"pages":null}""",
+            """{"pages":{}}""",
+            """{"pages":[null]}""",
+            """{"pages":[{"page":{},"decision":"KEEP"}]}""",
+            """{"pages":[{"page":1,"decision":{}}]}""",
+            """{"pages":[{"page":1.5,"decision":"KEEP"}]}""",
+            """{"pages":[{"page":true,"decision":"KEEP"}]}""",
         )) {
-            assertThrows(IllegalArgumentException::class.java) { PdfPageChangeProposalCodec.targets(json) }
+            assertThrows(json, IllegalArgumentException::class.java) { PdfPageChangeProposalCodec.targets(json) }
+        }
+    }
+
+    @Test fun malformedSelectionsAndReceiptsUseArgumentErrors() {
+        for (json in listOf("""{"pages":null}""", """{"pages":[{}]}""",
+            """{"pages":["1"]}""", """{"pages":[0]}""", """{"pages":[1,1]}""")) {
+            assertThrows(json, IllegalArgumentException::class.java) { PdfPageChangeProposalCodec.selection(json) }
+        }
+        val receipt = PdfPageChangeProposalCodec.receipt(PdfPageProposalReceipt(CommandId("c"),
+            ObjectFingerprint("b".repeat(64)), 0, listOf(1), emptyMap()))
+        for (json in listOf(
+            receipt.replace("\"accepted\":[1]", "\"accepted\":null"),
+            receipt.replace("\"accepted\":[1]", "\"accepted\":[{}]"),
+            receipt.replace("\"rejected\":[]", "\"rejected\":null"),
+            receipt.replace("\"rejected\":[]", "\"rejected\":[null]"),
+        )) {
+            assertNotEquals(receipt, json)
+            assertThrows(json, IllegalArgumentException::class.java) { PdfPageChangeProposalCodec.receipt(json) }
         }
     }
 

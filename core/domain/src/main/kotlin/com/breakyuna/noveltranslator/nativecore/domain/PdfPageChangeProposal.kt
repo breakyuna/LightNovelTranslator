@@ -121,14 +121,14 @@ object PdfPageChangeProposalCodec {
     fun targets(encoded: String): List<PdfPageChangeTarget> {
         val root = JsonObjectValue.parse(encoded, JsonInputLimits(512 * 1024, 16)).json
         require(root.keys == setOf("pages"))
-        val pages = root["pages"] as? JsonArray ?: error("Pages required")
+        val pages = root["pages"] as? JsonArray ?: throw IllegalArgumentException("Pages required")
         require(pages.size in 1..PdfPageChangeProposal.MAX_PAGES)
         val result = pages.map { raw ->
-            val page = raw as? JsonObject ?: error("Page object required")
+            val page = raw as? JsonObject ?: throw IllegalArgumentException("Page object required")
             require(page.keys == setOf("page", "decision"))
             val pageNumber = integer(page, "page", 1, PdfPageChangeProposal.MAX_PAGES.toLong()).toInt()
             val decision = text(page, "decision")
-            PdfPageChangeTarget(pageNumber, modes[decision] ?: error("Page decision required"))
+            PdfPageChangeTarget(pageNumber, modes[decision] ?: throw IllegalArgumentException("Page decision required"))
         }
         require(result.map { it.page }.toSet().size == result.size) { "Duplicate page" }
         return result.sortedBy { it.page }
@@ -140,7 +140,7 @@ object PdfPageChangeProposalCodec {
             "revision", "asset", "sha256", "page_count", "policy", "pages"))
         require(root["version"] == JsonPrimitive(1))
         val pageCount = integer(root, "page_count", 1, PdfPageChangeProposal.MAX_PAGES.toLong()).toInt()
-        val pages = root["pages"] as? JsonArray ?: error("Pages required")
+        val pages = root["pages"] as? JsonArray ?: throw IllegalArgumentException("Pages required")
         require(pages.size in 1..pageCount)
         return PdfPageChangeProposal(ApprovalRequestId(text(root, "id")),
             LocalProjectRef(ProjectId(text(root, "project")), ProjectInstanceId(text(root, "instance")),
@@ -165,10 +165,10 @@ object PdfPageChangeProposalCodec {
     fun selection(encoded: String): Set<Int> {
         val root = JsonObjectValue.parse(encoded, JsonInputLimits(64 * 1024, 4)).json
         require(root.keys == setOf("pages"))
-        val values = root["pages"] as? JsonArray ?: error("Selection required")
+        val values = root["pages"] as? JsonArray ?: throw IllegalArgumentException("Selection required")
         require(values.size in 1..PdfPageChangeProposal.MAX_PAGES)
         val pages = values.map { raw ->
-            val page = raw as? JsonPrimitive ?: error("Page required")
+            val page = raw as? JsonPrimitive ?: throw IllegalArgumentException("Page required")
             require(!page.isString)
             ToolArguments.int(ToolScalar.NumberToken(page.content), "page", 1, PdfPageChangeProposal.MAX_PAGES)
         }
@@ -189,14 +189,14 @@ object PdfPageChangeProposalCodec {
         val root = JsonObjectValue.parse(encoded, JsonInputLimits(512 * 1024, 8)).json
         require(root.keys == setOf("version", "command", "binding", "revision", "committed_at", "accepted", "rejected"))
         require(root["version"] == JsonPrimitive(1))
-        val accepted = (root["accepted"] as? JsonArray ?: error("Accepted list required")).map { raw ->
-            val page = raw as? JsonPrimitive ?: error("Page required")
+        val accepted = (root["accepted"] as? JsonArray ?: throw IllegalArgumentException("Accepted list required")).map { raw ->
+            val page = raw as? JsonPrimitive ?: throw IllegalArgumentException("Page required")
             require(!page.isString)
             ToolArguments.int(ToolScalar.NumberToken(page.content), "page", 1, PdfPageChangeProposal.MAX_PAGES)
         }
         val rejected = LinkedHashMap<Int, PdfPageProposalRejection>()
-        for (raw in root["rejected"] as? JsonArray ?: error("Rejected list required")) {
-            val item = raw as? JsonObject ?: error("Rejected page required")
+        for (raw in root["rejected"] as? JsonArray ?: throw IllegalArgumentException("Rejected list required")) {
+            val item = raw as? JsonObject ?: throw IllegalArgumentException("Rejected page required")
             require(item.keys == setOf("page", "reason"))
             require(rejected.put(integer(item, "page", 1, PdfPageChangeProposal.MAX_PAGES.toLong()).toInt(),
                 PdfPageProposalRejection.valueOf(text(item, "reason"))) == null)
@@ -207,13 +207,13 @@ object PdfPageChangeProposalCodec {
     }
 
     private fun integer(json: JsonObject, key: String, minimum: Long, maximum: Long): Long {
-        val raw = json[key] as? JsonPrimitive ?: error("Integer required")
+        val raw = json[key] as? JsonPrimitive ?: throw IllegalArgumentException("Integer required")
         require(!raw.isString)
         return ToolArguments.long(ToolScalar.NumberToken(raw.content), key, minimum, maximum)
     }
 
     private fun text(json: JsonObject, key: String): String {
-        val raw = json[key] as? JsonPrimitive ?: error("String required")
+        val raw = json[key] as? JsonPrimitive ?: throw IllegalArgumentException("String required")
         require(raw.isString)
         return raw.content
     }

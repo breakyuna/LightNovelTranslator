@@ -419,7 +419,7 @@ class NativeAgentStoreTest {
         } finally { runtime.finishRun(lease) }
 
         assertEquals(3, requests.size)
-        fun system(index: Int) = (requests[index].messages.first() as AgentMessage.System).text
+        fun system(index: Int) = (requests[index].history.first() as AgentMessage.System).text
         val base = system(0)
         assertEquals(base, system(2))
         assertFalse(base.contains("[[LNT_APP_PERSONA_BEGIN]]"))

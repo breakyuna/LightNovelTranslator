@@ -32,7 +32,7 @@ class NativePdfPageProposalStoreTest {
     private lateinit var items: NativeItemProposalStore
     private lateinit var proposals: NativePdfPageProposalStore
     private lateinit var ref: LocalProjectRef
-    private lateinit var chat: ChatId
+    private var chat: ChatId by kotlin.properties.Delegates.notNull()
     private lateinit var asset: ProjectAssetSummary
     private var sequence = 0
     private val sha = "a".repeat(64)

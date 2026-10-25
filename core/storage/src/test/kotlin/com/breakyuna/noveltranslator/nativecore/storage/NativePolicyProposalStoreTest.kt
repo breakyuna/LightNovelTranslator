@@ -27,7 +27,7 @@ class NativePolicyProposalStoreTest {
     private lateinit var items: NativeItemProposalStore
     private lateinit var policies: NativePolicyProposalStore
     private lateinit var ref: LocalProjectRef
-    private lateinit var chat: ChatId
+    private var chat: ChatId by kotlin.properties.Delegates.notNull()
     private var sequence = 0
     private val original = ProjectTextPolicy(listOf(
         ProjectTextRule("a", TextRuleKind.TERM, "cat", "猫"),
