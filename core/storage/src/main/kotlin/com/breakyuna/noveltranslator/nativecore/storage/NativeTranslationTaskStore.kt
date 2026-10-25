@@ -1145,8 +1145,11 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             val settledItems = items.associateWith { id ->
                 projects.item(ref, ItemId(id))?.item ?: throw TranslationTaskNeedsReview()
             }
+            val markingFailure = row.stage == "MARKING_FAILURE"
             transaction {
-                check(db.translationTasks().done(row.id, items) == items.size)
+                // An ERROR marker is a settlement, not a successful commit: the target stays
+                // unfinished so it still needs an explicit skip/retry decision.
+                if (!markingFailure) check(db.translationTasks().done(row.id, items) == items.size)
                 settledItems.forEach { (id, item) ->
                     db.translationTasks().setFingerprint(row.id, id, item.fingerprint.sha256)
                 }
