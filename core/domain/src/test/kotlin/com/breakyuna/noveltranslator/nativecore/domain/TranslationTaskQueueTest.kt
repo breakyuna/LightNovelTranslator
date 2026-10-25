@@ -93,7 +93,7 @@ class TranslationTaskQueueTest {
         assertEquals(11L, claimedRefresh.appliedTask().executionRevision)
         assertEquals(TranslationTaskQueueState.RUNNING, claimedRefresh.appliedTask().state)
         assertEquals(
-            TranslationTaskQueueRejection.INVALID_EVIDENCE,
+            TranslationQueueRejection.INVALID_EVIDENCE,
             running.revalidateRevision(task, CommandId("revalidate-back-while-running"), 8).rejection(),
         )
     }

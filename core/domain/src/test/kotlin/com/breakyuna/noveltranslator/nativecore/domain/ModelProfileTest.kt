@@ -73,7 +73,7 @@ class ModelProfileTest {
     fun `profile ids are bounded path-free identities`() {
         for (id in listOf("", "../escape", "a/b", "a b", "a".repeat(65))) {
             try {
-                ModelProfile(id = id, name = "x", kind = ModelProfileKind.CUSTOM,
+                NativeModelProfile(id = id, name = "x", kind = ModelProfileKind.CUSTOM,
                     purpose = ModelProfilePurpose.BOTH, group = "", order = 0, enabled = true,
                     settings = settings())
                 throw AssertionError("Expected InvalidModelProfile for $id")

@@ -435,7 +435,8 @@ class TranslationQueueScheduler(
         if (members.isEmpty()) return
         val batch = TranslationTaskFailureBatch(failureBatchId(task, members), members)
         when (coordinator.recordFailureBatch(identity, batch, requireRunning = true)) {
-            is TranslationQueueResult.Applied, is TranslationQueueResult.Unchanged -> {
+            is TranslationQueueResult.Applied, is TranslationQueueResult.Duplicate,
+            is TranslationQueueResult.Unchanged -> {
                 val saved = coordinator.snapshot(identity.ref).task(identity)
                 if (saved?.state == TranslationTaskQueueState.RUNNING) {
                     coordinator.markNeedsReview(identity)

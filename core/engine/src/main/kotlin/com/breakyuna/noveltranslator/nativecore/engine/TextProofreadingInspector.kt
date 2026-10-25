@@ -102,7 +102,7 @@ class TextProofreadingInspector(private val policy: ProjectTextPolicy, private v
         return intersection.toDouble() / (a.size + b.size - intersection) > 0.8
     }
 
-    private fun count(compiled: com.breakyuna.noveltranslator.nativecore.engine.CompiledTextRule,
+    private fun count(compiled: CompiledTextRule,
         text: String, budget: TextPolicyProcessor.RuleBudget): Int {
         val matcher = compiled.pattern.matcher(TextPolicyProcessor.BoundedSequence(text, budget))
         var count = 0
