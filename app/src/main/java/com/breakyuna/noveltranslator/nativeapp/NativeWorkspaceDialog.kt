@@ -11,12 +11,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -108,84 +106,92 @@ internal fun NativeWorkspaceDialog(
     }
 
     var importing by remember(ref, revision, chatId, runId) { mutableStateOf<WorkspaceArtifactRecord?>(null) }
-    // A second Dialog window can keep the Robolectric/Compose idling loop busy forever. Render
-    // the import confirmation as the only dialog while it is open, then return to the list.
-    val importingArtifact = importing
-    if (importingArtifact != null) {
-        NativeWorkspaceArtifactImport(ref, revision, importingArtifact, requireNotNull(actions.importArtifact),
-            close = { importing = null })
-        return
-    }
-    preview?.let { target -> when (target) {
-        is WorkspacePreviewTarget.Material -> NativeWorkspacePreview(
-            title = stringResource(R.string.native_workspace_preview_title),
-            identity = listOf("material", ref, revision, chatId, runId, target.id.value),
-            load = { actions.readMaterial(ref, revision, target.id) },
-            close = { preview = null },
-        )
-        is WorkspacePreviewTarget.Artifact -> if (runId != null) NativeWorkspacePreview(
-            title = stringResource(R.string.native_workspace_preview_title),
-            identity = listOf("artifact", ref, revision, chatId, runId, target.id.value),
-            load = { actions.readArtifact(ref, runId, target.id) },
-            close = { preview = null },
-        )
-    } }
+    var importBusy by remember(ref, revision, chatId, runId) { mutableStateOf(false) }
+    // All pages share one window; switching content must not recreate the focus owner.
+    Dialog(onDismissRequest = {
+        when {
+            importing != null -> if (!importBusy) importing = null
+            preview != null -> preview = null
+            else -> dismiss()
+        }
+    }) {
+        val importingArtifact = importing
+        if (importingArtifact != null) {
+            NativeWorkspaceArtifactImport(ref, revision, importingArtifact, requireNotNull(actions.importArtifact),
+                busy = importBusy, setBusy = { importBusy = it }, close = { importing = null })
+            return@Dialog
+        }
+        preview?.let { target -> when (target) {
+            is WorkspacePreviewTarget.Material -> NativeWorkspacePreview(
+                title = stringResource(R.string.native_workspace_preview_title),
+                identity = listOf("material", ref, revision, chatId, runId, target.id.value),
+                load = { actions.readMaterial(ref, revision, target.id) },
+                close = { preview = null },
+            )
+            is WorkspacePreviewTarget.Artifact -> if (runId != null) NativeWorkspacePreview(
+                title = stringResource(R.string.native_workspace_preview_title),
+                identity = listOf("artifact", ref, revision, chatId, runId, target.id.value),
+                load = { actions.readArtifact(ref, runId, target.id) },
+                close = { preview = null },
+            )
+        }; return@Dialog }
 
-    AlertDialog(onDismissRequest = dismiss,
-        modifier = Modifier.testTag("native-workspace-dialog"),
-        title = { Text(stringResource(R.string.native_workspace_title)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_workspace_notice), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.native_workspace_revision, revision), style = MaterialTheme.typography.labelMedium)
-                if (runId == null) Text(stringResource(R.string.native_workspace_no_run), style = MaterialTheme.typography.bodySmall)
-                else Text(stringResource(R.string.native_workspace_run, runId.value),
-                    style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                HorizontalDivider()
-                Text(stringResource(R.string.native_workspace_materials), style = MaterialTheme.typography.titleSmall)
-                if (materialFailed) Text(stringResource(R.string.native_workspace_load_failed),
-                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                val loadedMaterials = materials
-                when {
-                    loadedMaterials == null -> CircularProgressIndicator()
-                    loadedMaterials.isEmpty() -> Text(stringResource(R.string.native_workspace_no_materials),
-                        style = MaterialTheme.typography.bodySmall)
-                    else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(loadedMaterials, key = { "material-" + it.id.value }) { material ->
-                            WorkspaceMaterialRow(material) {
-                                preview = WorkspacePreviewTarget.Material(material.id)
+        NativeDialogSurface(
+            modifier = Modifier.testTag("native-workspace-dialog"),
+            title = { Text(stringResource(R.string.native_workspace_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.native_workspace_notice), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.native_workspace_revision, revision), style = MaterialTheme.typography.labelMedium)
+                    if (runId == null) Text(stringResource(R.string.native_workspace_no_run), style = MaterialTheme.typography.bodySmall)
+                    else Text(stringResource(R.string.native_workspace_run, runId.value),
+                        style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    HorizontalDivider()
+                    Text(stringResource(R.string.native_workspace_materials), style = MaterialTheme.typography.titleSmall)
+                    if (materialFailed) Text(stringResource(R.string.native_workspace_load_failed),
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    val loadedMaterials = materials
+                    when {
+                        loadedMaterials == null -> CircularProgressIndicator()
+                        loadedMaterials.isEmpty() -> Text(stringResource(R.string.native_workspace_no_materials),
+                            style = MaterialTheme.typography.bodySmall)
+                        else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 200.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(loadedMaterials, key = { "material-" + it.id.value }) { material ->
+                                WorkspaceMaterialRow(material) {
+                                    preview = WorkspacePreviewTarget.Material(material.id)
+                                }
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                    Text(stringResource(R.string.native_workspace_artifacts), style = MaterialTheme.typography.titleSmall)
+                    if (actions.inventory != null) TextButton(onClick = { refresh++ }) { Text(stringResource(R.string.native_workspace_recheck)) }
+                    if (artifactFailed) Text(stringResource(R.string.native_workspace_load_failed),
+                        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    val loadedArtifacts = artifacts
+                    when {
+                        runId == null -> Unit
+                        loadedArtifacts == null -> CircularProgressIndicator()
+                        loadedArtifacts.isEmpty() -> Text(stringResource(R.string.native_workspace_no_artifacts),
+                            style = MaterialTheme.typography.bodySmall)
+                        else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            items(loadedArtifacts, key = { "artifact-" + it.id.value }) { artifact ->
+                                WorkspaceArtifactRow(artifact,
+                                    preview = if (isTextArtifact(artifact)) {
+                                        { preview = WorkspacePreviewTarget.Artifact(artifact.id) }
+                                    } else null,
+                                    save = { saveArtifact(artifact) },
+                                    importAction = if (actions.importArtifact != null) ({ importing = artifact }) else null,
+                                    availability = artifactInventory[artifact.id])
                             }
                         }
                     }
                 }
-                HorizontalDivider()
-                Text(stringResource(R.string.native_workspace_artifacts), style = MaterialTheme.typography.titleSmall)
-                if (actions.inventory != null) TextButton(onClick = { refresh++ }) { Text(stringResource(R.string.native_workspace_recheck)) }
-                if (artifactFailed) Text(stringResource(R.string.native_workspace_load_failed),
-                    color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                val loadedArtifacts = artifacts
-                when {
-                    runId == null -> Unit
-                    loadedArtifacts == null -> CircularProgressIndicator()
-                    loadedArtifacts.isEmpty() -> Text(stringResource(R.string.native_workspace_no_artifacts),
-                        style = MaterialTheme.typography.bodySmall)
-                    else -> LazyColumn(Modifier.fillMaxWidth().heightIn(max = 220.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        items(loadedArtifacts, key = { "artifact-" + it.id.value }) { artifact ->
-                            WorkspaceArtifactRow(artifact,
-                                preview = if (isTextArtifact(artifact)) {
-                                    { preview = WorkspacePreviewTarget.Artifact(artifact.id) }
-                                } else null,
-                                save = { saveArtifact(artifact) },
-                                importAction = if (actions.importArtifact != null) ({ importing = artifact }) else null,
-                                availability = artifactInventory[artifact.id])
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) } })
+            },
+            confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) } })
+    }
 }
 
 @Composable
@@ -262,7 +268,7 @@ private fun NativeWorkspacePreview(
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { failed = true }
     }
-    AlertDialog(onDismissRequest = close,
+    NativeDialogSurface(
         title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -295,20 +301,18 @@ private fun isTextArtifact(artifact: WorkspaceArtifactRecord): Boolean =
 private fun NativeWorkspaceArtifactImport(ref: LocalProjectRef, revision: Long,
     artifact: WorkspaceArtifactRecord,
     apply: suspend (LocalProjectRef, Long, WorkspaceArtifactRecord, String, CommandId) -> Unit,
+    busy: Boolean,
+    setBusy: (Boolean) -> Unit,
     close: () -> Unit) {
     var path by remember(ref, revision, artifact.runId, artifact.id) { mutableStateOf(artifact.path.value) }
-    var busy by remember(ref, revision, artifact.runId, artifact.id) { mutableStateOf(false) }
     var failed by remember(ref, revision, artifact.runId, artifact.id) { mutableStateOf(false) }
     val command = remember(ref, revision, artifact.runId, artifact.id, path) { CommandId(UUID.randomUUID().toString()) }
     val scope = rememberCoroutineScope()
-    // A plain Dialog plus an explicitly sized Surface avoids the AlertDialog measure loop seen
-    // under Robolectric while keeping the same confirm/dismiss semantics.
-    Dialog(onDismissRequest = { if (!busy) close() }) {
-        Surface(Modifier.fillMaxWidth().padding(24.dp), tonalElevation = 6.dp) {
-            Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
+    NativeDialogSurface(
+        title = { Text(stringResource(R.string.native_workspace_import)) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_workspace_import),
-                    style = MaterialTheme.typography.titleLarge)
                 Text(stringResource(R.string.native_workspace_import_notice))
                 Text(stringResource(R.string.native_workspace_revision, revision))
                 Text(artifact.path.value)
@@ -321,22 +325,24 @@ private fun NativeWorkspaceArtifactImport(ref: LocalProjectRef, revision: Long,
                 if (failed) Text(stringResource(R.string.native_workspace_import_error),
                     color = MaterialTheme.colorScheme.error)
                 if (busy) CircularProgressIndicator()
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(enabled = !busy, onClick = close) {
-                        Text(stringResource(R.string.native_cancel))
-                    }
-                    TextButton(modifier = Modifier.testTag("native-workspace-import-confirm"),
-                        enabled = !busy && path.isNotBlank(), onClick = {
-                            busy = true; failed = false
-                            scope.launch {
-                                try { apply(ref, revision, artifact, path, command); close() }
-                                catch (cancelled: CancellationException) { throw cancelled }
-                                catch (_: Exception) { failed = true }
-                                finally { busy = false }
-                            }
-                        }) { Text(stringResource(R.string.native_workspace_import)) }
-                }
             }
-        }
-    }
+        },
+        dismissButton = {
+            TextButton(enabled = !busy, onClick = close,
+                modifier = Modifier.testTag("native-workspace-import-cancel")) {
+                Text(stringResource(R.string.native_cancel))
+            }
+        },
+        confirmButton = {
+            TextButton(modifier = Modifier.testTag("native-workspace-import-confirm"),
+                enabled = !busy && path.isNotBlank(), onClick = {
+                    setBusy(true); failed = false
+                    scope.launch {
+                        try { apply(ref, revision, artifact, path, command); close() }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { failed = true }
+                        finally { setBusy(false) }
+                    }
+                }) { Text(stringResource(R.string.native_workspace_import)) }
+        })
 }

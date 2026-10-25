@@ -69,10 +69,18 @@ class NativeWorkspaceDialogTest {
         compose.runOnIdle { assertEquals(0, calls) }
         compose.onNodeWithTag("native-workspace-import-" + artifact.id.value).performClick()
         compose.waitForIdle()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("native-workspace-dialog").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, calls) }
+        compose.onNodeWithTag("native-workspace-import-cancel").performClick()
+        compose.onNodeWithTag("native-workspace-dialog").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(0, calls) }
+        compose.onNodeWithTag("native-workspace-import-" + artifact.id.value).performClick()
         compose.onNodeWithTag("native-workspace-import-confirm").performClick()
         compose.waitForIdle()
         compose.runOnIdle { assertEquals(1, calls) }
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("native-workspace-dialog").assertIsDisplayed()
     }
 
     @Test fun previewLoadsOnlyAfterExplicitRequestAndSaveKeepsTheRecordIdentity() {

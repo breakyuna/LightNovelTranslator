@@ -12,6 +12,15 @@
 
 ## 2. 源码与验证基线
 
+### 2026-10-25 Actions #188 剩余四项 UI 测试修复
+
+- 已核对 [Actions #188 / 40207671696](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40207671696)，提交 `876d554230a7ef6c417d24b47e0665e6e2ac63de`，与本轮修改前 HEAD 一致；2227 项单元测试中 2223 通过、4 失败，12 项 API 35 设备测试全部通过；Release/签名/APK 上传及 Lint 通过。此运行没有测试编译阻断或跳过；不覆盖下面工作区修改。
+- 三个 `NativeSkillsDialogTest` 均在打开编辑器后等待正文超时；源码实际同时渲染编辑器与后置的目录 AlertDialog。改为同一个 Dialog 内切换目录/编辑器/删除确认，只展示当前内容；技能资源树入口不再叠加目录窗口。读取/保存、内置只读、冲突保留草稿契约沿用。
+- `NativeWorkspaceDialogTest.artifactImportRequiresConfirmationAndPassesFrozenIdentity` 在打开导入确认后 `waitForIdle()` 超时。列表/预览/导入改为一个稳定 Dialog 窗口内切换，移除导入确认重建窗口及预览叠窗；导入 busy 状态上移，提交期间仍禁止返回关闭，固定工程/修订/产物/CommandId 参数保留。
+- 新增仅绘制内容的 `NativeDialogSurface`，以有界 Surface/Column 布局共享标题、可收缩正文区和固定按钮区，避免 AlertDialog 多窗口及测量路径；文本/长列表保持各自滚动。技能测试显式滚动到字段后操作，不再吞掉任意异常等待；保留保存/冲突/只读断言，增加单窗口/目录隐藏断言与取消后重开相同技能重新读取用例；工作区现有导入用例增加取消不写入、重开确认及返回列表的断言。未增加超时或忽略失败。
+- 本轮静态审查，未实际构建、未运行测试/Lint、未实际查看原生 UI；需 PC/授权 CI 复跑上述用例及完整测试，并在设备检查窄屏/IME/滚动与对话框焦点。#188 全部已通过项不继承为本轮修复的通过证据。未提交、推送或触发 Actions。
+
+
 ### 2026-10-25 Actions #181 修复与未完成测试盘点
 
 - 最新已核对提交为 `40f6dd3fb93a599170513c6421369edf4239ca64`；[Actions #181 / 40197516389](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40197516389) 的 Release 构建/签名/APK 上传与 Lint 通过，test 失败。以下旧基线和“未提交增量”描述是历史验证边界；当前上述提交已包含产品增量，但没有完整测试通过证据。
