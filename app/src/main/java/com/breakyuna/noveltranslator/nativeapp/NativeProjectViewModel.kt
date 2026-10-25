@@ -3411,7 +3411,7 @@ class NativeProjectViewModel internal constructor(
         return result
     }
 
-    private fun recordActionFailure(error: Exception) {
+    private suspend fun recordActionFailure(error: Exception) {
         runCatching {
             graph.diagnostics.append(
                 com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.ERROR,

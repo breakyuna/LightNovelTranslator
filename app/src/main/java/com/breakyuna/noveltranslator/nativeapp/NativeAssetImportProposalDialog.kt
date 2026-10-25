@@ -56,8 +56,9 @@ internal fun NativeAssetImportProposalDialog(
                 else R.string.native_asset_import_disabled))
                 Text(stringResource(R.string.native_asset_import_binding), style = MaterialTheme.typography.bodySmall)
                 receipt?.let { result ->
-                    if (result.assetId != null) {
-                        Text(stringResource(R.string.native_asset_import_receipt, result.assetId, result.revision))
+                    val assetId = result.assetId
+                    if (assetId != null) {
+                        Text(stringResource(R.string.native_asset_import_receipt, assetId, result.revision))
                     }
                 }
                 if (failed) Text(stringResource(R.string.native_agent_load_error),

@@ -366,6 +366,7 @@ class WorkspaceArtifactStoreTest {
         assertThrows(WorkspaceArtifactUnavailable::class.java) {
             runBlocking { reopened.readForRun(run, saved.single { it.path.value == "bad.txt" }.id, 64) }
         }
+        Unit
     }
 
     @Test fun saveListReadAndRescanPreserveMetadata() = runBlocking {

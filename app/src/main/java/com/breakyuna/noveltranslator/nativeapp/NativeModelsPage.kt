@@ -145,6 +145,7 @@ internal fun NativeModelsPage(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ModelProfileCard(
     profile: NativeModelProfile,

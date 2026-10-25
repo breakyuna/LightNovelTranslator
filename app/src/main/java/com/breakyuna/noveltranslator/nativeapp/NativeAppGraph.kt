@@ -100,7 +100,12 @@ class NativeAppGraph(context: Context) {
         context.cacheDir)
     private val http = CompatibleHttpTransport(networkSettings = networkSettings)
     private val scheduler = ModelRequestScheduler(limitsProvider = requestLimits,
-        profileLimits = { reference -> modelProfiles.resolveProfile(reference)?.limits })
+        profileLimits = { reference ->
+            modelProfiles.resolveProfile(reference)?.limits?.let { limits ->
+                com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimits(
+                    limits.concurrency, limits.requestsPerMinute)
+            }
+        })
     internal val configuredTransport: CompatibleHttpTransport get() = http
     internal val configuredScheduler: ModelRequestScheduler get() = scheduler
     val usageLedger: com.breakyuna.noveltranslator.nativecore.domain.UsageLedgerReadPort =

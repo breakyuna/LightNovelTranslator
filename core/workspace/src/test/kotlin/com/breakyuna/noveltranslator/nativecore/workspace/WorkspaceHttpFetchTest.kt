@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.nativecore.workspace
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettings
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsProvider
 import java.net.InetAddress
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -22,7 +23,7 @@ class WorkspaceHttpFetchTest {
     }
 
     @Test fun cancellationBeforeFetchDoesNotReadSettingsOrStartNetwork() {
-        runWorkspaceSuspend {
+        runBlocking {
             val fetch = WorkspaceHttpFetch(object : ModelNetworkSettingsProvider {
                 override suspend fun networkSettings(): ModelNetworkSettings = error("Cancelled fetch read settings")
             })
@@ -33,7 +34,7 @@ class WorkspaceHttpFetchTest {
     }
 
     @Test fun unavailableProxySettingsAreNotReplacedByDirectAccess() {
-        runWorkspaceSuspend {
+        runBlocking {
             val fetch = WorkspaceHttpFetch(object : ModelNetworkSettingsProvider {
                 override suspend fun networkSettings(): ModelNetworkSettings = error("Unavailable")
             })

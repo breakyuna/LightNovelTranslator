@@ -118,7 +118,7 @@ class EpubFormatAdapterTest {
         assertTrue(chapter.contains("alt=\"Tom &amp; &lt;Jerry&gt;\""))
         assertTrue(chapter.contains("title='L&apos;été &amp; co'"))
         assertTrue(chapter.contains("title=\"Keep me\""))
-        assertTrue(chapter.contains("<p>正文</p>"))
+        assertTrue(chapter.contains("<p title=\"Keep me\">正文</p>"))
         assertTrue(chapter.contains("<img src=\"images/pic.png\""))
     }
 

@@ -65,7 +65,7 @@ data class TranslationTaskOutcomeEvidence(
 }
 
 /** Narrow evidence port used by the durable queue scheduler; it never starts work. */
-interface TranslationTaskOutcomePort {
+fun interface TranslationTaskOutcomePort {
     suspend fun outcome(ref: LocalProjectRef, run: RunIdentity,
         skippedItemIds: Set<ItemId>): TranslationTaskOutcomeEvidence
 }
