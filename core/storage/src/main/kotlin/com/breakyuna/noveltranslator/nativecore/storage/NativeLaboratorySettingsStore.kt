@@ -58,7 +58,7 @@ class NativeLaboratorySettingsStore(context: Context) : LaboratorySettingsProvid
             }
         }
 
-    private fun read(): Stored? {
+    private suspend fun read(): Stored? {
         val input = try { file.openRead() } catch (missing: FileNotFoundException) {
             if (file.baseFile.exists() || File(file.baseFile.path + ".bak").exists())
                 throw InvalidLaboratorySettings()

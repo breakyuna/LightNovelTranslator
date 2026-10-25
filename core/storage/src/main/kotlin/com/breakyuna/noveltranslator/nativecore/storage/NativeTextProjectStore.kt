@@ -643,7 +643,8 @@ class NativeTextProjectStore(
         withWriteLease {
             project(command.ref) { db ->
                 NativeProjectDatabase.summary(db, command.ref)
-                if (command.nameAssignment != null || (command.replacement?.target != null && command.replacement.target != TextReplacementTarget.TRANSLATION))
+                val replacement = command.replacement
+                if (command.nameAssignment != null || (replacement?.target != null && replacement.target != TextReplacementTarget.TRANSLATION))
                     NativeProjectDatabase.ensureV8(db)
                 ProjectWriteStore.editBatch(db, command, limits.maxItemChars) { coroutine.ensureActive() }
             }

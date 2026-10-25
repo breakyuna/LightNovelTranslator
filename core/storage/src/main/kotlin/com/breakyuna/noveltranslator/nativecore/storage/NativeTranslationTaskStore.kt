@@ -433,7 +433,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             val prior = db.translationTaskDecisions().selected(id, ordered.map { it.itemId.value })
                 .associateBy { it.itemId }
             val items = ordered.associate { member ->
-                val target = targets.getValue(member.itemId)
+                val target = targets.getValue(member.itemId.value)
                 require(!target.done && target.fingerprint == member.fingerprint.sha256) {
                     "Target or fingerprint changed"
                 }
@@ -443,12 +443,12 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
             }
             val receipts = latestReceipts(review.ref, review.run, ordered.map { it.itemId.value })
             val fresh = ordered.mapNotNull { member ->
-                failureMember(targets.getValue(member.itemId), items.getValue(member.itemId),
-                    receipts[member.itemId])
+                failureMember(targets.getValue(member.itemId.value), items.getValue(member.itemId),
+                    receipts[member.itemId.value])
             }.sortedBy { it.itemId.value }
             require(fresh == ordered) { "Failure evidence changed" }
             for (member in ordered) {
-                val previous = prior[member.itemId]
+                val previous = prior[member.itemId.value]
                 when (action) {
                     TranslationTaskCommandAction.RETRY_MEMBERS -> {
                         require(!member.committed && !member.terminal) { "Member is not retryable" }
@@ -485,9 +485,9 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                 val currentPrior = db.translationTaskDecisions().selected(id, ordered.map { it.itemId.value })
                     .associateBy { it.itemId }
                 for (member in ordered) {
-                    val target = currentTargets.getValue(member.itemId)
+                    val target = currentTargets.getValue(member.itemId.value)
                     require(!target.done && target.fingerprint == member.fingerprint.sha256)
-                    val previous = currentPrior[member.itemId]
+                    val previous = currentPrior[member.itemId.value]
                     require(previous == null || previous.action == RETRY_MEMBER_ACTION) {
                         "Member decision changed"
                     }
@@ -496,7 +496,7 @@ class NativeTranslationTaskStore(context: Context, private val projects: TextPro
                     command.value, id, taskAction, digest, review.stage, review.revision,
                     review.committed, review.remaining, review.requests, review.unresolvedRequests))
                 for (member in ordered) {
-                    val previous = currentPrior[member.itemId]
+                    val previous = currentPrior[member.itemId.value]
                     if (previous == null) {
                         db.translationTaskDecisions().members(listOf(NativeTranslationMemberDecisionRow(
                             id, member.itemId.value, command.value, action.name,

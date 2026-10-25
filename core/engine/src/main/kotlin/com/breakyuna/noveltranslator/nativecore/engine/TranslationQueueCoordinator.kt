@@ -241,7 +241,7 @@ class TranslationQueueCoordinator(
                                 CommandId("queue-recover-cancel-${current.identity.run.commandId.value}"))
                         else -> TranslationQueueResult.Unchanged(base.queue, current)
                     }
-                } ?: TranslationQueueResult.Unchanged(base, base.queue.task(task.identity))
+                } ?: TranslationQueueResult.Unchanged(base.queue, base.queue.task(task.identity))
             }
             results.add(TranslationQueueRecoveryResult(verdict, (result as? TranslationQueueResult.Applied)?.task
                 ?: (result as? TranslationQueueResult.Unchanged)?.task))
