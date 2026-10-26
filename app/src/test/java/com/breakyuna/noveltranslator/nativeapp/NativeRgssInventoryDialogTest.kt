@@ -20,6 +20,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextProjectException
 import com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssProject
 import com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssProjectFile
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -60,8 +61,9 @@ class NativeRgssInventoryDialogTest {
         assertEquals(NativeRgssEntryKind.SCRIPT, rgssEntryKind("nested/Scripts.rxdata"))
         assertEquals(NativeRgssEntryKind.DATA, rgssEntryKind("Data/System.rvdata"))
         assertEquals(NativeRgssEntryKind.OTHER, rgssEntryKind("Data/readme.txt"))
-        assertTrue(inventory.entries.filter { it.kind == NativeRgssEntryKind.SCRIPT }
-            .all { it.compressed })
+        // The classification must not invent compression: both flags are preserved as read.
+        assertTrue(inventory.entries.single { it.path == "Scripts.rvdata2" }.compressed)
+        assertFalse(inventory.entries.single { it.path == "Scripts.custom" }.compressed)
     }
 
     @Test fun dialogShowsCountsMembersAndReadOnlyNotice() {
