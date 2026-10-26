@@ -31,7 +31,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.R
-import com.breakyuna.noveltranslator.ui.theme.LocalAppColors
 
 internal enum class NativeTone {
     NEUTRAL,
@@ -103,12 +102,12 @@ internal fun NativeStatusBadge(
     tone: NativeTone = NativeTone.NEUTRAL,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val appColors = LocalAppColors.current
+    val statusColors = LocalNativeStatusColors.current
     val (bg, fg, border) = when (tone) {
         NativeTone.PRIMARY -> Triple(scheme.primaryContainer, scheme.onPrimaryContainer, scheme.primary.copy(alpha = 0.35f))
         NativeTone.SECONDARY -> Triple(scheme.secondaryContainer, scheme.onSecondaryContainer, scheme.secondary.copy(alpha = 0.35f))
         NativeTone.SUCCESS -> Triple(scheme.tertiaryContainer, scheme.onTertiaryContainer, scheme.tertiary.copy(alpha = 0.35f))
-        NativeTone.WARNING -> Triple(appColors.warningContainer, appColors.onWarningContainer, appColors.warning.copy(alpha = 0.4f))
+        NativeTone.WARNING -> Triple(statusColors.warningContainer, statusColors.onWarningContainer, statusColors.warning.copy(alpha = 0.4f))
         NativeTone.ERROR -> Triple(scheme.errorContainer, scheme.onErrorContainer, scheme.error.copy(alpha = 0.4f))
         NativeTone.NEUTRAL -> Triple(scheme.surfaceContainerHigh, scheme.onSurfaceVariant, scheme.outlineVariant)
     }
@@ -196,12 +195,12 @@ internal fun NativeBanner(
     action: (@Composable () -> Unit)? = null,
 ) {
     val scheme = MaterialTheme.colorScheme
-    val appColors = LocalAppColors.current
+    val statusColors = LocalNativeStatusColors.current
     val (bg, fg, border) = when (tone) {
         NativeTone.PRIMARY -> Triple(scheme.primaryContainer, scheme.onPrimaryContainer, scheme.primary.copy(alpha = 0.4f))
         NativeTone.SECONDARY -> Triple(scheme.secondaryContainer, scheme.onSecondaryContainer, scheme.secondary.copy(alpha = 0.4f))
         NativeTone.SUCCESS -> Triple(scheme.tertiaryContainer, scheme.onTertiaryContainer, scheme.tertiary.copy(alpha = 0.4f))
-        NativeTone.WARNING -> Triple(appColors.warningContainer, appColors.onWarningContainer, appColors.warning.copy(alpha = 0.4f))
+        NativeTone.WARNING -> Triple(statusColors.warningContainer, statusColors.onWarningContainer, statusColors.warning.copy(alpha = 0.4f))
         NativeTone.ERROR -> Triple(scheme.errorContainer, scheme.onErrorContainer, scheme.error.copy(alpha = 0.45f))
         NativeTone.NEUTRAL -> Triple(scheme.surfaceContainer, scheme.onSurfaceVariant, scheme.outlineVariant)
     }

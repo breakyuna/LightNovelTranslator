@@ -14,6 +14,8 @@
 
 ### 当前源码与 CI
 
+- 2026-10-27：[Actions #203 / 40358823290](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40358823290) 对应 `25217b2`，Release、Lint、app/workspace API 35 设备作业通过；test 在模块边界静态检查失败，单元测试未执行，原因是上轮警告配色引入旧 `ui.theme.LocalAppColors`。本轮移除该依赖，在 `NativeTheme` 内定义并按实际主题模式提供原生警告配色，徽标/横幅共用。用户授权修复并提交推送当前分支；本轮 CI 待核对，不沿用 #203 的绿色作业结果。静态审查，未实际构建；未运行测试或 Lint。
+
 - 2026-10-27：本轮修复前 HEAD 为 `a4c86b5`，[Actions #202 / 40357740599](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40357740599) 总体为 cancelled，但 lint 作业实际在 `:app:compileDebugKotlin` 报错：`NativeLogsPage` / `NativeRunHistory` 引用未定义的 `NativeTone.WARNING`，`NativeModelsPage` 缺少 `FontWeight` 导入；Unit tests 和 Release 构建步骤失败，设备测试取消，签名 APK 未上传。本轮修复补齐 WARNING 枚举及两个共享组件的主题警告色映射，补上 FontWeight 导入。静态审查，未实际构建；未运行测试或 Lint；用户已授权再次提交，随本轮提交推送当前分支并触发 CI，结果待核对。下述 `1d3dd1c` / #201 仅为上一绿色基线，不覆盖 `a4c86b5` 或本轮修复。
 
 - 分支为 `refactor/translation-agent-2026-10`。上一绿色代码基线为 `1d3dd1c`，其后 `fe77886` 仅 HANDOFF 文档；`1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 的 `test`（2268 项，0 失败）、`lint`、`release`（签名 APK artifact）与两组 API 35 设备 job（app 2/2、workspace 13/13）**全部通过**。此前 `057758a` 的 [run 40324194475](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40324194475) 因 engine/storage 编译与 NCX 单测失败，经 `8ea0433`（队列/检查点/测试编译与 NCX）、`c40f626`（app 端口导入与质量证据类型）修复后，`1d3dd1c` 再修正 RGSS 压缩断言与 Robolectric SDK 35。上一基线 `67b0b2e` 的 [Actions #197 / 40255046354](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40255046354) 仍只覆盖该提交。

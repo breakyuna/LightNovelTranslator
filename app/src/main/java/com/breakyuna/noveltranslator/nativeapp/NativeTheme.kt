@@ -8,6 +8,8 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -77,6 +79,26 @@ private val NativeDarkColors = darkColorScheme(
     outlineVariant = Color(0xff2b313c),
 )
 
+internal data class NativeStatusColors(
+    val warning: Color,
+    val warningContainer: Color,
+    val onWarningContainer: Color,
+)
+
+private val NativeLightStatusColors = NativeStatusColors(
+    warning = Color(0xff8a5100),
+    warningContainer = Color(0xffffddb0),
+    onWarningContainer = Color(0xff2c1600),
+)
+
+private val NativeDarkStatusColors = NativeStatusColors(
+    warning = Color(0xffffb95c),
+    warningContainer = Color(0xff663c00),
+    onWarningContainer = Color(0xffffddb0),
+)
+
+internal val LocalNativeStatusColors = staticCompositionLocalOf { NativeLightStatusColors }
+
 private val NativeShapes = Shapes(
     extraSmall = RoundedCornerShape(4.dp),
     small = RoundedCornerShape(6.dp),
@@ -144,10 +166,14 @@ fun NativeTheme(mode: NativeThemeMode = NativeThemeMode.SYSTEM, content: @Compos
         NativeThemeMode.LIGHT -> false
         NativeThemeMode.DARK -> true
     }
-    MaterialTheme(
-        colorScheme = if (dark) NativeDarkColors else NativeLightColors,
-        shapes = NativeShapes,
-        typography = NativeTypography,
-        content = content,
-    )
+    CompositionLocalProvider(
+        LocalNativeStatusColors provides if (dark) NativeDarkStatusColors else NativeLightStatusColors,
+    ) {
+        MaterialTheme(
+            colorScheme = if (dark) NativeDarkColors else NativeLightColors,
+            shapes = NativeShapes,
+            typography = NativeTypography,
+            content = content,
+        )
+    }
 }
