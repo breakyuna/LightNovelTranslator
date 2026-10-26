@@ -2,12 +2,14 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import android.content.Context
 import android.graphics.Bitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import java.io.ByteArrayOutputStream
+import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.*
 import org.junit.Rule
@@ -137,6 +139,7 @@ class NativePdfPagesDialogTest {
         compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
         compose.onNodeWithText("page body 1").assertIsDisplayed()
         compose.onNodeWithText(context.getString(R.string.native_close)).performClick()
+        awaitVisiblePageList()
         compose.onAllNodes(isDialog()).assertCountEquals(1)
         compose.onNodeWithTag("pdf-pages-list").assertIsDisplayed()
         compose.onNodeWithTag("pdf-page-preview").assertDoesNotExist()
@@ -182,6 +185,40 @@ class NativePdfPagesDialogTest {
         compose.onNodeWithTag(PdfThumbnailFailedTag).assertIsDisplayed()
         compose.onNodeWithText("page body").assertIsDisplayed()
         compose.onNodeWithText(context.getString(R.string.native_pdf_thumbnail_failed)).assertIsDisplayed()
+    }
+
+    private fun awaitVisiblePageList() {
+        try {
+            // Wait for placement and window visibility as well as restored semantics.
+            compose.waitUntil(10_000) { compose.onNodeWithTag("pdf-pages-list").isDisplayed() }
+        } catch (failure: Throwable) {
+            // Preserve the original failure even if diagnostics cannot be collected.
+            runCatching {
+                val tree = compose.onAllNodes(isRoot(), useUnmergedTree = true)
+                    .printToString(maxDepth = Int.MAX_VALUE)
+                val nodes = compose.onAllNodesWithTag("pdf-pages-list").fetchSemanticsNodes()
+                val bounds = nodes.joinToString("\n") { node ->
+                    "list: placed=${node.layoutInfo.isPlaced}, root=${node.boundsInRoot}, window=${node.boundsInWindow}"
+                }
+                val diagnostics = "$bounds\n$tree"
+                System.err.println(diagnostics)
+                File("build/reports/tests/testDebugUnitTest/pdf-return-diagnostics.txt").apply {
+                    parentFile.mkdirs()
+                    writeText(diagnostics)
+                }
+            }.exceptionOrNull()?.let { failure.addSuppressed(it) }
+            runCatching {
+                val bitmap = compose.onNode(isDialog()).captureToImage().asAndroidBitmap()
+                File("src/test/screenshots/native-pdf-return-failure.png").apply {
+                    parentFile.mkdirs()
+                    outputStream().use { output ->
+                        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))
+                    }
+                }
+            }.exceptionOrNull()?.let { failure.addSuppressed(it) }
+            throw failure
+        }
+        compose.onNodeWithTag("pdf-pages-list").assertIsDisplayed()
     }
 
     private fun pngBytes(): ByteArray {
