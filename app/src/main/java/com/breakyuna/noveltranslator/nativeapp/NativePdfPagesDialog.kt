@@ -73,17 +73,19 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
         if (previewPage != null) previewPage = null else if (!state.busy) close()
     }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            previewPage?.let { page ->
-                NativePdfPagePreview(project.ref, project.revision, asset, page,
-                    loadPage, loadThumbnail, { previewPage = null },
-                    edit = if (editPage != null && !state.busy && decisions == starting && current?.revision == project.revision &&
-                        state.editor == null && state.manualBatch == null && !state.selectingItems &&
-                        !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true)
-                        ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null)
-                return@Box
-            }
-            Surface(Modifier.testTag("pdf-pages-list").padding(16.dp).widthIn(max = 680.dp).fillMaxWidth().fillMaxHeight(.92f),
+            // Keep the measured panel alive when returning from a preview to the page list.
+            Surface(Modifier.testTag(if (previewPage == null) "pdf-pages-list" else "pdf-page-preview")
+                .padding(16.dp).widthIn(max = 680.dp).fillMaxWidth().fillMaxHeight(.92f),
                 shape = MaterialTheme.shapes.extraLarge) {
+                previewPage?.let { page ->
+                    NativePdfPagePreview(project.ref, project.revision, asset, page,
+                        loadPage, loadThumbnail, { previewPage = null },
+                        edit = if (editPage != null && !state.busy && decisions == starting && current?.revision == project.revision &&
+                            state.editor == null && state.manualBatch == null && !state.selectingItems &&
+                            !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true)
+                            ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null)
+                    return@Surface
+                }
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.native_pdf_pages), style = MaterialTheme.typography.headlineSmall)
                     Text(asset.path.value, maxLines = 1)
@@ -169,49 +171,46 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
             thumbnailFailed = true
         }
     }
-    Surface(Modifier.testTag("pdf-page-preview").padding(16.dp).widthIn(max = 760.dp).fillMaxWidth().fillMaxHeight(.9f),
-        shape = MaterialTheme.shapes.extraLarge) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
-            if (loadThumbnail != null) {
-                Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
-                when {
-                    thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
-                        contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
-                    thumbnailFailed -> Text(stringResource(R.string.native_pdf_thumbnail_failed),
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.testTag(PdfThumbnailFailedTag))
-                    else -> Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(stringResource(R.string.native_pdf_thumbnail_loading))
-                    }
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
+        if (loadThumbnail != null) {
+            Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
+            when {
+                thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
+                    contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
+                thumbnailFailed -> Text(stringResource(R.string.native_pdf_thumbnail_failed),
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.testTag(PdfThumbnailFailedTag))
+                else -> Row(verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.native_pdf_thumbnail_loading))
                 }
             }
-            Text(stringResource(R.string.native_pdf_text_preview_notice), style = MaterialTheme.typography.bodySmall)
-            if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
-            else if (item == null && loadPage != null) CircularProgressIndicator()
-            item?.let { loaded ->
-                SelectionContainer(Modifier.weight(1f)) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
-                        Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
-                        Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
-                        Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
-                        Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
-                            R.string.native_empty_result else R.string.native_empty_translation) })
-                    }
-                }
-            }
-            if (edit != null) TextButton(onClick = edit, enabled = item != null && !failed) {
-                Text(stringResource(R.string.native_pdf_edit_page))
-            }
-            TextButton(onClick = close, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.native_close)) }
         }
+        Text(stringResource(R.string.native_pdf_text_preview_notice), style = MaterialTheme.typography.bodySmall)
+        if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
+        else if (item == null && loadPage != null) CircularProgressIndicator()
+        item?.let { loaded ->
+            SelectionContainer(Modifier.weight(1f)) {
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
+                    Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
+                    Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
+                    Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
+                    Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
+                        R.string.native_empty_result else R.string.native_empty_translation) })
+                }
+            }
+        }
+        if (edit != null) TextButton(onClick = edit, enabled = item != null && !failed) {
+            Text(stringResource(R.string.native_pdf_edit_page))
+        }
+        TextButton(onClick = close, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.native_close)) }
     }
 }
 

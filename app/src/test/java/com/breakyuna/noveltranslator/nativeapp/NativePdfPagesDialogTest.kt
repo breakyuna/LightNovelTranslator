@@ -144,6 +144,22 @@ class NativePdfPagesDialogTest {
             assertEquals(listOf(1), pages)
             assertEquals(listOf(1), texts)
         }
+        // The restored list must remain interactive and open another page without a new window.
+        compose.onAllNodesWithText(context.getString(R.string.native_pdf_preview))[1].performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("pdf-pages-list").assertDoesNotExist()
+        compose.onNodeWithTag("pdf-page-preview").assertIsDisplayed()
+        compose.onNodeWithText("page body 2").assertIsDisplayed()
+        compose.waitUntil(10_000) {
+            compose.onAllNodesWithTag(PdfThumbnailImageTag).fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithTag(PdfThumbnailFailedTag).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag(PdfThumbnailFailedTag).assertDoesNotExist()
+        compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
+        compose.runOnIdle {
+            assertEquals(listOf(1, 2), pages)
+            assertEquals(listOf(1, 2), texts)
+        }
     }
 
     @Test fun thumbnailFailureDoesNotHideTheTextPreview() {
