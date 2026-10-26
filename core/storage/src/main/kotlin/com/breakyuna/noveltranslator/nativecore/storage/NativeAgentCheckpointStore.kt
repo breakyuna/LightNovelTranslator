@@ -83,7 +83,7 @@ class NativeAgentCheckpointStore(context: Context) : AgentCheckpointPort {
             "branches", digest(branch.value),
         ).joinToString(File.separator))
 
-    private fun readPartition(ref: LocalProjectRef, chat: ChatId, branch: BranchId, limit: Int): List<CheckpointEnvelope> {
+    private suspend fun readPartition(ref: LocalProjectRef, chat: ChatId, branch: BranchId, limit: Int): List<CheckpointEnvelope> {
         val directory = checkedPartition(ref, chat, branch)
         if (!directory.exists()) return emptyList()
         if (!directory.isDirectory) throw AgentCheckpointCorruptException("Agent checkpoint partition is not a directory")

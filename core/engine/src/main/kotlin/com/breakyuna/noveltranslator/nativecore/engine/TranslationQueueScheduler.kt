@@ -326,7 +326,7 @@ class TranslationQueueScheduler(
      */
     suspend fun reconcileSettled(): Int {
         val snapshots = try {
-            coordinator.snapshot()
+            coordinator.storedQueues()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -386,7 +386,7 @@ class TranslationQueueScheduler(
     suspend fun reconcileDecisions(): Int {
         val journal = decisionJournal ?: return 0
         val snapshots = try {
-            coordinator.snapshot()
+            coordinator.storedQueues()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {

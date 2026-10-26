@@ -83,6 +83,15 @@ class TranslationQueueCoordinator(
     }
 
     /**
+     * Every durable project queue with its stored revision and fingerprint. Reconciliation needs
+     * the [StoredTranslationQueue] wrapper (not only the decoded snapshot) to build a
+     * [TranslationQueueDispatch]; reads stay under the same scheduling mutex.
+     */
+    suspend fun storedQueues(): List<StoredTranslationQueue> = MUTEX.withLock {
+        store.list()
+    }
+
+    /**
      * Admits exactly the frozen paid spec at the tail. [command] must be the paid run command; it
      * is the durable idempotence identity for repeated taps. An existing task with the same
      * identity and spec is Unchanged; the same identity with different options is a conflict.

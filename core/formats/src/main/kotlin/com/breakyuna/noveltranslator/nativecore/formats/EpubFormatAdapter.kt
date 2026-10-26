@@ -1507,7 +1507,7 @@ private object NcxLabelScanner {
                     val close = text.indexOf('>', index + 2)
                     if (close < 0) break
                     if (docAuthorDepth > 0 &&
-                        XhtmlTextScanner.closingName(text.substring(index + 2, close)) == "docAuthor"
+                        XhtmlTextScanner.closingName(text.substring(index + 2, close)) == "docauthor"
                     ) {
                         docAuthorDepth -= 1
                     }
@@ -1519,14 +1519,14 @@ private object NcxLabelScanner {
                     val inside = text.substring(index + 1, close)
                     val selfClosing = inside.trimEnd().endsWith('/')
                     val name = XhtmlTextScanner.startName(inside)
-                    if (!selfClosing && name == "docAuthor") {
+                    if (!selfClosing && name == "docauthor") {
                         docAuthorDepth += 1
                         index = close + 1
                         continue
                     }
                     // The NCX schema places navMap after docAuthor. Reset the skip there so a
                     // malformed missing `</docAuthor>` cannot hide the whole outline.
-                    if (!selfClosing && name == "navMap") docAuthorDepth = 0
+                    if (!selfClosing && name == "navmap") docAuthorDepth = 0
                     if (!selfClosing && name == "text" && docAuthorDepth == 0) {
                         val slot = findLabelSlot(text, close + 1)
                         // An unterminated label makes every following range ambiguous; stop

@@ -63,5 +63,8 @@ class WorkspaceSearchChainTest {
     }
 
     private fun provider(block: suspend (WorkspaceSearchRequest) -> WorkspaceSearchOutcome) =
-        WorkspaceSearchPort { request -> block(request) }
+        object : WorkspaceSearchPort {
+            override suspend fun search(request: WorkspaceSearchRequest): WorkspaceSearchOutcome =
+                block(request)
+        }
 }

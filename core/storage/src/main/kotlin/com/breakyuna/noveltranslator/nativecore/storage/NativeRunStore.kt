@@ -156,11 +156,12 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
         run: RunIdentity,
         state: StoredRunState,
     ): Int = io {
-        require(run.projectId == ref.projectId && run.chatId != null) { "Approval run belongs to another project" }
+        require(run.projectId == ref.projectId) { "Approval run belongs to another project" }
+        val chatId = requireNotNull(run.chatId) { "Approval run requires a Chat" }
         require(state != StoredRunState.RUNNING && state != StoredRunState.INTERRUPTED &&
             state != StoredRunState.WAITING_APPROVAL) { "Invalid approval settlement" }
         val rows = db.runs().waitingApprovals(ref.instanceId.value, ref.generation.value,
-            ref.projectId.value, run.runId.value, run.commandId.value, run.chatId.value)
+            ref.projectId.value, run.runId.value, run.commandId.value, chatId.value)
         if (rows.isEmpty()) return@io 0
         transaction {
             rows.forEach { row ->
