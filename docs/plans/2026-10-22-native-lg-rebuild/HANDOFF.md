@@ -1,6 +1,6 @@
 # 原生 LG 重构交接
 
-更新：2026-10-26。这里只维护当前状态、证据和下一步；**正常接手只读本文件**。历轮细节完整保存在 [历史归档](HANDOFF_HISTORY.md)，仅遇到具体问题时搜索对应轮次，不要通读归档。
+更新：2026-10-27。这里只维护当前状态、证据和下一步；**正常接手只读本文件**。历轮细节完整保存在 [历史归档](HANDOFF_HISTORY.md)，仅遇到具体问题时搜索对应轮次，不要通读归档。
 
 ## 1. 范围与入口
 
@@ -14,7 +14,9 @@
 
 ### 当前源码与 CI
 
-- 分支为 `refactor/translation-agent-2026-10`。当前代码基线（最新代码提交）为 `1d3dd1c`，HEAD `fe77886` 仅 HANDOFF 文档；`1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 的 `test`（2268 项，0 失败）、`lint`、`release`（签名 APK artifact）与两组 API 35 设备 job（app 2/2、workspace 13/13）**全部通过**。此前 `057758a` 的 [run 40324194475](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40324194475) 因 engine/storage 编译与 NCX 单测失败，经 `8ea0433`（队列/检查点/测试编译与 NCX）、`c40f626`（app 端口导入与质量证据类型）修复后，`1d3dd1c` 再修正 RGSS 压缩断言与 Robolectric SDK 35。上一基线 `67b0b2e` 的 [Actions #197 / 40255046354](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40255046354) 仍只覆盖该提交。
+- 2026-10-27：本轮修复前 HEAD 为 `a4c86b5`，[Actions #202 / 40357740599](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40357740599) 总体为 cancelled，但 lint 作业实际在 `:app:compileDebugKotlin` 报错：`NativeLogsPage` / `NativeRunHistory` 引用未定义的 `NativeTone.WARNING`，`NativeModelsPage` 缺少 `FontWeight` 导入；Unit tests 和 Release 构建步骤失败，设备测试取消，签名 APK 未上传。本轮修复补齐 WARNING 枚举及两个共享组件的主题警告色映射，补上 FontWeight 导入。静态审查，未实际构建；未运行测试或 Lint；用户已授权再次提交，随本轮提交推送当前分支并触发 CI，结果待核对。下述 `1d3dd1c` / #201 仅为上一绿色基线，不覆盖 `a4c86b5` 或本轮修复。
+
+- 分支为 `refactor/translation-agent-2026-10`。上一绿色代码基线为 `1d3dd1c`，其后 `fe77886` 仅 HANDOFF 文档；`1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 的 `test`（2268 项，0 失败）、`lint`、`release`（签名 APK artifact）与两组 API 35 设备 job（app 2/2、workspace 13/13）**全部通过**。此前 `057758a` 的 [run 40324194475](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40324194475) 因 engine/storage 编译与 NCX 单测失败，经 `8ea0433`（队列/检查点/测试编译与 NCX）、`c40f626`（app 端口导入与质量证据类型）修复后，`1d3dd1c` 再修正 RGSS 压缩断言与 Robolectric SDK 35。上一基线 `67b0b2e` 的 [Actions #197 / 40255046354](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40255046354) 仍只覆盖该提交。
 - `057758a` 之前的全部未提交改动（工作区 apply、搜索、上传、检查点/恢复、EPUB、宽屏、RGSS 只读浏览、格式冷冻策略等）现已随 `057758a` 提交，编译/测试修复见 `8ea0433`、`c40f626`、`1d3dd1c`；本机未构建，以上绿测结论来自 CI。
 - 2026-10-26 代码审查修复（`057758a` 提交，`8ea0433` 修复其 CI 编译/NCX；未本地构建）：修复 `repairPendingToolTail` 成员扩展导致 `core:agent`/app 无法编译；队列租约改为显式 Token，获取失败不再释放他人锁，启动/恢复/续排统一在 IO 获取，并改用 API 24 可用的 `RandomAccessFile` 文件锁；EPUB 不再把 `dc:language`/`dc:date`/`dc:identifier` 当正文翻译，NCX 跳过 `docAuthor`，旧 `linear="no"` 译文仍可导出；切换工程清空工作区提案并在 Agent 加载期间 fail-closed；工作区审批后结算旧的 `WAITING_APPROVAL` 执行；开机 receiver 等待首轮 drain；工作区审批对话框批准/拒绝后关闭；宽屏规则编辑器阻止未保存导航；上传文件名按 UTF-8 字节清洗；apply intent 记录预检结果，崩溃恢复不再误报已提交；RGSS 浏览增加 24 MiB 上限；检查点每分区 16 个并增加全局 128 MiB/256 文件上限，拒绝 v2 编码；新增 `WorkspaceFileApplyStore` 设备测试与检查点版本测试。本机仍为静态审查；CI 已在 `1d3dd1c` 运行 2268 项单元测试、两组 API 35 设备测试、Lint 与 Release，全部通过。
 - 原 PDF 诊断仍保留在 `HANDOFF_HISTORY.md`；当前 PDF 仅保留已完成的 IO/错误处理和既有页编辑代码，OCR/版式/字体保真已取消。
