@@ -5,6 +5,7 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillDraft
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStore
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreException
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -16,7 +17,7 @@ import org.junit.Test
 class NativeSkillMetadataTest {
     @get:Rule val temporary = TemporaryFolder()
 
-    @Test fun editorDraftUpdatesLanguagesTagsOrderAndEnabledThroughTheExistingCasPath() {
+    @Test fun editorDraftUpdatesLanguagesTagsOrderAndEnabledThroughTheExistingCasPath() = runBlocking<Unit> {
         val root = temporary.newFolder("skills")
         val store = WorkspaceSkillStore(root)
         try {
