@@ -195,15 +195,19 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
         if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
         else if (item == null && loadPage != null) CircularProgressIndicator()
         item?.let { loaded ->
-            SelectionContainer(Modifier.weight(1f)) {
-                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
-                    Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
-                    Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
-                    Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
-                    Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
-                        R.string.native_empty_result else R.string.native_empty_translation) })
+            // Compose 1.7's SelectionContainer wraps its modifier in another layout.
+            // Keep Column parent data on this direct child so the action buttons retain height.
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                SelectionContainer(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
+                        Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
+                        Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
+                        Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
+                            R.string.native_empty_result else R.string.native_empty_translation) })
+                    }
                 }
             }
         }

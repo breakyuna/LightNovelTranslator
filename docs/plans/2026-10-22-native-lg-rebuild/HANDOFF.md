@@ -14,15 +14,16 @@
 
 ### 当前源码与 CI
 
-- 本轮开始时分支为 `refactor/translation-agent-2026-10`，HEAD 为 `6f71341`，工作区干净。上一轮共享 PDF 面板修复为 `69fe09cfe9e8167bdbeb8a471a1b5c6634ad290f`，HEAD 相比该提交仅多 HANDOFF 文档修改。
-- 最新核对 [Actions #195 / 40252905236](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40252905236)，对应 `69fe09c`，最终结论失败。完整 XML 为 2220 项单元测试，2219 通过、1 失败、0 跳过；核心 1340 全过，app 880 项中 879 通过。Lint、app/workspace 两组 API 35 设备测试、Release 构建/签名校验/APK 上传均通过，各自证据只覆盖该提交。
-- #195 唯一失败仍为 `NativePdfPagesDialogTest.originalThumbnailLoadsOnlyThePreviewedPageAndKeepsTextPreview` 第 141 行：关闭预览后列表节点存在，`assertIsDisplayed()` 失败，与 #194 相同。此前真实 PNG 加载、图片/正文可见及关闭操作断言均通过；追加的返回后再开第 2 页步骤尚未到达，不能算已验证。报告无 PNG，缺少失败时节点边界/窗口可见性证据，暂不能区分布局异常与测试同步问题。
-- 上一轮列表/预览已共用固定尺寸 Surface（最大宽 680dp、高度 92%），#195 证明这一改动未解决返回断言失败，不能登记为修复成功。本轮保留生产代码，调整测试返回阶段：用 Compose 1.7.0 的 `isDisplayed()` 在 10 秒内等待列表实际可见，然后继续保留列表显示、单窗口和跨页可操作断言；图片加载原有等待不变。若返回等待仍失败，记录原异常、语义树、布局放置状态/边界并尝试捕获 Dialog PNG，诊断失败作为 suppressed exception 保留，不吞原始失败。
-- 语义树/边界写入 `app/build/reports/tests/testDebugUnitTest/pdf-return-diagnostics.txt` 并输出到日志；截图写入 `app/src/test/screenshots/native-pdf-return-failure.png`，均由当前 workflow 的报告路径覆盖，无需改变 workflow。核对实际 BOM 2024.09.00 解析的 ui-test-android 1.7.0 源码，`isDisplayed` 检查放置、Android View 可见与裁剪边界；等待策略参考 [Compose 同步说明](https://developer.android.com/develop/ui/compose/testing/synchronization)。这是同步假设与诊断补充，尚未经运行确认；修改已提交为 `d4ce2a470ea4c0d79c7155debc69d59826cab6d3` 并推送至 `refactor/translation-agent-2026-10`；已触发 [Actions #196 / 40254204749](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40254204749)，核对 head_sha 与该提交一致，触发后排队中，尚无最终结果；未生成或查看新截图。
+- 本轮开始时分支为 `refactor/translation-agent-2026-10`，HEAD 为 `a8cd8f2`，工作区干净。上一轮测试等待与诊断为 `d4ce2a470ea4c0d79c7155debc69d59826cab6d3`，HEAD 相比该提交仅多 HANDOFF 文档修改。
+- 最新核对 [Actions #196 / 40254204749](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40254204749)，对应 `d4ce2a4`，最终结论失败。app 880 项单元测试中 879 通过、1 失败；Lint、app/workspace 两组 API 35 设备 job 和 Release 均通过。最近完整单元 XML 总数统计仍为 #195 的 2220 项、2219 通过，不将未重新汇总的总数当作 #196 的新统计。
+- #196 唯一失败仍为 `NativePdfPagesDialogTest.originalThumbnailLoadsOnlyThePreviewedPageAndKeepsTextPreview`：等待返回列表 10 秒超时。新增语义树证明实际仍是 `pdf-page-preview`，没有列表节点；关闭按钮边界为 `(314,822)-(376,822)`，高度为 0，正文滚动区已占到 y=822。因此此前“关闭后列表节点已恢复，只是不可见”的判断不成立，点击操作返回不能证明关闭回调已执行。原图片/正文可见断言已通过，返回后第 2 页步骤未到达。
+- 原因对应 `SelectionContainer(Modifier.weight(1f))`：BOM 2024.09.00 所用 Compose 1.7.0 的 SelectionContainer 将 modifier 放在 ContextMenuArea 内层，权重无法传给直接父 Column；正文 fillMaxSize 吃尽可用高度，后续关闭按钮被压成 0。已核对该版本源码及 [AndroidX 同一问题的修复](https://github.com/androidx/androidx/commit/ba9975513e62ee525d88e918b04bb096ee18cdc5)。共享面板和可见等待均未修复这一原因。
+- 本轮将权重移到 Column 的直接子节点 `Box(Modifier.weight(1f).fillMaxWidth())`，内部 `SelectionContainer(Modifier.fillMaxSize())` 保留文本选择及滚动，为后续操作按钮保留测量空间。测试在加载中、图片显示后、第 2 页图片显示后分别断言关闭按钮可见、启用且高度至少 1dp，再通过真实点击返回；保留返回列表、单窗口、页身份与加载序列断言，并补第 2 页返回。本轮修复随提交保存，尚待后续 Actions 验证，不预报通过。
+- 原诊断仍保留：语义树/边界写入 `app/build/reports/tests/testDebugUnitTest/pdf-return-diagnostics.txt`，Dialog PNG 目标为 `app/src/test/screenshots/native-pdf-return-failure.png`，均在 workflow 上传路径内。#196 语义树已读取；截图采集自身在 forceRedraw 等待中超时，作为 suppressed exception 保留，未生成 PNG，不宣称已查看视觉画面。本机仅静态审查，未实际构建或运行测试/Lint。
 - 历史 [Actions #193 / 40249427707](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40249427707) 对应 `ac4fd8e`，app 单元测试因缺少协程上下文编译失败；六核心模块缓存测试、11 项设备测试、Release/签名/APK 上传及 Lint 通过。元数据 CAS 测试已通过 `runBlocking<Unit>` 修复，保留普通 JUnit、TemporaryFolder、全部断言与 finally 清理；该修复已有 #194 的两项测试通过证据。
 - 历史完整 app 单元测试基线 [Actions #192 / 40212487481](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40212487481)，对应 `93b3484`；完整测试 XML 显示 2228 项单元测试中 2227 通过、1 失败、0 跳过，12 项 API 35 x86_64 模拟器设备测试全部通过；Release/签名/APK 上传及 Lint 通过。六个核心模块 1340 项全过，唯一失败为 app 的 `NativePdfPagesDialogTest.originalThumbnailLoadsOnlyThePreviewedPageAndKeepsTextPreview`，等待图片节点 10 秒超时。#193 未执行 app 单元测试，不能认定该超时已解决。
 - #191 的五项对话框超时已在 #192 全部通过：`NativeSkillsDialogTest` 4/4、`NativeWorkspaceDialogTest` 3/3。当前非默认宽度窗口/有界面板得到这次 CI 证据，不再归因于业务保存、只读或导入回调失败。#188—#191 为历史失败基线，不覆盖当前工作区差异。
-- 上一轮 PDF 修复：列表与预览从两个同时存在的 Dialog 改为同一窗口的互斥内容，防止异步预览被后创建的列表窗口遮挡；返回先回列表，固定工程/修订/资产/页号、后台解码和保存保护保留。#194/#195 已通过图片加载与可见断言，但返回列表仍失败；不把源码中的布局风险直接当作已复现的设备根因。
+- 上一轮 PDF 修复：列表与预览从两个同时存在的 Dialog 改为同一窗口的互斥内容，防止异步预览被后创建的列表窗口遮挡；返回先回列表，固定工程/修订/资产/页号、后台解码和保存保护保留。#194—#196 已通过图片加载与可见断言，但关闭按钮高度为 0、未返回列表；不把源码中的布局风险直接当作已复现的设备根因。
 - 测试优化：移除标题截图、包名、固定应用名称 3 项示例检查；MainActivity/manifest 已切原生入口，`AppNavigation` 无生产调用，删除旧阅读器→工作台导航测试的 4 项（不删除旧用户数据或旧生产代码）。保留术语 JSON 围栏/非法响应测试，重命名为 `TermExtractionResponseTest`，因 Android `org.json` 保留 Robolectric；`ExampleUnitTest` 中实际业务回归继续保留。
 - 合并 PDF 加载中→图片显示与固定页号/正文预览用例，使用 `CompletableDeferred` 控制返回，保留真实 PNG 解码、失败检查及单窗口断言；合并技能取消重开与元数据保存流程，保留重新读取、取消不保存及实际 draft 字段断言。两项合并减少重复启动，不用增大超时/忽略失败。`NativeSkillMetadataTest` 两项改用普通 JUnit + `TemporaryFolder`，继续真实文件 CAS/元数据验证，无需 Android Context 或 Robolectric。
 - 当前源码静态盘点为 2220 项单元测试（核心 1340、app 880）及 11 项设备测试，共 2231 项，比 #192 净减少 9 项（删除 7、合并 2）。仅统计现存 `@Test`；不把减少测试数量等同于性能提升或证明全部测试有价值。其余旧链路测试需随实际消费者/退役边界继续审查，未整组删除。
@@ -30,7 +31,7 @@
 
 ### 已取得的具体证据及边界
 
-- #188 四项 UI 失败及 #191 新增重开用例的超时已有 #192 通过证据，具体范围见上文；窄屏/IME/滚动/焦点仍需实际查看原生 UI。PDF 预览及测试精简已提交为 `ac4fd8e`；#194 图片/正文显示已通过，返回列表的可见性仍失败，#195 证明共享面板仍未消除返回失败，本轮测试同步与诊断修改尚待验证。
+- #188 四项 UI 失败及 #191 新增重开用例的超时已有 #192 通过证据，具体范围见上文；窄屏/IME/滚动/焦点仍需实际查看原生 UI。PDF 预览及测试精简已提交为 `ac4fd8e`；#194—#196 图片/正文显示已通过；#196 语义树明确关闭按钮高度为 0、仍停在预览。本轮权重宿主修复及关闭尺寸断言待新 CI 验证。
 - #188 单元 XML 确认 `NativeAppDatabaseUpgradeTest` 四种 v17 表存在组合的 v18 打开/数据保留用例均通过。这是自动化迁移证据，不等于覆盖所有历史版本真实安装升级。
 - #188 workspace 模拟器报告覆盖：隔离服务声明及执行、大脚本/材料通过描述符传递、越权写拒绝、提案返回、死循环超时后再次运行、主动取消后再次运行（6 项）；完整分页快照生成类型化提案（1 项）；Unicode 归一化/字素及非法/超限输入拒绝（2 项）。已具备 API 35 x86_64 的隔离执行/超时/取消证据，仍缺 ARM 真机、其他 Android 版本和内存硬预算证明。
 - #188 app 3 项设备测试中，1 项为包上下文检查，2 项实际运行 APK 内置 text-preserve/glossary 脚本；不能把 3 项都计为业务或视觉验收。上述 Unicode/脚本行为在该模拟器已运行，不再标为“只有回归源码”。
@@ -71,15 +72,15 @@
 | 规则与质量 | `core/engine/.../TextProofreadingInspector.kt` → `ProjectQualityScanner.kt`，读取 `nameSource/nameTranslation` 并累计 hits | TERM 正文/姓名作用域与正向命中有实际扫描消费者；设备正则、大工程和完整交互仍未验收 |
 | 数据版本与迁移 | `core/domain/.../TextProject.kt` 的 schema=8；`NativeAppDatabase.kt` version=18；`NativeTranslationQueueStore.kt` version=2 | HEAD 的 Room 为 v18；v14 条目提案、v15 规则提案、v16 PDF 页提案、v17 profile/资产导入与 v18 补表迁移已纳入 #188 构建，v17→v18 四组合单元测试通过；schemas 目录实际只有 Room `1.json`，2—18 缺失 |
 
-**完成口径**：当前已形成基础产品闭环与上述生产接线，已有广泛单元测试及局部模拟器行为证据；仍缺通用工作区 apply、搜索/MCP、Agent 检查点、后台自动续排、PDF OCR/保真等实际功能，尚未到“只剩验收”。无法从源码或测试数量推导“96 项中已完成多少项”；S1/S2/S3 和 G1—G5 保持开放。上一轮已提交差异为 §2 的 PDF 预览修复与测试精简；上一轮提交了共享 PDF 面板与跨页回归，本轮仅调整返回阶段的可见条件等待及失败诊断，同步本文件，不表示新增业务能力。
+**完成口径**：当前已形成基础产品闭环与上述生产接线，已有广泛单元测试及局部模拟器行为证据；仍缺通用工作区 apply、搜索/MCP、Agent 检查点、后台自动续排、PDF OCR/保真等实际功能，尚未到“只剩验收”。无法从源码或测试数量推导“96 项中已完成多少项”；S1/S2/S3 和 G1—G5 保持开放。上一轮已提交差异为 §2 的 PDF 预览修复与测试精简；此前共享 PDF 面板和返回等待未解决故障，本轮修正 SelectionContainer 的权重宿主并补按钮尺寸及两页返回回归，同步本文件，不表示新增业务能力。
 
-用户已授权本次提交、推送当前分支并触发 Actions；测试可见条件等待与失败诊断已推送为 `d4ce2a4`，#196 已触发并核对提交。本文件单独记录触发事实；#195 仍为最近已核对的失败结果，不将运行中状态当作通过证据。合并 `main`、发布与付费调用仍未授权。
+用户已授权本次修复提交、推送当前分支并触发 Actions；本轮针对 #196 的零高度按钮原因修正权重宿主并补断言，不将静态修改当作通过证据。合并 `main`、发布与付费调用仍未授权。
 
 ## 4. 下一轮顺序
 
 以下为待办，不自动授权实施、提交、推送、CI 或付费调用；按用户当前要求执行。
 
-1. **当前 CI 收尾**：#195 仍在 PDF 返回列表可见性断言失败，其余单元测试、两组设备 job、Lint 与 Release 均通过。本轮针对返回可见条件等待并补失败语义树/边界/截图，等待 #196（`d4ce2a4`）给出结果。若仍失败，先核对这些实际诊断与 PNG，再判断窗口/放置/边界原因；跨页回归必须实际到达，原生视觉另验。
+1. **当前 CI 收尾**：#196 已证明关闭按钮被压成零高度、实际未离开预览。本轮权重移至直接子 Box，补关闭按钮尺寸及加载中/加载后/第 2 页返回断言，待新 Actions 验证。若仍失败，依据实际诊断继续定位，保留原始失败；原生视觉另验。
 2. **Agent 工作区继续闭环**：文件/资产通用写审批与 apply、搜索/MCP、附件/图片、多对象审批、模块/异步/内存预算与取消；`core/workspace/src/androidTest` 的 9 项已在 #188 模拟器通过，新增能力仍需补对应证据。
 3. **任务与恢复**：跨进程调度/开机后台自动续排（应用打开后已有 QUEUED kick）、任务存储与队列成员行对账、暂停/崩溃窗口、Agent 检查点与完整工具恢复；旧任务弹窗与队列裁决路径继续收敛。
 4. **格式与系统**：PDF 原版式/字体保真/OCR、页编辑链路的交互与导出验证、RGSS 目录 UI、WOLF 分支、EPUB 更多兼容；产物清单的设备/并发对账验收、U09 执行窗口/取消的设备验证、其余实际内置包迁移、宽屏校对。
@@ -87,7 +88,7 @@
 
 ## 5. 高风险与技术决策
 
-当前 `.lnt` v8、Room v18、队列 v2、模型 profile、资产导入、工作区材料/产物、网络限流、U05—U15 页面及 PDF/EPUB 实现已进入 #188 的构建范围；最新 #195（`69fe09c`）完整单元 XML 为 2219/2220 通过，唯一失败仍为 PDF 关闭预览后列表不可见；共享面板未解决该断言，跨页后续步骤未到达。图片/正文显示已通过；Lint、两组 API 35 设备 job 与 Release/签名/上传通过。本轮测试可见条件等待与失败诊断已进入 #196（`d4ce2a4`），尚无最终 CI 结论。不能继续一概标为“未构建”，也不能据此认定可发布或功能完整。`MIGRATION_17_18` 四组合自动化已通过，权威 schema 与历史版本真实升级仍缺。隔离服务、死循环超时及主动取消已有 API 35 x86_64 模拟器证据；仍需 ARM 真机、多版本与资源预算验证，QuickJS 0.9.2 API 未提供堆限额/中断处理器，隔离进程不等于完成内存硬预算。草稿撤销历史目前保留在活动 ViewModel 内，仅存增量且不设条数硬截断；进程死亡只恢复当前草稿，不恢复撤销栈，大量编辑的内存预算仍需测量。重点仍是 Koog 检查点/恢复、工作区权限/取消/回收、一致备份、PDF 版式/字体/资源及大工程预算。Fetch 真实公网/供应商网络行为未验收；代理远端 DNS 行为、系统 DNS 阻塞取消、重定向、非 UTF-8 站点、HTML 提取及恶意页面需独立验证，不把源码中的请求超时当作完整网络验收。保持 API 24 支持边界，以真实设备测量冻结预算；未测量不宣称性能提升。
+当前 `.lnt` v8、Room v18、队列 v2、模型 profile、资产导入、工作区材料/产物、网络限流、U05—U15 页面及 PDF/EPUB 实现已进入 #188 的构建范围；最新 #196（`d4ce2a4`）app 单元测试为 879/880 通过，唯一失败为 PDF 返回等待超时；诊断明确关闭按钮高度 0，界面仍是预览页。共享面板与增加等待未触及该原因。图片/正文显示已通过，跨页后续步骤未到达；Lint、两组 API 35 设备 job 与 Release 通过。本轮修正 SelectionContainer 的权重宿主及按钮尺寸回归，尚无新 CI 结论。不能继续一概标为“未构建”，也不能据此认定可发布或功能完整。`MIGRATION_17_18` 四组合自动化已通过，权威 schema 与历史版本真实升级仍缺。隔离服务、死循环超时及主动取消已有 API 35 x86_64 模拟器证据；仍需 ARM 真机、多版本与资源预算验证，QuickJS 0.9.2 API 未提供堆限额/中断处理器，隔离进程不等于完成内存硬预算。草稿撤销历史目前保留在活动 ViewModel 内，仅存增量且不设条数硬截断；进程死亡只恢复当前草稿，不恢复撤销栈，大量编辑的内存预算仍需测量。重点仍是 Koog 检查点/恢复、工作区权限/取消/回收、一致备份、PDF 版式/字体/资源及大工程预算。Fetch 真实公网/供应商网络行为未验收；代理远端 DNS 行为、系统 DNS 阻塞取消、重定向、非 UTF-8 站点、HTML 提取及恶意页面需独立验证，不把源码中的请求超时当作完整网络验收。保持 API 24 支持边界，以真实设备测量冻结预算；未测量不宣称性能提升。
 
 ## 6. 历史追溯与维护
 

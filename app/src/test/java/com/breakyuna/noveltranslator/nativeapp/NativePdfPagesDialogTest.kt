@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
@@ -125,6 +126,8 @@ class NativePdfPagesDialogTest {
         compose.onNodeWithTag("pdf-page-preview").assertIsDisplayed()
         compose.onNodeWithTag(PdfThumbnailLoadingTag).assertIsDisplayed()
         compose.onNodeWithText("page body 1").assertIsDisplayed()
+        val closeButton = compose.onNodeWithText(context.getString(R.string.native_close))
+        closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled()
         compose.runOnIdle {
             assertEquals(listOf(1), pages)
             assertEquals(listOf(1), texts)
@@ -138,7 +141,7 @@ class NativePdfPagesDialogTest {
         compose.onNodeWithTag(PdfThumbnailLoadingTag).assertDoesNotExist()
         compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
         compose.onNodeWithText("page body 1").assertIsDisplayed()
-        compose.onNodeWithText(context.getString(R.string.native_close)).performClick()
+        closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled().performClick()
         awaitVisiblePageList()
         compose.onAllNodes(isDialog()).assertCountEquals(1)
         compose.onNodeWithTag("pdf-pages-list").assertIsDisplayed()
@@ -159,6 +162,10 @@ class NativePdfPagesDialogTest {
         }
         compose.onNodeWithTag(PdfThumbnailFailedTag).assertDoesNotExist()
         compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
+        closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled().performClick()
+        awaitVisiblePageList()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("pdf-page-preview").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(listOf(1, 2), pages)
             assertEquals(listOf(1, 2), texts)
