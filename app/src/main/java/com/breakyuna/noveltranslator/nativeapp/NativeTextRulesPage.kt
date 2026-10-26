@@ -498,7 +498,7 @@ private fun LazyListScope.nativeRuleItems(
     selectedIds: Set<String>,
     writable: Boolean,
     invalidRuleId: String?,
-    qualityEvidence: TextQualitySelection?,
+    qualityEvidence: TextQualityIndex?,
     highlightedRuleId: String?,
     onSelected: (ProjectTextRule, Boolean) -> Unit,
     onEnabled: (ProjectTextRule, Boolean) -> Unit,

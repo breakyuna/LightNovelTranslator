@@ -20,6 +20,8 @@ import com.breakyuna.noveltranslator.nativecore.engine.CompatibleModelCatalog
 import com.breakyuna.noveltranslator.nativecore.engine.ModelRequestScheduler
 import com.breakyuna.noveltranslator.nativecore.storage.NativeModelNetworkSettingsStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeRequestLimitsStore
+import com.breakyuna.noveltranslator.nativecore.domain.ChatId
+import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelCatalogPort
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelProfilePort
 import com.breakyuna.noveltranslator.nativecore.domain.AgentSummaryPort
