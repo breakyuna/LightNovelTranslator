@@ -1,6 +1,6 @@
 # 共享请求调度与用量汇总契约
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 开发记录见 HANDOFF §39，当前 CI 证据与验证边界见 [HANDOFF §3](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
 

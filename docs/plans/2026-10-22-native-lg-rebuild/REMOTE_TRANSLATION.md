@@ -1,6 +1,6 @@
 # 远程 TXT 批量翻译与持久请求回执
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 开发记录和验证边界见 [HANDOFF §43](HANDOFF.md)。本切片及 §51—56/§81—97 的后续源码已由 #158 覆盖，§41/#146 保留为旧版本证据。未调用真实供应商。完整 R10—R14/R18 和 S1/S2 仍未完成。
 
@@ -32,7 +32,7 @@
 
 ## Room v4 请求元数据与后续版本
 
-NativeAppDatabase 当前源码为 v9：v4 引入 MIGRATION_3_4 和 native_translation_requests，后续 v5 增加模型协议/多密钥、v6 增加用量账本、v7 增加固定翻译任务、v8 增加响应/提交暂存、v9 增加 Agent 输入队列/steer。v1→v9 源码在工作区，v1→v8 已由 #158 覆盖；该切片未改变当时的 `.lnt` 版本，当前工程为 v5。2—9.json 的真实 KSP 导出及设备升级均待用户统一验证，不手写 schema。
+NativeAppDatabase 当前源码为 v18：v4 引入 MIGRATION_3_4 和 native_translation_requests，v5 增加模型协议/多密钥、v6 用量账本、v7 固定翻译任务、v8 响应/提交暂存、v9 Agent 输入队列/steer，v10—v18 增加任务决策、上下文摘要、历史分支、条目/规则/PDF 页提案、profile/资产导入与补表。v1→v18 已提交并随 `1d3dd1c` 构建/测试；当前 `.lnt` 为 v8。2—18.json 的真实 KSP 导出及设备升级均待统一验证，不手写 schema。
 
 每个远程 attempt 持久绑定工程/实例/代际、Run/Command、模型配置修订、实际 HTTP 请求正文的 SHA256、DISPATCHED/RECEIVED、分类与五种 Token 度量。库中不存原稿、译文、提示词、Key、Header 或完整 HTTP 响应；仅有摘要和轻量事实。
 
@@ -50,13 +50,13 @@ NativeAppDatabase 当前源码为 v9：v4 引入 MIGRATION_3_4 和 native_transl
 
 ## 待用户统一验证
 
-新增协议/拦截器/用量保存竞态、真实存储迁移/核对、批次失败/选项绑定和表单确认用例源码，已由 #158 覆盖至 §101；§102—107 工作区增量不在其中。需后续 CI/PC 全量 test/lint/release、2—9.json KSP schema、组件截图录制与查看，以及设备通知/切页/重建/停止。真实供应商联调与付费调用仍需明确授权。
+新增协议/拦截器/用量保存竞态、真实存储迁移/核对、批次失败/选项绑定和表单确认用例源码，已由 #158 覆盖至 §101；§102—107 已随 `1d3dd1c` 构建/测试。需后续 CI/PC 全量 test/lint/release、2—18.json KSP schema、组件截图录制与查看，以及设备通知/切页/重建/停止。真实供应商联调与付费调用仍需明确授权。
 
 工程级规则、文本保护/替换、术语、前文/去重/Token 规划、所有翻译模式、完整五协议、动态调度/密钥池/费用账本、暂停/同 Run 接续和复杂格式仍待实施，不因本切片开放远程入口而登记为完整 LG 翻译器。
 
 ## 启动模式增量（#158 覆盖）
 
-HANDOFF §51—52 未提交源码已接共享资产分组规划与 NEW/CONTINUE/RESET 选择；模式随 RemoteTranslationOptions 冻结，改变模式不能重绑既有前台命令。重新翻译不先清空旧译文，只有新结果提交才替换；请求失败/停止仍保留旧事实。五语确认明确再次外发及可能费用。本增量已由 #158 覆盖；新增设备证据仍缺。
+HANDOFF §51—52 源码已接共享资产分组规划与 NEW/CONTINUE/RESET 选择；模式随 RemoteTranslationOptions 冻结，改变模式不能重绑既有前台命令。重新翻译不先清空旧译文，只有新结果提交才替换；请求失败/停止仍保留旧事实。五语确认明确再次外发及可能费用。本增量已由 #158 覆盖；新增设备证据仍缺。
 
 ## 前文增量（#158 覆盖）
 

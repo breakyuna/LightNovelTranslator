@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -33,8 +35,8 @@ internal fun NativeQualityPanel(state: NativeProjectUiState, actions: NativeQual
     if (filter && view != null && state.qualityCurrent) QualityFilterDialog(view, { filter = false }) {
         filter = false; actions.filter(it)
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        Row {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(onClick = { scan = true }, enabled = enabled && !state.policyLoadIncomplete && state.policyDraft?.dirty != true,
                 modifier = Modifier.testTag("native-quality-scan")) { Text(stringResource(R.string.native_quality_scan)) }
             if (view != null) {
@@ -44,11 +46,16 @@ internal fun NativeQualityPanel(state: NativeProjectUiState, actions: NativeQual
                     modifier = Modifier.testTag("native-quality-clear")) { Text(stringResource(R.string.native_quality_close)) }
             }
         }
-        state.qualityProgress?.let { Text(stringResource(R.string.native_quality_progress, it.scanned, it.total)) }
+        state.qualityProgress?.let {
+            Text(stringResource(R.string.native_quality_progress, it.scanned, it.total),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         if (view != null) {
-            if (!state.qualityCurrent) Text(stringResource(R.string.native_quality_stale), color = MaterialTheme.colorScheme.error)
+            if (!state.qualityCurrent) Text(stringResource(R.string.native_quality_stale),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             else Text(stringResource(R.string.native_quality_summary, view.ids.size, view.index.facts.size,
-                view.index.evaluatedCount, view.index.cleanCount), style = MaterialTheme.typography.bodySmall)
+                view.index.evaluatedCount, view.index.cleanCount),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -138,8 +145,13 @@ private fun QualityChoice(label: String, selected: Boolean, onClick: () -> Unit)
 private fun QualityDialog(dismiss: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Dialog(dismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {
-            Surface(Modifier.padding(16.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp).fillMaxHeight(),
-                shape = MaterialTheme.shapes.large) {
+            Surface(
+                modifier = Modifier.padding(16.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp).fillMaxHeight(),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                tonalElevation = 3.dp,
+            ) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp), content = content)
             }
         }

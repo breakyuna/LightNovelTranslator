@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -11,8 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
@@ -26,12 +27,15 @@ import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -40,11 +44,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.BuildConfig
 import com.breakyuna.noveltranslator.R
@@ -84,10 +90,12 @@ internal fun NativeMorePage(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item(key = "title") {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.native_more), style = MaterialTheme.typography.headlineSmall)
-                Text(stringResource(R.string.native_more_description), style = MaterialTheme.typography.bodySmall)
-            }
+            NativeSectionCard(
+                title = stringResource(R.string.native_more),
+                subtitle = stringResource(R.string.native_more_description),
+                badge = BuildConfig.VERSION_NAME,
+                badgeTone = NativeTone.PRIMARY,
+            ) {}
         }
         item(key = "rules") {
             RulesCard(
@@ -128,42 +136,50 @@ internal fun NativeMorePage(
                 tag = "native-more-appearance",
             )
         }
-        if (onAppSettings != null) item(key = "app-settings") {
-            MoreEntry(
-                icon = Icons.Default.Settings,
-                title = stringResource(R.string.native_more_app_settings),
-                description = stringResource(R.string.native_more_app_settings_description),
-                enabled = !state.busy,
-                onClick = onAppSettings,
-                tag = "native-more-app-settings",
-            )
+        if (onAppSettings != null) {
+            item(key = "app-settings") {
+                MoreEntry(
+                    icon = Icons.Default.Settings,
+                    title = stringResource(R.string.native_more_app_settings),
+                    description = stringResource(R.string.native_more_app_settings_description),
+                    enabled = !state.busy,
+                    onClick = onAppSettings,
+                    tag = "native-more-app-settings",
+                )
+            }
         }
-        if (onExpertSettings != null) item(key = "expert-settings") {
-            MoreEntry(
-                icon = Icons.Default.Settings,
-                title = stringResource(R.string.native_more_expert_settings),
-                description = stringResource(R.string.native_more_expert_settings_description),
-                enabled = !state.busy,
-                onClick = onExpertSettings,
-                tag = "native-more-expert-settings",
-            )
+        if (onExpertSettings != null) {
+            item(key = "expert-settings") {
+                MoreEntry(
+                    icon = Icons.Default.Settings,
+                    title = stringResource(R.string.native_more_expert_settings),
+                    description = stringResource(R.string.native_more_expert_settings_description),
+                    enabled = !state.busy,
+                    onClick = onExpertSettings,
+                    tag = "native-more-expert-settings",
+                )
+            }
         }
-        if (onAgentSettings != null) item(key = "agent-settings") {
-            MoreEntry(
-                icon = Icons.Default.Settings,
-                title = stringResource(R.string.native_agent_settings),
-                description = stringResource(R.string.native_auto_context_title),
-                enabled = !state.busy,
-                onClick = onAgentSettings,
-                tag = "native-more-agent-settings",
-            )
+        if (onAgentSettings != null) {
+            item(key = "agent-settings") {
+                MoreEntry(
+                    icon = Icons.Default.Settings,
+                    title = stringResource(R.string.native_agent_settings),
+                    description = stringResource(R.string.native_auto_context_title),
+                    enabled = !state.busy,
+                    onClick = onAgentSettings,
+                    tag = "native-more-agent-settings",
+                )
+            }
         }
         item(key = "notifications") {
             MoreEntry(
                 icon = Icons.Default.Notifications,
                 title = stringResource(R.string.native_more_notifications),
-                description = stringResource(if (notificationsGranted) R.string.native_more_notifications_granted
-                    else R.string.native_more_notifications_missing),
+                description = stringResource(
+                    if (notificationsGranted) R.string.native_more_notifications_granted
+                    else R.string.native_more_notifications_missing,
+                ),
                 enabled = !notificationsGranted && !state.busy,
                 onClick = requestNotifications,
                 tag = "native-more-notifications",
@@ -190,43 +206,73 @@ internal fun NativeMorePage(
             )
         }
         item(key = "app-backup") {
-            Card(Modifier.fillMaxWidth().testTag("native-more-app-backup")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.native_more_app_backup), style = MaterialTheme.typography.titleMedium)
-                    Text(stringResource(R.string.native_more_app_backup_description), style = MaterialTheme.typography.bodySmall)
-                    Text(stringResource(R.string.native_more_app_backup_credentials), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onBackupExport, enabled = !state.busy,
-                            modifier = Modifier.testTag("native-more-app-backup-export")) {
-                            Text(stringResource(R.string.native_app_backup_export))
-                        }
-                        OutlinedButton(onClick = onBackupImport, enabled = !state.busy,
-                            modifier = Modifier.testTag("native-more-app-backup-import")) {
-                            Text(stringResource(R.string.native_app_backup_import))
-                        }
+            NativeSectionCard(
+                modifier = Modifier.testTag("native-more-app-backup"),
+                title = stringResource(R.string.native_more_app_backup),
+                subtitle = stringResource(R.string.native_more_app_backup_description),
+            ) {
+                NativeBanner(
+                    text = stringResource(R.string.native_more_app_backup_credentials),
+                    tone = NativeTone.ERROR,
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onBackupExport,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f).testTag("native-more-app-backup-export"),
+                    ) {
+                        Text(stringResource(R.string.native_app_backup_export))
+                    }
+                    OutlinedButton(
+                        onClick = onBackupImport,
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f).testTag("native-more-app-backup-import"),
+                    ) {
+                        Text(stringResource(R.string.native_app_backup_import))
                     }
                 }
             }
         }
         item(key = "formats") {
-            Card(Modifier.fillMaxWidth().testTag("native-more-formats")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(stringResource(R.string.native_more_formats), style = MaterialTheme.typography.titleMedium)
-                    Text(stringResource(R.string.native_more_formats_description), style = MaterialTheme.typography.bodySmall)
-                    val formatLabels = state.supportedFormats.filter { isNativeFormatActive(it) }
-                        .sortedBy { it.name }
-                        .map { stringResource(nativeFormatLabelRes(it)) }
-                    Text(formatLabels.joinToString(", "), style = MaterialTheme.typography.bodySmall)
-                    Text(stringResource(R.string.native_format_frozen_notice),
-                        style = MaterialTheme.typography.bodySmall)
-                }
+            val formatLabels = state.supportedFormats.filter { isNativeFormatActive(it) }
+                .sortedBy { it.name }
+                .map { stringResource(nativeFormatLabelRes(it)) }
+            NativeSectionCard(
+                modifier = Modifier.testTag("native-more-formats"),
+                title = stringResource(R.string.native_more_formats),
+                subtitle = stringResource(R.string.native_more_formats_description),
+                badge = formatLabels.size.toString(),
+                badgeTone = NativeTone.NEUTRAL,
+            ) {
+                Text(formatLabels.joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = stringResource(R.string.native_format_frozen_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         item(key = "about") {
-            Card(Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.large,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
                 ListItem(
-                    leadingContent = { Icon(Icons.Default.Info, null) },
+                    colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+                    leadingContent = {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ) {
+                            Icon(Icons.Default.Info, null, Modifier.padding(8.dp))
+                        }
+                    },
                     headlineContent = { Text(stringResource(R.string.native_more_about)) },
                     supportingContent = { Text(stringResource(R.string.native_more_version, BuildConfig.VERSION_NAME)) },
                 )
@@ -255,7 +301,7 @@ internal fun NativeThemeDialog(
                     }
                     Row(
                         Modifier.fillMaxWidth().clickable { mode = candidate },
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
                         RadioButton(selected = mode == candidate, onClick = { mode = candidate })
                         Text(stringResource(label))
@@ -277,25 +323,61 @@ private fun RulesCard(
     enabled: Boolean,
     onRules: (NativeRuleSection) -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().testTag("native-more-rules")) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Description, null)
-                Text(stringResource(R.string.native_more_rules), style = MaterialTheme.typography.titleMedium)
-            }
-            Text(stringResource(R.string.native_more_rules_description), style = MaterialTheme.typography.bodySmall)
-            NativeRuleSection.entries.forEach { section ->
-                Row(
-                    Modifier.fillMaxWidth()
-                        .clickable(enabled = enabled) { onRules(section) }
-                        .testTag("native-more-rules-${section.slug}")
-                        .padding(vertical = 12.dp),
-                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-more-rules"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 ) {
-                    Icon(section.icon(), null, Modifier.size(20.dp))
-                    Text(stringResource(section.title()), style = MaterialTheme.typography.bodyLarge)
+                    Icon(Icons.Default.Description, null, Modifier.padding(8.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.native_more_rules), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = stringResource(R.string.native_more_rules_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            NativeRuleSection.entries.forEach { section ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = enabled) { onRules(section) }
+                        .testTag("native-more-rules-${section.slug}"),
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Icon(
+                            imageVector = section.icon(),
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            text = stringResource(section.title()),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
             }
         }
@@ -312,19 +394,41 @@ private fun NativeRuleSection.icon(): ImageVector = when (this) {
 
 @Composable
 private fun MoreEntry(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    icon: ImageVector,
     title: String,
     description: String,
     enabled: Boolean,
     onClick: () -> Unit,
     tag: String,
 ) {
-    Card(Modifier.fillMaxWidth().testTag(tag)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag(tag),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
         ListItem(
             modifier = Modifier.clickable(enabled = enabled, onClick = onClick),
-            leadingContent = { Icon(icon, null) },
-            headlineContent = { Text(title) },
-            supportingContent = { Text(description) },
+            colors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.surface),
+            leadingContent = {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = if (enabled) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = if (enabled) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                ) {
+                    Icon(icon, null, Modifier.padding(8.dp))
+                }
+            },
+            headlineContent = {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+            },
+            supportingContent = {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
         )
     }
 }
@@ -340,37 +444,75 @@ private fun StorageCard(
 ) {
     val context = LocalContext.current
     val canManage = !state.busy && state.editor == null && state.manualBatch == null
-    Card(Modifier.fillMaxWidth().testTag("native-more-storage")) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.Folder, null)
-                Text(stringResource(R.string.native_more_storage), style = MaterialTheme.typography.titleMedium)
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-more-storage"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ) {
+                    Icon(Icons.Default.Folder, null, Modifier.padding(8.dp))
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.native_more_storage), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = stringResource(R.string.native_more_storage_description),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
-            Text(stringResource(R.string.native_more_storage_description), style = MaterialTheme.typography.bodySmall)
-            HorizontalDivider()
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Text(project.name, style = MaterialTheme.typography.titleSmall)
-            Text(project.assetPath.value, style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_item_count, project.itemCount), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_more_revision, project.revision), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_more_assets, project.assets.size), style = MaterialTheme.typography.bodySmall)
+            Text(
+                text = project.assetPath.value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                NativeStatusBadge(stringResource(R.string.native_item_count, project.itemCount), tone = NativeTone.PRIMARY)
+                NativeStatusBadge(stringResource(R.string.native_more_revision, project.revision), tone = NativeTone.NEUTRAL)
+                NativeStatusBadge(stringResource(R.string.native_more_assets, project.assets.size), tone = NativeTone.SECONDARY)
+            }
             state.storageBytes?.let {
-                Text(stringResource(R.string.native_more_storage_used,
-                    android.text.format.Formatter.formatFileSize(context, it)), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    text = stringResource(
+                        R.string.native_more_storage_used,
+                        android.text.format.Formatter.formatFileSize(context, it),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
-            if (onFiles != null) OutlinedButton(onClick = onFiles, enabled = canManage,
-                modifier = Modifier.testTag("native-more-storage-open")) {
-                Text(stringResource(R.string.native_files_title))
+            if (onFiles != null) {
+                OutlinedButton(
+                    onClick = onFiles,
+                    enabled = canManage,
+                    modifier = Modifier.fillMaxWidth().testTag("native-more-storage-open"),
+                ) {
+                    Text(stringResource(R.string.native_files_title))
+                }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = cleanup, enabled = canManage) {
-                    Text(stringResource(R.string.native_more_cleanup))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = cleanup, enabled = canManage, modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.native_more_cleanup), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                OutlinedButton(onClick = refresh, enabled = canManage) {
-                    Text(stringResource(R.string.native_refresh))
+                OutlinedButton(onClick = refresh, enabled = canManage, modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.native_refresh), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                OutlinedButton(onClick = refreshStorage, enabled = !state.busy) {
-                    Text(stringResource(R.string.native_more_recalculate))
+                OutlinedButton(onClick = refreshStorage, enabled = !state.busy, modifier = Modifier.weight(1f)) {
+                    Text(stringResource(R.string.native_more_recalculate), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }

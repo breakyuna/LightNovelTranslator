@@ -1,18 +1,22 @@
 package com.breakyuna.noveltranslator.nativeapp
 
 import android.text.format.Formatter
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -20,6 +24,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -76,62 +82,95 @@ internal fun NativeFilesPage(
     LazyColumn(Modifier.fillMaxSize().testTag("native-files-page"),
         contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item(key = "header") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    TextButton(onClick = back, modifier = Modifier.testTag("native-files-back")) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = null)
-                        Text(stringResource(R.string.native_back))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = back, modifier = Modifier.testTag("native-files-back")) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = null)
+                            Spacer(Modifier.width(4.dp))
+                            Text(stringResource(R.string.native_back))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            stringResource(R.string.native_files_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        NativeStatusBadge(
+                            text = stringResource(R.string.native_item_count, project.itemCount),
+                            tone = NativeTone.PRIMARY,
+                        )
                     }
-                    Text(stringResource(R.string.native_files_title), style = MaterialTheme.typography.headlineSmall)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(stringResource(R.string.native_files_description), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(project.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(project.assetPath.value, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (shareAll != null) OutlinedButton(onClick = shareAll, enabled = !busy,
+                        modifier = Modifier.fillMaxWidth().testTag("native-files-share-all")) {
+                        Text(stringResource(R.string.native_files_share_all))
+                    }
                 }
-                Text(stringResource(R.string.native_files_description), style = MaterialTheme.typography.bodySmall)
-                Text(project.name, style = MaterialTheme.typography.titleMedium, maxLines = 2,
-                    overflow = TextOverflow.Ellipsis)
-                Text(project.assetPath.value, style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.native_item_count, project.itemCount),
-                    style = MaterialTheme.typography.bodySmall)
-                if (shareAll != null) OutlinedButton(onClick = shareAll, enabled = !busy,
-                    modifier = Modifier.testTag("native-files-share-all")) {
-                    Text(stringResource(R.string.native_files_share_all))
-                }
-                HorizontalDivider()
             }
         }
         item(key = "assets-header") {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.native_files_assets), style = MaterialTheme.typography.titleMedium)
-                Text(stringResource(R.string.native_files_assets_description), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.native_files_assets),
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.native_files_assets_description),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (inventoryFailed) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
             }
         }
         if (project.assets.isEmpty()) item(key = "assets-empty") {
-            Text(stringResource(R.string.native_files_empty_assets))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Text(stringResource(R.string.native_files_empty_assets), Modifier.padding(14.dp),
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
         items(project.assets, key = { "files-asset-${it.id}" }) { asset ->
             AssetInventoryCard(project.ref, asset, busy, exportAsset, exportBilingual, formatSize,
                 metadata[asset.id], browseRgss)
         }
         if (saveProject != null || exportBackup != null || exportAllBackups != null) item(key = "actions") {
-            Card(Modifier.fillMaxWidth().testTag("native-files-actions")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.native_files_actions), style = MaterialTheme.typography.titleMedium)
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("native-files-actions"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.native_files_actions),
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(stringResource(R.string.native_files_actions_description),
-                        style = MaterialTheme.typography.bodySmall)
-                    saveProject?.let {
-                        OutlinedButton(onClick = it, enabled = !busy,
-                            modifier = Modifier.testTag("native-files-save-lnt")) {
-                            Text(stringResource(R.string.native_save_project))
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        saveProject?.let {
+                            OutlinedButton(onClick = it, enabled = !busy,
+                                modifier = Modifier.weight(1f).testTag("native-files-save-lnt")) {
+                                Text(stringResource(R.string.native_save_project), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
-                    }
-                    exportBackup?.let {
-                        OutlinedButton(onClick = it, enabled = !busy,
-                            modifier = Modifier.testTag("native-files-backup")) {
-                            Text(stringResource(R.string.native_backup_export))
+                        exportBackup?.let {
+                            OutlinedButton(onClick = it, enabled = !busy,
+                                modifier = Modifier.weight(1f).testTag("native-files-backup")) {
+                                Text(stringResource(R.string.native_backup_export), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
                     }
                     exportAllBackups?.let {
                         OutlinedButton(onClick = it, enabled = !busy,
-                            modifier = Modifier.testTag("native-files-backup-all")) {
+                            modifier = Modifier.fillMaxWidth().testTag("native-files-backup-all")) {
                             Text(stringResource(R.string.native_project_set_export))
                         }
                     }
@@ -139,11 +178,26 @@ internal fun NativeFilesPage(
             }
         }
         item(key = "storage") {
-            Card(Modifier.fillMaxWidth().testTag("native-files-storage")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(stringResource(R.string.native_files_storage), style = MaterialTheme.typography.titleMedium)
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("native-files-storage"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(stringResource(R.string.native_files_storage),
+                            style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        TextButton(onClick = refreshStorage, enabled = !busy,
+                            modifier = Modifier.testTag("native-files-recalculate")) {
+                            Text(stringResource(R.string.native_more_recalculate))
+                        }
+                    }
                     Text(stringResource(R.string.native_files_storage_description),
-                        style = MaterialTheme.typography.bodySmall)
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     val usage = state.storageUsage
                     if (usage == null) {
                         Text(stringResource(R.string.native_files_storage_unavailable),
@@ -154,45 +208,53 @@ internal fun NativeFilesPage(
                         StorageRow(R.string.native_files_storage_artifacts, usage.workspaceArtifactBytes, formatSize)
                         StorageRow(R.string.native_files_storage_cache, usage.cacheBytes, formatSize)
                         StorageRow(R.string.native_files_storage_other, usage.otherFilesBytes, formatSize)
-                        HorizontalDivider()
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         StorageRow(R.string.native_files_storage_total, usage.totalPrivateBytes, formatSize)
-                    }
-                    TextButton(onClick = refreshStorage, enabled = !busy,
-                        modifier = Modifier.testTag("native-files-recalculate")) {
-                        Text(stringResource(R.string.native_more_recalculate))
                     }
                 }
             }
         }
         item(key = "retention") {
-            Card(Modifier.fillMaxWidth().testTag("native-files-retention")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("native-files-retention"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(stringResource(R.string.native_files_retention_title),
-                        style = MaterialTheme.typography.titleMedium)
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(stringResource(R.string.native_files_retention_body),
-                        style = MaterialTheme.typography.bodySmall)
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(stringResource(R.string.native_files_retention_failure),
-                        style = MaterialTheme.typography.bodySmall)
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = cleanup, enabled = !busy,
-                        modifier = Modifier.testTag("native-files-cleanup")) {
+                        modifier = Modifier.fillMaxWidth().testTag("native-files-cleanup")) {
                         Text(stringResource(R.string.native_more_cleanup))
                     }
                 }
             }
         }
         item(key = "backups") {
-            Card(Modifier.fillMaxWidth().testTag("native-files-backup-boundaries")) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Card(
+                modifier = Modifier.fillMaxWidth().testTag("native-files-backup-boundaries"),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.native_files_backup_title),
-                        style = MaterialTheme.typography.titleMedium)
+                        style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
                     Text(stringResource(R.string.native_files_backup_warning),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     BackupBoundary(R.string.native_files_backup_lnt_title, R.string.native_files_backup_lnt_body,
                         "native-files-boundary-lnt")
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     BackupBoundary(R.string.native_files_backup_project_title,
                         R.string.native_files_backup_project_body, "native-files-boundary-project")
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     BackupBoundary(R.string.native_files_backup_all_title, R.string.native_files_backup_all_body,
                         "native-files-boundary-all")
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     BackupBoundary(R.string.native_files_backup_app_title, R.string.native_files_backup_app_body,
                         "native-files-boundary-app")
                 }
@@ -218,48 +280,79 @@ private fun AssetInventoryCard(
     val context = LocalContext.current
     val available = inventory?.source != AssetSourceAvailability.INCOMPLETE
     val sha = if (showFullSha) asset.sha256 else asset.sha256.take(12) + "…"
-    Card(Modifier.fillMaxWidth().testTag("native-file-${asset.id}")) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(asset.path.value, maxLines = 2, overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleSmall)
-            Text(stringResource(R.string.native_files_format, filesFormatLabel(asset.format)))
-            Text(stringResource(R.string.native_files_items, asset.itemCount))
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-file-${asset.id}"),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    asset.path.value,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                NativeStatusBadge(
+                    text = stringResource(if (asset.enabled) R.string.native_files_enabled else R.string.native_files_disabled),
+                    tone = if (asset.enabled) NativeTone.PRIMARY else NativeTone.NEUTRAL,
+                )
+            }
+            Text(stringResource(R.string.native_files_format, filesFormatLabel(asset.format)),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(stringResource(R.string.native_files_items, asset.itemCount),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             val updated = inventory?.updatedAtMillis
             Text(stringResource(R.string.native_files_updated, if (updated == null)
                 stringResource(R.string.native_files_time_unknown) else
                 android.text.format.DateUtils.formatDateTime(context, updated,
-                    android.text.format.DateUtils.FORMAT_SHOW_DATE or android.text.format.DateUtils.FORMAT_SHOW_TIME)))
+                    android.text.format.DateUtils.FORMAT_SHOW_DATE or android.text.format.DateUtils.FORMAT_SHOW_TIME)),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(stringResource(when (inventory?.source) {
                 AssetSourceAvailability.PRESENT -> R.string.native_files_source_present
                 AssetSourceAvailability.INCOMPLETE -> R.string.native_files_source_incomplete
                 null -> R.string.native_files_source_unchecked
-            }))
-            Text(stringResource(R.string.native_files_size, formatSize(asset.originalSize)))
-            Text(stringResource(if (asset.enabled) R.string.native_files_enabled
-                else R.string.native_files_disabled),
-                color = if (asset.enabled) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(stringResource(R.string.native_files_sha, sha),
-                style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("native-file-sha-${asset.id}"))
-            TextButton(onClick = { showFullSha = !showFullSha }, enabled = !busy,
-                modifier = Modifier.testTag("native-file-sha-toggle-${asset.id}")) {
-                Text(stringResource(if (showFullSha) R.string.native_files_sha_hide
-                    else R.string.native_files_sha_show))
+            }), style = MaterialTheme.typography.bodySmall,
+                color = if (inventory?.source == AssetSourceAvailability.INCOMPLETE)
+                    MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(stringResource(R.string.native_files_size, formatSize(asset.originalSize)),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.native_files_sha, sha),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f).testTag("native-file-sha-${asset.id}"))
+                TextButton(onClick = { showFullSha = !showFullSha }, enabled = !busy,
+                    modifier = Modifier.testTag("native-file-sha-toggle-${asset.id}")) {
+                    Text(stringResource(if (showFullSha) R.string.native_files_sha_hide
+                        else R.string.native_files_sha_show))
+                }
             }
             if (asset.format == ProjectAssetFormat.RPGMAKER_RGSS && browseRgss != null) {
                 OutlinedButton(onClick = { browseRgss(ref, asset.id) }, enabled = !busy,
-                    modifier = Modifier.testTag("native-file-rgss-browse-${asset.id}")) {
+                    modifier = Modifier.fillMaxWidth().testTag("native-file-rgss-browse-${asset.id}")) {
                     Text(stringResource(R.string.native_rgss_browse))
                 }
             }
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { exportAsset(asset.id) }, enabled = !busy && available,
-                    modifier = Modifier.testTag("native-file-export-${asset.id}")) {
+                    modifier = Modifier.weight(1f).testTag("native-file-export-${asset.id}")) {
                     Text(stringResource(R.string.native_export_asset))
                 }
                 exportBilingual?.let { export ->
                     OutlinedButton(onClick = { export(asset.id) }, enabled = !busy && available,
-                        modifier = Modifier.testTag("native-file-export-bilingual-${asset.id}")) {
+                        modifier = Modifier.weight(1f).testTag("native-file-export-bilingual-${asset.id}")) {
                         Text(stringResource(R.string.native_export_bilingual))
                     }
                 }

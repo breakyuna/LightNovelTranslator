@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -16,19 +17,24 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -79,23 +85,51 @@ internal fun NativeSettingsPage(
     saveLaboratory: (LaboratorySettings) -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().testTag("native-settings-page")) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = back, modifier = Modifier.testTag("native-settings-back")) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text(stringResource(R.string.native_settings_back))
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 1.dp,
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = back, modifier = Modifier.testTag("native-settings-back")) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(R.string.native_settings_back))
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        stringResource(R.string.native_settings_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
         Column(
-            Modifier.weight(1f).imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            Modifier.weight(1f).imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.native_settings_title), style = MaterialTheme.typography.headlineSmall)
-                Text(stringResource(R.string.native_settings_description), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.native_settings_scope_notice), style = MaterialTheme.typography.bodySmall)
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(stringResource(R.string.native_settings_description), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.native_settings_scope_notice), style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            TabRow(selectedTabIndex = section.ordinal, modifier = Modifier.testTag("native-settings-tabs")) {
+            TabRow(
+                selectedTabIndex = section.ordinal,
+                containerColor = MaterialTheme.colorScheme.surface,
+                modifier = Modifier.testTag("native-settings-tabs"),
+            ) {
                 NativeSettingsSection.entries.forEach { candidate ->
                     Tab(
                         selected = candidate == section,
@@ -204,7 +238,7 @@ private fun PersonaCard(saved: String, saveFailed: Boolean, save: (String) -> Un
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         if (saveFailed) Text(stringResource(R.string.native_settings_persona_save_failed),
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        TextButton(
+        Button(
             onClick = { save(draft) },
             enabled = valid,
             modifier = Modifier.testTag("native-settings-persona-save"),
@@ -223,10 +257,17 @@ private fun ExpertSettings(
     reloadLaboratory: () -> Unit = {},
     saveLaboratory: (LaboratorySettings) -> Unit = {},
 ) {
-    Card(Modifier.fillMaxWidth().testTag("native-settings-fail-closed")) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(stringResource(R.string.native_settings_fail_closed_title), style = MaterialTheme.typography.titleMedium)
-            Text(stringResource(R.string.native_settings_fail_closed_body), style = MaterialTheme.typography.bodySmall)
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-settings-fail-closed"),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.4f)),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(stringResource(R.string.native_settings_fail_closed_title),
+                style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSecondaryContainer)
+            Text(stringResource(R.string.native_settings_fail_closed_body), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer)
         }
     }
     NetworkCard(network, reloadNetwork, saveNetwork)
@@ -328,11 +369,11 @@ private fun NetworkForm(
     if (!valid) Text(stringResource(R.string.native_settings_network_invalid),
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = { save(input) }, enabled = valid && !state.saving,
+        Button(onClick = { save(input) }, enabled = valid && !state.saving,
             modifier = Modifier.weight(1f).testTag("native-settings-network-save")) {
             Text(stringResource(if (state.saving) R.string.native_settings_saving else R.string.native_save))
         }
-        TextButton(onClick = reload, enabled = !state.saving,
+        OutlinedButton(onClick = reload, enabled = !state.saving,
             modifier = Modifier.weight(1f).testTag("native-settings-network-reload")) {
             Text(stringResource(R.string.native_settings_reload))
         }
@@ -410,11 +451,11 @@ private fun RequestLimitsForm(
     if (!valid) Text(stringResource(R.string.native_settings_request_invalid),
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        TextButton(onClick = { save(input) }, enabled = valid && !state.saving,
+        Button(onClick = { save(input) }, enabled = valid && !state.saving,
             modifier = Modifier.weight(1f).testTag("native-settings-limits-save")) {
             Text(stringResource(if (state.saving) R.string.native_settings_saving else R.string.native_save))
         }
-        TextButton(onClick = reload, enabled = !state.saving,
+        OutlinedButton(onClick = reload, enabled = !state.saving,
             modifier = Modifier.weight(1f).testTag("native-settings-limits-reload")) {
             Text(stringResource(R.string.native_settings_reload))
         }
@@ -435,10 +476,15 @@ private fun TimeoutField(label: Int, value: String, update: (String) -> Unit, ta
 
 @Composable
 private fun SettingsCard(title: Int, description: Int?, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(title), style = MaterialTheme.typography.titleMedium)
-            description?.let { Text(stringResource(it), style = MaterialTheme.typography.bodySmall) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            description?.let { Text(stringResource(it), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant) }
             content()
         }
     }
@@ -447,43 +493,61 @@ private fun SettingsCard(title: Int, description: Int?, content: @Composable () 
 @Composable
 private fun ChoiceRow(selected: Boolean, label: String, onClick: () -> Unit, tag: String) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick).testTag(tag),
+        Modifier.fillMaxWidth().heightIn(min = 44.dp).clickable(onClick = onClick).testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         RadioButton(selected = selected, onClick = onClick)
-        Text(label, Modifier.padding(start = 8.dp))
+        Text(
+            label,
+            Modifier.padding(start = 8.dp),
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        )
     }
 }
 
 @Composable
 private fun LaboratorySettingsSection(settings: LaboratorySettings, loaded: Boolean, saving: Boolean,
     failed: Boolean, reload: () -> Unit, save: (LaboratorySettings) -> Unit) {
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(stringResource(R.string.native_laboratory_title), style = MaterialTheme.typography.titleMedium)
-        Text(stringResource(R.string.native_laboratory_description), style = MaterialTheme.typography.bodySmall)
-        Text(stringResource(R.string.native_laboratory_scope_notice), style = MaterialTheme.typography.bodySmall)
-        if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
-        if (failed) Text(stringResource(R.string.native_laboratory_error), color = MaterialTheme.colorScheme.error)
-        if (!loaded && !saving) {
-            Text(stringResource(R.string.native_laboratory_loading), style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = reload) { Text(stringResource(R.string.native_refresh)) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(stringResource(R.string.native_laboratory_title),
+                style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.native_laboratory_description), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(stringResource(R.string.native_laboratory_scope_notice), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (failed) Text(stringResource(R.string.native_laboratory_error), color = MaterialTheme.colorScheme.error)
+            if (!loaded && !saving) {
+                Text(stringResource(R.string.native_laboratory_loading), style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = reload) { Text(stringResource(R.string.native_refresh)) }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LaboratorySwitch(stringResource(R.string.native_laboratory_clean_ruby),
+                stringResource(R.string.native_laboratory_clean_ruby_description),
+                settings.cleanRuby, enabled = loaded && !saving) {
+                save(settings.copy(cleanRuby = it))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LaboratorySwitch(stringResource(R.string.native_laboratory_prompt),
+                stringResource(R.string.native_laboratory_prompt_description),
+                settings.promptEnhancement, enabled = loaded && !saving) {
+                save(settings.copy(promptEnhancement = it))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            LaboratorySwitch(stringResource(R.string.native_laboratory_dedup),
+                stringResource(R.string.native_laboratory_dedup_description),
+                settings.duplicateSourceDeduplication, enabled = loaded && !saving) {
+                save(settings.copy(duplicateSourceDeduplication = it))
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Text(stringResource(R.string.native_laboratory_mtool_note), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        LaboratorySwitch(stringResource(R.string.native_laboratory_clean_ruby),
-            stringResource(R.string.native_laboratory_clean_ruby_description),
-            settings.cleanRuby, enabled = loaded && !saving) {
-            save(settings.copy(cleanRuby = it))
-        }
-        LaboratorySwitch(stringResource(R.string.native_laboratory_prompt),
-            stringResource(R.string.native_laboratory_prompt_description),
-            settings.promptEnhancement, enabled = loaded && !saving) {
-            save(settings.copy(promptEnhancement = it))
-        }
-        LaboratorySwitch(stringResource(R.string.native_laboratory_dedup),
-            stringResource(R.string.native_laboratory_dedup_description),
-            settings.duplicateSourceDeduplication, enabled = loaded && !saving) {
-            save(settings.copy(duplicateSourceDeduplication = it))
-        }
-        Text(stringResource(R.string.native_laboratory_mtool_note), style = MaterialTheme.typography.bodySmall)
     }
 }
 

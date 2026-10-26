@@ -1,12 +1,15 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
@@ -19,25 +22,50 @@ internal fun NativeEditorQuality(draft: NativeEditDraft, busy: Boolean, enabled:
     var targetTag by rememberSaveable(draft.ref.projectId.value, draft.ref.instanceId.value,
         draft.ref.generation.value, draft.item.id.value) { mutableStateOf(ProofreadingLanguage.ZH.name) }
     val options = TextProofreadingOptions(ProofreadingLanguage.valueOf(sourceTag), ProofreadingLanguage.valueOf(targetTag))
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(stringResource(R.string.native_quality_title), style = MaterialTheme.typography.titleSmall)
-        Text(stringResource(R.string.native_quality_hint), style = MaterialTheme.typography.bodySmall)
-        LanguageMenu(R.string.native_remote_source, options.source, ProofreadingLanguage.entries, !busy) { sourceTag = it.name }
-        LanguageMenu(R.string.native_remote_target, options.target,
-            ProofreadingLanguage.entries.filter { it != ProofreadingLanguage.AUTO }, !busy) { targetTag = it.name }
-        OutlinedButton(modifier = Modifier.testTag("native-quality-check"), onClick = { onInspect(options) }, enabled = !busy && enabled && !draft.conflict) {
-            Text(stringResource(R.string.native_quality_check))
-        }
-        if (!enabled || draft.conflict) Text(stringResource(R.string.native_quality_unavailable))
-        if (enabled && !draft.conflict && result != null && result.options == options) {
-            when {
-                !result.evaluated -> Text(stringResource(R.string.native_quality_skipped))
-                result.codes.isEmpty() -> Text(stringResource(R.string.native_quality_clear))
-                else -> result.codes.forEach { Text(stringResource(it.qualityLabel()), color = MaterialTheme.colorScheme.error) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.native_quality_title),
+                    style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                OutlinedButton(
+                    modifier = Modifier.testTag("native-quality-check"),
+                    onClick = { onInspect(options) },
+                    enabled = !busy && enabled && !draft.conflict,
+                ) {
+                    Text(stringResource(R.string.native_quality_check))
+                }
             }
-            if (result.missingTermRuleIds.isNotEmpty())
-                Text(stringResource(R.string.native_quality_missing_terms, result.missingTermRuleIds.joinToString(", ")),
-                    style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.native_quality_hint), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                LanguageMenu(R.string.native_remote_source, options.source, ProofreadingLanguage.entries, !busy) { sourceTag = it.name }
+                LanguageMenu(R.string.native_remote_target, options.target,
+                    ProofreadingLanguage.entries.filter { it != ProofreadingLanguage.AUTO }, !busy) { targetTag = it.name }
+            }
+            if (!enabled || draft.conflict) Text(stringResource(R.string.native_quality_unavailable),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (enabled && !draft.conflict && result != null && result.options == options) {
+                when {
+                    !result.evaluated -> Text(stringResource(R.string.native_quality_skipped), style = MaterialTheme.typography.bodySmall)
+                    result.codes.isEmpty() -> Text(stringResource(R.string.native_quality_clear),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+                    else -> result.codes.forEach {
+                        Text(stringResource(it.qualityLabel()),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (result.missingTermRuleIds.isNotEmpty())
+                    Text(stringResource(R.string.native_quality_missing_terms, result.missingTermRuleIds.joinToString(", ")),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
         }
     }
 }

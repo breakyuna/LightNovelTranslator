@@ -1,6 +1,6 @@
 # S2 原生 Agent 单条 TXT 审批切片
 
-后续源码边界：持久执行记录/中断核对及 Room v9 源码已由 #158 覆盖，见 [HANDOFF §3](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
+后续源码边界：持久执行记录/中断核对、Room v18 与检查点源码已在 `1d3dd1c` 构建/测试，见 [HANDOFF §3](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。
 
 当前验证边界：单条审批/Koog 切片已由 #158 覆盖；完整 S2 仍未验收，详见 [HANDOFF §3](HANDOFF.md)。§24 原始开发轮的未执行说明是历史记录。
 
@@ -28,7 +28,7 @@ NativeAppDatabase 从 v1 升至 v2，保留 project_instances，新增：
 | native_agent_requests | attempt、完整请求指纹、请求身份、PREPARED/DISPATCHED/COMPLETED、纯文本回执及 usage |
 | native_agent_approvals | 不可变单条 payload、实例/代际/Project/Chat/Run/命令、摘要、修订/对象指纹和裁决结果 |
 
-MIGRATION_1_2 只新增表/索引，不清库，不访问旧阅读 Room v6。该切片当时原生 `.lnt` 仍为 schema v1，当前工程已升至 v5。已提交 Room 1.json 保留；**2—9.json 必须由后续获授权 PC/CI 的 KSP 生成和审阅，本机未生成、不手写，不声称迁移已验证。**
+MIGRATION_1_2 只新增表/索引，不清库，不访问旧阅读 Room v6。该切片当时原生 `.lnt` 仍为 schema v1，当前工程已升至 v8。已提交 Room 1.json 保留；**2—18.json 必须由后续获授权 PC/CI 的 KSP 生成和审阅，本机未生成、不手写，不声称迁移已验证。**
 
 请求准备比较 AgentRequestFingerprint；DISPATCHED 只允许一个 CAS 获胜者，重启看到未结算请求返回 Uncertain，不自动重发。纯文本响应与完整五类 usage 在同一 Room 更新中保存。本切片显式拒绝工具调用、思考或 provider continuation 响应，避免默默丢弃字段；后续完整 codec 仍待实现。模拟用量为 UNKNOWN，不报告伪造的零 Token/费用。
 

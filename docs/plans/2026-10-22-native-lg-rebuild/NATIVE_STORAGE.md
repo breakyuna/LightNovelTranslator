@@ -8,9 +8,9 @@
 
 - 原生文件为 SQLite `.lnt`，`application_id = 0x4c4e5431`（LNT1），`user_version = 1`，对象/命令指纹编码版本为 1。打开时检查标识、版本与 SQLite 头部格式版本字节（18/19 必须为 1 = 回滚日志；2 = WAL 直接拒绝）。未来版本、WAL 与外来格式直接拒绝，不自动升级或清库。
   不能改用 `PRAGMA journal_mode` 断言：Android 每次可写打开都会把连接日志模式设成平台默认（AOSP 为 `TRUNCATE`），而 `DELETE/TRUNCATE/PERSIST` 不写进文件头，只有 WAL 持久化。快照保证的是"不是 WAL、经 ATTACH 逻辑复制"，不是某个连接的 rollback 子模式。
-- 以下描述历史单 TXT v1 切片；当前源码为多资产 v7，包含 v2 规则表、v3 资产/设置扩展、v4 归档移除、v5 姓名快照、v6 审批条目批次回执及 v7 PDF 页审批回执，不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
+- 以下描述历史单 TXT v1 切片；当前源码为多资产 v8，包含 v2 规则表、v3 资产/设置扩展、v4 归档移除、v5 姓名快照、v6 审批条目批次回执、v7 PDF 页审批回执及 v8 可验证正文/姓名组合回执（表不变），不是全部工程模型的冻结版。PDF、规则、Chat、格式私有字段、兼容保留区等须通过后续 schema 版本/迁移扩展；不得将旧数据导入这个不完整目标而静默丢字段。
 - 私有工程位于 `filesDir/native_projects/<本机生成的 UUID>/project.lnt`。路径不使用工程名称或外部文件名；逻辑资产路径经 `RelativePath` 验证，实际文件访问拒绝符号链接改写。
-- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v16：v1→v2 Agent 记录、v2→v3 执行表、v3→v4 请求元数据、v4→v5 协议/多密钥、v5→v6 用量账本、v6→v7 固定翻译任务、v7→v8 响应/提交暂存、v8→v9 Agent 输入队列/steer、v9→v10 任务终止、v10→v11 成员裁决、v11→v12 手动摘要、v12→v13 历史分支、v13→v14 批量条目提案与成员、v14→v15 规则/提示词提案、v15→v16 PDF 页提案与成员；导出/升级验证边界见 HANDOFF），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
+- 新应用索引使用独立 Room `lnt_native_app.db`（当前源码 v18：v1→v2 Agent 记录、v2→v3 执行表、v3→v4 请求元数据、v4→v5 协议/多密钥、v5→v6 用量账本、v6→v7 固定翻译任务、v7→v8 响应/提交暂存、v8→v9 Agent 输入队列/steer、v9→v10 任务终止、v10→v11 成员裁决、v11→v12 手动摘要、v12→v13 历史分支、v13→v14 批量条目提案与成员、v14→v15 规则/提示词提案、v15→v16 PDF 页提案与成员、v16→v17 profile/资产导入、v17→v18 补表；导出/升级验证边界见 HANDOFF），与旧 Room v6 完全分开。原生工程只保存来源工程身份；本地实例和恢复代际由 Room 索引拥有。当前只生成初始代际 1，没有覆盖恢复/代际推进入口。
 - 原稿使用 `raw-v1` 原始字节分块，单块最多 64 KiB，保存原始长度及 SHA-256；不是 Zstd，也不冒充 LG schema。外部工程转换已取消，仅维护原生 `.lnt`。
 
 ## 2. Schema 与端口
@@ -82,7 +82,7 @@
 
 nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支持 `.lnt`、译文、双语和原稿，流的写入/flush/close 全部成功才提示完成。目标 URI 与发起时的工程身份绑定。失败保留本地事实及适配器临时产物；cacheDir 可能被系统回收，不能代替备份。清理仅针对 native_project_snapshots 中自有 snapshot-* 的 lnt/txt/source 普通文件，进行中复制快照受保护，不删除项目、原稿或其他缓存。
 
-尚未实现来源 URI 关联/内容变化冲突策略、覆盖恢复与代际推进、完整应用级备份（设置/凭据/会话）、复杂格式、完整持久审批及完整后台执行接续；旧 LNT 数据迁移已按用户决定移出当前范围；后续单条审批、Agent 对话和模型翻译源码边界见 §7—8 与 HANDOFF §23—25。该导入切片当时未改变 `.lnt` v1，后续 Agent 切片引入 Room v2；当前 `.lnt` v5、Room v13，源码由工作区增量覆盖（#158 仅到 §101）。新导入/界面的 CI 与用户实机检查记录见 HANDOFF §22；本机仍只做静态审查。
+尚未实现来源 URI 关联/内容变化冲突策略、覆盖恢复与代际推进、完整应用级备份（设置/凭据/会话）、复杂格式、完整持久审批及完整后台执行接续；旧 LNT 数据迁移已按用户决定移出当前范围；后续单条审批、Agent 对话和模型翻译源码边界见 §7—8 与 HANDOFF §3。该导入切片当时未改变 `.lnt` v1，后续 Agent 切片引入 Room v2；当前 `.lnt` v8、Room v18，`1d3dd1c` 已构建/单测覆盖，权威 2—18.json 与真实设备升级仍缺。新导入/界面的 CI 与用户实机检查记录见 HANDOFF §22；本机仍只做静态审查。
 
 
 ## 7. 本地模拟翻译写回扩展
@@ -92,31 +92,31 @@ nativeapp 的系统 OpenDocument 导入采用私有副本；CreateDocument 支�
 
 ## 8. Agent 单条审批与应用 schema v2
 
-§24 切片引入 NativeAgentStore 与应用 Room v2（当前源码应用库为 v13，v1→v8 迁移源码已由 #158 覆盖，v9—v13 为工作区增量，2—13.json 导出与新版本设备升级仍待补）：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不改变工程 schema（当时 v1）和旧阅读库；Room 2—13.json 尚缺，后续 PC/CI 生成审阅；v1→v8 运行迁移源码已由 #158 覆盖，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §24。
+§24 切片引入 NativeAgentStore 与应用 Room v2（当前应用库为 v18；v1→v8 迁移源码已由 #158 覆盖，v9—v18 已提交并在 `1d3dd1c` 构建/单测覆盖，权威 2—18.json 导出与真实设备升级仍待补）：本机历史/请求回执/不可变审批正文不写入 .lnt。显式允许一次后，存储内部 approvedEdit 验证真实 AGENT 租约，通过 ProjectWriteStore 保存条目与命令回执；approvedReceipt 另外校验完整命令摘要，供重启核对。新增应用 MIGRATION_1_2 不改变工程 schema（当时 v1）和旧阅读库；v1→v8 运行迁移源码已由 #158 覆盖，仍不代替导出与设备升级验收。详见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)，实际进度见 HANDOFF §3。
 
 ## v3 多资产扩展基础
 
-`NativeProjectFormat.SCHEMA_VERSION` 当前为 5。v3 引入 assets 顺序/启用/格式元数据，items 增加 asset/slot/tag/name/extra_field/skip_internal_filter 及扩展状态；project_settings、asset_receipts、asset_revisions 参与修订与校验；v4 增加 archived_items 与资产移除归档；v5 给 item_revisions 增加 name_source/name_translation 快照。ProjectAssetPort 提供追加/删除/重排/重置/设置/读回/导出，写入仍经写租约和命令回执；工作台已接追加及按资产导出，其余端口不等于完整管理 UI。旧版本升级在需要 v3 资产操作时经 ensureV3、v4 移除时经 ensureV4、姓名写事务前经 ensureV5 升级；旧读取/编辑仍有版本感知路径，不声称只要打开就强制升级。以下旧 v1 表结构是历史基础，当前 schema 以 NativeProjectDatabase/NativeImportValidator 为准。
+`NativeProjectFormat.SCHEMA_VERSION` 当前为 8。v3 引入 assets 顺序/启用/格式元数据，items 增加 asset/slot/tag/name/extra_field/skip_internal_filter 及扩展状态；project_settings、asset_receipts、asset_revisions 参与修订与校验；v4 增加 archived_items 与资产移除归档；v5 给 item_revisions 增加 name_source/name_translation 快照；v6 增加审批条目批次回执、v7 增加 PDF 页审批回执、v8 增加可验证正文/姓名组合回执（表不变）。ProjectAssetPort 提供追加/删除/重排/重置/设置/读回/导出，写入仍经写租约和命令回执；工作台已接追加及按资产导出，其余端口不等于完整管理 UI。旧版本升级在需要 v3 资产操作时经 ensureV3、v4 移除时经 ensureV4、姓名写事务前经 ensureV5 升级；旧读取/编辑仍有版本感知路径，不声称只要打开就强制升级。以下旧 v1 表结构是历史基础，当前 schema 以 NativeProjectDatabase/NativeImportValidator 为准。
 
 ## v4 资产移除归档
 
-HANDOFF §58 将原生 `.lnt` 新建版本升至 4；§110 升至 5 并增加逐修订姓名快照，二者均在未提交工作区。archived_items 保留被移除条目完整文本/格式身份与指纹，item_revisions/回执保持不变；资产移除在同事务归档后删除活动资产和原始字节。快照包含归档；导入按活动/归档联合身份验证修订链、移除关系与高水位。活动加归档累计仍受工程条目上限约束。旧 v1/v2/v3 只在移除需要时事务升级，不要求只读打开就迁移。归档不参加翻译/统计/普通导出，外部源文件不触碰，暂未提供归档恢复 UI。源码未构建、未设备验证。
+HANDOFF §58 将原生 `.lnt` 新建版本升至 4；§110 升至 5 并增加逐修订姓名快照，二者均已提交。archived_items 保留被移除条目完整文本/格式身份与指纹，item_revisions/回执保持不变；资产移除在同事务归档后删除活动资产和原始字节。快照包含归档；导入按活动/归档联合身份验证修订链、移除关系与高水位。活动加归档累计仍受工程条目上限约束。旧 v1/v2/v3 只在移除需要时事务升级，不要求只读打开就迁移。归档不参加翻译/统计/普通导出，外部源文件不触碰，暂未提供归档恢复 UI。源码已随 `1d3dd1c` 构建/测试；设备验证仍缺。
 
 ## 工程备份与恢复（§70，#158 覆盖）
 
 `NativeProjectBackupService` 导出 ZIP：`manifest.json`（严格原生 envelope，含格式/版本/名称/来源身份/修订/字节数/SHA-256/时间）和 `project.lnt`。导出先经 `saveProject` 生成并校验 `.lnt`，再写压缩包；恢复只接受这两个精确条目，限制 manifest 1 MiB、工程 1 GiB，校验长度/摘要后经 `importProject` 创建新实例，不覆盖现有工程，也不恢复任何执行授权。凭据、Agent 会话、模型设置、预设/模板库不进入包。工作台已有 SAF 导出/恢复入口；运行中、编辑草稿、人工批次、未保存规则或加载不完整时禁用。该切片只覆盖单工程，不是全应用数据备份；源码已由 #158 覆盖，未设备验证。
 
-## 项目集备份（§110，未构建）
+## 项目集备份（§110）
 
 `NativeProjectSetBackupService` 将全部可读工程逐个经 `saveProject` 写成 `.lnt` 快照，ZIP 内含严格 `manifest.json` 和 `projects/NNNN.lnt`；恢复先校验条目/长度/SHA-256，再按顺序 `importProject` 创建新的本地实例。它不覆盖现有工程、不携带执行授权、凭据、Agent 会话、模型设置、模板/预设库或应用设置；多工程恢复不是跨工程事务，部分导入失败会保留已导入工程并上报。工作台已接 SAF 导出/恢复入口。
 
-## 任务人工终止裁决（Room v10，未构建）
+## 任务人工终止裁决（Room v10）
 
 NativeTranslationTaskStore 实现 TranslationTaskReviewPort，按固定工程实例/代际/Run 读取有界元数据快照；绑定任务状态、配置、恢复字段、已提交/剩余数及未知请求数的指纹。独占运行协调器写预留下重新核对，Room v10 同事务写入 native_translation_task_decisions 与 CANCELLED 终态。命令重放核对原指纹；既有目标、响应、暂存与回执不删除，不发送付费请求。重试、跳过和全任务队列执行仍待接线。
 
 显式错误成员重试见 HANDOFF §114：有界读取原任务目标，按当前修订/ERROR 状态/指纹重新固定所选成员；新 Run、新预算和 RETRY_ERRORS 裁决关联在 Room v10 同事务建立。未知派发拒绝，原任务事实与成功条目不变，准备不自动付费执行。
 
-Room 当前源码已到 v16：v10 任务终止、v11 逐条成员决策、v12 手动上下文摘要、v13 历史分支、v14 批量条目提案、v15 规则/提示词提案、v16 PDF 页提案；v9—v16 尚未构建验证，#158 不覆盖这些增量。翻译队列使用独立私有 AtomicFile（当前快照 v2，审计执行修订），不新增 Room 表。
+Room 当前源码为 v18：v10 任务终止、v11 逐条成员决策、v12 手动上下文摘要、v13 历史分支、v14 批量条目提案、v15 规则/提示词提案、v16 PDF 页提案、v17 profile/资产导入、v18 补表；v9—v18 已由 `1d3dd1c` 构建/单测覆盖，权威 2—18.json 与真实设备升级仍缺。翻译队列使用独立私有 AtomicFile（当前快照 v2，审计执行修订），不新增 Room 表。
 
 ## v6 审批条目批次与原生审计
 

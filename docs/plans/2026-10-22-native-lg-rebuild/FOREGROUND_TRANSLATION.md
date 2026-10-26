@@ -1,6 +1,6 @@
 # 模拟翻译的前台执行切片
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 开发记录见 HANDOFF §34—36，早期证据见 [HANDOFF §41](HANDOFF.md)：提交 `8e74fff` 的 Actions #136 覆盖了当轮构建、测试与 Lint；当前总基线为 `77daf74` / #158，新增设备验收仍缺。范围扩展契约见 HANDOFF §39：用户显式选择本页或整工程本地模拟；Agent 对话已由 §78 接应用级前台执行器，远程 TXT 翻译已有 §43/§49 接线与 CI；队列、暂停和进程重启后的原任务自动接续仍未完成（§83—97 已补暂停与有证据边界的显式恢复）。
 
@@ -35,7 +35,7 @@ Intent 只含随机执行令牌，不携带正文、Key、项目路径或可重�
 
 §36 另新增 8 个回归用例：游标纯函数 3、ViewModel/Robolectric 2、执行器 1、Runtime 1、存储 1。ViewModel 夹具使用真实存储及本地模型，在读取前后人为推进一个真实批次提交，再销毁并重建 ViewModel，检查同一 handle、页范围、进度、不重发与结束后目录恢复；另覆盖全部分页读取失败时仍可观察/停止及恢复失败保留告警。执行器检查启动失败后在异常处理前/日志收尾中再次停止均保持 FAILED；Runtime 检查资源释放前保留选择、释放后清理及旧租约隔离。上述用例已取得 §41 的 CI 运行证据；仍没有真实 Activity 重建的设备证据。
 
-#158 已覆盖全量任务及新增用例的构建/测试证据；仍须在 PC/获授权 CI 录制并查看组件截图；设备须覆盖 API 24、26、33、35/36 的启动/停止、通知拒绝、切后台/锁屏/任务移除、Activity 重建、系统超时和进程死亡。前台 Service 不保证保活或屏幕关闭后的 CPU 进度，不申请 WakeLock，不增加自动恢复/付费调用。没有 Room/`.lnt` schema 变更；Room 仍为 v9，2—9.json 和已有视觉/供应商验收缺口继续保留。
+#158 已覆盖全量任务及新增用例的构建/测试证据；仍须在 PC/获授权 CI 录制并查看组件截图；设备须覆盖 API 24、26、33、35/36 的启动/停止、通知拒绝、切后台/锁屏/任务移除、Activity 重建、系统超时和进程死亡。前台 Service 不保证保活或屏幕关闭后的 CPU 进度，不申请 WakeLock，不增加自动恢复/付费调用。没有 Room/`.lnt` schema 变更；Room 为 v18，2—18.json 和已有视觉/供应商验收缺口继续保留。
 
 ## 整工程范围
 

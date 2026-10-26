@@ -1,6 +1,6 @@
 # TXT 校对查询与统计契约
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 本切片实现 R15/R32 的状态/文本查询基础，不代表完整校对台。唯一实施记录与验证边界见 [HANDOFF §3](HANDOFF.md)；完整目标仍见 [UI_SPEC U04](UI_SPEC.md)。
 
@@ -32,7 +32,7 @@ TextItemWindow 是 1—100 个严格递增、去重且自持快照的 ItemId。�
 
 #158 的全量构建、测试/Lint 已通过，见 HANDOFF §3。仍待 PC/获授权 CI 的截图录制与实际查看，以及设备的输入法、横屏、语言切换、返回和列表交互检查。SQL 全工程搜索/统计的目标设备耗时与取消延迟尚未测量，不登记性能结论；现有 TXT 字节/条数预算仍适用。
 
-当前页批选、状态与清空译文的写入契约见 [MANUAL_BATCH](MANUAL_BATCH.md)，开发记录见 HANDOFF §38，当前 CI 与未验证边界见 §3。§46—47 另增警告/缺失术语筛选统计、上一条/下一条匹配定位与单条草稿替换源码，已由 #158 覆盖；§62/§63 已补普通查询与质量筛选集合的全量批写，§106/§107 工作区增量补全查询字面替换与正则/JavaScript 替换。仍须实现资产/完整术语筛选、姓名/PDF 页级事实、完整六类警告兼容与宽屏表格；本切片不关闭 R15/R32 或完整 S1/S2。
+当前页批选、状态与清空译文的写入契约见 [MANUAL_BATCH](MANUAL_BATCH.md)，开发记录见 HANDOFF §38，当前 CI 与未验证边界见 §3。§46—47 另增警告/缺失术语筛选统计、上一条/下一条匹配定位与单条草稿替换源码，已由 #158 覆盖；§62/§63 已补普通查询与质量筛选集合的全量批写，§106/§107 已补全查询字面替换与正则/JavaScript 替换。仍须实现资产/完整术语筛选、姓名/PDF 页级事实、完整六类警告兼容与宽屏表格；本切片不关闭 R15/R32 或完整 S1/S2。
 
 §45 另增完整编辑草稿的显式本地六类检查源码，已由 #158 覆盖，实际算法与局限见 [TEXT_QUALITY](TEXT_QUALITY.md)；后续 §46 的列表接线见 [QUALITY_SCAN](QUALITY_SCAN.md)，§47 草稿替换见 [EDITOR_TOOLS](EDITOR_TOOLS.md)。
 

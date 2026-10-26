@@ -1,8 +1,8 @@
 # TXT 人工批量选择与原子写入
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
-本切片对应 R15/R32 的当前页批选、状态修改和清空译文；实施与证据只记入 [HANDOFF §38](HANDOFF.md)。它不授予 Agent 写权限；§62/§63 已扩展全查询/质量筛选集合批写，§106/§107 工作区增量补查找替换。查询窗口见 [PROOFREADING_QUERY](PROOFREADING_QUERY.md)。
+本切片对应 R15/R32 的当前页批选、状态修改和清空译文；实施与证据只记入 [HANDOFF §38](HANDOFF.md)。它不授予 Agent 写权限；§62/§63 已扩展全查询/质量筛选集合批写，§106/§107 已补查找替换。查询窗口见 [PROOFREADING_QUERY](PROOFREADING_QUERY.md)。
 
 ## 固定选择与确认
 
@@ -16,7 +16,7 @@ ManualTextBatch 固定逻辑 commandId、完整 LocalProjectRef、预期修订�
 
 调用链：`NativeProjectViewModel.confirmManualBatch → NativeTextProjectStore.editBatch → ProjectWriteStore.editBatch`。先取得既有人工 Runtime 写租约，再在同一外层 SQLite 事务内核对全批修订/成员/指纹，之后逐条走既有编辑、对象指纹、item_revisions 和 write_receipts。每个实际修改增加一个修订；冲突拒绝整批，取消/异常回滚全部，不能部分成功。模型/Agent 运行时不能取得人工写租约。
 
-不修改工程 schema（当前 `.lnt` v5）或导入校验。每条成功回执仍保存普通 ManualTextEdit 的标准 64 位摘要，与历史内容一致。批次全量 payload 摘要绑定在生成的子命令 ID：`manual-batch-v1:<logicalCommandHash>:<payloadHash>:<index>`。哈希由 UTF-8 SHA-256 生成，原始命令不拼入 SQL 模式；按实例/代际及生成前缀核对已有组回执。
+不修改工程 schema（当前 `.lnt` v8）或导入校验。每条成功回执仍保存普通 ManualTextEdit 的标准 64 位摘要，与历史内容一致。批次全量 payload 摘要绑定在生成的子命令 ID：`manual-batch-v1:<logicalCommandHash>:<payloadHash>:<index>`。哈希由 UTF-8 SHA-256 生成，原始命令不拼入 SQL 模式；按实例/代际及生成前缀核对已有组回执。
 
 同一逻辑命令只对应一套 payload。已有回执必须数量完整、子命令匹配、条目/状态/修订序列一致；操作、目标或基线变化不能复用旧命令。部分或碰撞回执直接拒绝，不补写余项；单条和批量逻辑命令不能互相复用。
 
@@ -36,7 +36,7 @@ ManualTextBatch 固定逻辑 commandId、完整 LocalProjectRef、预期修订�
 
 ## 全查询增量（#158 覆盖）
 
-HANDOFF §62 新增按完整 SQL 查询准备固定目标集，最多工程 100,000 条；原本页接口仍最多 100 条。大预览只含 ID/行号/指纹，在应用私有文件恢复，SavedState 仅存摘要。确认/重放不重新查询，修订或指纹冲突全批拒绝，写入仍为同一原子事务；预检不加载整工程正文。质量二级筛选见 §63，查找替换见 §106/§107 工作区增量。大规模耗时、UI 与恢复用例仍需设备验证。
+HANDOFF §62 新增按完整 SQL 查询准备固定目标集，最多工程 100,000 条；原本页接口仍最多 100 条。大预览只含 ID/行号/指纹，在应用私有文件恢复，SavedState 仅存摘要。确认/重放不重新查询，修订或指纹冲突全批拒绝，写入仍为同一原子事务；预检不加载整工程正文。质量二级筛选见 §63，查找替换见 §106/§107。大规模耗时、UI 与恢复用例仍需设备验证。
 
 ## 质量选择批写增量（#158 覆盖）
 

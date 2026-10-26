@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -7,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -53,24 +55,88 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
         withFrameNanos { }
         if (following && !scroll.isScrollInProgress && preview.phase != AgentPreviewPhase.INTERRUPTED) scroll.scrollTo(scroll.maxValue)
     }
-    Card(Modifier.fillMaxWidth().testTag("native-agent-stream-preview")) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-agent-stream-preview"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(
+            1.dp,
+            if (preview.phase == AgentPreviewPhase.INTERRUPTED) MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+        ),
+    ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(when (preview.phase) {
-                AgentPreviewPhase.RECEIVING -> R.string.native_stream_receiving
-                AgentPreviewPhase.RECORDING -> R.string.native_stream_recording
-                AgentPreviewPhase.INTERRUPTED -> R.string.native_stream_interrupted
-            }), style = MaterialTheme.typography.labelMedium)
-            if (preview.phase == AgentPreviewPhase.RECEIVING) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (preview.phase == AgentPreviewPhase.INTERRUPTED) Text(stringResource(R.string.native_stream_partial_notice), style = MaterialTheme.typography.bodySmall)
-            if (preview.clipped) Text(stringResource(R.string.native_stream_tail), style = MaterialTheme.typography.labelSmall)
-            if (preview.thinking.isNotEmpty()) TextButton(onClick = { thinking = !thinking }) { Text(stringResource(R.string.native_agent_reasoning)) }
-            SelectionContainer {
-                Column(Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(scroll), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (thinking) Text(preview.thinking, style = MaterialTheme.typography.bodySmall)
-                    if (preview.text.isNotEmpty()) Text(preview.text)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                NativeStatusBadge(
+                    text = stringResource(
+                        when (preview.phase) {
+                            AgentPreviewPhase.RECEIVING -> R.string.native_stream_receiving
+                            AgentPreviewPhase.RECORDING -> R.string.native_stream_recording
+                            AgentPreviewPhase.INTERRUPTED -> R.string.native_stream_interrupted
+                        },
+                    ),
+                    tone = when (preview.phase) {
+                        AgentPreviewPhase.RECEIVING -> NativeTone.PRIMARY
+                        AgentPreviewPhase.RECORDING -> NativeTone.SECONDARY
+                        AgentPreviewPhase.INTERRUPTED -> NativeTone.ERROR
+                    },
+                )
+                if (preview.thinking.isNotEmpty()) {
+                    TextButton(
+                        onClick = { thinking = !thinking },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                    ) {
+                        Text(stringResource(R.string.native_agent_reasoning), style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
-            if (preview.toolCalls > 0) Text(stringResource(R.string.native_stream_tools, preview.toolCalls), style = MaterialTheme.typography.bodySmall)
+            if (preview.phase == AgentPreviewPhase.RECEIVING) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (preview.phase == AgentPreviewPhase.INTERRUPTED) {
+                Text(
+                    text = stringResource(R.string.native_stream_partial_notice),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (preview.clipped) {
+                Text(
+                    text = stringResource(R.string.native_stream_tail),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            SelectionContainer {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(scroll),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (thinking) {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = preview.thinking,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(8.dp),
+                            )
+                        }
+                    }
+                    if (preview.text.isNotEmpty()) Text(preview.text, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            if (preview.toolCalls > 0) {
+                NativeStatusBadge(
+                    text = stringResource(R.string.native_stream_tools, preview.toolCalls),
+                    tone = NativeTone.NEUTRAL,
+                )
+            }
         }
     }
 }

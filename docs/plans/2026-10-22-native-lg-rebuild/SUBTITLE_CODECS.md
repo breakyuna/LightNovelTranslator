@@ -1,6 +1,6 @@
 # 字幕纯文本格式核心
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 开发记录见 HANDOFF §39—40，当前 CI 与验证状态只记入 [HANDOFF §3](HANDOFF.md)。本文定义 R25 解码文本核心；§49 已新增工程适配桥及独立 VTT 适配器，仍不等于完整格式发布或 G4 验收。
 
@@ -10,7 +10,7 @@
 
 每个 `SubtitleSlotRef` 绑定整个已解码原稿的 UTF-8 SHA256、源 UTF-16 偏移及槽位源文 SHA256。引用不是列表序号；原稿中插入元数据也会改变文档绑定。未知/重复/跨原稿/伪造源文引用在返回结果前整体拒绝。槽位列表为不可变副本，正文和替换类没有自动输出内容的 toString。
 
-这里的 SHA256 标识已解码文本，不冒充原始二进制资产身份。当前 `.lnt` v5 已扩展资产格式/槽位元数据；SubtitleFormatAdapter 将字幕核心接入 ProjectFormatService，NativeAppGraph 显式安装目录并接入工作台追加/按资产导出。非 TXT 文件使用真实格式身份，不以改后缀或登记为 TXT 绕过校验。各格式完整导入—修改—导出—重读及设备验收仍待补齐。
+这里的 SHA256 标识已解码文本，不冒充原始二进制资产身份。当前 `.lnt` v8 已扩展资产格式/槽位元数据；SubtitleFormatAdapter 将字幕核心接入 ProjectFormatService，NativeAppGraph 显式安装目录并接入工作台追加/按资产导出。非 TXT 文件使用真实格式身份，不以改后缀或登记为 TXT 绕过校验。各格式完整导入—修改—导出—重读及设备验收仍待补齐。
 
 ## 格式规则
 

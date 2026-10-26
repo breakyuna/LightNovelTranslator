@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -12,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -58,10 +60,18 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null) { if (!state.busy) onDismiss() })
-            Surface(Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp)
-                .testTag("native-remote-translation-dialog"), shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(stringResource(R.string.native_remote_translate), style = MaterialTheme.typography.headlineSmall)
+            Surface(
+                modifier = Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp)
+                    .testTag("native-remote-translation-dialog"),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                tonalElevation = 3.dp,
+            ) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(stringResource(R.string.native_remote_translate),
+                        style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(project.name, style = MaterialTheme.typography.titleMedium)

@@ -1,6 +1,6 @@
 # 持久执行记录与中断核对切片
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 实际进度、当前 CI 和验证边界只记入 [HANDOFF §3](HANDOFF.md)，原开发轮见 §28。本文定义持久记录契约；本地模拟前台 Service 已有 #158 CI。当前翻译源码已有用户确认的同 Run 显式接续，边界见下文；Agent 跨进程执行接续及付费任务自动重启尚未实现。
 
@@ -10,7 +10,7 @@
 Agent 对话通过 `RunProgressRecorder` 记录请求阶段；本地模拟翻译记录请求、批次提交阶段和稳定命令编号。
 `NativeRunStore` 属于应用级 `NativeAppGraph`，每个进程只装配一个实例；它的随机拥有者编号不能作为跨进程并行执行协议。§28 原切片由页面协程发起；§34—35 将本地模拟接到应用级前台执行器与 Service，并加固宿主退出/任务切换，#158 已取得 CI 证据，§39 扩展为当前页/整工程范围，见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)。§78 源码（#158 覆盖）将远程 Agent 对话改接应用级 ForegroundAgentRunner 和 NativeAgentService，界面销毁仅脱离观察、同进程重建重新附着；短时本地演练/审批仍由页面发起。跨进程执行接续仍未实现。
 
-执行记录写入独立应用 Room 的 `native_runs` 表（当前数据库 v9）；该表由 `MIGRATION_2_3` 从 v2 增加，后续 v4—v9 继续沿用。该切片未改变当时的 `.lnt` 版本；当前工程为 v5。当前只有已提交的 `1.json`，`2.json`—`9.json` 均须 PC/CI 的 KSP 生成并审阅，禁止手写。
+执行记录写入独立应用 Room 的 `native_runs` 表（当前数据库 v18）；该表由 `MIGRATION_2_3` 从 v2 增加，后续 v4—v18 继续沿用。该切片未改变当时的 `.lnt` 版本；当前工程为 v8。当前只有已提交的 `1.json`，`2.json`—`18.json` 均须 PC/CI 的 KSP 生成并审阅，禁止手写。
 
 每次执行有独立 `executionId`，绑定本机 ProjectInstance / Generation / Project / Chat / Run / Command 和拥有者。准备审批和允许一次可以沿用逻辑 RunId，但后者产生新执行记录并保留实际审批命令身份。记录仅含元数据、计数、请求和提交命令编号，不存原稿、译文、凭据或异常正文。
 
@@ -33,7 +33,7 @@ Agent 对话通过 `RunProgressRecorder` 记录请求阶段；本地模拟翻译
 
 没有原 Run 的继续按钮、输入队列、持久工具策略检查点、自动补历史、完整用量账本或真实翻译供应商。§34—40 的本地模拟前台 Service、通知、超时停止及整工程范围已由 #158 覆盖，不代表完整后台系统已验收。用户可在核对事实后显式启动新运行；模拟翻译按显式选择重新读取当前页或整工程，沿用原有“仅处理未处理条目”的规则。它不是完整断点恢复，也不能保证后台保活。
 
-v3 运行迁移、持久记录与回执核对用例已由 #158 覆盖，见 HANDOFF §3；2—9.json 导出仍缺，最近运行界面、中断核对与真实设备升级仍需设备验证。既有 TXT 手工版的真机验收不自动覆盖这些增量。
+v3 运行迁移、持久记录与回执核对用例已由 #158 覆盖，见 HANDOFF §3；2—18.json 导出仍缺，最近运行界面、中断核对与真实设备升级仍需设备验证。既有 TXT 手工版的真机验收不自动覆盖这些增量。
 
 ## 批翻失败阶段增量（#158 覆盖）
 

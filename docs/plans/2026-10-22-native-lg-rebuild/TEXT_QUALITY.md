@@ -1,6 +1,6 @@
 # TXT 草稿质量检查契约
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
 算法开发及验证状态见 [HANDOFF §45—47](HANDOFF.md)。整工程已保存译文的扫描/列表筛选见 [QUALITY_SCAN](QUALITY_SCAN.md)。这是完整文本编辑器中的只读检查切片，不代表完整 LG 校对功能已经验收；该开发轮没有运行构建、测试、Lint、CI、供应商请求或设备验收，后续源码已由 #158 覆盖。
 

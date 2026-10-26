@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.nativeapp
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -178,136 +179,268 @@ internal fun NativeTextRulesPage(
         { rule -> selectedRuleId = rule.id }
     } else null
     val headerContent: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = back, enabled = editing == null, modifier = Modifier.testTag("native-rules-back")) {
-                Text(stringResource(R.string.native_more))
+        NativeSectionCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TextButton(
+                    onClick = back,
+                    enabled = editing == null,
+                    modifier = Modifier.testTag("native-rules-back"),
+                ) {
+                    Text(stringResource(R.string.native_more))
+                }
+                if (draft != null) {
+                    NativeStatusBadge(
+                        text = if (draft.dirty) stringResource(R.string.native_policy_unsaved) else stringResource(R.string.native_rules_enabled),
+                        tone = if (draft.dirty) NativeTone.PRIMARY else NativeTone.NEUTRAL,
+                    )
+                }
             }
-            Text(stringResource(section.title()), style = MaterialTheme.typography.headlineSmall,
-                modifier = Modifier.testTag("native-rules-title"))
-            Text(stringResource(R.string.native_rules_save_target, stringResource(section.title())),
+            Text(
+                text = stringResource(section.title()),
+                style = MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.testTag("native-rules-title"),
+            )
+            Text(
+                text = stringResource(R.string.native_rules_save_target, stringResource(section.title())),
                 style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.testTag("native-rules-save-target"))
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.testTag("native-rules-save-target"),
+            )
         }
     }
     val sectionsContent: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(stringResource(R.string.native_rules_section_nav), style = MaterialTheme.typography.labelMedium)
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth().testTag("native-rules-sections")) {
+            Text(
+                text = stringResource(R.string.native_rules_section_nav),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().testTag("native-rules-sections"),
+            ) {
                 items(NativeRuleSection.entries, key = { it.name }) { entry ->
-                    FilterChip(selected = entry == section, onClick = { selectSection(entry) },
+                    FilterChip(
+                        selected = entry == section,
+                        onClick = { selectSection(entry) },
                         enabled = editing == null,
                         label = { Text(stringResource(entry.label())) },
-                        modifier = Modifier.testTag("native-rules-section-${entry.slug}"))
+                        modifier = Modifier.testTag("native-rules-section-${entry.slug}"),
+                    )
                 }
             }
         }
     }
     val actionsContent: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Button(onClick = save, enabled = writable && editing == null && draft?.dirty == true,
-                modifier = Modifier.fillMaxWidth().testTag("native-policy-save")) {
-                Text(stringResource(R.string.native_rules_save_section, stringResource(section.title())))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = save,
+                enabled = writable && editing == null && draft?.dirty == true,
+                modifier = Modifier.weight(1.4f).testTag("native-policy-save"),
+            ) {
+                Text(stringResource(R.string.native_rules_save_section, stringResource(section.title())), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            TextButton(onClick = {
-                if (draft?.dirty == true) reloading = true else { selectedIds = emptySet(); reload() }
-            }, enabled = !state.busy && editing == null,
-                modifier = Modifier.fillMaxWidth()) { Text(stringResource(R.string.native_policy_reload)) }
+            OutlinedButton(
+                onClick = {
+                    if (draft?.dirty == true) reloading = true else { selectedIds = emptySet(); reload() }
+                },
+                enabled = !state.busy && editing == null,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(stringResource(R.string.native_policy_reload), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
     val statusContent: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            if (state.policyLoadIncomplete) Text(stringResource(R.string.native_policy_load_error), color = MaterialTheme.colorScheme.error)
-            if (draft?.conflict == true) Text(stringResource(R.string.native_conflict), color = MaterialTheme.colorScheme.error)
-            if (draft?.dirty == true) Text(stringResource(R.string.native_policy_unsaved), style = MaterialTheme.typography.bodySmall)
+            if (state.policyLoadIncomplete) {
+                NativeBanner(text = stringResource(R.string.native_policy_load_error), tone = NativeTone.ERROR)
+            }
+            if (draft?.conflict == true) {
+                NativeBanner(text = stringResource(R.string.native_conflict), tone = NativeTone.ERROR)
+            }
+            if (draft?.dirty == true) {
+                Text(
+                    text = stringResource(R.string.native_policy_unsaved),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             val invalidRuleId = state.policyInvalidRuleId
             if (invalidRuleId != null) {
                 val label = draft?.policy?.rules?.firstOrNull { it.id == invalidRuleId }?.source
                     ?.let { boundRuleText(it, 80).text } ?: invalidRuleId
-                Text(stringResource(R.string.native_rules_invalid_rule, label),
-                    color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("native-rules-invalid"))
+                Text(
+                    text = stringResource(R.string.native_rules_invalid_rule, label),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("native-rules-invalid"),
+                )
             }
         }
     }
     val toolbarContent: @Composable () -> Unit = {
-        Column(Modifier.testTag("native-rules-toolbar"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedTextField(search, { if (it.length <= 200) { search = it; selectedIds = emptySet() } },
-                label = { Text(stringResource(R.string.native_rules_search)) }, singleLine = true,
-                trailingIcon = {
-                    if (search.isNotEmpty()) IconButton(onClick = { search = ""; selectedIds = emptySet() }) {
-                        Icon(Icons.Default.Clear, stringResource(R.string.native_rules_search_clear))
+        Card(
+            modifier = Modifier.fillMaxWidth().testTag("native-rules-toolbar"),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
+            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { if (it.length <= 200) { search = it; selectedIds = emptySet() } },
+                    label = { Text(stringResource(R.string.native_rules_search)) },
+                    singleLine = true,
+                    trailingIcon = {
+                        if (search.isNotEmpty()) {
+                            IconButton(onClick = { search = ""; selectedIds = emptySet() }) {
+                                Icon(Icons.Default.Clear, stringResource(R.string.native_rules_search_clear))
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("native-rules-search"),
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.native_rules_selected, selectedIds.size),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = { selectedIds = visibleRules.map { it.id }.toSet() },
+                        enabled = allVisibleSelected.not() && visibleRules.isNotEmpty() && canEdit,
+                        modifier = Modifier.testTag("native-rules-select-all"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_select_all))
                     }
-                },
-                modifier = Modifier.fillMaxWidth().testTag("native-rules-search"))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.native_rules_selected, selectedIds.size),
-                    style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                TextButton(onClick = { selectedIds = visibleRules.map { it.id }.toSet() },
-                    enabled = allVisibleSelected.not() && visibleRules.isNotEmpty() && canEdit,
-                    modifier = Modifier.testTag("native-rules-select-all")) {
-                    Text(stringResource(R.string.native_rules_select_all))
+                    TextButton(
+                        onClick = { selectedIds = emptySet() },
+                        enabled = selectedIds.isNotEmpty() && canEdit,
+                        modifier = Modifier.testTag("native-rules-clear-selection"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_clear_selection))
+                    }
                 }
-                TextButton(onClick = { selectedIds = emptySet() }, enabled = selectedIds.isNotEmpty() && canEdit,
-                    modifier = Modifier.testTag("native-rules-clear-selection")) {
-                    Text(stringResource(R.string.native_rules_clear_selection))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { applyBatch(true) },
+                        enabled = canEdit && selectedIds.isNotEmpty(),
+                        modifier = Modifier.weight(1f).testTag("native-rules-enable-selected"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_enable_selected), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    OutlinedButton(
+                        onClick = { applyBatch(false) },
+                        enabled = canEdit && selectedIds.isNotEmpty(),
+                        modifier = Modifier.weight(1f).testTag("native-rules-disable-selected"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_disable_selected), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { applyBatch(true) }, enabled = canEdit && selectedIds.isNotEmpty(),
-                    modifier = Modifier.weight(1f).testTag("native-rules-enable-selected")) {
-                    Text(stringResource(R.string.native_rules_enable_selected))
+                FilledTonalButton(
+                    onClick = { beginEdit(UUID.randomUUID().toString()) },
+                    enabled = writable && editing == null && draft?.policy?.rules?.size?.let { it < 256 } == true,
+                    modifier = Modifier.fillMaxWidth().testTag("native-policy-add"),
+                ) {
+                    Text(stringResource(R.string.native_policy_add))
                 }
-                OutlinedButton(onClick = { applyBatch(false) }, enabled = canEdit && selectedIds.isNotEmpty(),
-                    modifier = Modifier.weight(1f).testTag("native-rules-disable-selected")) {
-                    Text(stringResource(R.string.native_rules_disable_selected))
-                }
-            }
-            TextButton(onClick = { beginEdit(UUID.randomUUID().toString()) },
-                enabled = writable && editing == null && draft?.policy?.rules?.size?.let { it < 256 } == true,
-                modifier = Modifier.testTag("native-policy-add")) {
-                Text(stringResource(R.string.native_policy_add))
             }
         }
     }
     val promptContent: @Composable () -> Unit = {
         if (draft != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(draft.policy.promptEnabled, { change(draft.policy.changed(promptEnabled = it)) },
-                        enabled = writable, modifier = Modifier.testTag("native-rules-prompt-enabled"))
-                    Text(stringResource(R.string.native_policy_prompt_enabled))
+            NativeSectionCard {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Switch(
+                        checked = draft.policy.promptEnabled,
+                        onCheckedChange = { change(draft.policy.changed(promptEnabled = it)) },
+                        enabled = writable,
+                        modifier = Modifier.testTag("native-rules-prompt-enabled"),
+                    )
+                    Text(stringResource(R.string.native_policy_prompt_enabled), style = MaterialTheme.typography.titleSmall)
                 }
-                OutlinedTextField(draft.policy.prompt, { value ->
-                    if (value.length <= 16_384) runCatching { draft.policy.changed(prompt = value) }.getOrNull()?.let(change)
-                }, label = { Text(stringResource(R.string.native_policy_prompt)) }, enabled = writable,
-                    minLines = 8, maxLines = 18,
-                    modifier = Modifier.fillMaxWidth().testTag("native-policy-prompt"))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { templateOpen = true }, enabled = writable,
-                        modifier = Modifier.testTag("native-prompt-template-open")) {
+                OutlinedTextField(
+                    value = draft.policy.prompt,
+                    onValueChange = { value ->
+                        if (value.length <= 16_384) runCatching { draft.policy.changed(prompt = value) }.getOrNull()?.let(change)
+                    },
+                    label = { Text(stringResource(R.string.native_policy_prompt)) },
+                    enabled = writable,
+                    minLines = 8,
+                    maxLines = 18,
+                    modifier = Modifier.fillMaxWidth().testTag("native-policy-prompt"),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(
+                        onClick = { templateOpen = true },
+                        enabled = writable,
+                        modifier = Modifier.testTag("native-prompt-template-open"),
+                    ) {
                         Text(stringResource(R.string.native_prompt_template))
                     }
-                    Text(stringResource(R.string.native_rules_chars, draft.policy.prompt.length, 16_384),
-                        style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = stringResource(R.string.native_rules_chars, draft.policy.prompt.length, 16_384),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(stringResource(R.string.native_rules_prompt_hint), style = MaterialTheme.typography.bodySmall)
-                if (draft.dirty) Text(stringResource(R.string.native_rules_prompt_unsaved),
+                Text(
+                    text = stringResource(R.string.native_rules_prompt_hint),
                     style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.testTag("native-rules-prompt-unsaved"))
-                Text(stringResource(R.string.native_rules_prompt_no_default), style = MaterialTheme.typography.bodySmall)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (draft.dirty) {
+                    Text(
+                        text = stringResource(R.string.native_rules_prompt_unsaved),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.testTag("native-rules-prompt-unsaved"),
+                    )
+                }
+                Text(
+                    text = stringResource(R.string.native_rules_prompt_no_default),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
     val glossaryContent: @Composable () -> Unit = {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        NativeSectionCard {
             Text(stringResource(R.string.native_rules_glossary_scope), style = MaterialTheme.typography.bodySmall)
             when {
-                qualityEvidence != null -> Text(stringResource(R.string.native_rules_evidence_hint),
-                    style = MaterialTheme.typography.bodySmall)
-                qualityIndex != null -> Text(stringResource(R.string.native_rules_evidence_stale),
-                    style = MaterialTheme.typography.bodySmall)
-                else -> Text(stringResource(R.string.native_rules_evidence_none),
-                    style = MaterialTheme.typography.bodySmall)
+                qualityEvidence != null -> Text(
+                    text = stringResource(R.string.native_rules_evidence_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                qualityIndex != null -> Text(
+                    text = stringResource(R.string.native_rules_evidence_stale),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                else -> Text(
+                    text = stringResource(R.string.native_rules_evidence_none),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -317,54 +450,88 @@ internal fun NativeTextRulesPage(
     val exchangeContent: @Composable () -> Unit = {
         if (draft != null && ruleKind != null) {
             val interaction = writable && editing == null
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(stringResource(R.string.native_policy_exchange_notice), style = MaterialTheme.typography.bodySmall)
-                Text(stringResource(R.string.native_policy_lg_json_notice, stringResource(ruleKind.label())),
-                    style = MaterialTheme.typography.bodySmall)
-                if (presets != null) TextButton(onClick = { library = true }, enabled = interaction) {
-                    Text(stringResource(R.string.native_preset_library))
+            NativeSectionCard(
+                subtitle = stringResource(R.string.native_policy_exchange_notice),
+            ) {
+                Text(
+                    text = stringResource(R.string.native_policy_lg_json_notice, stringResource(ruleKind.label())),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (presets != null) {
+                    OutlinedButton(onClick = { library = true }, enabled = interaction, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.native_preset_library))
+                    }
                 }
-                Row {
-                    TextButton(onClick = { exchange = true }, enabled = interaction) { Text(stringResource(R.string.native_policy_import)) }
-                    TextButton(onClick = { clipboard.setText(AnnotatedString(ProjectTextPolicyCodec.encode(draft.policy))) },
-                        enabled = !state.busy && editing == null) { Text(stringResource(R.string.native_policy_export)) }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { exchange = true }, enabled = interaction, modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.native_policy_import))
+                    }
+                    OutlinedButton(
+                        onClick = { clipboard.setText(AnnotatedString(ProjectTextPolicyCodec.encode(draft.policy))) },
+                        enabled = !state.busy && editing == null,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text(stringResource(R.string.native_policy_export))
+                    }
                 }
-                if (exchangeError) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
-                Row {
-                    TextButton(onClick = {
-                        runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }
-                            .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
-                            .onFailure { exchangeError = true }
-                    }, enabled = !state.busy && editing == null) { Text(stringResource(R.string.native_policy_export_lg_json)) }
+                if (exchangeError) {
+                    Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
                 }
-                TextButton(onClick = {
-                    runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }
-                        .onSuccess {
-                            pendingLgExport = it
-                            pendingExportKind = ruleKind.name; pendingExportFormat = "json"
-                            try { exportLgFile.launch("rules-${ruleKind.name.lowercase(Locale.ROOT)}.json") }
-                            catch (_: Exception) { pendingLgExport = null; exchangeError = true }
-                        }.onFailure { exchangeError = true }
-                }, enabled = !state.busy && editing == null && !exporting && pendingLgExport == null) {
-                    Text(stringResource(R.string.native_policy_save_lg_json))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(
+                        onClick = {
+                            runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }
+                                .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
+                                .onFailure { exchangeError = true }
+                        },
+                        enabled = !state.busy && editing == null,
+                    ) {
+                        Text(stringResource(R.string.native_policy_export_lg_json))
+                    }
+                    TextButton(
+                        onClick = {
+                            runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }
+                                .onSuccess {
+                                    pendingLgExport = it
+                                    pendingExportKind = ruleKind.name
+                                    pendingExportFormat = "json"
+                                    try { exportLgFile.launch("rules-${ruleKind.name.lowercase(Locale.ROOT)}.json") }
+                                    catch (_: Exception) { pendingLgExport = null; exchangeError = true }
+                                }.onFailure { exchangeError = true }
+                        },
+                        enabled = !state.busy && editing == null && !exporting && pendingLgExport == null,
+                    ) {
+                        Text(stringResource(R.string.native_policy_save_lg_json))
+                    }
                 }
-                for (format in listOf("csv", "xlsx")) TextButton(onClick = {
-                    runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }.onSuccess {
-                        pendingLgExport = it; pendingExportKind = ruleKind.name; pendingExportFormat = format
-                        try {
-                            val name = "rules-${ruleKind.name.lowercase(Locale.ROOT)}.$format"
-                            if (format == "csv") exportCsvFile.launch(name) else exportXlsxFile.launch(name)
-                        } catch (_: Exception) { pendingLgExport = null; exchangeError = true }
-                    }.onFailure { exchangeError = true }
-                }, enabled = !state.busy && editing == null && !exporting && pendingLgExport == null) {
-                    Text(stringResource(if (format == "csv") R.string.native_policy_save_csv else R.string.native_policy_save_xlsx))
-                }
-                Row {
-                    TextButton(onClick = {
-                        runCatching { RuleExchangeCodec.encodePolicy(draft.policy) }
-                            .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
-                            .onFailure { exchangeError = true }
-                    }, enabled = !state.busy && editing == null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (format in listOf("csv", "xlsx")) {
+                        TextButton(
+                            onClick = {
+                                runCatching { LgRuleJsonCodec.encode(draft.policy, ruleKind) }.onSuccess {
+                                    pendingLgExport = it
+                                    pendingExportKind = ruleKind.name
+                                    pendingExportFormat = format
+                                    try {
+                                        val name = "rules-${ruleKind.name.lowercase(Locale.ROOT)}.$format"
+                                        if (format == "csv") exportCsvFile.launch(name) else exportXlsxFile.launch(name)
+                                    } catch (_: Exception) { pendingLgExport = null; exchangeError = true }
+                                }.onFailure { exchangeError = true }
+                            },
+                            enabled = !state.busy && editing == null && !exporting && pendingLgExport == null,
+                        ) {
+                            Text(stringResource(if (format == "csv") R.string.native_policy_save_csv else R.string.native_policy_save_xlsx))
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            runCatching { RuleExchangeCodec.encodePolicy(draft.policy) }
+                                .onSuccess { clipboard.setText(AnnotatedString(it)); exchangeError = false }
+                                .onFailure { exchangeError = true }
+                        },
+                        enabled = !state.busy && editing == null,
+                    ) {
                         Text(stringResource(R.string.native_policy_export_exchange))
                     }
                 }
@@ -533,28 +700,66 @@ private fun NativeRuleDetail(
     hitIn: Int?,
     onEdit: () -> Unit,
 ) {
-    Card(Modifier.fillMaxWidth().testTag("native-rules-selected-rule")) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-rules-selected-rule"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.native_rules_rule_editor), style = MaterialTheme.typography.titleSmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(stringResource(R.string.native_rules_rule_editor), style = MaterialTheme.typography.titleSmall)
+                NativeStatusBadge(
+                    text = stringResource(if (rule.enabled) R.string.native_rules_enabled else R.string.native_rules_disabled),
+                    tone = if (rule.enabled) NativeTone.SUCCESS else NativeTone.NEUTRAL,
+                )
+            }
             Text(rule.source, style = MaterialTheme.typography.titleMedium)
-            if (rule.target.isNotEmpty()) Text(rule.target)
-            if (rule.note.isNotBlank()) Text(rule.note, style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(if (rule.enabled) R.string.native_rules_enabled else R.string.native_rules_disabled),
-                style = MaterialTheme.typography.bodySmall)
-            if (rule.regex) Text(stringResource(R.string.native_policy_regex), style = MaterialTheme.typography.bodySmall)
-            if (rule.kind == TextRuleKind.TERM) Text(stringResource(
-                when (rule.scope) {
-                    TextRuleScope.BODY -> R.string.native_rules_scope_body
-                    TextRuleScope.NAME -> R.string.native_rules_scope_name
-                    TextRuleScope.BOTH -> R.string.native_rules_scope_both
-                }), style = MaterialTheme.typography.bodySmall)
-            if (hitIn != null) Text(stringResource(R.string.native_rules_evidence_hit, hitIn),
-                style = MaterialTheme.typography.bodySmall)
-            if (missingIn != null) Text(stringResource(R.string.native_rules_evidence_missing, missingIn),
-                style = MaterialTheme.typography.bodySmall)
-            if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
-            TextButton(onClick = onEdit, enabled = writable,
-                modifier = Modifier.testTag("native-rules-selected-edit")) {
+            if (rule.target.isNotEmpty()) {
+                Text(rule.target, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            if (rule.note.isNotBlank()) {
+                Text(rule.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (rule.regex) {
+                    NativeStatusBadge(stringResource(R.string.native_policy_regex), tone = NativeTone.SECONDARY)
+                }
+                if (rule.kind == TextRuleKind.TERM) {
+                    NativeStatusBadge(
+                        stringResource(
+                            when (rule.scope) {
+                                TextRuleScope.BODY -> R.string.native_rules_scope_body
+                                TextRuleScope.NAME -> R.string.native_rules_scope_name
+                                TextRuleScope.BOTH -> R.string.native_rules_scope_both
+                            },
+                        ),
+                        tone = NativeTone.PRIMARY,
+                    )
+                }
+            }
+            if (hitIn != null) {
+                Text(stringResource(R.string.native_rules_evidence_hit, hitIn), style = MaterialTheme.typography.bodySmall)
+            }
+            if (missingIn != null) {
+                Text(
+                    text = stringResource(R.string.native_rules_evidence_missing, missingIn),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            if (invalid) {
+                Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+            }
+            OutlinedButton(
+                onClick = onEdit,
+                enabled = writable,
+                modifier = Modifier.testTag("native-rules-selected-edit"),
+            ) {
                 Text(stringResource(R.string.native_policy_edit))
             }
         }
@@ -582,62 +787,140 @@ private fun NativeRuleCard(
 ) {
     val selectLabel = stringResource(R.string.native_rules_select_rule)
     val enabledLabel = stringResource(if (rule.enabled) R.string.native_rules_enabled else R.string.native_rules_disabled)
-    val colors = if (highlighted) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-        else CardDefaults.cardColors()
-    Card(Modifier.fillMaxWidth()
-        .then(if (onOpen != null) Modifier.clickable { onOpen?.invoke() } else Modifier)
-        .then(if (highlighted) Modifier.semantics { this.selected = true } else Modifier)
-        .testTag("native-rule-${rule.id}"), colors = colors) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    val containerColor = if (highlighted) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+    val borderColor = when {
+        invalid -> MaterialTheme.colorScheme.error
+        highlighted -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.outlineVariant
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onOpen != null) Modifier.clickable { onOpen.invoke() } else Modifier)
+            .then(if (highlighted) Modifier.semantics { this.selected = true } else Modifier)
+            .testTag("native-rule-${rule.id}"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(1.dp, borderColor),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.Top) {
-                Checkbox(selected, onSelected, enabled = writable,
-                    modifier = Modifier.semantics { contentDescription = selectLabel }
-                        .testTag("native-rule-select-${rule.id}"))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text(rule.source, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (rule.target.isNotEmpty()) Text(rule.target, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    if (rule.note.isNotBlank()) Text(rule.note, maxLines = 3, overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodySmall)
-                    Text(stringResource(if (rule.enabled) R.string.native_rules_enabled else R.string.native_rules_disabled),
-                        style = MaterialTheme.typography.bodySmall)
-                    if (rule.regex) Text(stringResource(R.string.native_policy_regex),
-                        style = MaterialTheme.typography.bodySmall)
-                    if (rule.kind == TextRuleKind.TERM) Text(stringResource(
-                        when (rule.scope) {
-                            TextRuleScope.BODY -> R.string.native_rules_scope_body
-                            TextRuleScope.NAME -> R.string.native_rules_scope_name
-                            TextRuleScope.BOTH -> R.string.native_rules_scope_both
-                        }), style = MaterialTheme.typography.bodySmall)
-                    if (hitIn != null) Text(stringResource(R.string.native_rules_evidence_hit, hitIn),
-                        style = MaterialTheme.typography.bodySmall)
-                    if (missingIn != null) Text(stringResource(R.string.native_rules_evidence_missing, missingIn),
-                        style = MaterialTheme.typography.bodySmall)
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = onSelected,
+                    enabled = writable,
+                    modifier = Modifier
+                        .semantics { contentDescription = selectLabel }
+                        .testTag("native-rule-select-${rule.id}"),
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(rule.source, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (rule.target.isNotEmpty()) {
+                        Text(
+                            text = rule.target,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (rule.note.isNotBlank()) {
+                        Text(
+                            text = rule.note,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        NativeStatusBadge(
+                            text = stringResource(if (rule.enabled) R.string.native_rules_enabled else R.string.native_rules_disabled),
+                            tone = if (rule.enabled) NativeTone.SUCCESS else NativeTone.NEUTRAL,
+                        )
+                        if (rule.regex) {
+                            NativeStatusBadge(text = stringResource(R.string.native_policy_regex), tone = NativeTone.SECONDARY)
+                        }
+                        if (rule.kind == TextRuleKind.TERM) {
+                            NativeStatusBadge(
+                                text = stringResource(
+                                    when (rule.scope) {
+                                        TextRuleScope.BODY -> R.string.native_rules_scope_body
+                                        TextRuleScope.NAME -> R.string.native_rules_scope_name
+                                        TextRuleScope.BOTH -> R.string.native_rules_scope_both
+                                    },
+                                ),
+                                tone = NativeTone.PRIMARY,
+                            )
+                        }
+                    }
+                    if (hitIn != null) {
+                        Text(stringResource(R.string.native_rules_evidence_hit, hitIn), style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (missingIn != null) {
+                        Text(
+                            text = stringResource(R.string.native_rules_evidence_missing, missingIn),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
-            if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.testTag("native-rule-invalid-${rule.id}"))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(rule.enabled, onEnabled, enabled = writable,
-                    modifier = Modifier.semantics { contentDescription = enabledLabel }
-                        .testTag("native-rule-enabled-${rule.id}"))
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onEdit, enabled = writable,
-                    modifier = Modifier.testTag("native-rule-edit-${rule.id}")) { Text(stringResource(R.string.native_policy_edit)) }
-                TextButton(onClick = onDelete, enabled = writable,
-                    modifier = Modifier.testTag("native-rule-delete-${rule.id}")) { Text(stringResource(R.string.native_policy_delete)) }
+            if (invalid) {
+                Text(
+                    text = stringResource(R.string.native_policy_invalid),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("native-rule-invalid-${rule.id}"),
+                )
             }
-            Row {
-                val index = allRules.indexOfFirst { it.id == rule.id }
-                val previous = visibleRules.getOrNull(visibleIndex - 1)?.let { neighbor ->
-                    allRules.indexOfFirst { it.id == neighbor.id }
-                } ?: -1
-                val next = visibleRules.getOrNull(visibleIndex + 1)?.let { neighbor ->
-                    allRules.indexOfFirst { it.id == neighbor.id }
-                } ?: -1
-                TextButton(onClick = { if (previous >= 0) onMove(previous) }, enabled = writable && previous >= 0,
-                    modifier = Modifier.testTag("native-rule-up-${rule.id}")) { Text(stringResource(R.string.native_policy_up)) }
-                TextButton(onClick = { if (next >= 0) onMove(next) }, enabled = writable && next >= 0,
-                    modifier = Modifier.testTag("native-rule-down-${rule.id}")) { Text(stringResource(R.string.native_policy_down)) }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            val previous = visibleRules.getOrNull(visibleIndex - 1)?.let { neighbor ->
+                allRules.indexOfFirst { it.id == neighbor.id }
+            } ?: -1
+            val next = visibleRules.getOrNull(visibleIndex + 1)?.let { neighbor ->
+                allRules.indexOfFirst { it.id == neighbor.id }
+            } ?: -1
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = rule.enabled,
+                    onCheckedChange = onEnabled,
+                    enabled = writable,
+                    modifier = Modifier
+                        .semantics { contentDescription = enabledLabel }
+                        .testTag("native-rule-enabled-${rule.id}"),
+                )
+                Spacer(Modifier.weight(1f))
+                TextButton(
+                    onClick = { if (previous >= 0) onMove(previous) },
+                    enabled = writable && previous >= 0,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag("native-rule-up-${rule.id}"),
+                ) { Text(stringResource(R.string.native_policy_up)) }
+                TextButton(
+                    onClick = { if (next >= 0) onMove(next) },
+                    enabled = writable && next >= 0,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag("native-rule-down-${rule.id}"),
+                ) { Text(stringResource(R.string.native_policy_down)) }
+                TextButton(
+                    onClick = onEdit,
+                    enabled = writable,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag("native-rule-edit-${rule.id}"),
+                ) { Text(stringResource(R.string.native_policy_edit)) }
+                TextButton(
+                    onClick = onDelete,
+                    enabled = writable,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                    modifier = Modifier.testTag("native-rule-delete-${rule.id}"),
+                ) { Text(stringResource(R.string.native_policy_delete)) }
             }
         }
     }
@@ -661,81 +944,128 @@ private fun NativeRuleSamplePanel(
     val byId = remember(policy) { policy.rules.associateBy { it.id } }
     val latestPolicy by rememberUpdatedState(policy)
     LaunchedEffect(policy) { preview = null }
-    Card(Modifier.fillMaxWidth().testTag("native-rule-sample")) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-rule-sample"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(stringResource(R.string.native_rules_sample_title), style = MaterialTheme.typography.titleMedium)
-            Text(stringResource(R.string.native_rules_sample_hint, NATIVE_RULE_SAMPLE_MAX_CHARS),
-                style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_rules_sample_scope), style = MaterialTheme.typography.bodySmall)
-            OutlinedTextField(sample, {
-                if (it.length <= NATIVE_RULE_SAMPLE_MAX_CHARS) { sample = it; preview = null; invalid = false }
-            }, label = { Text(stringResource(R.string.native_rules_sample)) }, enabled = enabled,
-                minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth().testTag("native-rule-sample-text"))
-            Text(stringResource(R.string.native_rules_chars, sample.length, NATIVE_RULE_SAMPLE_MAX_CHARS),
-                style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = {
-                    val current = sample
-                    testing = true; invalid = false
-                    scope.launch {
-                        try {
-                            val outcome = withContext(Dispatchers.Default) {
-                                previewRuleSample(policy, section, current) { ensureActive() }
+            Text(
+                text = stringResource(R.string.native_rules_sample_hint, NATIVE_RULE_SAMPLE_MAX_CHARS),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = stringResource(R.string.native_rules_sample_scope),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = sample,
+                onValueChange = {
+                    if (it.length <= NATIVE_RULE_SAMPLE_MAX_CHARS) { sample = it; preview = null; invalid = false }
+                },
+                label = { Text(stringResource(R.string.native_rules_sample)) },
+                enabled = enabled,
+                minLines = 3,
+                maxLines = 6,
+                modifier = Modifier.fillMaxWidth().testTag("native-rule-sample-text"),
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = stringResource(R.string.native_rules_chars, sample.length, NATIVE_RULE_SAMPLE_MAX_CHARS),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            val current = sample
+                            testing = true; invalid = false
+                            scope.launch {
+                                try {
+                                    val outcome = withContext(Dispatchers.Default) {
+                                        previewRuleSample(policy, section, current) { ensureActive() }
+                                    }
+                                    if (sample == current && latestPolicy === policy) preview = outcome
+                                } catch (cancelled: CancellationException) { throw cancelled }
+                                catch (_: Exception) { invalid = true }
+                                finally { testing = false }
                             }
-                            if (sample == current && latestPolicy === policy) preview = outcome
-                        } catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { invalid = true }
-                        finally { testing = false }
+                        },
+                        enabled = enabled && !testing && sample.isNotEmpty() && sectionRules.isNotEmpty(),
+                        modifier = Modifier.testTag("native-rule-sample-run"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_sample_run))
                     }
-                }, enabled = enabled && !testing && sample.isNotEmpty() && sectionRules.isNotEmpty(),
-                    modifier = Modifier.testTag("native-rule-sample-run")) {
-                    Text(stringResource(R.string.native_rules_sample_run))
-                }
-                TextButton(onClick = { sample = ""; preview = null; invalid = false }, enabled = enabled && !testing,
-                    modifier = Modifier.testTag("native-rule-sample-clear")) {
-                    Text(stringResource(R.string.native_rules_sample_clear))
+                    TextButton(
+                        onClick = { sample = ""; preview = null; invalid = false },
+                        enabled = enabled && !testing,
+                        modifier = Modifier.testTag("native-rule-sample-clear"),
+                    ) {
+                        Text(stringResource(R.string.native_rules_sample_clear))
+                    }
                 }
             }
-            if (sectionRules.isEmpty()) Text(stringResource(R.string.native_rules_sample_empty),
-                style = MaterialTheme.typography.bodySmall)
-            else if (enabledRules == 0) Text(stringResource(R.string.native_rules_sample_no_enabled),
-                style = MaterialTheme.typography.bodySmall)
+            if (sectionRules.isEmpty()) {
+                Text(stringResource(R.string.native_rules_sample_empty), style = MaterialTheme.typography.bodySmall)
+            } else if (enabledRules == 0) {
+                Text(stringResource(R.string.native_rules_sample_no_enabled), style = MaterialTheme.typography.bodySmall)
+            }
             if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
             preview?.let { outcome ->
-                if (outcome.matches.isEmpty() && outcome.errors.isEmpty() && !outcome.failed)
+                if (outcome.matches.isEmpty() && outcome.errors.isEmpty() && !outcome.failed) {
                     Text(stringResource(R.string.native_rules_sample_no_matches), style = MaterialTheme.typography.bodySmall)
+                }
                 outcome.matches.forEach { match ->
                     val rule = byId[match.ruleId]
-                    Text(stringResource(R.string.native_rules_sample_matches, match.count),
-                        style = MaterialTheme.typography.titleSmall)
-                    Text(boundRuleText(rule?.source.orEmpty(), 80).text,
-                        style = MaterialTheme.typography.bodySmall)
-                    if (!match.enabled) Text(stringResource(R.string.native_rules_disabled),
-                        style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.native_rules_sample_matches, match.count), style = MaterialTheme.typography.titleSmall)
+                    Text(boundRuleText(rule?.source.orEmpty(), 80).text, style = MaterialTheme.typography.bodySmall)
+                    if (!match.enabled) Text(stringResource(R.string.native_rules_disabled), style = MaterialTheme.typography.bodySmall)
                     match.excerpts.forEach { excerpt ->
-                        Text(excerpt, style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(start = 16.dp))
+                        Text(excerpt, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 16.dp))
                     }
-                    if (match.truncated) Text(stringResource(R.string.native_rules_sample_match_truncated),
-                        style = MaterialTheme.typography.bodySmall)
+                    if (match.truncated) {
+                        Text(stringResource(R.string.native_rules_sample_match_truncated), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
                 outcome.errors.forEach { id ->
                     val rule = byId[id]
-                    Text(stringResource(R.string.native_rules_sample_error,
-                        boundRuleText(rule?.source.orEmpty().takeIf { it.isNotEmpty() } ?: id, 80).text),
-                        color = MaterialTheme.colorScheme.error)
+                    Text(
+                        text = stringResource(
+                            R.string.native_rules_sample_error,
+                            boundRuleText(rule?.source.orEmpty().takeIf { it.isNotEmpty() } ?: id, 80).text,
+                        ),
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
-                if (outcome.failed)
+                if (outcome.failed) {
                     Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
+                }
                 outcome.result?.let { result ->
                     Text(stringResource(R.string.native_rules_sample_result), style = MaterialTheme.typography.titleSmall)
-                    if (result.text.isEmpty()) Text(stringResource(R.string.native_rules_sample_result_empty),
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.testTag("native-rule-sample-result"))
-                    else Text(result.text, fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.testTag("native-rule-sample-result"))
-                    if (result.truncated) Text(stringResource(R.string.native_rules_sample_result_truncated),
-                        style = MaterialTheme.typography.bodySmall)
+                    if (result.text.isEmpty()) {
+                        Text(
+                            text = stringResource(R.string.native_rules_sample_result_empty),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.testTag("native-rule-sample-result"),
+                        )
+                    } else {
+                        Text(
+                            text = result.text,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.testTag("native-rule-sample-result"),
+                        )
+                    }
+                    if (result.truncated) {
+                        Text(stringResource(R.string.native_rules_sample_result_truncated), style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             }
         }
@@ -748,8 +1078,16 @@ private fun movedRule(rules: List<ProjectTextRule>, index: Int, other: Int): Lis
 }
 
 @Composable
-private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: ProjectTextRule?, kind: TextRuleKind,
-    invalid: Boolean, close: () -> Unit, inlineForm: Boolean = false, apply: (ProjectTextRule) -> Unit) {
+private fun NativeTextRuleEditor(
+    ref: LocalProjectRef,
+    id: String,
+    existing: ProjectTextRule?,
+    kind: TextRuleKind,
+    invalid: Boolean,
+    close: () -> Unit,
+    inlineForm: Boolean = false,
+    apply: (ProjectTextRule) -> Unit,
+) {
     var source by rememberSaveable(ref, id) { mutableStateOf(existing?.source.orEmpty()) }
     var target by rememberSaveable(ref, id) { mutableStateOf(existing?.target.orEmpty()) }
     var note by rememberSaveable(ref, id) { mutableStateOf(existing?.note.orEmpty()) }
@@ -758,31 +1096,64 @@ private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: Pro
     var enabled by rememberSaveable(ref, id) { mutableStateOf(existing?.enabled ?: true) }
     var scopeName by rememberSaveable(ref, id) { mutableStateOf((existing?.scope ?: TextRuleScope.BODY).name) }
     val ruleScope = runCatching { TextRuleScope.valueOf(scopeName) }.getOrDefault(TextRuleScope.BODY)
-    val rule = remember(source, target, note, regex, sensitive, enabled, ruleScope) { runCatching {
-        ProjectTextRule(id, existing?.kind ?: kind, source, target, note, enabled, regex, sensitive, ruleScope)
-    }.getOrNull() }
+    val rule = remember(source, target, note, regex, sensitive, enabled, ruleScope) {
+        runCatching {
+            ProjectTextRule(id, existing?.kind ?: kind, source, target, note, enabled, regex, sensitive, ruleScope)
+        }.getOrNull()
+    }
     val title = stringResource(R.string.native_rules_rule_editor)
     val fields: @Composable ColumnScope.() -> Unit = {
         if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
         Text(stringResource((existing?.kind ?: kind).section().title()), style = MaterialTheme.typography.titleSmall)
-        OutlinedTextField(source, { if (it.length <= 4096) source = it }, label = { Text(stringResource(R.string.native_policy_source)) },
-            minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth().testTag("native-policy-source"))
-        if (kind != TextRuleKind.PROTECT) OutlinedTextField(target, { if (it.length <= 4096) target = it },
-            label = { Text(stringResource(R.string.native_policy_target)) },
-            minLines = 2, maxLines = 4, modifier = Modifier.fillMaxWidth().testTag("native-policy-target"))
-        OutlinedTextField(note, { if (it.length <= 2048) note = it }, label = { Text(stringResource(R.string.native_policy_note)) },
-            minLines = 3, maxLines = 6, modifier = Modifier.fillMaxWidth().testTag("native-policy-note"))
+        OutlinedTextField(
+            value = source,
+            onValueChange = { if (it.length <= 4096) source = it },
+            label = { Text(stringResource(R.string.native_policy_source)) },
+            minLines = 2,
+            maxLines = 4,
+            modifier = Modifier.fillMaxWidth().testTag("native-policy-source"),
+        )
+        if (kind != TextRuleKind.PROTECT) {
+            OutlinedTextField(
+                value = target,
+                onValueChange = { if (it.length <= 4096) target = it },
+                label = { Text(stringResource(R.string.native_policy_target)) },
+                minLines = 2,
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth().testTag("native-policy-target"),
+            )
+        }
+        OutlinedTextField(
+            value = note,
+            onValueChange = { if (it.length <= 2048) note = it },
+            label = { Text(stringResource(R.string.native_policy_note)) },
+            minLines = 3,
+            maxLines = 6,
+            modifier = Modifier.fillMaxWidth().testTag("native-policy-note"),
+        )
         if (kind == TextRuleKind.TERM) {
             Text(stringResource(R.string.native_rules_scope), style = MaterialTheme.typography.titleSmall)
-            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
                 for (candidate in TextRuleScope.entries) {
-                    FilterChip(selected = candidate == ruleScope, onClick = { scopeName = candidate.name },
-                        label = { Text(stringResource(when (candidate) {
-                            TextRuleScope.BODY -> R.string.native_rules_scope_body
-                            TextRuleScope.NAME -> R.string.native_rules_scope_name
-                            TextRuleScope.BOTH -> R.string.native_rules_scope_both
-                        })) }, modifier = Modifier.testTag("native-rule-scope-${candidate.name}"))
+                    FilterChip(
+                        selected = candidate == ruleScope,
+                        onClick = { scopeName = candidate.name },
+                        label = {
+                            Text(
+                                stringResource(
+                                    when (candidate) {
+                                        TextRuleScope.BODY -> R.string.native_rules_scope_body
+                                        TextRuleScope.NAME -> R.string.native_rules_scope_name
+                                        TextRuleScope.BOTH -> R.string.native_rules_scope_both
+                                    },
+                                ),
+                            )
+                        },
+                        modifier = Modifier.testTag("native-rule-scope-${candidate.name}"),
+                    )
                 }
             }
         }
@@ -793,8 +1164,9 @@ private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: Pro
                 Text(stringResource(R.string.native_policy_regex))
             }
         }
-        if (kind == TextRuleKind.PRE_REPLACE || kind == TextRuleKind.POST_REPLACE)
+        if (kind == TextRuleKind.PRE_REPLACE || kind == TextRuleKind.POST_REPLACE) {
             Text(stringResource(R.string.native_rules_empty_target), style = MaterialTheme.typography.bodySmall)
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(sensitive, { sensitive = it }, modifier = Modifier.testTag("native-policy-case"))
             Text(stringResource(R.string.native_policy_case))
@@ -805,22 +1177,29 @@ private fun NativeTextRuleEditor(ref: LocalProjectRef, id: String, existing: Pro
         }
     }
     if (inlineForm) {
-        Card(Modifier.fillMaxWidth().testTag("native-rules-inline-editor")) {
+        Card(
+            modifier = Modifier.fillMaxWidth().testTag("native-rules-inline-editor"),
+            shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        ) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(title, style = MaterialTheme.typography.headlineSmall)
                 fields()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = close) { Text(stringResource(R.string.native_cancel)) }
-                    TextButton(onClick = { rule?.let(apply) }, enabled = rule != null,
-                        modifier = Modifier.testTag("native-policy-apply")) {
+                    TextButton(
+                        onClick = { rule?.let(apply) },
+                        enabled = rule != null,
+                        modifier = Modifier.testTag("native-policy-apply"),
+                    ) {
                         Text(stringResource(R.string.native_policy_apply))
                     }
                 }
             }
         }
     } else {
-        NativePolicyForm(close, title, "native-policy-rule-dialog", rule != null,
-            { rule?.let(apply) }) {
+        NativePolicyForm(close, title, "native-policy-rule-dialog", rule != null, { rule?.let(apply) }) {
             fields()
         }
     }
@@ -964,17 +1343,35 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
 }
 
 @Composable
-internal fun NativePolicyForm(close: () -> Unit, title: String, tag: String, enabled: Boolean,
-    apply: () -> Unit, applyLabel: String? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun NativePolicyForm(
+    close: () -> Unit,
+    title: String,
+    tag: String,
+    enabled: Boolean,
+    apply: () -> Unit,
+    applyLabel: String? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() })
-            Surface(Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 580.dp).testTag(tag),
-                shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
-                Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(
+                modifier = Modifier.padding(16.dp).widthIn(max = 580.dp).fillMaxWidth().heightIn(max = 600.dp).testTag(tag),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 4.dp,
+                shadowElevation = 8.dp,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            ) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(title, style = MaterialTheme.typography.headlineSmall)
-                    Column(Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Column(
+                        modifier = Modifier.fillMaxWidth().weight(1f, fill = false).verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        content = content,
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TextButton(onClick = close) { Text(stringResource(R.string.native_cancel)) }
                         TextButton(onClick = apply, enabled = enabled, modifier = Modifier.testTag("native-policy-apply")) {

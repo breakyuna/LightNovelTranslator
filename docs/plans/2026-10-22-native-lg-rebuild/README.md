@@ -60,7 +60,7 @@
 |---|---|---|
 | LNT | `refactor/translation-agent-2026-10` / `4bd2ae0e7a521309b558d27fa3b5acb7e125b998` | 比 `main` 多 44 个提交；有 22 个未提交文件，包含 Koog 和 UI 改动 |
 | LG | `termux-port` / `23796556fde9ffbae54ff0aa9c8d7879d8288281` | 包含 `main`；另有 67 个跟踪文件修改和 12 个未跟踪文件 |
-| LNT CI | [run 39375817891](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39375817891) | 该提交的 test / lint / release 成功；不覆盖当前未提交修改和本计划 |
+| LNT CI（规划时） | [run 39375817891](https://github.com/breakyuna/LightNovelTranslator/actions/runs/39375817891) | 该提交的 test / lint / release 成功；不覆盖规划时未提交修改和本计划 |
 | 工具链 | Kotlin 2.3.10、Koog 1.3.0、Java 17、AGP 9.1.1 | 当前声明基线，不代表拟新增库在 Android 上已可运行 |
 | Android | `minSdk 24`、`targetSdk 36` | 先维持支持范围；必要变化必须通过原型门槛形成书面决策 |
 

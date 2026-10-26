@@ -1,8 +1,9 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -77,45 +78,73 @@ internal fun NativeModelsPage(
         )
     }
     Column(Modifier.fillMaxSize().testTag("native-models-page")) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = back, modifier = Modifier.testTag("native-models-back")) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text(stringResource(R.string.native_settings_back))
-            }
-            Spacer(Modifier.weight(1f))
-            TextButton(enabled = !state.busy, onClick = { creating = true },
-                modifier = Modifier.testTag("native-models-add")) {
-                Text(stringResource(R.string.native_model_profile_add))
-            }
-            TextButton(enabled = !state.busy, onClick = refresh) {
-                Text(stringResource(R.string.native_refresh))
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    TextButton(onClick = back, modifier = Modifier.testTag("native-models-back")) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text(stringResource(R.string.native_settings_back))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    FilledTonalButton(
+                        enabled = !state.busy,
+                        onClick = { creating = true },
+                        modifier = Modifier.testTag("native-models-add"),
+                    ) {
+                        Text(stringResource(R.string.native_model_profile_add))
+                    }
+                    OutlinedButton(enabled = !state.busy, onClick = refresh) {
+                        Text(stringResource(R.string.native_refresh))
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
         if (state.modelProfilesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
         state.modelProfilesError?.let {
-            Text(stringResource(it), color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(horizontal = 16.dp))
+            NativeBanner(
+                text = stringResource(it),
+                tone = NativeTone.ERROR,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
         }
         val ungrouped = stringResource(R.string.native_model_profile_ungrouped)
         if (state.modelProfiles.isEmpty() && !state.modelProfilesLoading) {
-            Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.native_model_profiles_empty), style = MaterialTheme.typography.titleMedium)
-                Text(stringResource(R.string.native_model_profiles_empty_hint), style = MaterialTheme.typography.bodySmall)
-                Button(enabled = !state.busy, onClick = { creating = true }) {
-                    Text(stringResource(R.string.native_model_profile_add))
+            Box(Modifier.padding(16.dp)) {
+                NativeSectionCard(
+                    title = stringResource(R.string.native_model_profiles_empty),
+                    subtitle = stringResource(R.string.native_model_profiles_empty_hint),
+                ) {
+                    Button(enabled = !state.busy, onClick = { creating = true }) {
+                        Text(stringResource(R.string.native_model_profile_add))
+                    }
                 }
             }
         }
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("native-models-list"),
-            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth().testTag("native-models-list"),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             var lastGroup: String? = null
             state.modelProfiles.forEach { profile ->
                 val group = profile.group.ifBlank { ungrouped }
                 if (group != lastGroup) {
                     item(key = "group:$group") {
-                        Text(group, style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.padding(top = 4.dp))
+                        Text(
+                            text = group,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                     }
                     lastGroup = group
                 }
@@ -159,28 +188,56 @@ private fun ModelProfileCard(
     move: (Int) -> Unit,
     select: (ModelProfilePurpose) -> Unit,
 ) {
-    ElevatedCard(Modifier.fillMaxWidth().testTag("native-model-card-${profile.id}")) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
+    Card(
+        modifier = Modifier.fillMaxWidth().testTag("native-model-card-${profile.id}"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(
+            1.dp,
+            if (selectedLabels.isNotEmpty()) MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+            else MaterialTheme.colorScheme.outlineVariant,
+        ),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(profile.name, style = MaterialTheme.typography.titleMedium)
-                    Text("${profile.settings.model} · ${protocolLabel(profile.settings.protocol)}",
-                        style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        text = "${profile.settings.model} · ${protocolLabel(profile.settings.protocol)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                if (profile.enabled) AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_enabled)) })
-                else AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_disabled)) })
+                if (profile.enabled) {
+                    AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_enabled)) })
+                } else {
+                    AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_disabled)) })
+                }
             }
-            Text(stringResource(R.string.native_model_profile_purpose_value,
-                profilePurposeLabel(profile.purpose)), style = MaterialTheme.typography.bodySmall)
-            Text(stringResource(R.string.native_model_profile_keys_value, profile.settings.keyCount),
-                style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                NativeStatusBadge(
+                    text = stringResource(R.string.native_model_profile_purpose_value, profilePurposeLabel(profile.purpose)),
+                    tone = NativeTone.SECONDARY,
+                )
+                NativeStatusBadge(
+                    text = stringResource(R.string.native_model_profile_keys_value, profile.settings.keyCount),
+                    tone = NativeTone.NEUTRAL,
+                )
+            }
             if (selectedLabels.isNotEmpty()) {
-                Text(stringResource(R.string.native_model_profile_selected_value, selectedLabels),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                Text(
+                    text = stringResource(R.string.native_model_profile_selected_value, selectedLabels),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(enabled = !busy, onClick = edit,
-                    modifier = Modifier.testTag("native-model-edit-${profile.id}")) {
+                TextButton(
+                    enabled = !busy,
+                    onClick = edit,
+                    modifier = Modifier.testTag("native-model-edit-${profile.id}"),
+                ) {
                     Text(stringResource(R.string.native_model_action_edit))
                 }
                 if (profile.serves(ModelProfilePurpose.AGENT)) {
@@ -291,12 +348,18 @@ private fun NativeModelProfileEditor(
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(
                 interactionSource = remember { MutableInteractionSource() }, indication = null) { if (!busy) dismiss() })
-            Surface(Modifier.padding(16.dp).imePadding().widthIn(max = 720.dp).fillMaxWidth().heightIn(max = 720.dp),
-                shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
+            Surface(
+                modifier = Modifier.padding(16.dp).imePadding().widthIn(max = 720.dp).fillMaxWidth().heightIn(max = 720.dp),
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                tonalElevation = 3.dp,
+            ) {
                 Column(Modifier.padding(20.dp).testTag("native-model-profile-form"),
                     verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(stringResource(if (profile == null) R.string.native_model_profile_add else R.string.native_model_profile_edit),
-                        style = MaterialTheme.typography.headlineSmall)
+                        style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         OutlinedTextField(name, { name = it.take(120); invalid = false },

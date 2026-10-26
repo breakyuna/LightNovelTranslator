@@ -1,8 +1,8 @@
 # TXT 翻译流水线首个切片
 
-当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。提交 `77daf74` 的 [Actions #158 / 40085555783](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40085555783) 已通过 test/lint/release 和签名校验，覆盖至 §101；§102—107 仅存在于工作区，未提交、未构建，§108 为姓名链路核对。新增设备/视觉、真实供应商与 Room 2—8 schema 导出仍待补齐。
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
 
-后续源码边界：持久执行记录/中断核对及 Room v9 源码已由 #158 覆盖，见 [HANDOFF §3](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。§34—40 的当前页/整工程模拟应用级前台执行与共享调度已有 #158 CI 证据，见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)。
+后续源码边界：持久执行记录/中断核对、Room v18 与检查点源码已在 `1d3dd1c` 构建/测试，见 [HANDOFF §3](HANDOFF.md)。契约见 [RUN_RECOVERY](RUN_RECOVERY.md)；完整后台执行接续仍未完成。§34—40 的当前页/整工程模拟应用级前台执行与共享调度已有 #158 CI 证据，见 [FOREGROUND_TRANSLATION](FOREGROUND_TRANSLATION.md)。
 
 当前验证边界：本地模拟和分批写回用例已由 #158 覆盖，设备流程/截图仍待验；唯一进度见 [HANDOFF §3](HANDOFF.md)。不能继承 §22 TXT 手工版的真机结论。
 
@@ -28,7 +28,7 @@
 
 TranslationBatch 使用独立类型化端口；存储端验证运行归属和真实不透明租约，只允许 TRANSLATION，Agent 不能拿人工命令绕过审批。适配器外层 SQLite 事务包围批内的 ProjectWriteStore 条目事务，任一条修订/指纹冲突或提交前取消会回滚整批；每条仍产生既有 v1 指纹、修订及回执。后续批次失败不回滚之前批次。
 
-工程条目事实沿用早期 `.lnt` v1 命令编码；当前工程 schema 为 v5，独立持久 Run/请求与提交阶段记录由应用 Room v9 提供，见 RUN_RECOVERY。人工和翻译共享唯一事务拥有者，但执行入口和运行授权不同；Agent 单条 TXT 持久审批已有 #158 CI，完整 R19 多对象审批仍未完成。
+工程条目事实沿用早期 `.lnt` v1 命令编码；当前工程 schema 为 v8，独立持久 Run/请求与提交阶段记录由应用 Room v18 提供，见 RUN_RECOVERY。人工和翻译共享唯一事务拥有者，但执行入口和运行授权不同；Agent 单条 TXT 与工作区文件持久审批已进入当前基线，完整 R19 多对象审批仍未完成。
 
 取消按钮先请求 Runtime 停止，再取消实际协程；运行占用在最终清理后释放，停止阶段拒绝下一次请求和写入。ViewModel 在完成/失败/取消后重新读取已提交事实，避免提交成功但取消回调迟到时继续显示旧数据。再次点击模拟是显式的新运行，只处理仍未处理的条目；不自动恢复执行、不自动重放模型请求。
 
