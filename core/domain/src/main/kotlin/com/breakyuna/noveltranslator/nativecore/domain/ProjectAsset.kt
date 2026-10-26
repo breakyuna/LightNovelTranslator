@@ -173,6 +173,8 @@ data class AssetMutationReceipt(
     val revision: Long,
     val assetId: Long? = null,
     val committedAtMillis: Long,
+    /** Ephemeral adapter warnings, e.g. PDF text-layer or protected-structure notices. */
+    val warnings: List<FormatWarning> = emptyList(),
 )
 
 /** Project-level settings mirrored from the application; never silently changes a running run. */

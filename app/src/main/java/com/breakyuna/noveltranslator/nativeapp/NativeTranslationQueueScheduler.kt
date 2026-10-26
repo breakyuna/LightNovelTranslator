@@ -6,12 +6,14 @@ import com.breakyuna.noveltranslator.nativecore.storage.NativeRunStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationTaskStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** UI-neutral notification that one queue drain pass observed a terminal task. */
 data class TranslationQueueSchedulerEvent(
@@ -38,7 +40,9 @@ class NativeTranslationQueueScheduler(
     private val projects: TextProjectPort,
     private val runtime: RuntimePort,
     private val startService: (String) -> Unit,
+    processLeaseFile: java.io.File,
 ) {
+    private val processLease = TranslationQueueProcessLease(processLeaseFile)
     private val mutableEvents = MutableSharedFlow<TranslationQueueSchedulerEvent>(extraBufferCapacity = 16)
     val events = mutableEvents.asSharedFlow()
     private val startLock = Any()
@@ -56,6 +60,7 @@ class NativeTranslationQueueScheduler(
         outcomes = TranslationTaskOutcomePort { ref, run, skipped -> tasks.outcome(ref, run, skipped) },
         revisions = TranslationQueueRevisionPort { spec -> validateRevision(spec) },
         recovery = TranslationQueueRecoveryPort { dispatch -> evidence(dispatch) },
+        decisionJournal = TranslationQueueDecisionJournalPort { dispatch -> decisionCommands(dispatch) },
         control = object : TranslationQueueControlPort {
             override fun pause(identity: TranslationTaskQueueIdentity): Boolean =
                 live(identity)?.let { runner.pause(it.token) } == true
@@ -73,11 +78,13 @@ class NativeTranslationQueueScheduler(
     )
 
     /** Coalesced application-scope kick; concurrent enqueues share the active drain loop. */
-    fun kick() {
+    fun kick(): Job? {
         synchronized(startLock) {
-            if (drainJob?.isActive == true) return
-            drainJob = scope.launch {
+            drainJob?.takeIf { it.isActive }?.let { return it }
+            val job = scope.launch {
+                val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
                 try {
+                    if (token == null) return@launch
                     scheduler.recover()
                     scheduler.drain()
                 } catch (cancelled: CancellationException) {
@@ -86,6 +93,7 @@ class NativeTranslationQueueScheduler(
                     // Queue conflicts/corrupt snapshots are surfaced by the queue dialog; a
                     // scheduler pass must not crash the application process.
                 } finally {
+                    token?.let { processLease.release(it) }
                     synchronized(startLock) { drainJob = null }
                     val snapshot = runner.state.value
                     if (snapshot != null && !snapshot.phase.active) {
@@ -94,10 +102,25 @@ class NativeTranslationQueueScheduler(
                     }
                 }
             }
+            drainJob = job
+            return job
         }
     }
 
-    suspend fun recover(): List<TranslationQueueRecoveryResult> = scheduler.recover()
+    /**
+     * Recovery that must not run beside a drain in another process. The boot/package-replace
+     * receiver and the initial application load call this; [kick] already holds the same lease
+     * while it runs the core [TranslationQueueScheduler.recover], so this method is the only
+     * public recovery entry point.
+     */
+    suspend fun recoverExclusive(): List<TranslationQueueRecoveryResult> {
+        val token = withContext(Dispatchers.IO) { processLease.tryAcquire() } ?: return emptyList()
+        return try {
+            scheduler.recover()
+        } finally {
+            processLease.release(token)
+        }
+    }
 
     /**
      * Starts a QUEUED task in the application scope so ViewModel destruction cannot orphan the
@@ -105,7 +128,9 @@ class NativeTranslationQueueScheduler(
      */
     fun start(identity: TranslationTaskQueueIdentity) {
         scope.launch {
+            val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
             try {
+                if (token == null) return@launch
                 scheduler.start(identity)
                 publish(identity)
                 scheduler.drain()
@@ -113,6 +138,8 @@ class NativeTranslationQueueScheduler(
                 throw cancelled
             } catch (_: Exception) {
                 // The queue projection stays authoritative; a later kick/recovery can retry.
+            } finally {
+                token?.let { processLease.release(it) }
             }
         }
     }
@@ -165,7 +192,9 @@ class NativeTranslationQueueScheduler(
      */
     fun resume(ref: LocalProjectRef, command: CommandId? = null) {
         scope.launch {
+            val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
             try {
+                if (token == null) return@launch
                 scheduler.resume(ref, command)
                 scheduler.drain()
                 publish(null, ref)
@@ -173,6 +202,8 @@ class NativeTranslationQueueScheduler(
                 throw cancelled
             } catch (_: Exception) {
                 // Durable state remains; the user can retry from the queue dialog.
+            } finally {
+                token?.let { processLease.release(it) }
             }
         }
     }
@@ -226,7 +257,9 @@ class NativeTranslationQueueScheduler(
             )
         }
         val run = try {
-            runs.recent(dispatch.spec.ref, 20).firstOrNull { it.handle.run == dispatch.spec.run }
+            // Exact logical-Run lookup; a bounded recent window can miss the matching execution
+            // and must never be used as queue evidence.
+            runs.find(dispatch.spec.ref, dispatch.spec.run)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -257,6 +290,26 @@ class NativeTranslationQueueScheduler(
             live = live || run?.state == StoredRunState.RUNNING ||
                 run?.state == StoredRunState.WAITING_APPROVAL,
         )
+    }
+
+    /** Reads only the exact persisted decisions; an unreadable journal replays nothing. */
+    private suspend fun decisionCommands(
+        dispatch: TranslationQueueDispatch,
+    ): List<TranslationQueueTaskDecision> = try {
+        runs.taskDecisionCommands(dispatch.spec.ref, dispatch.spec.run).map { stored ->
+            TranslationQueueTaskDecision(
+                command = stored.command,
+                action = stored.action,
+                batchId = stored.batchId,
+                memberIds = stored.memberIds,
+                memberFingerprints = stored.memberFingerprints,
+                sequence = stored.sequence,
+            )
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        emptyList()
     }
 
     /**

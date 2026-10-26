@@ -57,6 +57,8 @@ internal class NativeWorkspaceActions(
     val readArtifact: suspend (LocalProjectRef, RunId, WorkspaceArtifactId) -> String,
     val importArtifact: (suspend (LocalProjectRef, Long, WorkspaceArtifactRecord, String, CommandId) -> Unit)? = null,
     val inventory: (suspend (LocalProjectRef, RunId) -> List<WorkspaceArtifactInventory>)? = null,
+    /** User picked a file to copy into uploads/, not a project asset or model image. */
+    val uploadUri: ((android.net.Uri) -> Unit)? = null,
 )
 
 private sealed interface WorkspacePreviewTarget {
@@ -73,6 +75,8 @@ internal fun NativeWorkspaceDialog(
     actions: NativeWorkspaceActions,
     dismiss: () -> Unit,
     saveArtifact: (WorkspaceArtifactRecord) -> Unit,
+    upload: (() -> Unit)? = null,
+    refreshKey: Int = 0,
 ) {
     var materials by remember(ref, revision) { mutableStateOf<List<WorkspaceMaterialSummary>?>(null) }
     var materialFailed by remember(ref, revision) { mutableStateOf(false) }
@@ -82,7 +86,7 @@ internal fun NativeWorkspaceDialog(
     var artifactFailed by remember(ref, chatId, runId) { mutableStateOf(false) }
     var preview by remember(ref, revision, chatId, runId) { mutableStateOf<WorkspacePreviewTarget?>(null) }
 
-    LaunchedEffect(ref, revision) {
+    LaunchedEffect(ref, revision, refreshKey) {
         materialFailed = false
         try { materials = actions.materials(ref, revision) }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -148,7 +152,14 @@ internal fun NativeWorkspaceDialog(
                     else Text(stringResource(R.string.native_workspace_run, runId.value),
                         style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     HorizontalDivider()
-                    Text(stringResource(R.string.native_workspace_materials), style = MaterialTheme.typography.titleSmall)
+                    Row {
+                        Text(stringResource(R.string.native_workspace_materials),
+                            style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                        if (upload != null) TextButton(onClick = upload,
+                            modifier = Modifier.testTag("native-workspace-upload")) {
+                            Text(stringResource(R.string.native_workspace_upload))
+                        }
+                    }
                     if (materialFailed) Text(stringResource(R.string.native_workspace_load_failed),
                         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                     val loadedMaterials = materials

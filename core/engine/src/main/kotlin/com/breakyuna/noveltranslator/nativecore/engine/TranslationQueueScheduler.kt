@@ -42,6 +42,46 @@ fun interface TranslationQueueRecoveryPort {
     suspend fun evidence(dispatch: TranslationQueueDispatch): TranslationQueueRecoveryEvidence
 }
 
+/**
+ * One persisted fixed-task decision awaiting its queue command. [memberFingerprints] are read from
+ * the same durable task rows, so replay can compare exact member evidence instead of trusting a
+ * label. Implementations are strictly read-only.
+ */
+class TranslationQueueTaskDecision(
+    val command: CommandId,
+    val action: TranslationTaskCommandAction,
+    val batchId: TranslationTaskFailureBatchId?,
+    memberIds: List<ItemId>,
+    memberFingerprints: List<ObjectFingerprint>,
+    /** Persisted order; the scheduler replays the oldest pending decision first. */
+    val sequence: Long,
+) {
+    val memberIds: List<ItemId> = java.util.Collections.unmodifiableList(ArrayList(memberIds))
+    val memberFingerprints: List<ObjectFingerprint> =
+        java.util.Collections.unmodifiableList(ArrayList(memberFingerprints))
+
+    init {
+        require(sequence >= 0) { "Invalid decision sequence" }
+        require(action.adjudication || action == TranslationTaskCommandAction.TERMINATE_TASK) {
+            "Unsupported task decision action"
+        }
+        require(this.memberIds.size == this.memberFingerprints.size)
+        require(this.memberIds.distinct().size == this.memberIds.size)
+        if (action.adjudication) {
+            require(batchId != null && this.memberIds.isNotEmpty())
+            require(this.memberIds.size <= TranslationTaskFailureBatch.MAX_MEMBERS)
+            require(this.memberIds == this.memberIds.sortedBy { it.value })
+        } else {
+            require(batchId == null && this.memberIds.isEmpty() && this.memberFingerprints.isEmpty())
+        }
+    }
+}
+
+/** Read-only decision journal used only to replay a decision that never reached queue JSON. */
+fun interface TranslationQueueDecisionJournalPort {
+    suspend fun decisions(dispatch: TranslationQueueDispatch): List<TranslationQueueTaskDecision>
+}
+
 enum class TranslationQueueRecoveryVerdict { LIVE, PAUSED, NEEDS_REVIEW, FAILED, CANCELLED }
 
 class TranslationQueueRecoveryResult(
@@ -105,6 +145,11 @@ interface TranslationQueueControlPort {
  * Safety invariants:
  * - restart reconciliation runs before dispatch and may only move RUNNING to PAUSED/NEEDS_REVIEW/
  *   FAILED from durable evidence; it never auto-resumes or re-sends an uncertain request;
+ * - a RUNNING task whose fixed-task store and exact Run journal prove completion is finalized as
+ *   COMPLETED/COMPLETED_WITH_ERRORS before generic recovery could freeze it at NEEDS_REVIEW;
+ *   missing usage, receipts or journal evidence stays in review;
+ * - a persisted member/terminate decision that never reached queue JSON is replayed only when its
+ *   command, action, batch and member fingerprints exactly match the durable queue task;
  * - a stale revision is refreshed only with an audited REVALIDATE_REVISION command; otherwise the
  *   task stops at NEEDS_REVIEW without any paid dispatch;
  * - pause/cancel first reach the live runner, then persist the matching queue command, so the
@@ -118,6 +163,8 @@ class TranslationQueueScheduler(
     private val outcomes: TranslationTaskOutcomePort,
     private val revisions: TranslationQueueRevisionPort,
     private val recovery: TranslationQueueRecoveryPort,
+    /** Optional durable decision journal; without it no queue command is ever replayed. */
+    private val decisionJournal: TranslationQueueDecisionJournalPort? = null,
     private val control: TranslationQueueControlPort = NoControl,
     private val isBusy: () -> Boolean = { false },
     private val recoverJournal: suspend () -> Unit = {},
@@ -139,6 +186,23 @@ class TranslationQueueScheduler(
     /** Reconciles abandoned RUNNING facts before any new dispatch. Does not start work. */
     suspend fun recover(): List<TranslationQueueRecoveryResult> {
         recoverJournal()
+        // Rebuild a durably proven completion while the queue task is still RUNNING. This must run
+        // before recoverRunning; otherwise a crash between task completion and queue outcome would
+        // be frozen as NEEDS_REVIEW forever. Reconciliation failures must not skip recovery.
+        try {
+            reconcileSettled()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A conflict/corrupt fact is retried by the next kick; recovery still gets its chance.
+        }
+        try {
+            reconcileDecisions()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A failed replay leaves the task for explicit review.
+        }
         return coordinator.recoverRunning(recovery)
     }
 
@@ -150,6 +214,22 @@ class TranslationQueueScheduler(
     suspend fun drain(): Int {
         if (!drainLock.tryLock()) return 0
         try {
+            // A previous pass may have died after a durable task/run settlement but before the
+            // queue outcome. Rebuild only from persisted evidence; never launch a request here.
+            try {
+                reconcileSettled()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Continue to normal claiming; a task that is still RUNNING blocks a new claim.
+            }
+            try {
+                reconcileDecisions()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Replay is best-effort and never widens evidence.
+            }
             var claimed = 0
             while (true) {
                 val dispatch = claimNext() ?: break
@@ -236,9 +316,224 @@ class TranslationQueueScheduler(
         return coordinator.nextRunnable()
     }
 
+    /**
+     * Rebuilds a terminal queue outcome from already-persisted facts when the task store says the
+     * fixed task is settled but the queue command was never written. It only runs while the queue
+     * task is still RUNNING or an unbatched review state (before restart recovery would freeze it
+     * as NEEDS_REVIEW), never launches a paid request and never treats missing usage/receipts as
+     * success. A fixed task keeps stage READY when some targets were explicitly skipped, so READY
+     * is reconcilable too; [completionProven] still requires committed + skipped = target.
+     */
+    suspend fun reconcileSettled(): Int {
+        val snapshots = try {
+            coordinator.snapshot()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return 0
+        }
+        var completed = 0
+        for (stored in snapshots) {
+            for (task in stored.snapshot.queue.tasks) {
+                val reviewWithoutBatch = task.state in setOf(
+                    TranslationTaskQueueState.NEEDS_REVIEW,
+                    TranslationTaskQueueState.FAILED,
+                ) && task.batches.isEmpty()
+                if (task.state != TranslationTaskQueueState.RUNNING && !reviewWithoutBatch) continue
+                val entry = stored.snapshot.entry(task.identity) ?: continue
+                val dispatch = TranslationQueueDispatch(stored, entry)
+                val recoveryEvidence = try {
+                    recovery.evidence(dispatch)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+                val taskEvidence = recoveryEvidence.task ?: continue
+                if (taskEvidence.stage !in SETTLED_TASK_STAGES) continue
+                if (recoveryEvidence.live) continue
+                if (!completionRunProven(recoveryEvidence.run)) continue
+                val evidence = readOutcome(dispatch.spec, task) ?: continue
+                if (evidence.stage !in SETTLED_TASK_STAGES) continue
+                if (evidence.skippedItems != task.skippedItemIds.size) continue
+                if (!completionProven(evidence)) continue
+                val rebuilt = try {
+                    completeFromEvidence(task.identity, task, evidence)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    false
+                }
+                if (rebuilt) {
+                    completed++
+                    notifySettled(dispatch)
+                }
+            }
+        }
+        return completed
+    }
+
+    /**
+     * Replays only a fixed-task decision that exactly matches the persisted queue batch. The
+     * decision is written by the task store before its queue command; after a crash the queue is
+     * still NEEDS_REVIEW/FAILED (or PAUSED for a task-level terminate). A task-level terminate is
+     * also replayed on a still-QUEUED task: the task store already wrote CANCELLED before the
+     * queue command, and without replay `drain` would launch the terminal task. RUNNING is left to
+     * live recovery so a terminate never fights a running foreground request. A mismatch, a changed
+     * fingerprint, an already-decided member or an uncertain receipt stops the replay instead of
+     * widening evidence.
+     */
+    suspend fun reconcileDecisions(): Int {
+        val journal = decisionJournal ?: return 0
+        val snapshots = try {
+            coordinator.snapshot()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            return 0
+        }
+        var applied = 0
+        for (stored in snapshots) {
+            for (task in stored.snapshot.queue.tasks) {
+                val terminateOnQueued = task.state == TranslationTaskQueueState.QUEUED
+                if (!task.state.awaitingDecision && task.state != TranslationTaskQueueState.PAUSED &&
+                    !terminateOnQueued
+                ) {
+                    continue
+                }
+                val entry = stored.snapshot.entry(task.identity) ?: continue
+                val dispatch = TranslationQueueDispatch(stored, entry)
+                val decisions = try {
+                    journal.decisions(dispatch)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    // An unreadable journal is no replay authority.
+                    emptyList()
+                }
+                for (decision in decisions.sortedBy { it.sequence }) {
+                    if (applied >= MAX_DECISION_REPLAYS) return applied
+                    val latest = try {
+                        coordinator.snapshot(dispatch.identity.ref).task(dispatch.identity)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        null
+                    }
+                    if (latest == null) break
+                    val terminate = decision.action == TranslationTaskCommandAction.TERMINATE_TASK
+                    if (!latest.state.awaitingDecision &&
+                        !(latest.state == TranslationTaskQueueState.PAUSED && terminate) &&
+                        !(latest.state == TranslationTaskQueueState.QUEUED && terminate)
+                    ) {
+                        // A paused/queued task can only have a persisted task-level terminate
+                        // command; member decisions require an explicit review state.
+                        break
+                    }
+                    if (latest.command(decision.command) != null) continue
+                    if (!decisionMatches(latest, decision)) break
+                    val result = try {
+                        when (decision.action) {
+                            TranslationTaskCommandAction.RETRY_MEMBERS -> coordinator.retryMembers(
+                                dispatch.identity,
+                                decision.command,
+                                requireNotNull(decision.batchId),
+                                decision.memberIds,
+                            )
+                            TranslationTaskCommandAction.SKIP_MEMBERS -> coordinator.skipMembers(
+                                dispatch.identity,
+                                decision.command,
+                                requireNotNull(decision.batchId),
+                                decision.memberIds,
+                            )
+                            TranslationTaskCommandAction.KEEP_ERROR -> coordinator.keepErrors(
+                                dispatch.identity,
+                                decision.command,
+                                requireNotNull(decision.batchId),
+                                decision.memberIds,
+                            )
+                            TranslationTaskCommandAction.TERMINATE_TASK ->
+                                coordinator.terminate(dispatch.identity, decision.command)
+                            else -> error("Unsupported task decision action")
+                        }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        break
+                    }
+                    when (result) {
+                        is TranslationQueueResult.Applied -> {
+                            applied++
+                            notifySettled(dispatch)
+                        }
+                        is TranslationQueueResult.Duplicate -> Unit
+                        else -> break
+                    }
+                }
+            }
+        }
+        return applied
+    }
+
+    private suspend fun notifySettled(dispatch: TranslationQueueDispatch) {
+        try {
+            onSettled(dispatch)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Observer failures cannot change the replayed durable fact.
+        }
+    }
+
+    private fun decisionMatches(task: TranslationQueuedTask, decision: TranslationQueueTaskDecision): Boolean {
+        if (decision.action == TranslationTaskCommandAction.TERMINATE_TASK) {
+            return decision.batchId == null && decision.memberIds.isEmpty()
+        }
+        val batchId = decision.batchId ?: return false
+        val batch = task.batch(batchId) ?: return false
+        for (index in decision.memberIds.indices) {
+            val itemId = decision.memberIds[index]
+            val member = batch.member(itemId) ?: return false
+            if (member.fingerprint != decision.memberFingerprints[index]) return false
+            if (task.decision(batchId, itemId) != null) return false
+            if (task.isCommitted(itemId)) return false
+            if (decision.action != TranslationTaskCommandAction.KEEP_ERROR &&
+                member.receipt == TranslationFailureReceipt.DISPATCHED_NO_RECEIPT
+            ) {
+                return false
+            }
+        }
+        return true
+    }
+
+    private fun completionRunProven(run: TranslationQueueRunEvidence?): Boolean {
+        if (run == null) return false
+        if (run.needsReview) return false
+        return when (run.state) {
+            StoredRunState.SUCCEEDED -> true
+            // A process death after exact commit receipts is reconciled to INTERRUPTED/COMMITTED.
+            StoredRunState.INTERRUPTED -> run.stage == StoredRunStage.COMMITTED
+            else -> false
+        }
+    }
+
     private suspend fun execute(dispatch: TranslationQueueDispatch) {
         try {
             executeClaimed(dispatch)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            // Never leave a claimed task as a bare RUNNING fact when launch/settlement itself
+            // failed. This is bounded (two re-reads + one FAILED fallback) and never retries paid
+            // work; a later recovery still sees an explicit review/failure state.
+            try {
+                stopRunningBounded(dispatch.identity)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // The original error remains authoritative; a corrupt queue cannot be repaired here.
+            }
+            throw error
         } finally {
             try {
                 onSettled(dispatch)
@@ -247,6 +542,45 @@ class TranslationQueueScheduler(
             } catch (_: Exception) {
                 // Observer failures cannot change the durable queue outcome.
             }
+        }
+    }
+
+    private suspend fun stopRunningBounded(identity: TranslationTaskQueueIdentity) {
+        repeat(2) {
+            val current = try {
+                stillRunning(identity)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            if (current == null || current.state != TranslationTaskQueueState.RUNNING) return
+            val result = try {
+                coordinator.markNeedsReview(identity)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
+            when (result) {
+                is TranslationQueueResult.Applied, is TranslationQueueResult.Unchanged -> return
+                else -> Unit
+            }
+        }
+        val current = try {
+            stillRunning(identity)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        if (current?.state != TranslationTaskQueueState.RUNNING) return
+        try {
+            coordinator.markFailed(identity)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Bounded fallback exhausted; recovery still treats RUNNING as non-dispatchable.
         }
     }
 
@@ -525,7 +859,9 @@ class TranslationQueueScheduler(
                 return false
             }
         }
-        val completed = if (evidence.skippedItems == 0) {
+        val completed = if (task.state != TranslationTaskQueueState.RUNNING) {
+            coordinator.markCompletedAfterReview(identity, facts)
+        } else if (evidence.skippedItems == 0) {
             coordinator.markCompleted(identity, facts)
         } else {
             coordinator.markCompletedWithErrors(identity, facts)
@@ -561,3 +897,12 @@ class TranslationQueueScheduler(
 
 /** 100 pages × 20 members bounds one settlement read without scanning an unbounded project. */
 private const val MAX_FAILURE_EVIDENCE_PAGES = 100
+
+/** A reconciliation pass replays a bounded oldest-first prefix; idempotent callers can run again. */
+private const val MAX_DECISION_REPLAYS = 8
+
+/**
+ * Fixed-task stages that can prove a settled outcome from persisted facts. READY is included
+ * because skipping every failing target leaves the task READY with committed + skipped = target.
+ */
+private val SETTLED_TASK_STAGES: Set<String> = setOf("READY", "COMPLETE", "COMMITTING", "MARKING_FAILURE")

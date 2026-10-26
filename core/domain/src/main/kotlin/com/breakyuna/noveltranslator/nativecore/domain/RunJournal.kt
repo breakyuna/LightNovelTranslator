@@ -39,6 +39,11 @@ interface RunJournalPort {
     suspend fun finish(handle: RunJournalHandle, state: StoredRunState)
     /** Reconcile dead-process records and project receipts; never execute requests or writes. */
     suspend fun recoverInterrupted()
+    /**
+     * Latest execution journal entry for exactly this logical Run, or null. Callers that need a
+     * durable fact for one Run must not approximate this with a bounded recent window.
+     */
+    suspend fun find(ref: LocalProjectRef, run: RunIdentity): StoredRun?
     suspend fun recent(ref: LocalProjectRef, limit: Int = 5): List<StoredRun>
 }
 

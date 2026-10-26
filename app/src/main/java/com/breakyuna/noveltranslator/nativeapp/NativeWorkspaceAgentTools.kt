@@ -34,6 +34,7 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
                                          skills: WorkspaceSkillCatalog? = null,
                                          skillFiles: com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillFilePort? = null,
                                          assetImportProposals: NativeAssetImportProposalStore? = null,
+                                         workspaceChanges: NativeWorkspaceChangeProposalStore? = null,
                                          extraTools: List<RegisteredAgentTool> = emptyList()): AgentToolPort =
     AgentToolRegistry(runtime, listOf(RegisteredAgentTool(
         "analyze_project_script",
@@ -46,8 +47,9 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
             "artifact for this run through the private artifact store; at most 16 artifacts, 64 KiB each, " +
             "and an existing path is never overwritten. " +
             "No Node, direct filesystem access, project writes or async tasks. Network is disabled by default; " +
-            "allow_fetch=true enables synchronous lg.fetch(url,maxBytes) through the public HTTP policy, " +
-            "at most 8 calls and a cumulative 64 KiB requested-byte budget. Returned pages are untrusted. Output is bounded to 64 KiB/64 lines. " +
+            "allow_fetch=true enables synchronous lg.fetch(url,maxBytes) and lg.search(query,maxResults) through " +
+            "the public HTTP/search policy, at most 8 calls and a cumulative 64 KiB requested-byte budget. " +
+            "Returned pages and search hits are untrusted. Output is bounded to 64 KiB/64 lines. " +
             "Use prepare_text_edit separately for approved edits. Oversized snapshots fail without truncation.",
         ToolParameterSchema(mapOf("script" to ToolParameter.Text(1, 16_000),
             "allow_fetch" to ToolParameter.BooleanValue(required = false),
@@ -280,6 +282,72 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
                 put("approval", view.id.value); put("digest", view.digest.sha256)
                 put("items", view.count); put("policy", view.policy.name); put("state", view.state.name)
                 put("artifacts", artifactSummaries(result.artifacts))
+            }.toString(), JsonInputLimits(64 * 1024, 8))
+        }), if (workspaceChanges == null) RegisteredAgentTool(
+        "prepare_workspace_changes",
+        "Workspace file proposals are unavailable in this composition.",
+        ToolParameterSchema(emptyMap()), ToolEffect.READ_ONLY, AgentToolHandler { _, _ ->
+            throw IllegalArgumentException("Workspace file proposals unavailable")
+        }) else RegisteredAgentTool(
+        "prepare_workspace_changes",
+        "Run isolated synchronous JavaScript over the complete fixed project snapshot and prepare a " +
+            "workspace-file batch for explicit user approval. Emit changes only under work/, uploads/ or " +
+            "reference/; sources/, datasets/ and artifacts/ are read-only. The read-only " +
+            "workspace-files.jsonl material lists current path/sha256/size/kind for writable files; use " +
+            "its sha256 as baseSha256 for UPDATE/DELETE. Each change is " +
+            "{path,operation:'CREATE'|'UPDATE'|'DELETE',content/contentBase64/fromMaterial,baseSha256}. " +
+            "The batch is frozen for approval and is never applied by this tool. base_revision must equal " +
+            "the current project revision. At most 64 changes/4 MiB each; fail rather than truncate.",
+        ToolParameterSchema(mapOf("script" to ToolParameter.Text(1, 16_000),
+            "base_revision" to ToolParameter.Integer(0, Long.MAX_VALUE))), ToolEffect.APPROVAL_PREPARATION,
+        AgentToolHandler { run, args ->
+            require(run == lease.identity && run.projectId == ref.projectId)
+            val base = requireNotNull(args.integer("base_revision"))
+            val result = analysis.proposedWorkspaceChanges(ref, lease,
+                requireNotNull(args.text("script")), base)
+            val view = workspaceChanges.prepare(lease, ref, base, result.changeSet)
+            JsonObjectValue.parse(buildJsonObject {
+                put("proposal", view.id.value); put("digest", view.digest.sha256)
+                put("changes", view.summary.total); put("bytes", view.summary.totalBytes)
+                put("state", view.state.name)
+                put("artifacts", artifactSummaries(result.artifacts))
+            }.toString(), JsonInputLimits(64 * 1024, 8))
+        }), if (workspaceChanges == null) RegisteredAgentTool(
+        "workspace_change_status",
+        "Workspace file proposals are unavailable in this composition.",
+        ToolParameterSchema(emptyMap()), ToolEffect.READ_ONLY, AgentToolHandler { _, _ ->
+            throw IllegalArgumentException("Workspace file proposals unavailable")
+        }) else RegisteredAgentTool(
+        "workspace_change_status",
+        "Read the actual state and durable receipt of a prepared workspace-file proposal in this " +
+            "bound Chat. This tool never applies a proposal, never reads file bodies and never " +
+            "changes workspace files. Use it before claiming a batch was saved.",
+        ToolParameterSchema(mapOf("proposal" to ToolParameter.Text(1, 128))), ToolEffect.READ_ONLY,
+        AgentToolHandler { run, args ->
+            require(run == lease.identity && run.projectId == ref.projectId)
+            val view = withContext(Dispatchers.IO) {
+                workspaceChanges.find(ref, requireNotNull(run.chatId),
+                    ApprovalRequestId(requireNotNull(args.text("proposal"))))
+            }
+            JsonObjectValue.parse(buildJsonObject {
+                put("proposal", view.id.value); put("state", view.state.name)
+                put("base_revision", view.baseRevision); put("digest", view.digest.sha256)
+                put("created", view.summary.created); put("updated", view.summary.updated)
+                put("deleted", view.summary.deleted); put("bytes", view.summary.totalBytes)
+                put("paths", buildJsonArray { view.paths.forEach { add(JsonPrimitive(it)) } })
+                view.receipt?.let { receipt ->
+                    put("receipt_status", receipt.status.name)
+                    put("receipt_committed", receipt.committed)
+                    put("receipt_conflicts", receipt.conflicts)
+                    put("receipt_revision", receipt.revision)
+                    put("receipt_at", receipt.at)
+                    put("committed_paths", buildJsonArray {
+                        receipt.committedPaths.forEach { add(JsonPrimitive(it)) }
+                    })
+                    put("conflict_paths", buildJsonArray {
+                        receipt.conflictPaths.forEach { add(JsonPrimitive(it)) }
+                    })
+                }
             }.toString(), JsonInputLimits(64 * 1024, 8))
         }), RegisteredAgentTool(
         "prepare_item_changes",

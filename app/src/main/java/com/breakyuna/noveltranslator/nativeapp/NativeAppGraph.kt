@@ -7,6 +7,7 @@ import com.breakyuna.noveltranslator.nativecore.engine.CompatibleTranslationMode
 import com.breakyuna.noveltranslator.nativecore.engine.CompatibleAgentModel
 import com.breakyuna.noveltranslator.nativecore.storage.NativeModelSettingsStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeAgentStore
+import com.breakyuna.noveltranslator.nativecore.storage.NativeAgentCheckpointStore
 import com.breakyuna.noveltranslator.nativecore.engine.LocalSimulationModel
 import com.breakyuna.noveltranslator.nativecore.engine.NativeModelGateway
 import com.breakyuna.noveltranslator.nativecore.engine.TextTranslationService
@@ -63,6 +64,7 @@ class NativeAppGraph(context: Context) {
     val formatAdapters = NativeFormatAdapters.install()
     val formatProjects = ProjectFormatService(projects, projects)
     val agentStore = NativeAgentStore(context.applicationContext, projects, runtime)
+    val agentCheckpoints = NativeAgentCheckpointStore(context.applicationContext)
     val itemProposals = com.breakyuna.noveltranslator.nativecore.storage.NativeItemProposalStore(
         context.applicationContext, projects, runtime)
     val policyProposals = com.breakyuna.noveltranslator.nativecore.storage.NativePolicyProposalStore(
@@ -82,6 +84,8 @@ class NativeAppGraph(context: Context) {
                 formatProjects.importAsset(command, ref, revision, path, bytes, enabled)
             },
         ))
+    internal val workspaceChanges = NativeWorkspaceChangeProposalStore(
+        context.applicationContext, workspace, runtime)
     val agentInputs = com.breakyuna.noveltranslator.nativecore.storage.NativeAgentInputStore(
         context.applicationContext, projects, runtime)
     val steering = com.breakyuna.noveltranslator.nativecore.engine.AgentSteerController(runtime, agentInputs)
@@ -123,19 +127,39 @@ class NativeAppGraph(context: Context) {
             profiles = { reference -> modelProfiles.resolveProfile(reference) }))
     val modelCatalog: NativeModelCatalogPort = gateway
     private val workspaceFetch = com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceHttpFetch(networkSettings)
+    private val workspaceSearch = com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSearchChain(
+        listOf(com.breakyuna.noveltranslator.nativeapp.net.NativeDuckDuckGoSearch(workspaceFetch)))
     internal val workspaceAnalysis = com.breakyuna.noveltranslator.nativecore.workspace.ProjectWorkspaceAnalysis(
-        context.applicationContext, projects, fetch = workspaceFetch,
+        context.applicationContext, projects, fetch = workspaceFetch, search = workspaceSearch,
         artifactPublisher = com.breakyuna.noveltranslator.nativecore.workspace.ProjectWorkspaceArtifactPublisher {
-                ref, lease, drafts -> workspace.publishArtifacts(ref, lease.identity.runId, drafts) })
-    val conversations = NativeKoogConversation(runtime, projects, agentStore, agentStore, agentStore, gateway, steering,
+                ref, lease, drafts -> workspace.publishArtifacts(ref, lease.identity.runId, drafts) },
+        workspaceInventory = { ref -> workspace.inventory(ref) })
+    /**
+     * A turn must not stage a second proposal while any typed approval is unresolved. AgentStore
+     * owns the single-item approval; the composite adds every other proposal store, including
+     * workspace files, so one Chat keeps one pending approval across storage formats.
+     */
+    val agentWorkspace: com.breakyuna.noveltranslator.nativecore.domain.NativeAgentWorkspacePort =
+        object : com.breakyuna.noveltranslator.nativecore.domain.NativeAgentWorkspacePort by agentStore {
+        override suspend fun hasPending(ref: LocalProjectRef, chatId: ChatId): Boolean =
+            agentStore.hasPending(ref, chatId) ||
+                itemProposals.pending(ref, chatId) != null ||
+                policyProposals.pending(ref, chatId) != null ||
+                pdfPageProposals.pending(ref, chatId) != null ||
+                assetImportProposals.pending(ref, chatId) != null ||
+                workspaceChanges.pending(ref, chatId) != null
+    }
+    val conversations = NativeKoogConversation(runtime, projects, agentWorkspace, agentStore, agentStore, gateway, steering,
         additionalTools = { lease, ref ->
             val workspaceRun = NativeWorkspaceRun(ref, lease, workspace)
             nativeWorkspaceAnalysisTools(runtime, workspaceAnalysis, ref, lease, itemProposals, policyProposals,
                 pdfPageProposals, workspaceRun,
                 skills = workspaceSkills, skillFiles = workspaceSkills,
                 assetImportProposals = assetImportProposals,
+                workspaceChanges = workspaceChanges,
                 extraTools = nativeWorkspaceInspectionTools(workspaceRun, workspaceSkills, workspaceSkills) +
-                    nativeWorkspaceFetchTools(runtime, lease, workspaceFetch))
+                    nativeWorkspaceFetchTools(runtime, lease, workspaceFetch) +
+                    nativeWorkspaceSearchTools(runtime, lease, workspaceSearch))
         },
         appPersona = { appPreferences.appPersona().takeIf { it.isNotEmpty() } },
         skillContext = {
@@ -154,6 +178,12 @@ class NativeAppGraph(context: Context) {
                     if (!body.isNullOrBlank()) append(body).append('\n')
                 }
             }
+        },
+        checkpoints = agentCheckpoints,
+        onCheckpointFailure = { failure ->
+            runCatching { diagnostics.append(
+                com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.WARN,
+                "agent", "Agent checkpoint write failed: ${failure::class.java.simpleName}") }
         })
     val translationTasks = com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationTaskStore(context.applicationContext, projects, runtime,
         com.breakyuna.noveltranslator.nativecore.engine.DefaultTranslationRetryRecoveryPolicy, usageLedger)
@@ -244,6 +274,7 @@ class NativeAppGraph(context: Context) {
         projects = projects,
         runtime = runtime,
         startService = { token -> NativeTranslationService.start(context.applicationContext, token) },
+        processLeaseFile = java.io.File(context.applicationContext.filesDir, "native_translation_queue.lock"),
     )
     /**
      * Releases every Room/file owner and cancels application-scoped work. Production keeps the

@@ -33,6 +33,11 @@ class CheckpointEnvelope(
     val summary: CompactionSummary?,
     acceptedCommands: List<CommandId>,
     val usage: RequestUsage,
+    /**
+     * Private working-copy scope. Existing callers may omit it for an in-memory envelope, but a
+     * durable Agent checkpoint must carry it so reads can reject a different instance/generation.
+     */
+    val projectRef: LocalProjectRef? = null,
 ) {
     val messages: List<AgentMessage> = frozenList(messages)
     val pendingToolCalls: List<ToolCallId> = frozenList(pendingToolCalls)
@@ -41,6 +46,9 @@ class CheckpointEnvelope(
     init {
         require(version > 0 && strategyVersion > 0) { "Checkpoint and strategy versions start at 1" }
         require(run.chatId != null) { "Agent checkpoints belong to a Chat" }
+        require(projectRef == null || projectRef.projectId == run.projectId) {
+            "Checkpoint scope belongs to the same project as the run"
+        }
         require((summary != null) == (stage == CheckpointStage.COMPACTED)) {
             "Only a compacted checkpoint carries a summary"
         }

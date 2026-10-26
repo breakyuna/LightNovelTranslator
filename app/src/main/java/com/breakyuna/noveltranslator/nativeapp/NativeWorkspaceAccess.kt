@@ -12,12 +12,15 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactKind
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactRecord
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactStore
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactUnavailable
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceFileStore
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceHardLimits
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialKind
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialManifest
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialProjectPort
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialSource
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialSummary
+import com.breakyuna.noveltranslator.nativecore.workspace.PathPolicy
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceMaterialUnavailable
 import java.io.File
 import java.nio.ByteBuffer
@@ -32,6 +35,10 @@ import kotlinx.coroutines.withContext
 
 /** The text body cap for one model/UI preview; full artifacts are only written by SAF on demand. */
 internal const val WORKSPACE_TEXT_PREVIEW_BYTES: Int = 64 * 1024
+
+/** Upload leaf limits leave room for a UUID prefix inside the 255-byte segment bound. */
+private const val MAX_UPLOAD_LEAF_BYTES = 200
+private const val DEFAULT_UPLOAD_NAME = "upload.bin"
 
 /**
  * App-owned private workspace composition. One root per Project instance/generation holds the
@@ -52,6 +59,76 @@ internal class NativeWorkspaceAccess(
     private val artifactStores = HashMap<LocalProjectRef, WorkspaceArtifactStore>()
 
     private fun rootFor(ref: LocalProjectRef): File = File(base, "ws-" + identityHash(ref))
+
+    /** Read-only view of the private workspace root for file proposal application. */
+    internal fun workspaceRoot(ref: LocalProjectRef): File = rootFor(ref)
+
+    /**
+     * Read-only inventory of files a workspace proposal may update/delete. It exposes only paths,
+     * fingerprints and sizes; bodies remain in the private root and are never copied to UI state.
+     */
+    suspend fun inventory(ref: LocalProjectRef): List<WorkspaceMaterialSummary> = withContext(Dispatchers.IO) {
+        WorkspaceFileStore(rootFor(ref)).list()
+            .filter { it.kind in setOf(WorkspaceMaterialKind.WORK, WorkspaceMaterialKind.UPLOAD,
+                WorkspaceMaterialKind.REFERENCE) }
+    }
+
+    /**
+     * Copies one user-selected file into `uploads/` with a bounded name and no overwrite. The
+     * returned material is immediately visible to workspace scripts and Agent read tools.
+     */
+    suspend fun upload(ref: LocalProjectRef, displayName: String, bytes: ByteArray): WorkspaceMaterialSummary =
+        withContext(Dispatchers.IO) {
+            require(bytes.size.toLong() in 0..WorkspaceHardLimits.MAX_SINGLE_BYTES) { "Upload too large" }
+            val leaf = uploadLeaf(displayName)
+            val preferred = PathPolicy.DEFAULT.parse("uploads/$leaf")
+            val path = if (File(rootFor(ref), preferred.value).exists()) {
+                PathPolicy.DEFAULT.parse("uploads/" + java.util.UUID.randomUUID() + "-" + leaf)
+            } else preferred
+            WorkspaceFileStore(rootFor(ref)).saveUpload(path, bytes)
+        }
+
+    /**
+     * One safe `uploads/` leaf name. Control characters and separators become `_`; the UTF-8 byte
+     * bound keeps room for the duplicate-name UUID inside the 255-byte segment limit, and names the
+     * path policy still rejects (trailing dots, Windows devices) are repaired or prefixed instead
+     * of failing the whole upload.
+     */
+    private fun uploadLeaf(displayName: String): String {
+        val cleaned = displayName.substringAfterLast('/').substringAfterLast('\\')
+            .map { if (it.isISOControl() || it in "/\\") '_' else it }
+            .joinToString("")
+            .trim()
+            .trimEnd('.', ' ')
+            .ifBlank { DEFAULT_UPLOAD_NAME }
+        val bounded = truncateUtf8(cleaned, MAX_UPLOAD_LEAF_BYTES)
+            .trimEnd('.', ' ')
+            .ifBlank { DEFAULT_UPLOAD_NAME }
+        return if (isReservedUploadName(bounded)) "_$bounded" else bounded
+    }
+
+    private fun truncateUtf8(value: String, maxBytes: Int): String {
+        if (value.toByteArray(Charsets.UTF_8).size <= maxBytes) return value
+        val builder = StringBuilder(value.length)
+        var index = 0
+        var used = 0
+        while (index < value.length) {
+            val codePoint = value.codePointAt(index)
+            val size = String(Character.toChars(codePoint)).toByteArray(Charsets.UTF_8).size
+            if (used + size > maxBytes) break
+            builder.appendCodePoint(codePoint)
+            used += size
+            index += Character.charCount(codePoint)
+        }
+        return builder.toString()
+    }
+
+    private fun isReservedUploadName(leaf: String): Boolean {
+        val base = leaf.substringBefore('.').trimEnd(' ', '.').uppercase(Locale.ROOT)
+        if (base in setOf("CON", "PRN", "AUX", "NUL")) return true
+        return base.length == 4 && (base.startsWith("COM") || base.startsWith("LPT")) &&
+            base.last() in '1'..'9'
+    }
 
     suspend fun projectRevision(ref: LocalProjectRef): Long = withContext(Dispatchers.IO) {
         val summary = projects.open(ref)
@@ -76,7 +153,7 @@ internal class NativeWorkspaceAccess(
         withContext(Dispatchers.IO) { withMaterialRoot(ref) { materialSource(ref, revision).snapshot() } }
 
     suspend fun listMaterials(ref: LocalProjectRef, revision: Long): List<WorkspaceMaterialSummary> =
-        manifest(ref, revision).materials
+        withContext(Dispatchers.IO) { materialSource(ref, revision).list(null) }
 
     /**
      * Reads one manifest-approved material. The opaque id is never interpreted as a path; the
@@ -91,7 +168,7 @@ internal class NativeWorkspaceAccess(
         require(limitBytes in 1..WORKSPACE_TEXT_PREVIEW_BYTES) { "Invalid workspace material read limit" }
         withMaterialRoot(ref) {
             val source = materialSource(ref, revision)
-            val summary = source.snapshot().materials.firstOrNull { it.id == id }
+            val summary = source.list(null).firstOrNull { it.id == id }
                 ?: throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.NOT_FOUND)
             if (summary.sizeBytes > limitBytes.toLong()) {
                 throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.TOO_LARGE)

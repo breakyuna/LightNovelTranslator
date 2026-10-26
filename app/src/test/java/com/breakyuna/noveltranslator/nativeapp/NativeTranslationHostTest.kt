@@ -27,6 +27,7 @@ class NativeTranslationHostTest {
             finishGate?.await(); terminals.add(state)
         }
         override suspend fun recoverInterrupted() = Unit
+        override suspend fun find(ref: LocalProjectRef, run: RunIdentity): StoredRun? = null
         override suspend fun recent(ref: LocalProjectRef, limit: Int) = emptyList<StoredRun>()
     }
 

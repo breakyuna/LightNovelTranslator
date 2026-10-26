@@ -30,6 +30,11 @@ internal class NativeAssetImportApplier(
 ) : AssetImportApplier {
     override suspend fun apply(proposal: AssetImportProposal, command: CommandId): AssetMutationReceipt {
         require(command == proposal.command) { "Asset import command changed" }
+        if (!isNativeFormatActive(proposal.target.value)) {
+            // Frozen formats are a policy conflict at apply time; the proposal is claimed, so
+            // REJECTED would violate the store's binding invariant.
+            throw AssetImportApplyFailure(AssetImportProposalState.CONFLICT)
+        }
         if (projectRevision(proposal.ref) != proposal.revision) {
             throw AssetImportApplyFailure(AssetImportProposalState.STALE)
         }

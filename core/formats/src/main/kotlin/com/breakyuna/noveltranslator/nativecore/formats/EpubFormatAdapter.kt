@@ -10,25 +10,37 @@ import com.breakyuna.noveltranslator.nativecore.domain.RelativePath
 import com.breakyuna.noveltranslator.nativecore.domain.TextItemStatus
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.w3c.dom.Element
 
 /**
  * EPUB package rewriter. It parses only `META-INF/container.xml`, the OPF package document, spine
  * XHTML documents, the EPUB3 navigation document and the EPUB2 NCX, all located through the OPF.
- * The leading text slot of every direct OPF `<dc:title>`, `<dc:description>` and `<dc:subject>`
- * child, spine text/`alt`/`title` slots, nav text plus nav `alt`/`title` attributes and NCX
- * `<text>` labels are exposed as units and written back with UTF-16 offset splices into the
- * original member bytes, never a DOM re-serialization. Every other member (images, fonts, CSS,
- * OPF markup outside those slots) is copied literally. A locator stores its member path, exact
- * UTF-16 range, a raw-slot digest and a kind discriminator; `read()` emits navigation labels in a
- * stable order (spine documents, then nav text, nav attributes, NCX labels, then OPF metadata in
- * document order), and `write()` rejects stale, foreign, overlapping or duplicate locators instead
- * of writing into the package.
+ * The leading text slot of every direct OPF `<dc:title>`, `<dc:description>`, `<dc:subject>`,
+ * `<dc:publisher>`, `<dc:date>`, `<dc:language>`, `<dc:rights>`, `<dc:identifier>` and
+ * `<dc:series>` child, a `<meta name="calibre:series" content="...">` value, an EPUB3
+ * `belongs-to-collection` value, spine text/`alt`/`title` slots, nav text plus nav `alt`/`title`
+ * attributes and NCX `<text>` labels are exposed as units and written back with UTF-16 offset
+ * splices into the original member bytes, never a DOM re-serialization. Every other member
+ * (images, fonts, CSS, OPF markup outside those slots) is copied literally. A locator stores its
+ * member path, exact UTF-16 range, a raw-slot digest and a kind discriminator; `read()` emits
+ * navigation labels in a stable order (spine documents, then nav text, nav attributes, NCX labels,
+ * then OPF metadata in document order), and `write()` rejects stale, foreign, overlapping or
+ * duplicate locators instead of writing into the package.
+ *
+ * Spine items marked `linear="no"` are auxiliary/non-reading-order pages. Their body text is not
+ * exposed for translation and `read()` emits `epub.spine_non_linear` instead. Fixed-layout OPFs
+ * (`rendition:layout` with `pre-paginated`/`fixed`, Apple `fixed-layout` metadata or a
+ * `fixed-layout`/`rendition:layout-pre-paginated` manifest property) are still imported, but
+ * `read()` emits `epub.fixed_layout` because reflow-based translation cannot preserve page
+ * positioning. Unknown named entities are skipped and reported as `epub.unknown_entity`; common
+ * HTML entities are decoded.
  *
  * OPF `dc:creator` is intentionally not exposed. An author name is identity metadata rather than
  * prose, and a generic translation flow would rename a person. The writer therefore never touches
- * creator elements and leaves their bytes (and every child/attribute) intact. Only the direct
- * leading text slot is supported for the other metadata elements; values whose text starts after
- * child markup are left literal rather than guessing at mixed content.
+ * creator elements and leaves their bytes (and every child/attribute) intact. Only a direct
+ * leading text slot (or a series `content` attribute value) is supported for the other metadata
+ * elements; values whose text starts after child markup are left literal rather than guessing at
+ * mixed content.
  *
  * Bilingual mode follows LG for metadata and navigation: metadata, nav and NCX labels receive the
  * target only. A source/target pair would turn a single-valued `<dc:title>` into a multi-line
@@ -49,12 +61,30 @@ class EpubFormatAdapter : BinaryFormatAdapter {
 
     override fun read(bytes: ByteArray, path: RelativePath): FormatDocument {
         val archive = ZipContainer.read(bytes)
-        val packageInfo = readPackage(archive)
-        val units = ArrayList<FormatUnit>()
         val warnings = ArrayList<FormatWarning>()
+        val packageInfo = readPackage(archive, warnings)
+        val units = ArrayList<FormatUnit>()
         var limited = false
+        if (packageInfo.fixedLayout) {
+            addWarning(warnings, "epub.fixed_layout", packageInfo.opfPath,
+                "EPUB declares a fixed-layout rendition (rendition:layout); " +
+                    "text is extracted without page reflow")
+        }
         val processedPaths = HashSet<String>()
-        for (documentPath in packageInfo.spinePaths) {
+        val linearPaths = packageInfo.linearSpinePaths.toHashSet()
+        val warnedNonLinear = HashSet<String>()
+        for (spineItem in packageInfo.spineItems) {
+            val documentPath = spineItem.path
+            if (!spineItem.linear) {
+                if (documentPath !in linearPaths && documentPath != packageInfo.navPath &&
+                    documentPath != packageInfo.ncxPath && isHtmlDocumentPath(documentPath) &&
+                    warnedNonLinear.add(documentPath)
+                ) {
+                    addWarning(warnings, "epub.spine_non_linear", documentPath,
+                        "Non-linear spine item (linear=\"no\"); its body text was skipped")
+                }
+                continue
+            }
             if (!isHtmlDocumentPath(documentPath)) continue
             if (documentPath == packageInfo.navPath || documentPath == packageInfo.ncxPath) continue
             if (!processedPaths.add(documentPath)) continue
@@ -80,7 +110,8 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                     null, "Spine document is not valid UTF-8"))
                 continue
             }
-            for (node in XhtmlTextScanner.scan(text)) {
+            val onUnknownEntity = unknownEntityWarning(warnings, documentPath)
+            for (node in XhtmlTextScanner.scan(text, onUnknownEntity = onUnknownEntity)) {
                 if (units.size >= ContainerLimits.MAX_UNITS) {
                     limited = true
                     break
@@ -130,7 +161,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         val metadata = buildJsonObject {
             put("v", 1)
             put("opf", packageInfo.opfPath)
-            put("spine", packageInfo.spinePaths.size)
+            put("spine", packageInfo.spineItems.size)
             packageInfo.navPath?.let { put("nav", it) }
             packageInfo.ncxPath?.let { put("ncx", it) }
         }.toString()
@@ -166,7 +197,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 "Navigation document is not valid UTF-8")
             return false
         }
-        val slots = scanNavigationSlots(text)
+        val slots = scanNavigationSlots(text, unknownEntityWarning(warnings, documentPath))
         val labels = slots.filter { it.kind == ScannedNodeKind.NAV_TEXT }
         val attributes = slots.filter { it.kind == ScannedNodeKind.NAV_ATTRIBUTE }
         if (appendNavigationUnits(documentPath, labels, ScannedNodeKind.NAV_TEXT, units, warnings)) {
@@ -200,8 +231,8 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 "NCX document is not valid UTF-8")
             return false
         }
-        return appendNavigationUnits(documentPath, NcxLabelScanner.find(text),
-            ScannedNodeKind.NCX_TEXT, units, warnings)
+        return appendNavigationUnits(documentPath, NcxLabelScanner.find(text,
+            unknownEntityWarning(warnings, documentPath)), ScannedNodeKind.NCX_TEXT, units, warnings)
     }
 
     /**
@@ -243,9 +274,13 @@ class EpubFormatAdapter : BinaryFormatAdapter {
      * tolerantly because nav documents in the wild contain bare ampersands; attribute values use
      * strict XML decoding and remain unsupported when that decoding fails.
      */
-    private fun scanNavigationSlots(text: String): List<ScannedTextNode> {
+    private fun scanNavigationSlots(
+        text: String,
+        onUnknownEntity: (() -> Unit)? = null,
+    ): List<ScannedTextNode> {
         val result = ArrayList<ScannedTextNode>()
-        for (node in XhtmlTextScanner.scan(text, tolerantEntities = true)) {
+        for (node in XhtmlTextScanner.scan(text, tolerantEntities = true,
+            onUnknownEntity = onUnknownEntity)) {
             when (node.kind) {
                 ScannedNodeKind.TEXT -> result.add(node.withKind(ScannedNodeKind.NAV_TEXT))
                 ScannedNodeKind.ATTRIBUTE -> result.add(node.withKind(ScannedNodeKind.NAV_ATTRIBUTE))
@@ -268,6 +303,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
     ): Boolean {
         for (slot in slots) {
             if (units.size >= ContainerLimits.MAX_UNITS) return true
+            if (!slot.kind.translatable) continue
             val source = slot.normalizedText
             when {
                 source.length > ContainerLimits.MAX_UNIT_SOURCE_CHARS -> {
@@ -287,6 +323,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 put("end", slot.end)
                 put("digest", slot.digest)
                 put("kind", slot.kind.extraName)
+                if (slot.attribute) put("slot", "attr")
             }.toString()
             units.add(FormatUnit(units.size, source, "", TextItemStatus.NONE, opfPath,
                 extraField = extra))
@@ -301,6 +338,24 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         message: String,
     ) {
         if (warnings.size < 1_000) warnings.add(FormatWarning(code, safeWarningPath(path), null, message))
+    }
+
+    /**
+     * One warning per member is enough to tell the operator that a slot was dropped; a book with
+     * many unsupported entities should not flood the warning list and hide structural warnings.
+     */
+    private fun unknownEntityWarning(
+        warnings: MutableList<FormatWarning>,
+        path: String,
+    ): () -> Unit {
+        var reported = false
+        return {
+            if (!reported) {
+                reported = true
+                addWarning(warnings, "epub.unknown_entity", path,
+                    "An unsupported named entity was skipped in a text or attribute slot")
+            }
+        }
     }
 
     override fun write(original: ByteArray, units: List<FormatUnit>, options: FormatWriteOptions): ByteArray {
@@ -318,7 +373,10 @@ class EpubFormatAdapter : BinaryFormatAdapter {
             navDocumentPath?.let { add(it) }
             ncxDocumentPath?.let { add(it) }
         }
-        // Only spine XHTML documents explicitly exposed by read() are writable as body text.
+        // New reads expose only linear spine XHTML documents, but projects imported before that
+        // rule may already hold digest-bound units for linear="no" documents. Keep writing every
+        // spine document so those translations are not silently dropped on export; a fresh import
+        // still never creates such units.
         val allowed = packageInfo.spinePaths
             .asSequence()
             .filter { isHtmlDocumentPath(it) && it !in navigationPaths }
@@ -428,6 +486,9 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                     for (unit in opfUnits) {
                         val extra = parseJsonObject(unit.extraField) ?: continue
                         val kind = OpfMetadataKind.fromExtra(extraString(extra, "kind")) ?: continue
+                        // Old imports may still carry a persisted unit for identity metadata;
+                        // never let a translated value rewrite the language/date/identifier.
+                        if (!kind.translatable) continue
                         val start = extraInt(extra, "start") ?: continue
                         val end = extraInt(extra, "end") ?: continue
                         if (start < 0 || end <= start || end > text.length) continue
@@ -435,13 +496,22 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                         // digest and normalized source close the race where the OPF changed after
                         // read; creator and mixed-content element bytes are never addressed.
                         val slot = slotsByStart[start] ?: continue
-                        if (slot.kind != kind || slot.end != end) continue
+                        val attributeSlot = extraString(extra, "slot") == "attr"
+                        if (slot.kind != kind || slot.end != end ||
+                            slot.attribute != attributeSlot
+                        ) {
+                            continue
+                        }
                         val raw = text.substring(start, end)
                         if (extraString(extra, "digest") != containerSha256Hex(raw)) continue
                         if (unit.source != slot.normalizedText) continue
                         val target = effectiveTarget(unit, options) ?: continue
                         if (target.isBlank() || target == slot.normalizedText) continue
-                        val escaped = escapeXmlText(target)
+                        val escaped = if (slot.attribute) {
+                            escapeXmlAttribute(target)
+                        } else {
+                            escapeXmlText(target)
+                        }
                         if (escaped.isBlank()) continue
                         if (!claimed.add(start)) continue
                         replacements.add(TextReplacement(start, end, escaped))
@@ -556,7 +626,10 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         return target
     }
 
-    private fun readPackage(archive: Map<String, ZipMember>): EpubPackage {
+    private fun readPackage(
+        archive: Map<String, ZipMember>,
+        warnings: MutableList<FormatWarning>? = null,
+    ): EpubPackage {
         val container = archive["META-INF/container.xml"] ?: throw FormatContainerException(
             FormatContainerException.Reason.STRUCTURE)
         if (container.bytes.size > ContainerLimits.MAX_TEXT_ENTRY_BYTES) {
@@ -606,28 +679,134 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         val ncxPath = (tocId?.let { items[it] } ?: items.values.firstOrNull {
             it.mediaType.lowercase().contains("application/x-dtbncx+xml")
         })?.path
-        val spinePaths = ArrayList<String>()
+        val spineItems = ArrayList<SpineItem>()
         if (spine != null) {
             for (itemref in childElements(spine)) {
                 if (localName(itemref) != "itemref") continue
                 val idref = attributeValue(itemref, "idref") ?: continue
                 val item = items[idref] ?: continue
-                if (item.path.isNotEmpty()) spinePaths.add(item.path)
+                if (item.path.isNotEmpty()) {
+                    val linear = attributeValue(itemref, "linear")?.trim()?.lowercase() != "no"
+                    spineItems.add(SpineItem(item.path, linear))
+                }
             }
         }
-        return EpubPackage(opfPath, spinePaths, navPath, ncxPath, OpfMetadataScanner.find(opfText))
+        val metadataElement = descendants(packageElement, "metadata").firstOrNull()
+        val fixedLayout = isFixedLayoutPackage(packageElement, metadataElement, manifest, spine)
+        val opfMetadataWarning = warnings?.let { unknownEntityWarning(it, opfPath) }
+        return EpubPackage(
+            opfPath,
+            spineItems,
+            navPath,
+            ncxPath,
+            OpfMetadataScanner.find(opfText, opfMetadataWarning),
+            fixedLayout,
+        )
     }
 
     private class EpubPackage(
         val opfPath: String,
-        val spinePaths: List<String>,
+        val spineItems: List<SpineItem>,
         val navPath: String?,
         val ncxPath: String?,
         val opfMetadata: List<OpfMetadataSlot>,
-    )
+        val fixedLayout: Boolean,
+    ) {
+        val spinePaths: List<String> = spineItems.map { it.path }
+        val linearSpinePaths: List<String> = spineItems.filter { it.linear }.map { it.path }
+    }
 
+    private class SpineItem(val path: String, val linear: Boolean)
     private class ManifestItem(val path: String, val mediaType: String, val properties: String)
     private class TextReplacement(val start: Int, val end: Int, val text: String)
+
+    /**
+     * Fixed layout is still a readable package; this only decides whether to warn. It accepts the
+     * EPUB3 `rendition:layout` metadata form, Apple/legacy `fixed-layout` metadata, a layout
+     * property on package/spine/itemref and manifest `fixed-layout` property tokens.
+     */
+    private fun isFixedLayoutPackage(
+        packageElement: Element,
+        metadata: Element?,
+        manifest: Element?,
+        spine: Element?,
+    ): Boolean {
+        if (isFixedLayoutValue(attributeValue(packageElement, "rendition:layout"))) return true
+        if (spine != null) {
+            if (isFixedLayoutValue(attributeValue(spine, "rendition:layout"))) return true
+            if (hasFixedLayoutProperty(attributeValue(spine, "properties"))) return true
+            for (itemref in childElements(spine)) {
+                if (localName(itemref) == "itemref" &&
+                    (isFixedLayoutValue(attributeValue(itemref, "rendition:layout")) ||
+                        hasFixedLayoutProperty(attributeValue(itemref, "properties")))
+                ) {
+                    return true
+                }
+            }
+        }
+        if (metadata != null) {
+            for (meta in childElements(metadata)) {
+                if (localName(meta) != "meta") continue
+                val property = attributeValue(meta, "property")?.trim()?.lowercase()
+                val name = attributeValue(meta, "name")?.trim()?.lowercase()
+                val content = attributeValue(meta, "content")?.trim()?.lowercase()
+                val text = elementText(meta).trim().lowercase()
+                if (property != null) {
+                    if (isRenditionLayoutKey(property) &&
+                        (isFixedLayoutValue(text) || isFixedLayoutValue(content))
+                    ) {
+                        return true
+                    }
+                    if (property == "fixed-layout" && isFixedLayoutFlag(content ?: text)) return true
+                }
+                if (name != null) {
+                    if (isRenditionLayoutKey(name) &&
+                        (isFixedLayoutValue(content) || isFixedLayoutValue(text))
+                    ) {
+                        return true
+                    }
+                    if (name == "fixed-layout" && isFixedLayoutFlag(content ?: text)) return true
+                }
+            }
+        }
+        if (manifest != null) {
+            for (item in childElements(manifest)) {
+                if (localName(item) != "item") continue
+                if (isFixedLayoutValue(attributeValue(item, "rendition:layout")) ||
+                    hasFixedLayoutProperty(attributeValue(item, "properties"))
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun isRenditionLayoutKey(value: String): Boolean =
+        value == "rendition:layout" || value.endsWith(":rendition:layout")
+
+    private fun isFixedLayoutValue(value: String?): Boolean {
+        val normalized = value?.trim()?.lowercase() ?: return false
+        return normalized == "pre-paginated" || normalized == "prepaginated" ||
+            normalized == "fixed" || normalized == "fixed-layout"
+    }
+
+    private fun isFixedLayoutFlag(value: String?): Boolean {
+        val normalized = value?.trim()?.lowercase() ?: return false
+        return normalized == "true" || normalized == "yes" || normalized == "1" ||
+            isFixedLayoutValue(normalized)
+    }
+
+    private fun hasFixedLayoutProperty(value: String?): Boolean {
+        if (value.isNullOrBlank()) return false
+        return value.split(Regex("\\s+")).any { token ->
+            val normalized = token.lowercase()
+            normalized == "fixed-layout" ||
+                normalized == "rendition:layout-pre-paginated" ||
+                normalized == "rendition:layout-fixed" ||
+                normalized == "pre-paginated"
+        }
+    }
 
     private fun safeWarningPath(value: String): String =
         if (value.length <= 4_096 && value.none(Char::isISOControl)) value else ""
@@ -640,17 +819,33 @@ private class OpfMetadataSlot(
     val end: Int,
     val normalizedText: String,
     val digest: String,
+    val attribute: Boolean = false,
 )
 
 /**
  * Metadata that can be safely located as one direct leading text slot. `dc:creator` is omitted on
  * purpose: author names are identity data, not prose, so a generic translation must not rewrite
- * them. Metadata attributes and mixed child content are likewise outside this set.
+ * them. `dc:language`, `dc:date` and `dc:identifier` are located for fidelity but are never
+ * exposed or written: a language tag, an ISO-8601 date and a book identifier must stay byte-exact,
+ * and a generic translation would turn `ja` into “Japanese” or reformat the date. Mixed child
+ * content is likewise outside this set. Series additionally accepts a
+ * `calibre:series`/`belongs-to-collection` attribute value, which the scanner marks as an
+ * attribute slot so writeback uses attribute escaping.
  */
-private enum class OpfMetadataKind(val localName: String, val extraName: String) {
+private enum class OpfMetadataKind(
+    val localName: String,
+    val extraName: String,
+    val translatable: Boolean = true,
+) {
     TITLE("title", "opf_title"),
     DESCRIPTION("description", "opf_description"),
-    SUBJECT("subject", "opf_subject");
+    SUBJECT("subject", "opf_subject"),
+    PUBLISHER("publisher", "opf_publisher"),
+    DATE("date", "opf_date", translatable = false),
+    LANGUAGE("language", "opf_language", translatable = false),
+    RIGHTS("rights", "opf_rights"),
+    IDENTIFIER("identifier", "opf_identifier", translatable = false),
+    SERIES("series", "opf_series");
 
     companion object {
         fun fromLocalName(value: String): OpfMetadataKind? =
@@ -696,17 +891,20 @@ private enum class ScannedNodeKind(val extraName: String) {
 }
 
 /**
- * Finds every non-blank direct `<dc:title>`, `<dc:description>` and `<dc:subject>` child of an
- * OPF `<metadata>` element in the raw OPF text. Only each element's leading text slot (text before
- * the first child element) is located, matching LG's `read_text_slot`. Multiple direct titles and
- * repeated subjects stay separate in document order. `dc:creator` is deliberately not matched.
- * Results keep exact UTF-16 character offsets so writeback can replace only that slot in the
- * original bytes instead of serializing the XML DOM again.
+ * Finds every non-blank direct OPF metadata slot in the raw OPF text. Text metadata uses the
+ * element's leading text slot (text before the first child element), matching LG's
+ * `read_text_slot`; series additionally supports Calibre's `content` attribute and the EPUB3
+ * `belongs-to-collection` text form. Multiple direct values stay separate in document order.
+ * `dc:creator` is deliberately not matched. Results keep exact UTF-16 character offsets so
+ * writeback can replace only that slot in the original bytes instead of serializing the XML DOM.
  */
 private object OpfMetadataScanner {
     private const val MAX_METADATA_SLOTS = 10_000
 
-    fun find(text: String): List<OpfMetadataSlot> {
+    fun find(
+        text: String,
+        onUnknownEntity: (() -> Unit)? = null,
+    ): List<OpfMetadataSlot> {
         val result = ArrayList<OpfMetadataSlot>()
         val stack = ArrayList<String>()
         var index = 0
@@ -748,34 +946,130 @@ private object OpfMetadataScanner {
                     val inside = text.substring(index + 1, close)
                     val selfClosing = inside.trimEnd().endsWith('/')
                     val name = XhtmlTextScanner.startName(inside)
-                    val kind = if (stack.lastOrNull() == "metadata" && !selfClosing) {
-                        OpfMetadataKind.fromLocalName(name)
-                    } else {
-                        null
-                    }
-                    if (kind != null) {
-                        val slotStart = close + 1
-                        val nextTag = text.indexOf('<', slotStart)
-                        val slotEnd = if (nextTag < 0) text.length else nextTag
-                        val raw = text.substring(slotStart, slotEnd)
-                        val decoded = XhtmlTextScanner.decodeText(raw)
-                        if (decoded != null) {
-                            val normalized = normalizeInlineWhitespace(decoded)
-                            if (hasVisibleText(normalized)) {
-                                result.add(OpfMetadataSlot(
-                                    kind,
-                                    slotStart,
-                                    slotEnd,
-                                    normalized,
-                                    containerSha256Hex(raw),
-                                ))
-                            }
+                    if (stack.lastOrNull() == "metadata") {
+                        val kind = OpfMetadataKind.fromLocalName(name)
+                        if (kind != null && !selfClosing) {
+                            textSlot(text, close + 1, kind, onUnknownEntity)?.let(result::add)
+                        } else if (name == "meta") {
+                            seriesSlot(text, index, close, inside, selfClosing, onUnknownEntity)
+                                ?.let(result::add)
                         }
                     }
                     if (name.isNotEmpty() && !selfClosing) stack.add(name)
                     index = close + 1
                 }
             }
+        }
+        return result
+    }
+
+    private fun textSlot(
+        text: String,
+        contentStart: Int,
+        kind: OpfMetadataKind,
+        onUnknownEntity: (() -> Unit)?,
+    ): OpfMetadataSlot? {
+        val nextTag = text.indexOf('<', contentStart)
+        val slotEnd = if (nextTag < 0) text.length else nextTag
+        val raw = text.substring(contentStart, slotEnd)
+        val decoded = XhtmlTextScanner.decodeText(raw, onUnknownEntity) ?: return null
+        val normalized = normalizeInlineWhitespace(decoded)
+        if (!hasVisibleText(normalized)) return null
+        return OpfMetadataSlot(kind, contentStart, slotEnd, normalized, containerSha256Hex(raw))
+    }
+
+    /**
+     * Series has no Dublin Core element in EPUB2. Calibre stores it in a `content` attribute and
+     * EPUB3 uses the `belongs-to-collection` text property, so both forms become one SERIES slot
+     * with an exact value range. A direct `<dc:series>` element goes through [textSlot] instead.
+     */
+    private fun seriesSlot(
+        text: String,
+        tagStart: Int,
+        close: Int,
+        inside: String,
+        selfClosing: Boolean,
+        onUnknownEntity: (() -> Unit)?,
+    ): OpfMetadataSlot? {
+        val attributes = readAttributes(inside, tagStart + 1)
+        val property = attributes.firstOrNull { it.name == "property" }?.value
+            ?.trim()?.lowercase()
+        val name = attributes.firstOrNull { it.name == "name" }?.value
+            ?.trim()?.lowercase()
+        if (!isSeriesKey(property) && !isSeriesKey(name)) return null
+        val content = attributes.firstOrNull { it.name == "content" }
+        if (content != null && content.value.isNotBlank()) {
+            val raw = text.substring(content.start, content.end)
+            val decoded = XhtmlTextScanner.decodeText(raw, onUnknownEntity) ?: return null
+            val normalized = normalizeInlineWhitespace(decoded)
+            if (!hasVisibleText(normalized)) return null
+            return OpfMetadataSlot(
+                OpfMetadataKind.SERIES,
+                content.start,
+                content.end,
+                normalized,
+                containerSha256Hex(raw),
+                attribute = true,
+            )
+        }
+        if (selfClosing) return null
+        return textSlot(text, close + 1, OpfMetadataKind.SERIES, onUnknownEntity)
+    }
+
+    private fun isSeriesKey(value: String?): Boolean {
+        if (value == null) return false
+        return value == "series" || value.endsWith(":series") ||
+            value == "belongs-to-collection" ||
+            value.endsWith(":belongs-to-collection")
+    }
+
+    private class TagAttribute(
+        val name: String,
+        val value: String,
+        val start: Int,
+        val end: Int,
+    )
+
+    private fun readAttributes(inside: String, offset: Int): List<TagAttribute> {
+        val result = ArrayList<TagAttribute>()
+        var index = 0
+        while (index < inside.length && !inside[index].isWhitespace()) index += 1
+        while (index < inside.length) {
+            while (index < inside.length && inside[index].isWhitespace()) index += 1
+            if (index >= inside.length) break
+            if (inside[index] == '/' || inside[index] == '>') break
+            val nameStart = index
+            while (index < inside.length && !inside[index].isWhitespace() &&
+                inside[index] != '=' && inside[index] != '/' && inside[index] != '>'
+            ) {
+                index += 1
+            }
+            val name = inside.substring(nameStart, index)
+                .substringAfterLast(':').lowercase()
+            while (index < inside.length && inside[index].isWhitespace()) index += 1
+            if (index >= inside.length || inside[index] != '=') continue
+            index += 1
+            while (index < inside.length && inside[index].isWhitespace()) index += 1
+            if (index >= inside.length) break
+            val quote = inside[index]
+            if (quote != '"' && quote != '\'') {
+                while (index < inside.length && !inside[index].isWhitespace() &&
+                    inside[index] != '>'
+                ) {
+                    index += 1
+                }
+                continue
+            }
+            val valueStart = index + 1
+            val valueEnd = inside.indexOf(quote, valueStart)
+            if (valueEnd < 0) break
+            result.add(TagAttribute(
+                name,
+                inside.substring(valueStart, valueEnd),
+                offset + valueStart,
+                offset + valueEnd,
+            ))
+            index = valueEnd + 1
         }
         return result
     }
@@ -796,7 +1090,11 @@ private object XhtmlTextScanner {
         "rt", "rp", "rtc", "svg", "math",
     )
 
-    fun scan(text: String, tolerantEntities: Boolean = false): List<ScannedTextNode> {
+    fun scan(
+        text: String,
+        tolerantEntities: Boolean = false,
+        onUnknownEntity: (() -> Unit)? = null,
+    ): List<ScannedTextNode> {
         val result = ArrayList<ScannedTextNode>()
         val stack = ArrayList<String>()
         var skipDepth = -1
@@ -822,7 +1120,11 @@ private object XhtmlTextScanner {
             val textEnd = if (nextTag < 0) text.length else nextTag
             if (textEnd > index && skipDepth < 0) {
                 val rawText = text.substring(index, textEnd)
-                val decoded = if (tolerantEntities) decodeTolerantText(rawText) else decodeXmlText(rawText)
+                val decoded = if (tolerantEntities) {
+                    decodeTolerantText(rawText, onUnknownEntity)
+                } else {
+                    decodeXmlText(rawText, onUnknownEntity)
+                }
                 if (decoded != null) {
                     result.add(ScannedTextNode(index, textEnd, rawText, decoded, ScannedNodeKind.TEXT))
                     if (result.size >= MAX_SCANNED_TEXT_NODES) break
@@ -867,7 +1169,7 @@ private object XhtmlTextScanner {
                     val selfClosing = inside.trimEnd().endsWith('/')
                     val name = startTagName(inside)
                     if (name.isNotEmpty() && skipDepth < 0 && name !in SKIP_SUBTREES) {
-                        scanAttributes(text, index, close, result)
+                        scanAttributes(text, index, close, result, onUnknownEntity)
                     }
                     if (name.isNotEmpty() && !selfClosing) {
                         stack.add(name)
@@ -881,7 +1183,8 @@ private object XhtmlTextScanner {
         return result
     }
 
-    fun decodeText(raw: String): String? = decodeXmlText(raw)
+    fun decodeText(raw: String, onUnknownEntity: (() -> Unit)? = null): String? =
+        decodeXmlText(raw, onUnknownEntity)
     fun tagEnd(text: String, start: Int): Int = findTagEnd(text, start)
     fun startName(inside: String): String = startTagName(inside)
     fun closingName(inside: String): String = localTag(inside.trim().substringBefore(' '))
@@ -892,7 +1195,10 @@ private object XhtmlTextScanner {
      * so this decoder keeps them literal while still decoding real entities, `CDATA` sections and
      * comments. Child markup makes the slot ambiguous and is skipped.
      */
-    fun decodeTolerantText(raw: String): String? {
+    fun decodeTolerantText(
+        raw: String,
+        onUnknownEntity: (() -> Unit)? = null,
+    ): String? {
         if ('<' !in raw && '&' !in raw) return raw
         val output = StringBuilder(raw.length)
         var index = 0
@@ -918,8 +1224,12 @@ private object XhtmlTextScanner {
                 raw[index] == '&' -> {
                     val semicolon = raw.indexOf(';', index + 1)
                     if (semicolon in (index + 2)..(index + 32)) {
-                        val decoded = decodeEntity(raw.substring(index + 1, semicolon))
-                            ?: return null
+                        val entity = raw.substring(index + 1, semicolon)
+                        val decoded = decodeEntity(entity)
+                        if (decoded == null) {
+                            if (!entity.startsWith("#")) onUnknownEntity?.invoke()
+                            return null
+                        }
                         output.append(decoded)
                         index = semicolon + 1
                     } else {
@@ -941,6 +1251,7 @@ private object XhtmlTextScanner {
         tagStart: Int,
         tagEnd: Int,
         output: MutableList<ScannedTextNode>,
+        onUnknownEntity: (() -> Unit)?,
     ) {
         var index = tagStart + 1
         while (index < tagEnd && !text[index].isWhitespace()) index++
@@ -973,7 +1284,7 @@ private object XhtmlTextScanner {
             val raw = text.substring(valueStart, valueEnd)
             val lower = name.lowercase()
             if (lower == "alt" || lower == "title") {
-                val decoded = decodeXmlText(raw)
+                val decoded = decodeXmlText(raw, onUnknownEntity)
                 if (decoded != null) {
                     output.add(ScannedTextNode(
                         valueStart, valueEnd, raw, decoded, ScannedNodeKind.ATTRIBUTE,
@@ -1038,7 +1349,10 @@ private object XhtmlTextScanner {
     private fun localTag(raw: String): String =
         raw.substringAfterLast(':').substringAfterLast('}').lowercase()
 
-    private fun decodeXmlText(raw: String): String? {
+    private fun decodeXmlText(
+        raw: String,
+        onUnknownEntity: (() -> Unit)?,
+    ): String? {
         if ('&' !in raw) return raw
         val output = StringBuilder(raw.length)
         var index = 0
@@ -1050,8 +1364,18 @@ private object XhtmlTextScanner {
                 continue
             }
             val semicolon = raw.indexOf(';', index + 1)
-            if (semicolon < 0 || semicolon - index > 32) return null
-            val decoded = decodeEntity(raw.substring(index + 1, semicolon)) ?: return null
+            if (semicolon < 0 || semicolon - index > 32) {
+                // A bare ampersand is common in malformed EPUBs. The whole text node is skipped
+                // (strict XML), so report it through the same warning hook as an unknown entity.
+                onUnknownEntity?.invoke()
+                return null
+            }
+            val entity = raw.substring(index + 1, semicolon)
+            val decoded = decodeEntity(entity)
+            if (decoded == null) {
+                if (!entity.startsWith("#")) onUnknownEntity?.invoke()
+                return null
+            }
             output.append(decoded)
             index = semicolon + 1
         }
@@ -1087,21 +1411,80 @@ private object XhtmlTextScanner {
         "shy" to "\u00ad", "macr" to "\u00af", "acute" to "\u00b4", "micro" to "\u00b5",
         "ordf" to "\u00aa", "ordm" to "\u00ba", "not" to "\u00ac", "sup1" to "\u00b9",
         "sup2" to "\u00b2", "sup3" to "\u00b3", "uml" to "\u00a8", "cedil" to "\u00b8",
+        "sbquo" to "\u201a", "bdquo" to "\u201e", "lsaquo" to "\u2039", "rsaquo" to "\u203a",
+        "prime" to "\u2032", "Prime" to "\u2033", "oline" to "\u203e", "frasl" to "\u2044",
+        "zwnj" to "\u200c", "zwj" to "\u200d", "lrm" to "\u200e", "rlm" to "\u200f",
+        "OElig" to "\u0152", "oelig" to "\u0153", "Scaron" to "\u0160", "scaron" to "\u0161",
+        "Yuml" to "\u0178", "fnof" to "\u0192", "circ" to "\u02c6", "tilde" to "\u02dc",
+        "thetasym" to "\u03d1", "upsih" to "\u03d2", "piv" to "\u03d6",
+        "Agrave" to "\u00c0", "Aacute" to "\u00c1", "Acirc" to "\u00c2", "Atilde" to "\u00c3",
+        "Auml" to "\u00c4", "Aring" to "\u00c5", "AElig" to "\u00c6", "Ccedil" to "\u00c7",
+        "Egrave" to "\u00c8", "Eacute" to "\u00c9", "Ecirc" to "\u00ca", "Euml" to "\u00cb",
+        "Igrave" to "\u00cc", "Iacute" to "\u00cd", "Icirc" to "\u00ce", "Iuml" to "\u00cf",
+        "ETH" to "\u00d0", "Ntilde" to "\u00d1", "Ograve" to "\u00d2", "Oacute" to "\u00d3",
+        "Ocirc" to "\u00d4", "Otilde" to "\u00d5", "Ouml" to "\u00d6", "Oslash" to "\u00d8",
+        "Ugrave" to "\u00d9", "Uacute" to "\u00da", "Ucirc" to "\u00db", "Uuml" to "\u00dc",
+        "Yacute" to "\u00dd", "THORN" to "\u00de", "szlig" to "\u00df",
+        "agrave" to "\u00e0", "aacute" to "\u00e1", "acirc" to "\u00e2", "atilde" to "\u00e3",
+        "auml" to "\u00e4", "aring" to "\u00e5", "aelig" to "\u00e6", "ccedil" to "\u00e7",
+        "egrave" to "\u00e8", "eacute" to "\u00e9", "ecirc" to "\u00ea", "euml" to "\u00eb",
+        "igrave" to "\u00ec", "iacute" to "\u00ed", "icirc" to "\u00ee", "iuml" to "\u00ef",
+        "eth" to "\u00f0", "ntilde" to "\u00f1", "ograve" to "\u00f2", "oacute" to "\u00f3",
+        "ocirc" to "\u00f4", "otilde" to "\u00f5", "ouml" to "\u00f6", "oslash" to "\u00f8",
+        "ugrave" to "\u00f9", "uacute" to "\u00fa", "ucirc" to "\u00fb", "uuml" to "\u00fc",
+        "yacute" to "\u00fd", "thorn" to "\u00fe", "yuml" to "\u00ff",
+        "alefsym" to "\u2135", "weierp" to "\u2118", "real" to "\u211c", "image" to "\u2111",
+        "larr" to "\u2190", "uarr" to "\u2191", "rarr" to "\u2192", "darr" to "\u2193",
+        "harr" to "\u2194", "crarr" to "\u21b5", "lArr" to "\u21d0", "uArr" to "\u21d1",
+        "rArr" to "\u21d2", "dArr" to "\u21d3", "hArr" to "\u21d4",
+        "forall" to "\u2200", "part" to "\u2202", "exist" to "\u2203", "empty" to "\u2205",
+        "nabla" to "\u2207", "isin" to "\u2208", "notin" to "\u2209", "ni" to "\u220b",
+        "prod" to "\u220f", "sum" to "\u2211", "minus" to "\u2212", "lowast" to "\u2217",
+        "radic" to "\u221a", "prop" to "\u221d", "infin" to "\u221e", "ang" to "\u2220",
+        "and" to "\u2227", "or" to "\u2228", "cap" to "\u2229", "cup" to "\u222a",
+        "int" to "\u222b", "there4" to "\u2234", "sim" to "\u223c", "cong" to "\u2245",
+        "asymp" to "\u2248", "ne" to "\u2260", "equiv" to "\u2261", "le" to "\u2264",
+        "ge" to "\u2265", "sub" to "\u2282", "sup" to "\u2283", "nsub" to "\u2284",
+        "sube" to "\u2286", "supe" to "\u2287", "oplus" to "\u2295", "otimes" to "\u2297",
+        "perp" to "\u22a5", "sdot" to "\u22c5", "lceil" to "\u2308", "rceil" to "\u2309",
+        "lfloor" to "\u230a", "rfloor" to "\u230b", "lang" to "\u2329", "rang" to "\u232a",
+        "loz" to "\u25ca", "spades" to "\u2660", "clubs" to "\u2663", "hearts" to "\u2665",
+        "diams" to "\u2666",
+        "Alpha" to "\u0391", "Beta" to "\u0392", "Gamma" to "\u0393", "Delta" to "\u0394",
+        "Epsilon" to "\u0395", "Zeta" to "\u0396", "Eta" to "\u0397", "Theta" to "\u0398",
+        "Iota" to "\u0399", "Kappa" to "\u039a", "Lambda" to "\u039b", "Mu" to "\u039c",
+        "Nu" to "\u039d", "Xi" to "\u039e", "Omicron" to "\u039f", "Pi" to "\u03a0",
+        "Rho" to "\u03a1", "Sigma" to "\u03a3", "Tau" to "\u03a4", "Upsilon" to "\u03a5",
+        "Phi" to "\u03a6", "Chi" to "\u03a7", "Psi" to "\u03a8", "Omega" to "\u03a9",
+        "alpha" to "\u03b1", "beta" to "\u03b2", "gamma" to "\u03b3", "delta" to "\u03b4",
+        "epsilon" to "\u03b5", "zeta" to "\u03b6", "eta" to "\u03b7", "theta" to "\u03b8",
+        "iota" to "\u03b9", "kappa" to "\u03ba", "lambda" to "\u03bb", "mu" to "\u03bc",
+        "nu" to "\u03bd", "xi" to "\u03be", "omicron" to "\u03bf", "pi" to "\u03c0",
+        "rho" to "\u03c1", "sigmaf" to "\u03c2", "sigma" to "\u03c3", "tau" to "\u03c4",
+        "upsilon" to "\u03c5", "phi" to "\u03c6", "chi" to "\u03c7", "psi" to "\u03c8",
+        "omega" to "\u03c9",
     )
 }
 
 /**
- * Finds every NCX `<text>` content slot without a DOM parse so writeback can replace only the
- * label range. All local names are matched so a namespace prefix such as `<ncx:text>` works.
- * `navPoint` nesting needs no special handling: labels are emitted in document order, while
- * `id`, `playOrder`, `src` and every other attribute stay untouched.
+ * Finds NCX `<text>` label content slots without a DOM parse so writeback can replace only the
+ * label range. `docTitle` and `navLabel` text is accepted; `<docAuthor><text>` is skipped because
+ * an author is identity metadata. All local names are matched so a namespace prefix such as
+ * `<ncx:text>` works. `navPoint` nesting needs no special handling: labels are emitted in document
+ * order, while `id`, `playOrder`, `src` and every other attribute stay untouched.
  */
 private object NcxLabelScanner {
     private const val MAX_SCANNED_LABELS = 200_000
 
-    fun find(text: String): List<ScannedTextNode> {
+    fun find(
+        text: String,
+        onUnknownEntity: (() -> Unit)? = null,
+    ): List<ScannedTextNode> {
         val result = ArrayList<ScannedTextNode>()
         var index = 0
+        // `docAuthor` also contains a `<text>` element, but an author is identity metadata and
+        // must never be translated (the OPF dc:creator is deliberately left untouched too).
+        var docAuthorDepth = 0
         while (index < text.length && result.size < MAX_SCANNED_LABELS) {
             val tagStart = text.indexOf('<', index)
             if (tagStart < 0) break
@@ -1123,6 +1506,11 @@ private object NcxLabelScanner {
                 text.startsWith("</", index) -> {
                     val close = text.indexOf('>', index + 2)
                     if (close < 0) break
+                    if (docAuthorDepth > 0 &&
+                        XhtmlTextScanner.closingName(text.substring(index + 2, close)) == "docAuthor"
+                    ) {
+                        docAuthorDepth -= 1
+                    }
                     index = close + 1
                 }
                 else -> {
@@ -1131,13 +1519,21 @@ private object NcxLabelScanner {
                     val inside = text.substring(index + 1, close)
                     val selfClosing = inside.trimEnd().endsWith('/')
                     val name = XhtmlTextScanner.startName(inside)
-                    if (!selfClosing && name == "text") {
+                    if (!selfClosing && name == "docAuthor") {
+                        docAuthorDepth += 1
+                        index = close + 1
+                        continue
+                    }
+                    // The NCX schema places navMap after docAuthor. Reset the skip there so a
+                    // malformed missing `</docAuthor>` cannot hide the whole outline.
+                    if (!selfClosing && name == "navMap") docAuthorDepth = 0
+                    if (!selfClosing && name == "text" && docAuthorDepth == 0) {
                         val slot = findLabelSlot(text, close + 1)
                         // An unterminated label makes every following range ambiguous; stop
                         // instead of rescanning the tail once per malformed start tag.
                         if (slot == null) break
                         val raw = text.substring(slot.contentStart, slot.contentEnd)
-                        val decoded = XhtmlTextScanner.decodeTolerantText(raw)
+                        val decoded = XhtmlTextScanner.decodeTolerantText(raw, onUnknownEntity)
                         if (decoded != null) {
                             result.add(ScannedTextNode(slot.contentStart, slot.contentEnd, raw, decoded,
                                 ScannedNodeKind.NCX_TEXT))

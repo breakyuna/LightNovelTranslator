@@ -65,6 +65,22 @@ class WorkspaceFileStore(
         return if (file.isFile) WorkspaceDigest(sha256Hex(file)) else null
     }
 
+    /**
+     * Publishes one user-provided upload under `uploads/`. The path is already structurally
+     * canonical; this adapter re-resolves it below the root, refuses read-only areas, writes with
+     * temp+fsync+rename, and returns the verified material identity. No existing file is
+     * overwritten.
+     */
+    suspend fun saveUpload(path: WorkspacePath, bytes: ByteArray): WorkspaceMaterialSummary {
+        require(path.value.startsWith("uploads/")) { "Upload path must be under uploads/" }
+        require(bytes.size.toLong() in 0..WorkspaceHardLimits.MAX_SINGLE_BYTES) { "Upload too large" }
+        val target = WorkspaceStorageSupport.resolve(base, path, createParents = true)
+        require(!target.exists()) { "Upload already exists" }
+        WorkspaceStorageSupport.writeAtomically(target, bytes)
+        return list(WorkspaceMaterialKind.UPLOAD).firstOrNull { it.path == path }
+            ?: throw WorkspaceMaterialUnavailable(WorkspaceMaterialUnavailable.Reason.NOT_FOUND)
+    }
+
     override suspend fun save(runId: RunId, drafts: List<WorkspaceArtifactDraft>): List<WorkspaceArtifactSummary> {
         if (drafts.isEmpty()) return emptyList()
         require(drafts.size <= WorkspaceHardLimits.MAX_ARTIFACTS) { "Too many artifacts" }

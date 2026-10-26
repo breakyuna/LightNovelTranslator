@@ -19,6 +19,7 @@ class ForegroundAgentRunnerTest {
         override suspend fun checkpoint(handle: RunJournalHandle, checkpoint: RunCheckpoint) = Unit
         override suspend fun finish(handle: RunJournalHandle, state: StoredRunState) { states.add(state) }
         override suspend fun recoverInterrupted() = Unit
+        override suspend fun find(ref: LocalProjectRef, run: RunIdentity): StoredRun? = null
         override suspend fun recent(ref: LocalProjectRef, limit: Int) = emptyList<StoredRun>()
     }
 

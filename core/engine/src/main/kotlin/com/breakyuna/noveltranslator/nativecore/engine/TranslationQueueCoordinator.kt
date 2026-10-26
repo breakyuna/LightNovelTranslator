@@ -286,6 +286,12 @@ class TranslationQueueCoordinator(
         ) {
             return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
         }
+        // An explicit cancellation outranks a COMMITTING/MARKING_FAILURE checkpoint. A successful
+        // commit batch may already be complete, but cancellation is never silently rewritten into
+        // an ordinary review state. `needsReview` above still preserves genuine uncertainty.
+        if (run?.state == StoredRunState.CANCELLED) {
+            return TranslationQueueRecoveryVerdict.CANCELLED
+        }
         if (task?.stage == "CANCELLED" || task?.stage == "FAILED") {
             return TranslationQueueRecoveryVerdict.FAILED
         }
@@ -299,11 +305,6 @@ class TranslationQueueCoordinator(
             // Without the task store's receipt reconciliation a commit is not proven safe to
             // resume. Keep the facts for explicit review instead of replaying the commit.
             return TranslationQueueRecoveryVerdict.NEEDS_REVIEW
-        }
-        if (run?.state == StoredRunState.CANCELLED) {
-            // An explicit stop/cancel must not be reclassified as a resumable pause. Keep the
-            // task stopped for an explicit terminate/replace decision.
-            return TranslationQueueRecoveryVerdict.CANCELLED
         }
         if (run?.state == StoredRunState.FAILED) {
             // A classified run failure with an intact task checkpoint and no unresolved receipt is
@@ -339,6 +340,18 @@ class TranslationQueueCoordinator(
                 snapshot.queue.complete(identity, facts)
             }
         }
+    }
+
+    /**
+     * Proven completion for a review/failed task with no failure batch. Used only after restart
+     * reconciliation has re-read the fixed task, exact Run journal and usage evidence; tasks with
+     * member batches still require explicit adjudication.
+     */
+    suspend fun markCompletedAfterReview(
+        identity: TranslationTaskQueueIdentity,
+        facts: TranslationTaskCompletionFacts,
+    ): TranslationQueueResult = MUTEX.withLock {
+        apply(identity.ref) { it.queue.completeAfterReview(identity, facts) }
     }
 
     /** Proven completion that accounts for explicitly skipped members as retained errors. */

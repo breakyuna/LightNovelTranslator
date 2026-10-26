@@ -358,9 +358,17 @@ class ApprovedWorkspaceChangeSet internal constructor(
     val changeSet: WorkspaceChangeSet,
     val approvalRequestId: ApprovalRequestId,
     val approvedAtMillis: Long,
+    /** Project revision observed when the batch was prepared; 0 for a scope without one. */
+    val baseRevision: Long = 0,
+    /**
+     * True when a durable approval claim already exists. An adapter must reconcile its write
+     * intent instead of starting a fresh write with the same command.
+     */
+    val resumed: Boolean = false,
 ) {
     init {
         require(approvedAtMillis >= 0) { "Invalid approval time" }
+        require(baseRevision >= 0) { "Invalid approval revision" }
     }
 
     override fun toString(): String =

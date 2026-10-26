@@ -23,6 +23,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
+import com.breakyuna.noveltranslator.nativecore.formats.PdfFormatException
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -150,7 +151,7 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
     var item by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf<TextProjectItem?>(null) }
     var failed by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf(false) }
     var thumbnail by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf<ImageBitmap?>(null) }
-    var thumbnailFailed by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf(false) }
+    var thumbnailError by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf<Int?>(null) }
     val loadText = loadPage
     val loadImage = loadThumbnail
     LaunchedEffect(ref, revision, asset.id, asset.sha256, page) {
@@ -164,23 +165,26 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
         try {
             val bytes = loader(ref, revision, asset, page)
             val decoded = withContext(Dispatchers.Default) { decodePdfThumbnail(bytes) }
-            if (decoded == null) thumbnailFailed = true else thumbnail = decoded
+            if (decoded == null) thumbnailError = R.string.native_pdf_thumbnail_failed else thumbnail = decoded
         } catch (cancelled: CancellationException) {
             throw cancelled
+        } catch (error: PdfFormatException) {
+            thumbnailError = pdfFormatErrorLabel(error.reason)
         } catch (_: Exception) {
-            thumbnailFailed = true
+            thumbnailError = R.string.native_pdf_thumbnail_failed
         }
     }
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
         if (loadThumbnail != null) {
             Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
+            val renderError = thumbnailError
             when {
                 thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
                     contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
-                thumbnailFailed -> Text(stringResource(R.string.native_pdf_thumbnail_failed),
+                renderError != null -> Text(stringResource(renderError),
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.testTag(PdfThumbnailFailedTag))
                 else -> Row(verticalAlignment = Alignment.CenterVertically,

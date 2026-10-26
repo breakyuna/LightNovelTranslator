@@ -456,6 +456,71 @@ class NativeAgentStoreTest {
         assertEquals(2, history.filterIsInstance<AgentMessage.ToolResult>().size)
         assertEquals("model proposal", agent.pending(project.ref, chat)!!.after)
     }
+    @Test fun koogConversationWritesRecoverableCheckpointStagesWithoutChangingTheTurn() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        var requests = 0
+        val unknown = TokenMeasurement(null, UsageSource.UNKNOWN)
+        val usage = RequestUsage(unknown, unknown, unknown, unknown, unknown)
+        val model = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+                requests++
+                val parts = if (requests == 1) listOf(AssistantPart.ToolCall(AgentToolCall(ToolCallId("summary"),
+                    "project_summary", JsonObjectValue.parse("{}", JsonInputLimits(128, 4)))))
+                    else listOf(AssistantPart.Text("done"))
+                return AgentModelResponse(AgentMessage.Assistant(MessageId("checkpoint-response-$requests"), parts), usage,
+                    if (requests == 1) ModelStopReason.TOOL_CALLS else ModelStopReason.COMPLETE)
+            }
+        }
+        val checkpoints = RecordingAgentCheckpoints()
+        try {
+            val result = NativeKoogConversation(runtime, projects, agent, agent, agent, model,
+                checkpoints = checkpoints).send(lease, project.ref,
+                ModelConfigurationRef("fixture", 1), "Summarize the project")
+            assertFalse(result.waitingApproval)
+        } finally { runtime.finishRun(lease) }
+
+        assertEquals(2, requests)
+        val stages = checkpoints.saved.map { it.stage }
+        assertEquals(CheckpointStage.BEFORE_REQUEST, stages.first())
+        assertTrue(stages.contains(CheckpointStage.TOOL_PENDING))
+        assertEquals(CheckpointStage.AFTER_RESPONSE, stages.last())
+        val pending = checkpoints.saved.first { it.stage == CheckpointStage.TOOL_PENDING }
+        assertEquals(listOf(ToolCallId("summary")), pending.pendingToolCalls)
+        assertEquals(project.ref, pending.projectRef)
+        assertEquals(chat, pending.run.chatId)
+        assertTrue(checkpoints.saved.all { it.summary == null })
+        assertTrue(checkpoints.saved.all { it.acceptedCommands == listOf(lease.identity.commandId) })
+    }
+
+    @Test fun checkpointFailureIsVisibleButDoesNotReplaceTheModelOrToolResult() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        val unknown = TokenMeasurement(null, UsageSource.UNKNOWN)
+        val usage = RequestUsage(unknown, unknown, unknown, unknown, unknown)
+        val model = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit) =
+                AgentModelResponse(AgentMessage.Assistant(MessageId("checkpoint-failure-response"),
+                    listOf(AssistantPart.Text("answer remains"))), usage, ModelStopReason.COMPLETE)
+        }
+        val failures = mutableListOf<Throwable>()
+        val failing = object : AgentCheckpointPort {
+            override suspend fun save(envelope: CheckpointEnvelope) { throw java.io.IOException("fixture failure") }
+            override suspend fun latest(ref: LocalProjectRef, chat: ChatId, branch: BranchId): CheckpointEnvelope? = null
+            override suspend fun list(ref: LocalProjectRef, chat: ChatId, branch: BranchId, limit: Int) = emptyList<CheckpointEnvelope>()
+        }
+        try {
+            NativeKoogConversation(runtime, projects, agent, agent, agent, model,
+                checkpoints = failing,
+                onCheckpointFailure = { failures += it }).send(lease, project.ref,
+                ModelConfigurationRef("fixture", 1), "Answer without checkpoint storage")
+        } finally { runtime.finishRun(lease) }
+
+        assertTrue(failures.isNotEmpty())
+        val history = agent.history(project.ref, chat)
+        AgentHistory.validate(history)
+        assertEquals("answer remains", (history.last() as AgentMessage.Assistant)
+            .parts.filterIsInstance<AssistantPart.Text>().single().text)
+    }
+
     @Test fun stopAfterAssistantCommitCompletesPendingCalls() = runBlocking {
         verifyStopAfterCommit(cancelAfterResult = false)
     }
@@ -546,5 +611,14 @@ class NativeAgentStoreTest {
         agent.close(); agent = NativeAgentStore(context, projects, runtime)
         assertEquals(1, agent.messages(project.ref, chat).size)
         assertEquals(0L, projects.open(project.ref).revision)
+    }
+
+    private class RecordingAgentCheckpoints : AgentCheckpointPort {
+        val saved = mutableListOf<CheckpointEnvelope>()
+        override suspend fun save(envelope: CheckpointEnvelope) { saved += envelope }
+        override suspend fun latest(ref: LocalProjectRef, chat: ChatId, branch: BranchId): CheckpointEnvelope? =
+            saved.lastOrNull { it.projectRef == ref && it.run.chatId == chat && it.branchId == branch }
+        override suspend fun list(ref: LocalProjectRef, chat: ChatId, branch: BranchId, limit: Int): List<CheckpointEnvelope> =
+            saved.asReversed().filter { it.projectRef == ref && it.run.chatId == chat && it.branchId == branch }.take(limit)
     }
 }

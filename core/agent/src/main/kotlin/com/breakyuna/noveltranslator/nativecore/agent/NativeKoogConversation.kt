@@ -35,8 +35,66 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
     private val steer: AgentSteerExecutionPort? = null,
     private val additionalTools: ((RunLease, LocalProjectRef) -> AgentToolPort)? = null,
     private val appPersona: (() -> String?)? = null,
-    private val skillContext: (suspend () -> String?)? = null) {
+    private val skillContext: (suspend () -> String?)? = null,
+    private val checkpoints: AgentCheckpointPort? = null,
+    private val onCheckpointFailure: (suspend (Throwable) -> Unit)? = null) {
     private fun uuid() = UUID.randomUUID().toString()
+
+    /**
+     * Best-effort durable evidence. A checkpoint failure is reported through the optional
+     * listener but never replaces a model/tool result or makes a cancelled run continue.
+     */
+    private suspend fun writeCheckpoint(
+        lease: RunLease,
+        ref: LocalProjectRef,
+        chat: ChatId,
+        stage: CheckpointStage,
+        messages: List<AgentMessage>,
+        pending: List<ToolCallId>,
+        usage: RequestUsage,
+        acceptedCommands: List<CommandId>,
+    ) {
+        val store = checkpoints ?: return
+        val envelope = try {
+            CheckpointEnvelope(
+                version = 1,
+                strategyVersion = CHECKPOINT_STRATEGY_VERSION,
+                run = lease.identity,
+                branchId = BranchId("main"),
+                stage = stage,
+                messages = messages,
+                pendingToolCalls = pending,
+                summary = null,
+                acceptedCommands = acceptedCommands,
+                usage = usage,
+                projectRef = ref,
+            )
+        } catch (invalid: IllegalArgumentException) {
+            reportCheckpointFailure(invalid)
+            return
+        }
+        try {
+            store.save(envelope)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            reportCheckpointFailure(failure)
+        }
+    }
+
+    private suspend fun reportCheckpointFailure(failure: Throwable) {
+        val listener = onCheckpointFailure ?: return
+        try {
+            listener(failure)
+        } catch (_: Throwable) {
+            // Diagnostics must never change the Agent result or cancellation semantics.
+        }
+    }
+
+    private fun unknownUsage(): RequestUsage {
+        fun unknown() = TokenMeasurement(null, UsageSource.UNKNOWN)
+        return RequestUsage(unknown(), unknown(), unknown(), unknown(), unknown())
+    }
 
     /**
      * One bounded, audited summary request for automatic context compaction. It uses the same
@@ -82,8 +140,20 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
         TextProjectFingerprint.utf8(input)
         val chat = requireNotNull(lease.identity.chatId)
         require(!workspace.hasPending(ref, chat)) { "Settle pending approval first" }
-        val history = conversation.modelHistory(ref, chat).toMutableList()
-        AgentHistory.validate(history)
+        var history = conversation.modelHistory(ref, chat).toMutableList()
+        try {
+            AgentHistory.validate(history)
+        } catch (invalid: InvalidAgentHistory) {
+            // A process death after the assistant tool-call was committed but before its result
+            // leaves a permanently unsendable tail. Close it with an explicit interrupted result;
+            // never re-run a tool whose side effect is unknown. Other history corruption is not
+            // repaired here.
+            if (invalid.reason != InvalidAgentHistory.Reason.MISSING_RESULT) throw invalid
+            val repaired = conversation.repairPendingToolTail(ref, chat)
+            if (repaired == 0) throw invalid
+            history = conversation.modelHistory(ref, chat).toMutableList()
+            AgentHistory.validate(history)
+        }
         if (history.size > 160) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
         val user = AgentMessage.User(MessageId(uuid()), listOf(UserPart.Text(input)))
         conversation.appendMessage(ref, chat, user); history.add(user)
@@ -121,6 +191,11 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
             MessageId("native-system"),
             baseSystem + (personaBlock ?: "") + (skillsBlock ?: ""),
         )
+        var checkpointUsage = unknownUsage()
+        val acceptedCommands = listOf(lease.identity.commandId)
+        suspend fun checkpoint(stage: CheckpointStage, messages: List<AgentMessage>,
+                               pending: List<ToolCallId> = emptyList()) =
+            writeCheckpoint(lease, ref, chat, stage, messages, pending, checkpointUsage, acceptedCommands)
         val steering = mutableListOf<AgentMessage.System>()
         var response: AgentModelResponse? = null
         var responseKey: AgentRequestKey? = null
@@ -133,6 +208,7 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                 requests++
                 val request = AgentModelRequest(lease.identity, BranchId("main"),
                     RequestAttemptId(uuid()), configuration, listOf(system) + steering + history, toolHost.definitions())
+                checkpoint(CheckpointStage.BEFORE_REQUEST, listOf(system) + steering + history)
                 recorder?.checkpoint(RunCheckpoint(StoredRunStage.REQUESTING, requests = requests, agentRequest = request.key()))
                 val result = boundary.complete(lease, request)
                 withContext(NonCancellable) {
@@ -140,6 +216,7 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                 }
                 response = result
                 responseKey = request.key()
+                checkpointUsage = result.usage
                 return Message.Assistant(result.message.parts.filterIsInstance<AssistantPart.Text>().joinToString("") { it.text },
                     ResponseMetaInfo(timestamp = Instant.DISTANT_PAST, modelId = model.id))
             }
@@ -168,8 +245,14 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                         catch (cancelled: CancellationException) { throw cancelled }
                         catch (_: Exception) { /* Presentation only. */ }
                     }
-                    if (calls.isEmpty()) return@functionalStrategy AgentTurnCompletion(false)
+                    if (calls.isEmpty()) {
+                        checkpoint(CheckpointStage.AFTER_RESPONSE, history.toList())
+                        return@functionalStrategy AgentTurnCompletion(false)
+                    }
                     steer?.phase(lease, AgentRunStage.TOOL_EXECUTION)
+                    // The assistant turn and all open call IDs are durable before any tool can
+                    // cross its side-effect boundary. The history itself is unchanged.
+                    checkpoint(CheckpointStage.TOOL_PENDING, history.toList(), calls.map { it.id })
                     for (call in calls) {
                         currentCoroutineContext().ensureActive()
                         val outcome = if (waiting) AgentToolOutcome.Failure("approval_pending")
@@ -185,6 +268,7 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                         notifyTimeline()
                         if (outcome is AgentToolOutcome.Success && workspace.hasPending(ref, chat)) waiting = true
                     }
+                    checkpoint(CheckpointStage.AFTER_RESPONSE, history.toList())
                 } catch (cancelled: CancellationException) {
                     withContext(NonCancellable) {
                         // Cancellation can be delivered after a non-cancellable append commits.
@@ -198,6 +282,7 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                             conversation.appendMessage(ref, chat, AgentMessage.ToolResult(MessageId(uuid()), call.id, call.name,
                                 JsonObjectValue.parse("{\"error\":\"cancelled\"}", JsonInputLimits(4096, 4)), true))
                         }
+                        checkpoint(CheckpointStage.INTERRUPTED, conversation.modelHistory(ref, chat))
                     }
                     throw cancelled
                 }
@@ -215,5 +300,9 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
             toolRegistry = ToolRegistry.EMPTY, systemPrompt = "Native structured conversation", maxIterations = 24,
             id = "native-turn-" + lease.identity.runId.value)
         try { agent.run(input) } finally { withContext(NonCancellable) { agent.close() } }
+    }
+
+    private companion object {
+        const val CHECKPOINT_STRATEGY_VERSION = 1
     }
 }

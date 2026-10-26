@@ -23,6 +23,10 @@ import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationRequ
 import com.breakyuna.noveltranslator.nativecore.engine.ForegroundTranslationStartFailed
 import com.breakyuna.noveltranslator.nativecore.engine.TranslationFailureAdjudicationResult
 import com.breakyuna.noveltranslator.nativecore.engine.TranslationQueueRefused
+import com.breakyuna.noveltranslator.nativecore.formats.PdfFormatException
+import com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssArchiveException
+import com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssFormatException
+import com.breakyuna.noveltranslator.nativecore.formats.rgss.RgssProjectService
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactRecord
 import java.io.ByteArrayOutputStream
@@ -52,6 +56,64 @@ enum class NativePage { AGENT, WORKBENCH, PROOFREADING, MORE, RULES, SETTINGS, F
 /** RULES, SETTINGS, FILES and LOGS remain routed pages; the bottom bar stays at four items. */
 internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.MORE)
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
+
+/** Precise, path-free PDF failure text for imports, exports and page previews. */
+internal fun pdfFormatErrorLabel(reason: PdfFormatException.Reason): Int = when (reason) {
+    PdfFormatException.Reason.CORRUPT -> R.string.native_pdf_error_corrupt
+    PdfFormatException.Reason.ENCRYPTED -> R.string.native_pdf_error_encrypted
+    PdfFormatException.Reason.RESOURCES -> R.string.native_pdf_error_resources
+    PdfFormatException.Reason.LIMIT -> R.string.native_pdf_error_limit
+    PdfFormatException.Reason.BINDING -> R.string.native_pdf_error_binding
+    PdfFormatException.Reason.DUPLICATE -> R.string.native_pdf_error_duplicate
+    PdfFormatException.Reason.MISSING_TRANSLATION -> R.string.native_pdf_error_missing_translation
+    PdfFormatException.Reason.EMPTY_OUTPUT -> R.string.native_pdf_error_empty_output
+    PdfFormatException.Reason.EXTRACT -> R.string.native_pdf_error_extract
+    PdfFormatException.Reason.RENDER -> R.string.native_pdf_error_render
+    PdfFormatException.Reason.FONT -> R.string.native_pdf_error_font
+    PdfFormatException.Reason.UNSUPPORTED -> R.string.native_pdf_error_unsupported
+}
+
+/**
+ * Maps the adapter's structural PDF warnings to one visible import notice. Warnings are
+ * ephemeral list metadata; no path or adapter message is displayed.
+ */
+internal fun pdfImportNotice(warnings: List<FormatWarning>): Int? {
+    val codes = warnings.mapTo(HashSet()) { it.code }
+    val forms = "pdf.forms_protected" in codes
+    val attachments = "pdf.attachments_protected" in codes
+    return when {
+        forms && attachments -> R.string.native_pdf_import_warning_forms_attachments
+        attachments -> R.string.native_pdf_import_warning_attachments
+        forms -> R.string.native_pdf_import_warning_forms
+        "pdf.no_text_layer" in codes -> R.string.native_pdf_import_warning_no_text_layer
+        "pdf.empty_pages" in codes -> R.string.native_pdf_import_warning_empty_pages
+        else -> null
+    }
+}
+
+/**
+ * EPUB warnings that affect translation scope or layout fidelity. They are shown after import;
+ * no path or body is displayed.
+ */
+internal fun epubImportNotice(warnings: List<FormatWarning>): Int? {
+    val codes = warnings.mapTo(HashSet()) { it.code }
+    return when {
+        "epub.fixed_layout" in codes -> R.string.native_epub_import_warning_fixed_layout
+        "epub.spine_non_linear" in codes -> R.string.native_epub_import_warning_non_linear
+        "epub.unknown_entity" in codes -> R.string.native_epub_import_warning_unknown_entity
+        else -> null
+    }
+}
+
+/** One import notice for the active format families; PDF remains available for old projects. */
+internal fun formatImportNotice(warnings: List<FormatWarning>): Int? =
+    epubImportNotice(warnings) ?: pdfImportNotice(warnings)
+
+/**
+ * RGSS inventory decodes every member into its own copy, so browsing is bounded to avoid an OOM
+ * on a phone. The format is frozen; opening a larger archive stays possible through export.
+ */
+private const val RGSS_INVENTORY_MAX_BYTES = 24L * 1024 * 1024
 
 class ItemPreview(val id: ItemId, val row: Int, val source: String, val translation: String,
                   val status: TextItemStatus, val hasTranslatableSource: Boolean = source.isNotBlank(), val assetId: Long = 1) {
@@ -171,6 +233,8 @@ data class NativeProjectUiState(
     val policyProposals: List<PolicyApprovalSummary> = emptyList(),
     val pdfPageProposals: List<PdfPageProposalSummary> = emptyList(),
     val assetImportProposals: List<AssetImportProposalSummary> = emptyList(),
+    val workspaceChangeProposals: List<WorkspaceChangeProposalSummary> = emptyList(),
+    val workspaceUploadRevision: Int = 0,
     val supportedFormats: Set<ProjectAssetFormat> = emptySet(),
 ) {
     val foregroundExecutionActive: Boolean get() = foregroundTranslationActive || foregroundAgentActive
@@ -186,8 +250,11 @@ data class NativeProjectUiState(
     val pendingAssetImportProposal: AssetImportProposalSummary? get() = assetImportProposals.firstOrNull {
         it.state == AssetImportProposalState.PENDING
     }
+    val pendingWorkspaceChangeProposal: WorkspaceChangeProposalSummary? get() =
+        workspaceChangeProposals.firstOrNull { it.state == WorkspaceChangeProposalState.PENDING }
     val hasAgentApproval: Boolean get() = approval != null || pendingItemProposal != null ||
-        pendingPolicyProposal != null || pendingPdfPageProposal != null || pendingAssetImportProposal != null
+        pendingPolicyProposal != null || pendingPdfPageProposal != null || pendingAssetImportProposal != null ||
+        pendingWorkspaceChangeProposal != null
     val qualityCurrent: Boolean get() {
         val current = project ?: return false
         val index = qualityView?.index ?: return false
@@ -303,6 +370,9 @@ class NativeProjectViewModel internal constructor(
                 require(selectedProject.ref == ref && selectedProject.revision == revision &&
                     current.agentRunId == artifact.runId && current.editor == null && current.manualBatch == null)
                 val target = RelativePath(path)
+                if (!isNativeFormatActive(target.value)) {
+                    throw TextProjectException(TextProjectException.Reason.INVALID_FORMAT)
+                }
                 val bytes = graph.workspace.readVerifiedArtifactBytes(ref, artifact.runId, artifact.id,
                     artifact.sha256, artifact.sizeBytes)
                 val receipt = graph.formatProjects.importAsset(command, ref, revision, target, bytes)
@@ -310,7 +380,12 @@ class NativeProjectViewModel internal constructor(
                     throw TextProjectException(TextProjectException.Reason.STALE_PAGE)
                 // The commit receipt is authoritative even if refreshing the projection fails.
                 mutable.value = mutable.value.copy(qualityView = null, qualityInvalidated = true)
-                try { loadPage(ref, cursors.last()); loadAgent(ref) }
+                try {
+                    loadPage(ref, cursors.last()); loadAgent(ref)
+                    formatImportNotice(receipt.warnings)?.let { warning ->
+                        mutable.value = mutable.value.copy(notice = warning)
+                    }
+                }
                 catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) {
                     mutable.value = mutable.value.copy(error = R.string.native_workspace_import_refresh)
@@ -335,7 +410,42 @@ class NativeProjectViewModel internal constructor(
             require(mutable.value.project?.ref == ref)
             graph.workspace.readArtifactText(ref, runId, id).text
         } },
+        uploadUri = { uri -> uploadWorkspaceFile(uri) },
     )
+    /**
+     * Copies one SAF file into the project workspace uploads/ area. This is a workspace material,
+     * not a project asset and not a model image; the Agent can list/read it through workspace tools.
+     */
+    fun uploadWorkspaceFile(uri: Uri) = action {
+        val project = mutable.value.project ?: return@action
+        val input = withContext(Dispatchers.IO) {
+            val resolver = getApplication<Application>().contentResolver
+            val rawName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { if (it.moveToFirst()) it.getString(0) else null }
+                ?: "upload.bin"
+            val output = ByteArrayOutputStream()
+            val coroutine = currentCoroutineContext()
+            resolver.openInputStream(uri)?.use { stream ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    coroutine.ensureActive()
+                    val count = stream.read(buffer)
+                    if (count < 0) break
+                    if (output.size().toLong() + count > 32L * 1024 * 1024) {
+                        throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
+                    }
+                    output.write(buffer, 0, count)
+                }
+            } ?: throw java.io.IOException()
+            rawName to output.toByteArray()
+        }
+        withContext(Dispatchers.IO) {
+            graph.workspace.upload(project.ref, input.first, input.second)
+        }
+        mutable.value = mutable.value.copy(notice = R.string.native_saved,
+            workspaceUploadRevision = mutable.value.workspaceUploadRevision + 1)
+    }
+
     private val agentPreviews = graph.agentPreviews
     val agentStream = agentPreviews.state
     private var job: Job? = null
@@ -464,7 +574,7 @@ class NativeProjectViewModel internal constructor(
         // Reconcile abandoned queue RUNNING facts before any page/queue projection is shown.
         // Recovery only pauses or routes to review; it never resumes a paid task automatically.
         try {
-            graph.translationQueueScheduler.recover()
+            graph.translationQueueScheduler.recoverExclusive()
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -841,6 +951,41 @@ class NativeProjectViewModel internal constructor(
         require(mutable.value.project?.let { it.ref == ref && it.revision == revision } == true)
         return result
     }
+
+    /**
+     * Read-only member metadata for one stored RGSS archive. Bytes are read through the asset port,
+     * decoded only to obtain sizes and flags, and never returned to the UI. Validation failures use
+     * the existing path-free [TextProjectException] reasons.
+     */
+    internal suspend fun rgssInventory(ref: LocalProjectRef, assetId: Long): NativeRgssInventory =
+        withContext(Dispatchers.IO) {
+            val assetStore = projects as? ProjectAssetPort
+                ?: throw TextProjectException(TextProjectException.Reason.INVALID_FORMAT)
+            val asset = assetStore.assets(ref).firstOrNull { it.id == assetId }
+                ?: throw TextProjectException(TextProjectException.Reason.UNKNOWN_PROJECT)
+            if (asset.format != ProjectAssetFormat.RPGMAKER_RGSS) {
+                throw TextProjectException(TextProjectException.Reason.INVALID_FORMAT)
+            }
+            val bytes = assetStore.readAsset(ref, assetId)
+            if (bytes.size.toLong() > RGSS_INVENTORY_MAX_BYTES) {
+                throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
+            }
+            try {
+                rgssInventoryOf(RgssProjectService.importArchive(bytes), bytes.size.toLong())
+            } catch (failure: RgssArchiveException) {
+                throw TextProjectException(when (failure.reason) {
+                    RgssArchiveException.Reason.LIMIT -> TextProjectException.Reason.LIMIT_EXCEEDED
+                    RgssArchiveException.Reason.VERSION -> TextProjectException.Reason.UNSUPPORTED_VERSION
+                    else -> TextProjectException.Reason.INVALID_FORMAT
+                })
+            } catch (failure: RgssFormatException) {
+                throw TextProjectException(when (failure.reason) {
+                    RgssFormatException.Reason.LIMIT -> TextProjectException.Reason.LIMIT_EXCEEDED
+                    RgssFormatException.Reason.IO -> TextProjectException.Reason.STORAGE_IO
+                    else -> TextProjectException.Reason.INVALID_FORMAT
+                })
+            }
+        }
 
     fun refreshStorageUsage() = action {
         val usage = privateStorageUsage()
@@ -1683,6 +1828,75 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    fun allowWorkspaceChange() = action {
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
+        val view = mutable.value.pendingWorkspaceChangeProposal ?: return@action
+        try {
+            val result = agentRun(view.ref, view.run, view.command) { lease, recorder ->
+                graph.workspaceChanges.apply(lease, view).also {
+                    recorder.itemProposalResult(when (it) {
+                        WorkspaceChangeProposalState.APPLIED -> ItemProposalState.COMMITTED
+                        // A partial file batch must not be recorded as a successful run.
+                        WorkspaceChangeProposalState.PARTIAL -> ItemProposalState.CONFLICT
+                        WorkspaceChangeProposalState.REJECTED -> ItemProposalState.REJECTED
+                        WorkspaceChangeProposalState.CONFLICT -> ItemProposalState.CONFLICT
+                        WorkspaceChangeProposalState.PENDING -> ItemProposalState.PENDING
+                    })
+                }
+            }
+            mutable.value = mutable.value.copy(notice = when (result) {
+                WorkspaceChangeProposalState.APPLIED -> R.string.native_saved
+                WorkspaceChangeProposalState.PARTIAL -> R.string.native_workspace_change_partial
+                WorkspaceChangeProposalState.REJECTED -> R.string.native_agent_result_rejected
+                WorkspaceChangeProposalState.CONFLICT -> R.string.native_conflict
+                WorkspaceChangeProposalState.PENDING -> R.string.native_agent_unresolved
+            })
+            settleWorkspaceApproval(view, result)
+        } finally {
+            withContext(NonCancellable) { loadPage(view.ref, cursors.last()); loadAgent(view.ref) }
+        }
+    }
+
+    fun rejectWorkspaceChange() = action {
+        if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
+        val view = mutable.value.pendingWorkspaceChangeProposal ?: return@action
+        val result = graph.workspaceChanges.reject(view)
+        mutable.value = mutable.value.copy(notice = when (result) {
+            WorkspaceChangeProposalState.REJECTED -> R.string.native_agent_result_rejected
+            WorkspaceChangeProposalState.CONFLICT -> R.string.native_conflict
+            else -> R.string.native_agent_unresolved
+        })
+        settleWorkspaceApproval(view, result)
+        loadAgent(view.ref)
+    }
+
+    /**
+     * The workspace proposal is file-backed, so the run journal's SQL `approvalState` union cannot
+     * settle the execution that prepared it. Close that WAITING_APPROVAL execution explicitly;
+     * otherwise it would stay "waiting approval" in every later run-history read.
+     */
+    private suspend fun settleWorkspaceApproval(
+        view: WorkspaceChangeProposalSummary,
+        state: WorkspaceChangeProposalState,
+    ) {
+        val terminal = when (state) {
+            WorkspaceChangeProposalState.APPLIED -> StoredRunState.SUCCEEDED
+            // The new execution records PARTIAL as a conflict, so the superseded one must not
+            // claim success for a batch that only partially committed.
+            WorkspaceChangeProposalState.PARTIAL -> StoredRunState.FAILED
+            WorkspaceChangeProposalState.REJECTED -> StoredRunState.CANCELLED
+            WorkspaceChangeProposalState.CONFLICT -> StoredRunState.FAILED
+            WorkspaceChangeProposalState.PENDING -> return
+        }
+        runCatching {
+            graph.runStore.settleWaitingApproval(
+                view.ref,
+                RunIdentity(view.ref.projectId, view.chat, view.run, view.command),
+                terminal,
+            )
+        }
+    }
+
     fun rejectAgentEdit() = action {
         if (mutable.value.agentLoadIncomplete || mutable.value.runLoadIncomplete) return@action
         val approval = mutable.value.approval ?: return@action
@@ -1711,18 +1925,47 @@ class NativeProjectViewModel internal constructor(
     }
 
     private suspend fun loadAgent(ref: LocalProjectRef) {
+        // Fail closed until every proposal/history read below succeeds. A cancelled load must not
+        // leave the previous project's approvals looking actionable.
+        mutable.value = mutable.value.copy(agentLoadIncomplete = true)
         var incomplete = false
         suspend fun <T> loadOr(fallback: T, block: suspend () -> T): T = try { block() }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { incomplete = true; fallback }
         val selectedChat = loadOr<ChatId?>(null) { graph.agentStore.currentChat(ref) }
         if (selectedChat != null) agentChat = selectedChat
+        var recoveredInterruptedTool = false
         if (selectedChat != null) {
             loadOr(Unit) { graph.agentStore.reconcile(ref, selectedChat) }
             loadOr(Unit) { graph.itemProposals.reconcile(ref, selectedChat) }
             loadOr(Unit) { graph.policyProposals.reconcile(ref, selectedChat) }
             loadOr(Unit) { graph.pdfPageProposals.reconcile(ref, selectedChat) }
             loadOr(Unit) { graph.assetImportProposals.reconcile(ref, selectedChat) }
+            loadOr(Unit) { graph.workspaceChanges.reconcile(ref, selectedChat) }
+            // A process death between a committed assistant tool call and its result leaves the
+            // canonical history unsendable. The checkpoint is evidence for the same boundary, but
+            // the message table remains authoritative; close only open calls and never re-run a
+            // tool with an unknown side effect. A live execution is never repaired here.
+            if (graph.backgroundAgents.state.value?.phase?.active != true) {
+                val checkpoint = try {
+                    graph.agentCheckpoints.latest(ref, selectedChat, BranchId("main"))
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    null
+                }
+                if (checkpoint?.stage == CheckpointStage.TOOL_PENDING) {
+                    val repaired = try {
+                        graph.agentStore.repairPendingToolTail(ref, selectedChat)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        incomplete = true
+                        0
+                    }
+                    recoveredInterruptedTool = repaired > 0
+                }
+            }
         }
         val messages = if (selectedChat == null) emptyList() else
             loadOr(emptyList<AgentChatLine>()) { graph.agentStore.messages(ref, selectedChat) }
@@ -1738,6 +1981,8 @@ class NativeProjectViewModel internal constructor(
             loadOr(emptyList<PdfPageProposalSummary>()) { graph.pdfPageProposals.recent(ref, selectedChat) }
         val assetImportProposals = if (selectedChat == null) emptyList() else
             loadOr(emptyList<AssetImportProposalSummary>()) { graph.assetImportProposals.recent(ref, selectedChat) }
+        val workspaceChangeProposals = if (selectedChat == null) emptyList() else
+            loadOr(emptyList<WorkspaceChangeProposalSummary>()) { graph.workspaceChanges.recent(ref, selectedChat) }
         val settings = loadOr<NativeModelSettings?>(mutable.value.modelSettings) { graph.modelSettings.current() }
         val translationSettings = loadOr<NativeModelSettings?>(mutable.value.translationModelSettings) {
             graph.modelProfiles.selected(ModelProfilePurpose.TRANSLATION)?.settings
@@ -1754,11 +1999,13 @@ class NativeProjectViewModel internal constructor(
             saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") ?: "" else ""
         mutable.value = mutable.value.copy(agentMessages = messages, approval = approval, agentResults = results, itemProposals = proposals, policyProposals = policyProposals,
             pdfPageProposals = pdfPageProposals, assetImportProposals = assetImportProposals,
+            workspaceChangeProposals = workspaceChangeProposals,
             agentContextStatus = mutable.value.agentContextStatus.takeIf { mutable.value.agentChatId == selectedChat },
             agentChatId = selectedChat, agentChats = chats, modelSettings = settings,
             translationModelSettings = translationSettings, modelProfiles = profiles, agentInput = draft,
             agentQueue = queue, agentQueueRevision = storedQueue?.revision ?: 0,
-            agentQueueIncomplete = incomplete, agentLoadIncomplete = incomplete, agentMessageDetail = null)
+            agentQueueIncomplete = incomplete, agentLoadIncomplete = incomplete, agentMessageDetail = null,
+            notice = if (recoveredInterruptedTool) R.string.native_agent_interrupted_recovered else mutable.value.notice)
         loadRuns(ref)
     }
 
@@ -1808,21 +2055,35 @@ class NativeProjectViewModel internal constructor(
 
     private suspend fun <T> agentRun(ref: LocalProjectRef, runId: RunId = RunId(UUID.randomUUID().toString()),
                                      command: CommandId = commandId(), block: suspend (RunLease, RunProgressRecorder) -> T): T {
-        graph.runtime.selectChat(ChatIdentity(ref.projectId, agentChat))
+        val chat = agentChat
+        graph.runtime.selectChat(ChatIdentity(ref.projectId, chat))
         agentPreviews.clear()
         try {
-            return graph.runs.execute(ref, RunIdentity(ref.projectId, agentChat, runId, command), RuntimeOwner.AGENT) { lease, recorder ->
+            return graph.runs.execute(ref, RunIdentity(ref.projectId, chat, runId, command), RuntimeOwner.AGENT) { lease, recorder ->
                 agentLease = lease
                 try {
                     val result = block(lease, recorder)
-                    if (graph.agentStore.pending(ref, agentChat)?.runId == runId ||
-                        graph.itemProposals.pending(ref, agentChat)?.run == runId ||
-                        graph.policyProposals.pending(ref, agentChat)?.run == runId ||
-                        graph.pdfPageProposals.pending(ref, agentChat)?.run == runId ||
-                        graph.assetImportProposals.pending(ref, agentChat)?.run == runId) recorder.waitingForApproval()
+                    if (graph.agentStore.pending(ref, chat)?.runId == runId ||
+                        graph.itemProposals.pending(ref, chat)?.run == runId ||
+                        graph.policyProposals.pending(ref, chat)?.run == runId ||
+                        graph.pdfPageProposals.pending(ref, chat)?.run == runId ||
+                        graph.assetImportProposals.pending(ref, chat)?.run == runId ||
+                        graph.workspaceChanges.pending(ref, chat)?.run == runId) recorder.waitingForApproval()
                     result
                 } catch (cancelled: CancellationException) {
-                    withContext(NonCancellable) { graph.agentStore.cancelPending(ref, runId) }
+                    withContext(NonCancellable) {
+                        graph.agentStore.cancelPending(ref, runId)
+                        runCatching { graph.workspaceChanges.cancelRun(ref, chat, runId) }
+                        // A workspace proposal is file-backed; settle the waiting execution that
+                        // prepared it instead of leaving it in the run history forever.
+                        runCatching {
+                            graph.runStore.settleWaitingApproval(
+                                ref,
+                                RunIdentity(ref.projectId, chat, runId, command),
+                                StoredRunState.CANCELLED,
+                            )
+                        }
+                    }
                     throw cancelled
                 }
             }
@@ -2267,6 +2528,10 @@ class NativeProjectViewModel internal constructor(
                 } ?: throw java.io.IOException()
                 basename to output.toByteArray()
             }
+            if (!isNativeFormatActive(input.first)) {
+                mutable.value = mutable.value.copy(error = R.string.native_format_frozen)
+                return@queuedAction
+            }
             val receipt = graph.formatProjects.importAsset(CommandId(intent[0]), project.ref, project.revision,
                 RelativePath(input.first), input.second)
             if (receipt.status != AssetMutationStatus.COMMITTED) {
@@ -2275,6 +2540,9 @@ class NativeProjectViewModel internal constructor(
             }
             saved.remove<ArrayList<String>>("native_add_asset")
             openInternal(project.ref)
+            formatImportNotice(receipt.warnings)?.let { warning ->
+                mutable.value = mutable.value.copy(notice = warning)
+            }
         }
     }
 
@@ -2657,7 +2925,7 @@ class NativeProjectViewModel internal constructor(
             settingsSection = NativeSettingsSection.BASIC,
             proofreadingQuery = TextItemQuery(), itemStatistics = null, matchingItems = null, matchingStatistics = null, qualityView = null, qualityInvalidated = false, qualityProgress = null,
             selectingItems = false, selectedItems = emptySet(), manualBatch = null, manualBatchConflict = false,
-            agentMessages = emptyList(), approval = null, agentResults = emptyList(), itemProposals = emptyList(), policyProposals = emptyList(), pdfPageProposals = emptyList(), assetImportProposals = emptyList(), recentRuns = emptyList(), runLoadIncomplete = false,
+            agentMessages = emptyList(), approval = null, agentResults = emptyList(), itemProposals = emptyList(), policyProposals = emptyList(), pdfPageProposals = emptyList(), assetImportProposals = emptyList(), workspaceChangeProposals = emptyList(), workspaceUploadRevision = 0, recentRuns = emptyList(), runLoadIncomplete = false,
             agentContextStatus = null,
             agentMessageDetail = null, policyDraft = null, policyLoadIncomplete = false, policyInvalidRuleId = null)
         refresh()
@@ -3256,8 +3524,8 @@ class NativeProjectViewModel internal constructor(
             manualBatchConflict = batch != null && saved.get<Boolean>("manual_batch_conflict") == true,
             proofreadingQuery = query, qualityView = null, qualityInvalidated = false, qualityProgress = null, itemStatistics = page.statistics, matchingItems = page.matchingItems, matchingStatistics = page.matchingStatistics,
             items = page.items.take(PAGE_SIZE).map { ItemPreview.of(it) }, hasNext = page.items.size > PAGE_SIZE, hasPrevious = false,
-            agentMessages = emptyList(), approval = null, agentResults = emptyList(), itemProposals = emptyList(), policyProposals = emptyList(), pdfPageProposals = emptyList(), assetImportProposals = emptyList(), recentRuns = emptyList(),
-            runLoadIncomplete = false, agentMessageDetail = null, agentChatId = null, agentInput = "", agentContextStatus = null)
+            agentMessages = emptyList(), approval = null, agentResults = emptyList(), itemProposals = emptyList(), policyProposals = emptyList(), pdfPageProposals = emptyList(), assetImportProposals = emptyList(), workspaceChangeProposals = emptyList(), workspaceUploadRevision = 0, recentRuns = emptyList(),
+            runLoadIncomplete = true, agentLoadIncomplete = true, agentMessageDetail = null, agentChatId = null, agentInput = "", agentContextStatus = null)
         if (selectedPage == NativePage.SETTINGS) ensureSettingsLoaded()
         loadAgent(ref)
         loadTextPolicy(ref, restore = true)
@@ -3422,6 +3690,7 @@ class NativeProjectViewModel internal constructor(
                 error is TextProjectException && error.reason == TextProjectException.Reason.STALE_PAGE,
             policyInvalidRuleId = (error as? InvalidTextRule)?.ruleId ?: mutable.value.policyInvalidRuleId,
             error = when (error) {
+                is PdfFormatException -> pdfFormatErrorLabel(error.reason)
                 is TextProjectException -> when (error.reason) {
                     TextProjectException.Reason.LIMIT_EXCEEDED -> R.string.native_limit
                     TextProjectException.Reason.INVALID_TEXT -> R.string.native_encoding_error

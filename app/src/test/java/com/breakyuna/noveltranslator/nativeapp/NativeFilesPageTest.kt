@@ -122,6 +122,36 @@ class NativeFilesPageTest {
         compose.onAllNodesWithText("generation 7", substring = true).assertCountEquals(0)
     }
 
+    @Test fun rgssArchiveOffersReadOnlyInventoryWhileOtherFormatsDoNot() {
+        val rgss = ProjectAssetSummary(2, RelativePath("game.rgss3a"), ProjectAssetFormat.RPGMAKER_RGSS,
+            0, true, 50, sha, 0)
+        val txt = ProjectAssetSummary(3, RelativePath("notes.txt"), ProjectAssetFormat.TXT,
+            1, true, 10, sha, 1)
+        val project = TextProjectSummary(ref, "fixture", 3, RelativePath("primary.txt"), 2,
+            listOf(rgss, txt))
+        var requestedRef: LocalProjectRef? = null
+        var requestedId: Long? = null
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeFilesPage(NativeProjectUiState(project = project, page = NativePage.FILES,
+                            storageUsage = usage), back = {}, exportAsset = {}, cleanup = {},
+                        refreshStorage = {}, browseRgss = { actualRef, assetId ->
+                            requestedRef = actualRef
+                            requestedId = assetId
+                        })
+                }
+            }
+        }
+        compose.onNodeWithTag("native-file-rgss-browse-2").performClick()
+        compose.runOnIdle {
+            assertEquals(ref, requestedRef)
+            assertEquals(2L, requestedId)
+        }
+        compose.onNodeWithTag("native-files-page").performScrollToNode(hasTestTag("native-file-3"))
+        compose.onNodeWithTag("native-file-rgss-browse-3").assertDoesNotExist()
+    }
+
     @Test fun storageProjectionSumsDisjointPrivateCategories() {
         assertEquals(10_000, usage.filesBytes)
         assertEquals(5_000, usage.workspaceBytes)

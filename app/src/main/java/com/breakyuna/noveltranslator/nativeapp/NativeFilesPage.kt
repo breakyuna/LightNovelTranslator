@@ -57,6 +57,7 @@ internal fun NativeFilesPage(
     refreshStorage: () -> Unit,
     shareAll: (() -> Unit)? = null,
     loadInventory: (suspend (LocalProjectRef, Long) -> ProjectFileInventory)? = null,
+    browseRgss: ((LocalProjectRef, Long) -> Unit)? = null,
 ) {
     val project = state.project ?: return
     val context = LocalContext.current
@@ -107,8 +108,8 @@ internal fun NativeFilesPage(
             Text(stringResource(R.string.native_files_empty_assets))
         }
         items(project.assets, key = { "files-asset-${it.id}" }) { asset ->
-            AssetInventoryCard(project.ref.projectId.value, project.ref.instanceId.value,
-                project.ref.generation.value, asset, busy, exportAsset, exportBilingual, formatSize, metadata[asset.id])
+            AssetInventoryCard(project.ref, asset, busy, exportAsset, exportBilingual, formatSize,
+                metadata[asset.id], browseRgss)
         }
         if (saveProject != null || exportBackup != null || exportAllBackups != null) item(key = "actions") {
             Card(Modifier.fillMaxWidth().testTag("native-files-actions")) {
@@ -203,17 +204,17 @@ internal fun NativeFilesPage(
 
 @Composable
 private fun AssetInventoryCard(
-    projectId: String,
-    instanceId: String,
-    generation: Long,
+    ref: LocalProjectRef,
     asset: ProjectAssetSummary,
     busy: Boolean,
     exportAsset: (Long) -> Unit,
     exportBilingual: ((Long) -> Unit)?,
     formatSize: (Long) -> String,
     inventory: AssetFileInventory? = null,
+    browseRgss: ((LocalProjectRef, Long) -> Unit)? = null,
 ) {
-    var showFullSha by rememberSaveable(projectId, instanceId, generation, asset.id) { mutableStateOf(false) }
+    var showFullSha by rememberSaveable(ref.projectId.value, ref.instanceId.value, ref.generation.value,
+        asset.id) { mutableStateOf(false) }
     val context = LocalContext.current
     val available = inventory?.source != AssetSourceAvailability.INCOMPLETE
     val sha = if (showFullSha) asset.sha256 else asset.sha256.take(12) + "…"
@@ -244,6 +245,12 @@ private fun AssetInventoryCard(
                 modifier = Modifier.testTag("native-file-sha-toggle-${asset.id}")) {
                 Text(stringResource(if (showFullSha) R.string.native_files_sha_hide
                     else R.string.native_files_sha_show))
+            }
+            if (asset.format == ProjectAssetFormat.RPGMAKER_RGSS && browseRgss != null) {
+                OutlinedButton(onClick = { browseRgss(ref, asset.id) }, enabled = !busy,
+                    modifier = Modifier.testTag("native-file-rgss-browse-${asset.id}")) {
+                    Text(stringResource(R.string.native_rgss_browse))
+                }
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { exportAsset(asset.id) }, enabled = !busy && available,
@@ -278,8 +285,6 @@ private fun BackupBoundary(title: Int, body: Int, tag: String) {
 }
 
 @Composable
-private fun filesFormatLabel(format: ProjectAssetFormat): String = when (format) {
-    ProjectAssetFormat.RPGMAKER_RGSS -> stringResource(R.string.native_format_rpgmaker_rgss)
-    else -> format.name
-}
+private fun filesFormatLabel(format: ProjectAssetFormat): String =
+    stringResource(nativeFormatLabelRes(format))
 

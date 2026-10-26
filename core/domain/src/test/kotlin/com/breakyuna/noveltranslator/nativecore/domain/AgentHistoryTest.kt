@@ -56,6 +56,14 @@ class AgentHistoryTest {
     }
 
     @Test
+    fun recoveryListsOnlyCallsWithoutAResultInCallOrder() {
+        val pending = AgentHistoryRecovery.pendingToolCalls(listOf(
+            user("u"), calls("a", "one", "two"), result("r2", "two"),
+        ))
+        assertEquals(listOf("one"), pending.map { it.id.value })
+    }
+
+    @Test
     fun constructorFreezesCallerOwnedPartLists() {
         val parts = mutableListOf<UserPart>(UserPart.Text("original"))
         val message = AgentMessage.User(MessageId("u"), parts)

@@ -42,6 +42,20 @@ class NativeRunStoreTest {
     }
     private suspend fun reopen() { runs.close(); runs = NativeRunStore(context, projects, runtime); runs.recoverInterrupted() }
 
+    @Test fun findReturnsTheExactRunAndRejectsAnotherRunIdentity() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        val record = runs.begin(project.ref, lease.identity, RuntimeOwner.TRANSLATION)
+        runs.finish(record, StoredRunState.SUCCEEDED)
+        runtime.finishRun(lease)
+
+        val found = runs.find(project.ref, lease.identity)
+        assertNotNull(found)
+        assertEquals(record.executionId, found!!.handle.executionId)
+        assertEquals(StoredRunState.SUCCEEDED, found.state)
+        assertNull(runs.find(project.ref, lease.identity.copy(runId = RunId("another"))))
+        assertNull(runs.find(project.ref, lease.identity.copy(commandId = CommandId("another"))))
+    }
+
     @Test fun recoveryOfFailureStatusWritesDoesNotCountThemAsTranslations() = runBlocking {
         val project = project(); val lease = begin(project.ref)
         val record = runs.begin(project.ref, lease.identity, RuntimeOwner.TRANSLATION)

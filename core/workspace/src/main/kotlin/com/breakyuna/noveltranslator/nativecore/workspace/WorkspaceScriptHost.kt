@@ -103,6 +103,7 @@ internal class WorkspaceScriptHostSession(
     private val artifacts = ArrayList<WorkspaceArtifactDraft>()
     private var fetchCalls = 0
     private var reservedFetchBytes = 0L
+    private var searchCalls = 0
     private var outputBytes: Long = 0
     private var invalidOutput: Boolean = false
     private var truncated: Boolean = false
@@ -262,13 +263,22 @@ internal class WorkspaceScriptHostSession(
         val hostRequest = WorkspaceHostRequest.Search(query, maxResults)
         authorize(hostRequest)
         val port = searchPort ?: throw WorkspaceScriptHostUnavailable("search port")
+        if (searchCalls >= 8) throw WorkspaceScriptHostLimitExceeded(WorkspaceScriptHostLimitExceeded.Limit.SEARCH_BYTES)
+        searchCalls++
         val searchRequest = WorkspaceSearchRequest.create(
             query = query,
             deadlineAtMillis = request.deadlineAtMillis,
             cancellation = request.cancellation,
             maxResults = maxResults,
         )
-        val outcome = runWorkspacePort { port.search(searchRequest) }
+        // A real HTTP search adapter suspends; the QuickJS callback is synchronous, so await it
+        // with the same deadline/structured-cancellation boundary as fetch.
+        val outcome = kotlinx.coroutines.runBlocking {
+            kotlinx.coroutines.withTimeout((request.deadlineAtMillis - clock.nowMillis()).coerceAtLeast(1)) {
+                port.search(searchRequest)
+            }
+        }
+        checkActive()
         return when (outcome) {
             is WorkspaceSearchOutcome.Found -> {
                 val json = WorkspaceBridgeJson.search(outcome.hits, outcome.truncated)

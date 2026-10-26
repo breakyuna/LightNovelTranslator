@@ -17,6 +17,8 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextProjectPort
 import com.breakyuna.noveltranslator.nativecore.domain.TextProjectItem
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Connects pure format adapters to the asset store. It performs no format interpretation itself:
@@ -31,7 +33,7 @@ class ProjectFormatService(
     },
 ) {
     suspend fun importAsset(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
-        path: RelativePath, bytes: ByteArray, enabled: Boolean = true): AssetMutationReceipt {
+        path: RelativePath, bytes: ByteArray, enabled: Boolean = true): AssetMutationReceipt = io {
         require(expectedRevision >= 0 && bytes.size <= MAX_INPUT_BYTES)
         val format = resolveImportFormat(path.value, bytes)
         if (format == ProjectAssetFormat.BINARY) fail(TextProjectException.Reason.INVALID_FORMAT)
@@ -53,12 +55,15 @@ class ProjectFormatService(
             AssetImportUnit(index, unit.row, unit.source, unit.translation, unit.status, unit.tag,
                 unit.nameSource, unit.nameTranslation, unit.extraField, unit.skipInternalFilter)
         }
-        return projects.importAsset(AssetImportPlan(commandId, ref, expectedRevision, path, format,
+        val receipt = projects.importAsset(AssetImportPlan(commandId, ref, expectedRevision, path, format,
             bytes, units, enabled, document.metadata))
+        // Warnings stay in the command response; they are not persisted and never change the
+        // import digest. The caller can explain e.g. a missing text layer or protected forms.
+        receipt.copy(warnings = document.warnings.take(MAX_WARNINGS).toList())
     }
 
     suspend fun exportAsset(ref: LocalProjectRef, assetId: Long, options: FormatWriteOptions,
-        destination: () -> OutputStream) {
+        destination: () -> OutputStream) = io {
         val snapshot = items.open(ref)
         val assets = snapshot.assets
         val asset = assets.firstOrNull { it.id == assetId } ?: fail(TextProjectException.Reason.UNKNOWN_PROJECT)
@@ -96,15 +101,16 @@ class ProjectFormatService(
      * checked again afterwards. A late result from a superseded revision is therefore rejected
      * instead of being returned to a dialog that now shows a different project.
      *
-     * This is blocking PDFBox work. The app's ViewModel calls it from `Dispatchers.IO`; callers
-     * must not invoke it on the main thread.
+     * This is blocking PDFBox work, so the service moves it to [Dispatchers.IO]. Callers may invoke
+     * it from the main thread; they must still treat a returned bitmap as stale when the project or
+     * asset identity has changed since the request.
      */
     suspend fun renderPdfPage(
         ref: LocalProjectRef,
         revision: Long,
         asset: ProjectAssetSummary,
         page: Int,
-    ): ByteArray {
+    ): ByteArray = io {
         if (revision < 0) fail(TextProjectException.Reason.STALE_PAGE)
         if (asset.format != ProjectAssetFormat.PDF) fail(TextProjectException.Reason.INVALID_FORMAT)
         if (asset.itemCount !in 1..PdfFormatBounds.MAX_PAGES || page !in 1..asset.itemCount) {
@@ -130,8 +136,10 @@ class ProjectFormatService(
             fail(TextProjectException.Reason.STALE_PAGE)
         }
         if (png.size !in 1..PdfPageRenderBounds.MAX_PNG_BYTES) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
-        return png
+        png
     }
+
+    private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) { block() }
 
     private suspend fun readUnits(ref: LocalProjectRef, asset: ProjectAssetSummary, revision: Long): List<FormatUnit> {
         var after = 0L
@@ -212,6 +220,7 @@ class ProjectFormatService(
         const val MAX_INPUT_BYTES = 64 * 1024 * 1024
         const val MAX_OUTPUT_BYTES = 128 * 1024 * 1024
         private const val PAGE = 100
+        private const val MAX_WARNINGS = 64
     }
 }
 

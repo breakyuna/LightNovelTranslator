@@ -142,23 +142,139 @@ class NativeRunStore(context: Context, private val projects: TextProjectPort, pr
 
     override suspend fun recent(ref: LocalProjectRef, limit: Int): List<StoredRun> = io {
         require(limit in 1..20)
+        db.runs().recent(ref.instanceId.value, ref.generation.value, ref.projectId.value, limit).map { stored(it) }
+    }
+
+    /**
+     * Settles executions that are still WAITING_APPROVAL for exactly this logical Run after a
+     * file-backed approval (workspace files) reached a terminal state. The SQL `approvalState`
+     * union cannot see file stores, so without this the previous execution would remain
+     * "waiting approval" forever and crowd the recent-run window.
+     */
+    suspend fun settleWaitingApproval(
+        ref: LocalProjectRef,
+        run: RunIdentity,
+        state: StoredRunState,
+    ): Int = io {
+        require(run.projectId == ref.projectId && run.chatId != null) { "Approval run belongs to another project" }
+        require(state != StoredRunState.RUNNING && state != StoredRunState.INTERRUPTED &&
+            state != StoredRunState.WAITING_APPROVAL) { "Invalid approval settlement" }
+        val rows = db.runs().waitingApprovals(ref.instanceId.value, ref.generation.value,
+            ref.projectId.value, run.runId.value, run.commandId.value, run.chatId.value)
+        if (rows.isEmpty()) return@io 0
+        transaction {
+            rows.forEach { row ->
+                check(db.runs().update(row.copy(state = state.name, updatedAt = now())) == 1)
+            }
+        }
+        rows.size
+    }
+
+    /**
+     * Exact logical-Run lookup. A recent-window lookup is not sufficient: queue reconciliation must
+     * observe the real journal fact even when many later executions exist.
+     */
+    override suspend fun find(ref: LocalProjectRef, run: RunIdentity): StoredRun? = io {
+        require(run.projectId == ref.projectId) { "Run belongs to another project" }
+        db.runs().findRun(ref.instanceId.value, ref.generation.value, ref.projectId.value,
+            run.runId.value, run.commandId.value, run.chatId?.value)?.let { stored(it) }
+    }
+
+    private suspend fun stored(row: NativeRunRow): StoredRun {
         val context = currentCoroutineContext()
-        db.runs().recent(ref.instanceId.value, ref.generation.value, ref.projectId.value, limit).map { row ->
-            val settled = if (row.state == "WAITING_APPROVAL") when (db.runs().approvalState(
-                row.instanceId, row.generation, row.projectId, row.chatId, row.runId)) {
-                "COMMITTED", "PARTIAL" -> row.copy(state = "SUCCEEDED")
-                "REJECTED", "CANCELLED" -> row.copy(state = "CANCELLED")
-                "CONFLICT" -> row.copy(state = "FAILED")
-                else -> row
-            } else row
-            if (settled != row) check(db.runs().update(settled.copy(updatedAt = now())) == 1)
-            StoredRun(storedHandle(row), RuntimeOwner.valueOf(row.owner), StoredRunState.valueOf(settled.state),
-                RunCheckpoint(StoredRunStage.valueOf(row.stage), row.revision, row.committedItems, row.requests, commands(row), request(row),
-                    row.requestAttemptId?.takeIf { row.owner == RuntimeOwner.TRANSLATION.name && row.stage == "REQUESTING" }?.let(::RequestAttemptId)),
-                row.needsReview, if (row.owner == RuntimeOwner.TRANSLATION.name)
-                    NativeTranslationAuditStore.totals(db, ref, storedHandle(row).run) { context.ensureActive() } else null)
+        val settled = if (row.state == "WAITING_APPROVAL") when (db.runs().approvalState(
+            row.instanceId, row.generation, row.projectId, row.chatId, row.runId)) {
+            // Item/PDF proposals use COMMITTED/PARTIAL, asset import uses APPLIED. Only a terminal
+            // state settles the run; CONSUMED/PENDING/UNKNOWN remain waiting.
+            "COMMITTED", "PARTIAL", "APPLIED" -> row.copy(state = "SUCCEEDED")
+            "REJECTED", "CANCELLED" -> row.copy(state = "CANCELLED")
+            "CONFLICT", "STALE" -> row.copy(state = "FAILED")
+            else -> row
+        } else row
+        if (settled != row) check(db.runs().update(settled.copy(updatedAt = now())) == 1)
+        return StoredRun(storedHandle(row), RuntimeOwner.valueOf(row.owner), StoredRunState.valueOf(settled.state),
+            RunCheckpoint(StoredRunStage.valueOf(row.stage), row.revision, row.committedItems, row.requests, commands(row), request(row),
+                row.requestAttemptId?.takeIf { row.owner == RuntimeOwner.TRANSLATION.name && row.stage == "REQUESTING" }?.let(::RequestAttemptId)),
+            row.needsReview, if (row.owner == RuntimeOwner.TRANSLATION.name)
+                NativeTranslationAuditStore.totals(db, ref(row), storedHandle(row).run) { context.ensureActive() } else null)
+    }
+
+    /**
+     * Read-only fixed-task decisions for exactly this logical Run. A member decision is written
+     * before its queue command by the adjudicator; after a crash this method is the only source of
+     * the original command identity. It never writes, dispatches or invents evidence.
+     */
+    suspend fun taskDecisionCommands(ref: LocalProjectRef, run: RunIdentity): List<StoredTranslationTaskCommand> = io {
+        require(run.projectId == ref.projectId && run.chatId == null) { "Task decision belongs to another project" }
+        val id = taskKey(run)
+        val sqlite = db.openHelper.readableDatabase
+        val decisions = ArrayList<Triple<Long, String, String>>()
+        sqlite.query(
+            "SELECT rowid, command, action FROM native_translation_task_decisions WHERE task=? ORDER BY rowid",
+            arrayOf<Any?>(id),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                currentCoroutineContext().ensureActive()
+                decisions.add(Triple(cursor.getLong(0), cursor.getString(1), cursor.getString(2)))
+            }
+        }
+        val result = ArrayList<StoredTranslationTaskCommand>(decisions.size)
+        for ((sequence, command, rawAction) in decisions) {
+            currentCoroutineContext().ensureActive()
+            val parsed = replayAction(rawAction) ?: continue
+            val (action, batchId) = parsed
+            try {
+                if (action.adjudication) {
+                    val members = ArrayList<Pair<ItemId, ObjectFingerprint>>()
+                    var valid = true
+                    sqlite.query(
+                        "SELECT itemId, action, fingerprint FROM native_translation_member_decisions " +
+                            "WHERE task=? AND command=? ORDER BY itemId",
+                        arrayOf<Any?>(id, command),
+                    ).use { cursor ->
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(1) != action.name) { valid = false; break }
+                            members.add(ItemId(cursor.getLong(0)) to ObjectFingerprint(cursor.getString(2)))
+                        }
+                    }
+                    if (!valid || members.isEmpty()) continue
+                    result.add(StoredTranslationTaskCommand(CommandId(command), action, batchId,
+                        members.map { it.first }, members.map { it.second }, sequence))
+                } else {
+                    result.add(StoredTranslationTaskCommand(CommandId(command), action, null,
+                        emptyList(), emptyList(), sequence))
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: IllegalArgumentException) {
+                // A corrupt/foreign decision row is never treated as replay authority.
+            }
+        }
+        result
+    }
+
+    private fun replayAction(raw: String): Pair<TranslationTaskCommandAction, TranslationTaskFailureBatchId?>? {
+        val separator = raw.indexOf(':')
+        val name = if (separator < 0) raw else raw.substring(0, separator)
+        val action = TranslationTaskCommandAction.entries.firstOrNull { it.name == name } ?: return null
+        val batch = if (separator < 0) null else raw.substring(separator + 1)
+        return try {
+            when {
+                action.adjudication -> {
+                    if (batch.isNullOrBlank()) null
+                    else action to TranslationTaskFailureBatchId(batch)
+                }
+                action == TranslationTaskCommandAction.TERMINATE_TASK && batch == null -> action to null
+                else -> null
+            }
+        } catch (_: IllegalArgumentException) {
+            null
         }
     }
+
+    private fun taskKey(run: RunIdentity): String =
+        TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(
+            JsonArray(listOf(run.projectId.value, run.runId.value, run.commandId.value).map(::JsonPrimitive)).toString()))
 
     private fun commands(row: NativeRunRow): List<CommandId> {
         require(row.pendingCommands.length <= 8192)

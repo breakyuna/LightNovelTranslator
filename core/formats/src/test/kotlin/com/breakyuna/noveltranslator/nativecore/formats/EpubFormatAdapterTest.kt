@@ -514,6 +514,182 @@ class EpubFormatAdapterTest {
         assertEquals(listOf("Hello", "World", "Contents", "Contents"), document.units.map { it.source })
     }
 
+    @Test fun nonLinearSpineItemsAreSkippedWithWarningInEpub2AndEpub3() {
+        for (version in listOf("3.0", "2.0")) {
+            val contentOpf = opf(metadata = "<dc:title>Title</dc:title>", version = version)
+                .replace(
+                    "<item id=\"img\"",
+                    "<item id=\"aux\" href=\"text/aux.xhtml\"" +
+                        " media-type=\"application/xhtml+xml\"/><item id=\"img\"",
+                )
+                .replace(
+                    "<itemref idref=\"chap\"/>",
+                    "<itemref idref=\"chap\"/><itemref idref=\"aux\" linear=\"no\"/>",
+                )
+            val original = epub(
+                contentOpf = contentOpf,
+                entries = listOf(
+                    "OEBPS/text/aux.xhtml" to chapterHtml("<p>Auxiliary</p>").toByteArray(),
+                ),
+            )
+            val document = adapter.read(original, path)
+            assertEquals(listOf("Hello", "World", "Contents", "Contents", "Title"),
+                document.units.map { it.source })
+            assertTrue(document.units.none { it.source == "Auxiliary" })
+            val warning = document.warnings.single {
+                it.code == "epub.spine_non_linear" && it.path == "OEBPS/text/aux.xhtml"
+            }
+            assertTrue(warning.message.contains("linear=\"no\""))
+
+            val output = adapter.write(original,
+                translated(document, mapOf("Hello" to "Bonjour")), FormatWriteOptions())
+            val input = FormatArchiveFixtures.unzip(original)
+            val result = FormatArchiveFixtures.unzip(output)
+            assertTrue(FormatArchiveFixtures.text(result.getValue("OEBPS/text/ch1.xhtml"))
+                .contains("Bonjour"))
+            assertArrayEquals(input.getValue("OEBPS/text/aux.xhtml"),
+                result.getValue("OEBPS/text/aux.xhtml"))
+
+            val forged = FormatUnit(0, "Auxiliary", "Auxiliaire", TextItemStatus.PROCESSED,
+                "OEBPS/text/aux.xhtml", extraField = "{}")
+            assertArrayEquals(original, adapter.write(original, listOf(forged), FormatWriteOptions()))
+
+            // A project imported before the linear-only read rule can still hold a real,
+            // digest-bound unit for this auxiliary document. Export must apply it instead of
+            // silently dropping the translation.
+            val aux = FormatArchiveFixtures.text(input.getValue("OEBPS/text/aux.xhtml"))
+            val start = aux.indexOf("Auxiliary")
+            assertTrue(start >= 0)
+            val raw = aux.substring(start, start + "Auxiliary".length)
+            val legacy = FormatUnit(0, "Auxiliary", "Auxiliaire", TextItemStatus.PROCESSED,
+                "OEBPS/text/aux.xhtml",
+                extraField = buildJsonObject {
+                    put("v", 1)
+                    put("start", start)
+                    put("end", start + raw.length)
+                    put("digest", containerSha256Hex(raw))
+                }.toString())
+            val legacyOutput = adapter.write(original, listOf(legacy), FormatWriteOptions())
+            assertTrue(FormatArchiveFixtures.text(
+                FormatArchiveFixtures.unzip(legacyOutput).getValue("OEBPS/text/aux.xhtml"))
+                .contains("Auxiliaire"))
+        }
+    }
+
+    @Test fun fixedLayoutMetadataProducesWarningWithoutRejectingTheBook() {
+        val prePaginated = opf(metadata =
+            "<dc:title>Title</dc:title>" +
+                "<meta property=\"rendition:layout\">pre-paginated</meta>")
+        val document = adapter.read(epub(contentOpf = prePaginated), path)
+        assertEquals(listOf("Hello", "World", "Contents", "Contents", "Title"),
+            document.units.map { it.source })
+        val warning = document.warnings.single { it.code == "epub.fixed_layout" }
+        assertEquals("OEBPS/content.opf", warning.path)
+        assertTrue(warning.message.contains("fixed-layout"))
+
+        val apple = opf(metadata =
+            "<dc:title>Title</dc:title><meta name=\"fixed-layout\" content=\"true\"/>")
+        assertTrue(adapter.read(epub(contentOpf = apple), path).warnings
+            .any { it.code == "epub.fixed_layout" })
+
+        val manifestFixed = opf().replace(
+            "<item id=\"chap\" href=\"text/ch1.xhtml\" media-type=\"application/xhtml+xml\"/>",
+            "<item id=\"chap\" href=\"text/ch1.xhtml\" media-type=\"application/xhtml+xml\"" +
+                " properties=\"fixed-layout\"/>",
+        )
+        assertTrue(adapter.read(epub(contentOpf = manifestFixed), path).warnings
+            .any { it.code == "epub.fixed_layout" })
+
+        val reflowable = opf(metadata =
+            "<dc:title>Title</dc:title>" +
+                "<meta property=\"rendition:layout\">reflowable</meta>")
+        assertTrue(adapter.read(epub(contentOpf = reflowable), path).warnings
+            .none { it.code == "epub.fixed_layout" })
+    }
+
+    @Test fun publisherRightsIdentifierAndSeriesRoundTripInExactSlots() {
+        val metadata =
+            "<dc:title>Title</dc:title>" +
+                "<dc:publisher>Pub &amp; Co</dc:publisher>" +
+                "<dc:date>2024-01-02</dc:date>" +
+                "<dc:language>ja</dc:language>" +
+                "<dc:rights>All &amp; Rights</dc:rights>" +
+                "<dc:identifier id=\"bookid\">urn:isbn:123</dc:identifier>" +
+                "<meta name=\"calibre:series\" content=\"The &amp; Series\"/>"
+        val original = epub(contentOpf = opf(metadata = metadata))
+        val document = adapter.read(original, path)
+        val metadataUnits = document.units.filter { it.tag == "OEBPS/content.opf" }
+        // Language, date and identifier are identity metadata: located for fidelity but never
+        // exposed as translatable text, exactly like dc:creator.
+        assertEquals(listOf("Title", "Pub & Co", "All & Rights", "The & Series"),
+            metadataUnits.map { it.source })
+        assertEquals(listOf("opf_title", "opf_publisher", "opf_rights", "opf_series"),
+            metadataUnits.map { extraKind(it) })
+        assertEquals("attr", parseJsonObject(metadataUnits.last().extraField)
+            ?.let { extraString(it, "slot") })
+
+        val output = adapter.write(original, translated(document, mapOf(
+            "Pub & Co" to "Éditeur & Cie",
+            "All & Rights" to "Tous & Droits",
+            "The & Series" to "La & Série",
+        )), FormatWriteOptions())
+        val resultOpf = FormatArchiveFixtures.text(
+            FormatArchiveFixtures.unzip(output).getValue("OEBPS/content.opf"))
+        assertTrue(resultOpf.contains("<dc:publisher>Éditeur &amp; Cie</dc:publisher>"))
+        assertTrue(resultOpf.contains("<dc:date>2024-01-02</dc:date>"))
+        assertTrue(resultOpf.contains("<dc:language>ja</dc:language>"))
+        assertTrue(resultOpf.contains("<dc:rights>Tous &amp; Droits</dc:rights>"))
+        assertTrue(resultOpf.contains(
+            "<dc:identifier id=\"bookid\">urn:isbn:123</dc:identifier>"))
+        assertTrue(resultOpf.contains(
+            "<meta name=\"calibre:series\" content=\"La &amp; Série\"/>"))
+
+        val reread = adapter.read(output, path)
+        assertEquals(listOf("Title", "Éditeur & Cie", "Tous & Droits", "La & Série"),
+            reread.units.filter { it.tag == "OEBPS/content.opf" }.map { it.source })
+        assertArrayEquals(output, adapter.write(output, reread.units, FormatWriteOptions()))
+    }
+
+    @Test fun epub3BelongsToCollectionIsExposedAsASeriesSlot() {
+        val contentOpf = opf(metadata =
+            "<dc:title>Title</dc:title>" +
+                "<meta property=\"belongs-to-collection\" id=\"c1\">Cycle &amp; Co</meta>")
+        val original = epub(contentOpf = contentOpf)
+        val document = adapter.read(original, path)
+        val series = document.units.single { extraKind(it) == "opf_series" }
+        assertEquals("Cycle & Co", series.source)
+        val output = adapter.write(original,
+            translated(document, mapOf("Cycle & Co" to "Cycle & Cie")), FormatWriteOptions())
+        val resultOpf = FormatArchiveFixtures.text(
+            FormatArchiveFixtures.unzip(output).getValue("OEBPS/content.opf"))
+        assertTrue(resultOpf.contains(
+            "<meta property=\"belongs-to-collection\" id=\"c1\">Cycle &amp; Cie</meta>"))
+    }
+
+    @Test fun commonHtmlEntitiesDecodeAndUnknownNamedEntitiesAreSkippedWithWarning() {
+        val original = epub(chapter = chapterHtml(
+            "<p>&ldquo;Tom &amp; Jerry&rdquo; &mdash; &hellip; &copy; &reg; &trade;</p>" +
+                "<p>&lsquo;A&rsquo; &ndash; B&nbsp;C &eacute; &frac12; &rarr;</p>" +
+                "<p>Drop &bogus; this</p>",
+        ))
+        val document = adapter.read(original, path)
+        val chapterUnits = document.units.filter { it.tag == "OEBPS/text/ch1.xhtml" }
+        assertEquals(listOf("“Tom & Jerry” — … © ® ™",
+            "‘A’ – B\u00a0C é ½ →"), chapterUnits.map { it.source })
+        assertTrue(chapterUnits.none { it.source.contains("Drop") })
+        assertEquals(1, document.warnings.count {
+            it.code == "epub.unknown_entity" && it.path == "OEBPS/text/ch1.xhtml"
+        })
+
+        val output = adapter.write(original, translated(document, mapOf(
+            "“Tom & Jerry” — … © ® ™" to "Translated",
+        )), FormatWriteOptions())
+        val chapter = FormatArchiveFixtures.text(
+            FormatArchiveFixtures.unzip(output).getValue("OEBPS/text/ch1.xhtml"))
+        assertTrue(chapter.contains("<p>Translated</p>"))
+        assertTrue(chapter.contains("<p>Drop &bogus; this</p>"))
+    }
+
     @Test fun epub3NavLabelsAndNestedListsAreSplicedWithoutTouchingMarkup() {
         val nav = nestedNav()
         val original = epub(chapter = chapterHtml("<p>Hello</p>"), navDocument = nav)
@@ -605,6 +781,8 @@ class EpubFormatAdapterTest {
         val ncxText = FormatArchiveFixtures.text(
             FormatArchiveFixtures.unzip(output).getValue("OEBPS/toc.ncx"))
         assertTrue(ncxText.contains("<docTitle><text>Livre &amp; Titre</text></docTitle>"))
+        // Author identity is never a navigation label; only docTitle/navLabel text is rewritten.
+        assertTrue(ncxText.contains("<docAuthor><text>Author &amp; Name</text></docAuthor>"))
         assertTrue(ncxText.contains("<navPoint id=\"n1\" playOrder=\"1\">"))
         assertTrue(ncxText.contains("<navPoint id=\"n1-1\" playOrder=\"2\">"))
         assertTrue(ncxText.contains("<content src=\"text/ch1.xhtml\"/>"))
@@ -790,6 +968,7 @@ class EpubFormatAdapterTest {
             "<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\">" +
             "<head><meta name=\"dtb:uid\" content=\"urn:uuid:test\"/></head>" +
             "<docTitle><text>Book &amp; Title</text></docTitle>" +
+            "<docAuthor><text>Author &amp; Name</text></docAuthor>" +
             "<navMap>" +
             "<navPoint id=\"n1\" playOrder=\"1\"><navLabel><text>Chapter & One</text></navLabel>" +
             "<content src=\"text/ch1.xhtml\"/>" +
@@ -847,9 +1026,13 @@ class EpubFormatAdapterTest {
             "<rootfile full-path=\"$opfPath\" media-type=\"application/oebps-package+xml\"/>" +
             "</rootfiles></container>"
 
-    private fun opf(title: String = "Title", metadata: String? = null): String =
+    private fun opf(
+        title: String = "Title",
+        metadata: String? = null,
+        version: String = "3.0",
+    ): String =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>" +
-            "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\">" +
+            "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"$version\">" +
             "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">" +
             (metadata ?: "<dc:title>$title</dc:title>") + "</metadata>" +
             "<manifest>" +

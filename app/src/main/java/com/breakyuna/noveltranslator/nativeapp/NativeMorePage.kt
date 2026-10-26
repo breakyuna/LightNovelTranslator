@@ -214,7 +214,11 @@ internal fun NativeMorePage(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(stringResource(R.string.native_more_formats), style = MaterialTheme.typography.titleMedium)
                     Text(stringResource(R.string.native_more_formats_description), style = MaterialTheme.typography.bodySmall)
-                    Text(state.supportedFormats.sortedBy { it.name }.joinToString(", ") { it.name },
+                    val formatLabels = state.supportedFormats.filter { isNativeFormatActive(it) }
+                        .sortedBy { it.name }
+                        .map { stringResource(nativeFormatLabelRes(it)) }
+                    Text(formatLabels.joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.native_format_frozen_notice),
                         style = MaterialTheme.typography.bodySmall)
                 }
             }

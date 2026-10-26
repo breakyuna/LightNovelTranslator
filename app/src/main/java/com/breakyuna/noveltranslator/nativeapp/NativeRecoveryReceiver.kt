@@ -11,9 +11,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Recovery-only boot/replace hook. It never dispatches a paid request and never resumes a
- * paused queue: it asks the durable stores to classify abandoned RUNNING facts so the next
- * explicit user action sees an accurate PAUSED/NEEDS_REVIEW/CANCELLED state.
+ * Boot/replace recovery hook. It first classifies abandoned RUNNING facts, then lets the durable
+ * queue scheduler continue explicitly QUEUED tasks. Recovery never resumes a PAUSED/NEEDS_REVIEW
+ * task and never retries an uncertain request; foreground-service start failures are contained by
+ * the scheduler and leave the queue unchanged for the next app open.
  */
 class NativeRecoveryReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -26,7 +27,12 @@ class NativeRecoveryReceiver : BroadcastReceiver() {
             try {
                 withTimeoutOrNull(30_000) {
                     runCatching { app.nativeGraph.runStore.recoverInterrupted() }
-                    runCatching { app.nativeGraph.translationQueueScheduler.recover() }
+                    runCatching { app.nativeGraph.translationQueueScheduler.recoverExclusive() }
+                    // Only explicitly admitted QUEUED tasks can be claimed. `kick` contains its
+                    // own foreground-service failure and never retries PAUSED/uncertain work.
+                    // Joining keeps the broadcast alive while the first drain pass runs; the
+                    // timeout only stops waiting and never cancels the application-scope job.
+                    app.nativeGraph.translationQueueScheduler.kick()?.join()
                 }
             } finally {
                 pending.finish()

@@ -312,6 +312,160 @@ class TranslationQueueSchedulerTest {
             completed.decisions.completed)
     }
 
+    @Test
+    fun settledTaskIsCompletedFromPersistedEvidenceBeforeRecoveryWouldFreezeReview() = runBlocking {
+        val committing = runningFixture("run-settled-committing")
+        committing.outcomes.launched.add(committing.task.run.runId.value)
+        committing.outcomes.evidence = complete(committed = 1, target = 1).copy(stage = "COMMITTING")
+        committing.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMMITTING", 1, 1, 0, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.INTERRUPTED, StoredRunStage.COMMITTED, false),
+            )
+        }
+        assertTrue(committing.scheduler.recover().isEmpty())
+        assertEquals(TranslationTaskQueueState.COMPLETED,
+            committing.store.queues.getValue(projectA).snapshot.task(committing.task.queueIdentity())!!.state)
+        assertEquals(1, committing.decisions.completed.size)
+        assertTrue(committing.launcher.calls.isEmpty())
+
+        val completed = runningFixture("run-settled-complete")
+        completed.outcomes.launched.add(completed.task.run.runId.value)
+        completed.outcomes.evidence = complete(committed = 1, target = 1).copy(stage = "COMPLETE")
+        completed.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMPLETE", 1, 1, 0, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.SUCCEEDED, StoredRunStage.COMMITTED, false),
+            )
+        }
+        assertTrue(completed.scheduler.recover().isEmpty())
+        assertEquals(TranslationTaskQueueState.COMPLETED,
+            completed.store.queues.getValue(projectA).snapshot.task(completed.task.queueIdentity())!!.state)
+        assertTrue(completed.decisions.completed.isEmpty())
+        assertTrue(completed.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun insufficientSettledEvidenceStaysInReviewAndNeverLaunches() = runBlocking {
+        val fixture = runningFixture("run-unproven-settled")
+        fixture.outcomes.launched.add(fixture.task.run.runId.value)
+        fixture.outcomes.evidence = complete(committed = 1, target = 1)
+            .copy(stage = "COMMITTING", usage = UsageSource.UNKNOWN)
+        fixture.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMMITTING", 1, 1, 0, 0, UsageSource.UNKNOWN),
+                run = TranslationQueueRunEvidence(StoredRunState.INTERRUPTED, StoredRunStage.COMMITTED, false),
+            )
+        }
+
+        assertTrue(fixture.scheduler.recover().single().verdict ==
+            TranslationQueueRecoveryVerdict.NEEDS_REVIEW)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW,
+            fixture.store.queues.getValue(projectA).snapshot.task(fixture.task.queueIdentity())!!.state)
+        assertTrue(fixture.decisions.completed.isEmpty())
+        assertTrue(fixture.launcher.calls.isEmpty())
+
+        val missingRun = runningFixture("run-missing-journal")
+        missingRun.outcomes.launched.add(missingRun.task.run.runId.value)
+        missingRun.outcomes.evidence = complete(committed = 1, target = 1).copy(stage = "COMPLETE")
+        missingRun.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMPLETE", 1, 1, 0, 0, UsageSource.ACTUAL),
+                run = null,
+            )
+        }
+        assertTrue(missingRun.scheduler.recover().single().verdict ==
+            TranslationQueueRecoveryVerdict.NEEDS_REVIEW)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW,
+            missingRun.store.queues.getValue(projectA).snapshot.task(missingRun.task.queueIdentity())!!.state)
+        assertTrue(missingRun.decisions.completed.isEmpty())
+        assertTrue(missingRun.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun explicitCancelledRunOutranksCommittingAndKeepsGenuineUncertaintyInReview() = runBlocking {
+        val cancelled = runningFixture("run-cancelled-commit")
+        cancelled.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMMITTING", 1, 0, 1, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.CANCELLED, StoredRunStage.COMMITTING, false),
+            )
+        }
+        assertTrue(cancelled.scheduler.recover().single().verdict ==
+            TranslationQueueRecoveryVerdict.CANCELLED)
+        assertEquals(TranslationTaskQueueState.CANCELLED,
+            cancelled.store.queues.getValue(projectA).snapshot.task(cancelled.task.queueIdentity())!!.state)
+
+        val uncertain = runningFixture("run-cancelled-uncertain")
+        uncertain.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMMITTING", 1, 0, 1, 0, UsageSource.UNKNOWN),
+                run = TranslationQueueRunEvidence(StoredRunState.CANCELLED, StoredRunStage.COMMITTING, true),
+            )
+        }
+        assertTrue(uncertain.scheduler.recover().single().verdict ==
+            TranslationQueueRecoveryVerdict.NEEDS_REVIEW)
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW,
+            uncertain.store.queues.getValue(projectA).snapshot.task(uncertain.task.queueIdentity())!!.state)
+    }
+
+    @Test
+    fun persistedDecisionIsReplayedExactlyOnceAndChangedEvidenceIsNotReplayed() = runBlocking {
+        val fixture = Fixture()
+        val task = spec(projectA, "run-persisted-decision")
+        fixture.coordinator.enqueue(task, task.run.commandId)
+        requireNotNull(fixture.coordinator.nextRunnable())
+        val batch = TranslationTaskFailureBatch(
+            TranslationTaskFailureBatchId("batch-replay"),
+            listOf(member(1)),
+        )
+        fixture.coordinator.recordFailureBatch(task.queueIdentity(), batch)
+        fixture.decisionJournal.decisions.add(TranslationQueueTaskDecision(
+            CommandId("retry-persisted"), TranslationTaskCommandAction.RETRY_MEMBERS, batch.id,
+            listOf(ItemId(1)), listOf(ObjectFingerprint("a".repeat(64))), 1,
+        ))
+
+        assertEquals(1, fixture.scheduler.reconcileDecisions())
+        var saved = fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!
+        assertEquals(TranslationTaskQueueState.QUEUED, saved.state)
+        assertEquals(listOf("retry-persisted"), saved.commands.map { it.commandId.value })
+
+        assertEquals(0, fixture.scheduler.reconcileDecisions())
+        saved = fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!
+        assertEquals(1, saved.commands.size)
+        assertTrue(fixture.launcher.calls.isEmpty())
+
+        val changed = Fixture()
+        val changedTask = spec(projectA, "run-changed-decision")
+        changed.coordinator.enqueue(changedTask, changedTask.run.commandId)
+        requireNotNull(changed.coordinator.nextRunnable())
+        changed.coordinator.recordFailureBatch(changedTask.queueIdentity(), batch)
+        changed.decisionJournal.decisions.add(TranslationQueueTaskDecision(
+            CommandId("retry-changed"), TranslationTaskCommandAction.RETRY_MEMBERS, batch.id,
+            listOf(ItemId(1)), listOf(ObjectFingerprint("b".repeat(64))), 1,
+        ))
+        assertEquals(0, changed.scheduler.reconcileDecisions())
+        val unchanged = changed.store.queues.getValue(projectA).snapshot.task(changedTask.queueIdentity())!!
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, unchanged.state)
+        assertTrue(unchanged.commands.isEmpty())
+    }
+
+    @Test
+    fun queuedTaskWithPersistedTerminateIsCancelledBeforeDispatch() = runBlocking {
+        val fixture = Fixture()
+        val task = spec(projectA, "run-queued-terminate")
+        fixture.coordinator.enqueue(task, task.run.commandId)
+        fixture.decisionJournal.decisions.add(TranslationQueueTaskDecision(
+            CommandId("terminate-persisted"), TranslationTaskCommandAction.TERMINATE_TASK,
+            null, emptyList(), emptyList(), 1,
+        ))
+
+        assertEquals(1, fixture.scheduler.reconcileDecisions())
+        val saved = fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!
+        assertEquals(TranslationTaskQueueState.CANCELLED, saved.state)
+        assertTrue(fixture.launcher.calls.isEmpty())
+    }
+
     private fun completionCommandForTest(task: TranslationTaskSpec): CommandId {
         val material = buildString {
             append(task.run.commandId.value); append('\u0000')
@@ -546,6 +700,8 @@ class TranslationQueueSchedulerTest {
         val store get() = fixture.store
         val launcher get() = fixture.launcher
         val recovery get() = fixture.recovery
+        val outcomes get() = fixture.outcomes
+        val decisions get() = fixture.decisions
         val recoveredJournals get() = fixture.recoveredJournals
     }
 
@@ -560,6 +716,7 @@ class TranslationQueueSchedulerTest {
         val controls = FakeControls()
         val failures = FakeFailures()
         val decisions = FakeDecisions()
+        val decisionJournal = FakeDecisionJournal()
         var recoveredJournals = 0
         val scheduler = TranslationQueueScheduler(
             coordinator = coordinator,
@@ -567,6 +724,7 @@ class TranslationQueueSchedulerTest {
             outcomes = outcomes,
             revisions = revisions,
             recovery = recovery,
+            decisionJournal = decisionJournal,
             control = controls,
             isBusy = { busy },
             recoverJournal = { recoveredJournals++ },
@@ -686,6 +844,12 @@ class TranslationQueueSchedulerTest {
             { TranslationQueueRecoveryEvidence(null, null) }
         override suspend fun evidence(dispatch: TranslationQueueDispatch): TranslationQueueRecoveryEvidence =
             provider(dispatch)
+    }
+
+    private class FakeDecisionJournal : TranslationQueueDecisionJournalPort {
+        val decisions = mutableListOf<TranslationQueueTaskDecision>()
+        override suspend fun decisions(dispatch: TranslationQueueDispatch): List<TranslationQueueTaskDecision> =
+            decisions
     }
 
     private class FakeControls : TranslationQueueControlPort {

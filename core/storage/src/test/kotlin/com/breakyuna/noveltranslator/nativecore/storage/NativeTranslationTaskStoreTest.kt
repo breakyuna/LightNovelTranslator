@@ -79,6 +79,41 @@ class NativeTranslationTaskStoreTest {
         } finally { audit.close() }
     }
 
+    @Test fun runStoreReadsPersistedTaskDecisionCommandForQueueReplay() = runBlocking {
+        val original = spec()
+        val lease = begin(original); tasks.open(lease, original)
+        tasks.failed(lease)
+        runtime.finishRun(lease)
+        val review = tasks.review(original.ref, original.run)
+        tasks.terminate(review, CommandId("terminate-replay"))
+        val runs = NativeRunStore(context, projects, runtime)
+        try {
+            val command = runs.taskDecisionCommands(original.ref, original.run)
+                .single { it.command.value == "terminate-replay" }
+            assertEquals(TranslationTaskCommandAction.TERMINATE_TASK, command.action)
+            assertNull(command.batchId)
+            assertTrue(command.memberIds.isEmpty())
+        } finally { runs.close() }
+    }
+
+    @Test fun runStoreReadsPersistedMemberDecisionForQueueReplay() = runBlocking {
+        val original = spec()
+        val (_, item) = failSingleTarget(original)
+        val evidence = tasks.failures(original.ref, original.run, 0L)
+        val member = evidence.members.single()
+        tasks.recordFailureDecision(evidence, TranslationTaskFailureBatchId("batch-read"),
+            TranslationTaskCommandAction.SKIP_MEMBERS, listOf(member), CommandId("skip-read"))
+        val runs = NativeRunStore(context, projects, runtime)
+        try {
+            val commands = runs.taskDecisionCommands(original.ref, original.run)
+            val command = commands.single { it.command.value == "skip-read" }
+            assertEquals(TranslationTaskCommandAction.SKIP_MEMBERS, command.action)
+            assertEquals("batch-read", command.batchId!!.value)
+            assertEquals(listOf(item.id), command.memberIds)
+            assertEquals(listOf(member.fingerprint), command.memberFingerprints)
+        } finally { runs.close() }
+    }
+
     @Test fun staleOrForgedReviewCannotTerminateAndActiveTaskRejectsReview() = runBlocking {
         val original = spec()
         val lease = begin(original); tasks.open(lease, original)

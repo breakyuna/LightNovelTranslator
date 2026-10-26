@@ -988,6 +988,45 @@ class TranslationTaskQueue private constructor(
         return TranslationQueueResult.Applied(replace(completed), completed)
     }
 
+    /**
+     * Finalizes a review/failed task only when the execution left no failure batch and every
+     * completion fact is proven. This is for the crash window where the fixed task and Run
+     * journal are already settled but the queue outcome was never written; tasks with a failure
+     * batch still require explicit member adjudication.
+     */
+    fun completeAfterReview(
+        identity: TranslationTaskQueueIdentity,
+        facts: TranslationTaskCompletionFacts,
+    ): TranslationQueueResult {
+        val current = task(identity) ?: return missing(identity)
+        if (current.state == TranslationTaskQueueState.COMPLETED ||
+            current.state == TranslationTaskQueueState.COMPLETED_WITH_ERRORS
+        ) return complete(identity, facts)
+        if (current.state != TranslationTaskQueueState.NEEDS_REVIEW &&
+            current.state != TranslationTaskQueueState.FAILED
+        ) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INVALID_TRANSITION)
+        }
+        if (current.batches.isNotEmpty()) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.INCOMPLETE_FAILURE_DECISIONS)
+        }
+        val proven = facts.targetItems > 0 &&
+            facts.committedItems.toLong() + facts.skippedItems == facts.targetItems.toLong() &&
+            facts.receiptedItems == facts.committedItems && facts.unreceiptedDispatches == 0 &&
+            facts.usage != UsageSource.UNKNOWN &&
+            facts.skippedItems == current.skippedItemIds.size
+        if (!proven) {
+            return TranslationQueueResult.Rejected(this, TranslationQueueRejection.COMPLETION_NOT_PROVEN)
+        }
+        val terminalState = if (facts.skippedItems == 0) {
+            TranslationTaskQueueState.COMPLETED
+        } else {
+            TranslationTaskQueueState.COMPLETED_WITH_ERRORS
+        }
+        val completed = current.with(state = terminalState)
+        return TranslationQueueResult.Applied(replace(completed), completed)
+    }
+
     private fun executionStop(
         identity: TranslationTaskQueueIdentity,
         to: TranslationTaskQueueState,

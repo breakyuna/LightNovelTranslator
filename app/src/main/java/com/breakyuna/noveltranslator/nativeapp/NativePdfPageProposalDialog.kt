@@ -41,8 +41,14 @@ internal fun NativePdfPageProposalDialog(view: PdfPageProposalSummary,
                     modifier = Modifier.testTag("native-pdf-proposal-state"))
                 Text(stringResource(R.string.native_pdf_proposal_asset, view.assetId, view.pageCount),
                     style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.native_pdf_proposal_revision, view.revision),
+                    style = MaterialTheme.typography.bodySmall)
                 Text(stringResource(if (view.policy == ConflictPolicy.REJECT_BATCH) R.string.native_pdf_proposal_reject_batch
                     else R.string.native_pdf_proposal_independent), style = MaterialTheme.typography.bodySmall)
+                // The proposal stores page decisions only. Never imply that source/translation text
+                // or a rendered layout has been reviewed here.
+                Text(stringResource(R.string.native_pdf_proposal_mode_only),
+                    style = MaterialTheme.typography.bodySmall)
                 if (pending || receipt != null) Text(stringResource(
                     if (pending) R.string.native_pdf_proposal_selection else R.string.native_pdf_proposal_saved_count,
                     selected.size, view.count)) else Text(stringResource(R.string.native_pdf_proposal_total, view.count))
@@ -64,7 +70,7 @@ internal fun NativePdfPageProposalDialog(view: PdfPageProposalSummary,
                                 selected = if (checked) selected + member.page else selected - member.page
                             }, Modifier.testTag("native-pdf-proposal-select-${member.page}"))
                             Column(Modifier.weight(1f).padding(8.dp)) {
-                                Text(stringResource(R.string.native_pdf_page_number, member.page))
+                                Text(stringResource(R.string.native_pdf_proposal_page_of, member.page, view.pageCount))
                                 Text(stringResource(pdfPageModeLabel(member.before)) + " → " +
                                     stringResource(pdfPageModeLabel(member.after)), style = MaterialTheme.typography.bodySmall)
                                 val reason = receipt?.rejected?.get(member.page)

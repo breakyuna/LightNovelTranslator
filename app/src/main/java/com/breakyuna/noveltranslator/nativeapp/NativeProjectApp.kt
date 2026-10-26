@@ -19,10 +19,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -82,6 +84,13 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     var reviewedPolicyProposal by remember(state.project?.ref, state.agentChatId) { mutableStateOf<PolicyApprovalSummary?>(null) }
     var reviewedPdfPageProposal by remember(state.project?.ref, state.agentChatId) { mutableStateOf<PdfPageProposalSummary?>(null) }
     var reviewedAssetImportProposal by remember(state.project?.ref, state.agentChatId) { mutableStateOf<AssetImportProposalSummary?>(null) }
+    var reviewedWorkspaceChange by remember(state.project?.ref, state.agentChatId) { mutableStateOf<WorkspaceChangeProposalSummary?>(null) }
+    // The wide rules page keeps unapplied fields in local state; block navigation until it closes.
+    var ruleEditorOpen by remember(state.project?.ref) { mutableStateOf(false) }
+    reviewedWorkspaceChange?.let { proposal -> NativeWorkspaceChangeDialog(proposal,
+        { model.allowWorkspaceChange(); reviewedWorkspaceChange = null },
+        { model.rejectWorkspaceChange(); reviewedWorkspaceChange = null },
+        { reviewedWorkspaceChange = null }) }
     reviewedAssetImportProposal?.let { proposal -> NativeAssetImportProposalDialog(proposal,
         model::assetImportProposalReceipt, model::acceptAssetImportProposal, model::rejectAssetImportProposal,
         { reviewedAssetImportProposal = null }) }
@@ -130,6 +139,12 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             if (filename != null) saveUsage.launch(filename)
             else usageVisible = false // Reveal the rejection message outside the modal dialog.
         })
+    var rgssAssetId by rememberSaveable(state.project?.ref?.instanceId?.value,
+        state.project?.ref?.generation?.value) { mutableStateOf<Long?>(null) }
+    val rgssProject = state.project
+    val rgssAsset = rgssAssetId?.let { id -> rgssProject?.assets?.firstOrNull { it.id == id } }
+    if (rgssProject != null && rgssAsset != null) NativeRgssInventoryDialog(rgssProject.ref, rgssAsset,
+        model::rgssInventory, { rgssAssetId = null })
     val context = LocalContext.current
     val activity = context.findActivity()
     var notificationsGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 ||
@@ -171,7 +186,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     BackHandler(enabled = state.busy || state.project != null || state.editor != null || state.page == NativePage.SETTINGS || state.page == NativePage.MODELS) { back() }
     NativeTheme(state.themeMode) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val rail = maxWidth >= 600.dp && state.project != null
+            val rail = maxWidth >= NativeRailBreakpoint && state.project != null
+            val wide = maxWidth >= NativeTwoPaneBreakpoint && state.project != null
             Scaffold(
                 snackbarHost = { SnackbarHost(snackbar) },
                 topBar = { TopAppBar(
@@ -184,7 +200,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
                         state.project?.let { Text(it.assetPath.value, style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) }
                     } },
-                    navigationIcon = { if (state.project != null) IconButton(onClick = { home() }, enabled = !state.busy && state.editor == null) {
+                    navigationIcon = { if (state.project != null) IconButton(onClick = { home() }, enabled = !state.busy && state.editor == null && !ruleEditorOpen) {
                         Icon(Icons.Default.Home, stringResource(R.string.native_projects))
                     } },
                     actions = {
@@ -203,20 +219,20 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                             Text(stringResource(R.string.native_queue_title))
                         }
                         TextButton(onClick = { usageVisible = true }) { Text(stringResource(R.string.native_ledger_title)) }
-                        IconButton(onClick = model::refresh, enabled = !state.busy && state.editor == null) {
+                        IconButton(onClick = model::refresh, enabled = !state.busy && state.editor == null && !ruleEditorOpen) {
                         Icon(Icons.Default.Refresh, stringResource(R.string.native_refresh))
                     } },
                 ) },
                 bottomBar = { if (state.project != null && !rail) NavigationBar {
                     NativeNavigationPages.forEach { page -> NavigationBarItem(
-                        selected = state.page == page || (page == NativePage.MORE && (state.page == NativePage.RULES || state.page == NativePage.SETTINGS)), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
+                        selected = state.page == page || (page == NativePage.MORE && (state.page == NativePage.RULES || state.page == NativePage.SETTINGS)), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null && !ruleEditorOpen,
                         icon = { Icon(page.icon(), contentDescription = null) }, label = { Text(stringResource(page.label())) },
                     ) }
                 } },
             ) { padding ->
                 Row(Modifier.padding(padding).fillMaxSize()) {
                     if (rail) NavigationRail { NativeNavigationPages.forEach { page -> NavigationRailItem(
-                        selected = state.page == page || (page == NativePage.MORE && (state.page == NativePage.RULES || state.page == NativePage.SETTINGS)), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null,
+                        selected = state.page == page || (page == NativePage.MORE && (state.page == NativePage.RULES || state.page == NativePage.SETTINGS)), onClick = { model.selectPage(page) }, enabled = (!state.busy || state.foregroundExecutionActive) && state.editor == null && state.manualBatch == null && !ruleEditorOpen,
                         icon = { Icon(page.icon(), null) }, label = { Text(stringResource(page.label())) },
                     ) } }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -286,10 +302,12 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     reviewPolicyProposal = { reviewedPolicyProposal = it },
                                     reviewPdfPageProposal = { reviewedPdfPageProposal = it },
                                     reviewAssetImportProposal = { reviewedAssetImportProposal = it },
+                                    reviewWorkspaceChange = { reviewedWorkspaceChange = it },
                                     workspace = model.workspaceActions,
                                     saveWorkspaceArtifact = { artifact ->
                                         model.prepareWorkspaceArtifactExport(artifact)?.let(saveWorkspaceArtifact::launch)
-                                    })
+                                    },
+                                    wideLayout = wide)
                                 NativePage.WORKBENCH -> Workbench(
                                     state = state,
                                     cleanup = model::cleanupOutputs,
@@ -299,7 +317,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         }
                                     },
                                     addAsset = {
-                                        if (model.prepareAddAsset()) inputAsset.launch(arrayOf("*/*"))
+                                        if (model.prepareAddAsset()) inputAsset.launch(arrayOf(
+                                            "text/plain", "application/epub+zip", "application/octet-stream"))
                                     },
                                     mutateAsset = model::mutateAsset,
                                     editSettings = model::saveProjectSettings,
@@ -342,6 +361,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                 NativePage.FILES -> NativeFilesPage(
                                     state = state, loadInventory = model::fileInventory,
                                     back = model::closeFiles,
+                                    browseRgss = { _, assetId -> rgssAssetId = assetId },
                                     exportAsset = { assetId ->
                                         model.prepareAssetExport(assetId)?.let { saveAsset.launch(it) }
                                     },
@@ -376,7 +396,9 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model.rulePresetActions, model.promptTemplateActions,
                                     section = state.rulesSection,
                                     selectSection = model::selectRulesSection,
-                                    back = { model.selectPage(NativePage.MORE) })
+                                    back = { model.selectPage(NativePage.MORE) },
+                                    wideLayout = wide,
+                                    onEditingChange = { ruleEditorOpen = it })
                                 NativePage.SETTINGS -> Unit
                                 NativePage.MODELS -> Unit
                                 NativePage.PROOFREADING -> Proofreading(state, model::edit, model::previousPage, model::nextPage,
@@ -386,7 +408,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         model::prepareQueryReplacement, model::prepareQueryNameAssignment),
                                     model::simulateProject, model::translateRemote,
                                     model::enqueueRemoteTranslation,
-                                    qualityActions = NativeQualityActions(model::scanQuality, model::filterQuality, model::clearQuality)) {
+                                    qualityActions = NativeQualityActions(model::scanQuality, model::filterQuality, model::clearQuality),
+                                    wideLayout = wide) {
                                     if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
                                 }
                             }
@@ -422,14 +445,6 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         )
     }
 }
-
-@Composable
-private fun formatLabel(format: com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat): String =
-    when (format) {
-        com.breakyuna.noveltranslator.nativecore.domain.ProjectAssetFormat.RPGMAKER_RGSS ->
-            stringResource(R.string.native_format_rpgmaker_rgss)
-        else -> format.name
-    }
 
 @Composable
 internal fun ProjectsHome(state: NativeProjectUiState, onCreate: () -> Unit, onImport: () -> Unit,
@@ -551,7 +566,8 @@ internal fun Workbench(state: NativeProjectUiState, cleanup: () -> Unit, export:
                     verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(asset.path.value, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(stringResource(R.string.native_asset_summary, formatLabel(asset.format), asset.itemCount),
+                        Text(stringResource(R.string.native_asset_summary,
+                            stringResource(nativeFormatLabelRes(asset.format)), asset.itemCount),
                             style = MaterialTheme.typography.bodySmall)
                     }
                     OutlinedButton(onClick = { exportAsset(asset.id) }, enabled = !state.busy) {
@@ -614,7 +630,9 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
                           simulateProject: (() -> Unit)? = null,
                           remoteTranslation: NativeRemoteTranslationAction? = null,
                           queueTranslation: NativeRemoteTranslationAction? = null,
-                          qualityActions: NativeQualityActions? = null, requestNotifications: () -> Unit = {}) {
+                          qualityActions: NativeQualityActions? = null,
+                          wideLayout: Boolean = false,
+                          requestNotifications: () -> Unit = {}) {
     if (state.manualBatch != null && batchActions != null) NativeManualBatchDialog(state, batchActions)
     var filtering by rememberSaveable(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
         state.project?.ref?.generation?.value) { mutableStateOf(false) }
@@ -663,8 +681,12 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
         dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.native_cancel)) } },
     )
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val headerHeight = maxHeight * 0.55f
-        Column(Modifier.fillMaxSize()) {
+        val wide = wideLayout || maxWidth >= NativeTwoPaneBreakpoint
+        val headerHeight = maxHeight * if (wide) 0.42f else 0.55f
+        var selectedItemId by rememberSaveable(state.project?.ref?.projectId?.value,
+            state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value) { mutableStateOf<Long?>(null) }
+        val selectedItem = state.items.firstOrNull { it.id.value == selectedItemId } ?: state.items.firstOrNull()
+        val header: @Composable () -> Unit = {
             key(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value) {
                 Column(Modifier.fillMaxWidth().heightIn(max = headerHeight).verticalScroll(rememberScrollState())) {
                     if (qualityActions != null) NativeQualityPanel(state, qualityActions)
@@ -711,38 +733,138 @@ internal fun Proofreading(state: NativeProjectUiState, edit: (ItemId) -> Unit, p
                     }
                 }
             }
-            key(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
-                state.project?.ref?.generation?.value, state.items.firstOrNull()?.id?.value) {
-                LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    if (state.items.isEmpty()) item { Text(stringResource(R.string.native_empty_items)) }
-                    items(state.items, key = { it.id.value }) { item ->
-                        val selectionLabel = stringResource(R.string.native_batch_select_row, item.row.toLong() + 1)
-                        Card(Modifier.fillMaxWidth().clickable(enabled = !state.busy) {
-                            if (state.selectingItems && batchActions != null) batchActions.toggle(item.id) else edit(item.id)
-                        }) {
-                            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Row {
-                                    if (state.selectingItems && batchActions != null) Checkbox(item.id in state.selectedItems,
-                                        onCheckedChange = { batchActions.toggle(item.id) }, enabled = !state.busy,
-                                        modifier = Modifier.semantics { contentDescription = selectionLabel })
-                                    Text(stringResource(R.string.native_row_status, item.row + 1, stringResource(item.status.label())), style = MaterialTheme.typography.labelLarge)
-                                }
-                                if (state.qualityCurrent) state.qualityView?.index?.fact(item.id)?.result?.let { result ->
-                                    val summary = when {
-                                        !result.evaluated -> stringResource(R.string.native_quality_skipped)
-                                        result.codes.isEmpty() -> stringResource(R.string.native_quality_clear)
-                                        else -> stringResource(R.string.native_quality_row_warnings, result.codes.size)
-                                    }
-                                    Text(summary, style = MaterialTheme.typography.bodySmall)
-                                }
-                                Text(item.source.ifEmpty { stringResource(R.string.native_blank_line) }, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                                HorizontalDivider()
-                                Text(item.translation.ifEmpty { stringResource(if (item.status == TextItemStatus.PROCESSED) R.string.native_empty_result else R.string.native_empty_translation) },
-                                    maxLines = 3, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                    }
+        }
+        if (wide) {
+            Row(Modifier.fillMaxSize()) {
+                Column(Modifier.weight(1.2f).fillMaxHeight()) {
+                    header()
+                    ProofreadingItemList(state, batchActions, selectedItem?.id?.value,
+                        Modifier.weight(1f).fillMaxWidth()) { selectedItemId = it.value }
                 }
+                VerticalDivider()
+                ProofreadingItemDetail(state, selectedItem, batchActions,
+                    Modifier.weight(1f).fillMaxHeight(), edit)
+            }
+        } else {
+            Column(Modifier.fillMaxSize()) {
+                header()
+                ProofreadingItemList(state, batchActions, null,
+                    Modifier.weight(1f).fillMaxWidth()) { edit(it) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProofreadingItemList(
+    state: NativeProjectUiState,
+    batchActions: NativeBatchActions?,
+    selectedItemId: Long?,
+    modifier: Modifier = Modifier,
+    onOpen: (ItemId) -> Unit,
+) {
+    key(state.project?.ref?.projectId?.value, state.project?.ref?.instanceId?.value,
+        state.project?.ref?.generation?.value, state.items.firstOrNull()?.id?.value) {
+        LazyColumn(modifier, contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (state.items.isEmpty()) item { Text(stringResource(R.string.native_empty_items)) }
+            items(state.items, key = { it.id.value }) { item ->
+                ProofreadingItemCard(
+                    item = item,
+                    state = state,
+                    batchActions = batchActions,
+                    selected = item.id.value == selectedItemId,
+                    expandedPreview = false,
+                    onOpen = {
+                        if (state.selectingItems && batchActions != null) batchActions.toggle(item.id) else onOpen(item.id)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProofreadingItemCard(
+    item: ItemPreview,
+    state: NativeProjectUiState,
+    batchActions: NativeBatchActions?,
+    selected: Boolean,
+    expandedPreview: Boolean,
+    onOpen: () -> Unit,
+) {
+    val selectionLabel = stringResource(R.string.native_batch_select_row, item.row.toLong() + 1)
+    val colors = if (selected) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+        else CardDefaults.cardColors()
+    Card(Modifier.fillMaxWidth().clickable(enabled = !state.busy) { onOpen() }
+        .then(if (selected) Modifier.semantics { this.selected = true } else Modifier), colors = colors) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row {
+                if (state.selectingItems && batchActions != null) Checkbox(item.id in state.selectedItems,
+                    onCheckedChange = { batchActions.toggle(item.id) }, enabled = !state.busy,
+                    modifier = Modifier.semantics { contentDescription = selectionLabel })
+                Text(stringResource(R.string.native_row_status, item.row + 1, stringResource(item.status.label())), style = MaterialTheme.typography.labelLarge)
+            }
+            ProofreadingQualitySummary(state, item.id)
+            Text(item.source.ifEmpty { stringResource(R.string.native_blank_line) },
+                maxLines = if (expandedPreview) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis)
+            HorizontalDivider()
+            Text(item.translation.ifEmpty { stringResource(if (item.status == TextItemStatus.PROCESSED) R.string.native_empty_result else R.string.native_empty_translation) },
+                maxLines = if (expandedPreview) Int.MAX_VALUE else 3, overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+@Composable
+private fun ProofreadingQualitySummary(state: NativeProjectUiState, itemId: ItemId) {
+    if (!state.qualityCurrent) return
+    val result = state.qualityView?.index?.fact(itemId)?.result ?: return
+    val summary = when {
+        !result.evaluated -> stringResource(R.string.native_quality_skipped)
+        result.codes.isEmpty() -> stringResource(R.string.native_quality_clear)
+        else -> stringResource(R.string.native_quality_row_warnings, result.codes.size)
+    }
+    Text(summary, style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun ProofreadingItemDetail(
+    state: NativeProjectUiState,
+    item: ItemPreview?,
+    batchActions: NativeBatchActions?,
+    modifier: Modifier = Modifier,
+    onEdit: (ItemId) -> Unit,
+) {
+    if (item == null) {
+        Box(modifier.testTag("native-proofreading-detail"), contentAlignment = Alignment.Center) {
+            Text(stringResource(R.string.native_empty_items), Modifier.padding(16.dp))
+        }
+        return
+    }
+    Column(modifier.testTag("native-proofreading-detail").padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(stringResource(R.string.native_row_status, item.row + 1, stringResource(item.status.label())),
+            style = MaterialTheme.typography.titleMedium)
+        if (state.selectingItems) {
+            Text(stringResource(R.string.native_batch_selected, state.selectedItems.size),
+                style = MaterialTheme.typography.bodySmall)
+        }
+        Button(onClick = { onEdit(item.id) }, enabled = !state.busy && !state.selectingItems) {
+            Text(stringResource(R.string.native_edit_row, item.row + 1))
+        }
+        HorizontalDivider()
+        key(item.id.value) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                ProofreadingItemCard(
+                    item = item,
+                    state = state,
+                    batchActions = batchActions,
+                    selected = true,
+                    expandedPreview = true,
+                    onOpen = {
+                        if (state.selectingItems && batchActions != null) batchActions.toggle(item.id) else onEdit(item.id)
+                    },
+                )
             }
         }
     }

@@ -36,6 +36,7 @@ kotlin {
 dependencies {
   api(project(":core:domain"))
   implementation(libs.pdfbox.android)
+  implementation(libs.kotlinx.coroutines.core)
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.core)
 }
