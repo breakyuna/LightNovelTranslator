@@ -1,9 +1,6 @@
-package com.breakyuna.noveltranslator
+package com.breakyuna.noveltranslator.core.agent
 
-import com.breakyuna.noveltranslator.core.agent.TermExtractionAgent
 import com.breakyuna.noveltranslator.data.model.TermCategory
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -12,14 +9,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class ExampleRobolectricTest {
-
-    @Test
-    fun `read string from context`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val appName = context.getString(R.string.app_name)
-        assertEquals("Novel Translator", appName)
-    }
+class TermExtractionResponseTest {
 
     @Test
     fun `test TermExtractionAgent parseTermsJson with code fences`() {

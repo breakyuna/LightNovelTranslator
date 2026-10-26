@@ -28,7 +28,7 @@
 - CI（`.github/workflows/android.yml`）：push 到 `main` / `beta` 或 `workflow_dispatch` 触发，执行 `./gradlew testDebugUnitTest lintDebug assembleRelease`，需要 4 个签名 Secrets；本地打签名 Release 需提供 `ANDROID_KEYSTORE_PATH` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` / `ANDROID_KEY_PASSWORD` 环境变量。
 - 单元测试在 JVM 执行：Android 模块的相关用例使用 Robolectric，domain/engine 使用纯 JVM 测试；Android 测试任务需要 Android SDK，无需真机。**本机（Termux/Android 开发设备）禁止执行任何构建与测试**，理由见上文；静态审查（`rg`/`read`/符号核对）是唯一的本地验证手段，汇报时如实说明"未构建验证"。
 - 截图测试：Roborazzi，用 `captureRoboImage(filePath = "src/test/screenshots/...")` 显式指定路径，产物在 `app/src/test/screenshots/`。改动 UI 后用 `./gradlew recordRoborazziDebug` 重新录制（同样只在 CI/PC 执行）。新增截图测试沿用现有 `@RunWith(RobolectricTestRunner)` + `@GraphicsMode(NATIVE)` + `@Config(qualifiers = Pixel8, sdk = [35])` 配置。
-- `app/src/test` 下的 `ExampleUnitTest` / `ExampleRobolectricTest` 是模板遗留，不代表真实覆盖。
+- 测试按实际断言判断价值：`ExampleUnitTest` 虽沿用旧名，包含内容保留、解析和记账回归；不可按模板命名整类删除。术语响应围栏/非法 JSON 用例集中在 `TermExtractionResponseTest`，因使用 Android `org.json` 保留 Robolectric。纯表单/文件逻辑（如 `NativeSkillMetadataTest`）使用普通 JUnit 与临时目录，避免无必要的 Android 沙箱。
 
 
 ## 4. 仓库特有约定（最容易踩的坑）

@@ -98,6 +98,8 @@ class NativePdfPagesDialogTest {
         val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
         val asset = ProjectAssetSummary(2, RelativePath("book.pdf"), ProjectAssetFormat.PDF, 0, true, 10, "a".repeat(64), 3)
         val project = TextProjectSummary(ref, "test", 7, asset.path, 3, listOf(asset), ProjectSettings())
+        val pending = CompletableDeferred<ByteArray>()
+        val png = pngBytes()
         val pages = mutableListOf<Int>()
         val texts = mutableListOf<Int>()
         val context: Context = ApplicationProvider.getApplicationContext()
@@ -111,39 +113,36 @@ class NativePdfPagesDialogTest {
                 loadThumbnail = { actual, revision, source, page ->
                     assertEquals(ref, actual); assertEquals(7L, revision); assertEquals(asset, source)
                     pages.add(page)
-                    pngBytes()
+                    pending.await()
                 })
         } }
         compose.runOnIdle { assertTrue(pages.isEmpty()) }
         compose.onAllNodesWithText(context.getString(R.string.native_pdf_preview))[0].performClick()
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithTag(PdfThumbnailImageTag).fetchSemanticsNodes().isNotEmpty()
-        }
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("pdf-pages-list").assertDoesNotExist()
+        compose.onNodeWithTag("pdf-page-preview").assertIsDisplayed()
+        compose.onNodeWithTag(PdfThumbnailLoadingTag).assertIsDisplayed()
         compose.onNodeWithText("page body 1").assertIsDisplayed()
         compose.runOnIdle {
             assertEquals(listOf(1), pages)
             assertEquals(listOf(1), texts)
+            pending.complete(png)
         }
-    }
-
-    @Test fun thumbnailLoadingStateIsVisibleUntilTheRenderReturns() {
-        val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
-        val asset = ProjectAssetSummary(2, RelativePath("book.pdf"), ProjectAssetFormat.PDF, 0, true, 10, "a".repeat(64), 3)
-        val project = TextProjectSummary(ref, "test", 7, asset.path, 3, listOf(asset), ProjectSettings())
-        val pending = CompletableDeferred<ByteArray>()
-        val context: Context = ApplicationProvider.getApplicationContext()
-        compose.setContent { NativeTheme {
-            NativePdfPagesDialog(NativeProjectUiState(project = project), asset, {}, { error("Preview cannot save") },
-                loadThumbnail = { _, _, _, _ -> pending.await() })
-        } }
-        compose.onAllNodesWithText(context.getString(R.string.native_pdf_preview))[0].performClick()
-        compose.waitUntil(5_000) {
-            compose.onAllNodesWithTag(PdfThumbnailLoadingTag).fetchSemanticsNodes().isNotEmpty()
-        }
-        compose.onNodeWithTag(PdfThumbnailLoadingTag).assertIsDisplayed()
-        pending.complete(pngBytes())
         compose.waitUntil(10_000) {
-            compose.onAllNodesWithTag(PdfThumbnailImageTag).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag(PdfThumbnailImageTag).fetchSemanticsNodes().isNotEmpty() ||
+                compose.onAllNodesWithTag(PdfThumbnailFailedTag).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag(PdfThumbnailFailedTag).assertDoesNotExist()
+        compose.onNodeWithTag(PdfThumbnailLoadingTag).assertDoesNotExist()
+        compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
+        compose.onNodeWithText("page body 1").assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_close)).performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("pdf-pages-list").assertIsDisplayed()
+        compose.onNodeWithTag("pdf-page-preview").assertDoesNotExist()
+        compose.runOnIdle {
+            assertEquals(listOf(1), pages)
+            assertEquals(listOf(1), texts)
         }
     }
 

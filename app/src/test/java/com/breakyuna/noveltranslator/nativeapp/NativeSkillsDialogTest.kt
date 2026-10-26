@@ -26,6 +26,7 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSource
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreException
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSummary
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
@@ -83,10 +84,11 @@ class NativeSkillsDialogTest {
             .assertTextContains("body", substring = true)
     }
 
-    @Test fun editorSavesLanguagesTagsOrderAndEnabledThroughTheUpdatePath() {
+    @Test fun editorReloadsAfterCancelThenSavesLanguagesTagsOrderAndEnabled() {
         val record = record()
         var saved: WorkspaceSkillDraft? = null
-        val skillActions = actions(record) { _, draft, _ ->
+        var reads = 0
+        val skillActions = actions(record, read = { "body-${++reads}" }) { _, draft, _ ->
             saved = draft
             record
         }
@@ -98,6 +100,15 @@ class NativeSkillsDialogTest {
             }
         }
         openEditor()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("body-1")
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("native-skills-catalog").assertIsDisplayed()
+        compose.onNodeWithTag("native-skill-content").assertDoesNotExist()
+        compose.runOnIdle { assertNull(saved) }
+        openEditor()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("body-2")
+        compose.runOnIdle { assertEquals(2, reads) }
         compose.onNodeWithTag("native-skill-languages").performScrollTo().performTextReplacement("JA, en")
         compose.onNodeWithTag("native-skill-tags").performScrollTo().performTextReplacement("New, Style")
         compose.onNodeWithTag("native-skill-order").performScrollTo().performTextReplacement("7")
@@ -105,6 +116,7 @@ class NativeSkillsDialogTest {
         compose.onNodeWithTag("native-skill-save").performClick()
         compose.waitUntil(5_000) { saved != null }
         val draft = requireNotNull(saved)
+        assertEquals("body-2", draft.content)
         assertEquals(setOf("ja", "en"), draft.languages)
         assertEquals(setOf("new", "style"), draft.tags)
         assertEquals(7, draft.order)
@@ -153,20 +165,4 @@ class NativeSkillsDialogTest {
         compose.onNodeWithText(context.getString(R.string.native_skills_builtin_readonly))
             .performScrollTo().assertIsDisplayed()
     }
-
-    @Test fun cancellingEditorReturnsToCatalogAndReopeningReloadsTheSameSkill() {
-        var reads = 0
-        val skillActions = actions(record(), read = { "body-${++reads}" })
-        compose.setContent { NativeTheme { NativeSkillsDialog(skillActions, {}) } }
-        openEditor()
-        compose.onNodeWithTag("native-skill-content").assertTextContains("body-1")
-        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
-        compose.onAllNodes(isDialog()).assertCountEquals(1)
-        compose.onNodeWithTag("native-skills-catalog").assertIsDisplayed()
-        compose.onNodeWithTag("native-skill-content").assertDoesNotExist()
-        openEditor()
-        compose.onNodeWithTag("native-skill-content").assertTextContains("body-2")
-        compose.runOnIdle { assertEquals(2, reads) }
-    }
-
 }

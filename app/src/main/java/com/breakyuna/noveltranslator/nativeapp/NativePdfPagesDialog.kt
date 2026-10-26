@@ -60,12 +60,6 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
     val command = rememberSaveable(project.ref, asset.id, decisions) { UUID.randomUUID().toString() }
     var submitted by remember(project.ref, asset.id) { mutableStateOf(false) }
     var previewPage by remember(project.ref, asset.id, project.revision) { mutableStateOf<Int?>(null) }
-    previewPage?.let { page -> if (loadPage != null || loadThumbnail != null) NativePdfPagePreview(project.ref,
-        project.revision, asset, page, loadPage, loadThumbnail, { previewPage = null },
-        edit = if (editPage != null && !state.busy && decisions == starting && state.project?.revision == project.revision &&
-            state.editor == null && state.manualBatch == null && !state.selectingItems &&
-            !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true)
-            ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null) }
     val current = state.project
     LaunchedEffect(state.busy, current?.revision, submitted) {
         if (submitted && !state.busy && current != null && current.ref == project.ref && current.revision > project.revision &&
@@ -74,57 +68,71 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
     val eligible = valid && !state.busy && current != null && current.ref == project.ref && current.revision == project.revision &&
         state.editor == null && state.manualBatch == null && !state.selectingItems &&
         !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true
-    Dialog(onDismissRequest = { if (!state.busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.padding(16.dp).widthIn(max = 680.dp).fillMaxWidth().fillMaxHeight(.92f),
-            shape = MaterialTheme.shapes.extraLarge) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_pdf_pages), style = MaterialTheme.typography.headlineSmall)
-                Text(asset.path.value, maxLines = 1)
-                Text(stringResource(R.string.native_pdf_pages_description), style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(from, { if (it.length <= 4 && it.all(Char::isDigit)) from = it },
-                        label = { Text(stringResource(R.string.native_pdf_from)) }, singleLine = true,
-                        enabled = eligible, modifier = Modifier.weight(1f))
-                    OutlinedTextField(through, { if (it.length <= 4 && it.all(Char::isDigit)) through = it },
-                        label = { Text(stringResource(R.string.native_pdf_through)) }, singleLine = true,
-                        enabled = eligible, modifier = Modifier.weight(1f))
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    PdfModeMenu(bulk, eligible, { bulk = it }, Modifier.weight(1f))
-                    TextButton(onClick = { range?.let { selected ->
-                        decisions = decisions.toCharArray().also { chars -> selected.forEach { chars[it - 1] = bulk } }.concatToString()
-                    } }, enabled = eligible && range != null) { Text(stringResource(R.string.native_pdf_apply_range)) }
-                }
-                if (editPage != null && decisions != starting) Text(stringResource(R.string.native_pdf_edit_settings_first),
-                    style = MaterialTheme.typography.bodySmall)
-                LazyColumn(Modifier.weight(1f)) {
-                    items((1..decisions.length).toList(), key = { it }) { page ->
-                        Column(Modifier.fillMaxWidth().testTag(pdfPageRowTag(page))) {
-                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                Text(stringResource(R.string.native_pdf_page_number, page), Modifier.weight(1f))
-                                PdfModeMenu(decisions[page - 1], eligible, { code ->
-                                    decisions = decisions.toCharArray().also { it[page - 1] = code }.concatToString()
-                                })
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (loadPage != null || loadThumbnail != null) TextButton(onClick = { previewPage = page },
-                                    enabled = eligible) { Text(stringResource(R.string.native_pdf_preview)) }
-                                if (editPage != null) TextButton(onClick = {
-                                    close(); editPage(project.ref, project.revision, asset, page)
-                                }, enabled = eligible && decisions == starting, modifier = Modifier.testTag(pdfPageEditTag(page))) {
-                                    Text(stringResource(R.string.native_pdf_edit_page))
+    // Keep one window/focus owner while showing a page preview; the list must not cover it.
+    Dialog(onDismissRequest = {
+        if (previewPage != null) previewPage = null else if (!state.busy) close()
+    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            previewPage?.let { page ->
+                NativePdfPagePreview(project.ref, project.revision, asset, page,
+                    loadPage, loadThumbnail, { previewPage = null },
+                    edit = if (editPage != null && !state.busy && decisions == starting && current?.revision == project.revision &&
+                        state.editor == null && state.manualBatch == null && !state.selectingItems &&
+                        !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true)
+                        ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null)
+                return@Box
+            }
+            Surface(Modifier.testTag("pdf-pages-list").padding(16.dp).widthIn(max = 680.dp).fillMaxWidth().fillMaxHeight(.92f),
+                shape = MaterialTheme.shapes.extraLarge) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.native_pdf_pages), style = MaterialTheme.typography.headlineSmall)
+                    Text(asset.path.value, maxLines = 1)
+                    Text(stringResource(R.string.native_pdf_pages_description), style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(from, { if (it.length <= 4 && it.all(Char::isDigit)) from = it },
+                            label = { Text(stringResource(R.string.native_pdf_from)) }, singleLine = true,
+                            enabled = eligible, modifier = Modifier.weight(1f))
+                        OutlinedTextField(through, { if (it.length <= 4 && it.all(Char::isDigit)) through = it },
+                            label = { Text(stringResource(R.string.native_pdf_through)) }, singleLine = true,
+                            enabled = eligible, modifier = Modifier.weight(1f))
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        PdfModeMenu(bulk, eligible, { bulk = it }, Modifier.weight(1f))
+                        TextButton(onClick = { range?.let { selected ->
+                            decisions = decisions.toCharArray().also { chars -> selected.forEach { chars[it - 1] = bulk } }.concatToString()
+                        } }, enabled = eligible && range != null) { Text(stringResource(R.string.native_pdf_apply_range)) }
+                    }
+                    if (editPage != null && decisions != starting) Text(stringResource(R.string.native_pdf_edit_settings_first),
+                        style = MaterialTheme.typography.bodySmall)
+                    LazyColumn(Modifier.weight(1f)) {
+                        items((1..decisions.length).toList(), key = { it }) { page ->
+                            Column(Modifier.fillMaxWidth().testTag(pdfPageRowTag(page))) {
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(stringResource(R.string.native_pdf_page_number, page), Modifier.weight(1f))
+                                    PdfModeMenu(decisions[page - 1], eligible, { code ->
+                                        decisions = decisions.toCharArray().also { it[page - 1] = code }.concatToString()
+                                    })
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (loadPage != null || loadThumbnail != null) TextButton(onClick = { previewPage = page },
+                                        enabled = eligible) { Text(stringResource(R.string.native_pdf_preview)) }
+                                    if (editPage != null) TextButton(onClick = {
+                                        close(); editPage(project.ref, project.revision, asset, page)
+                                    }, enabled = eligible && decisions == starting, modifier = Modifier.testTag(pdfPageEditTag(page))) {
+                                        Text(stringResource(R.string.native_pdf_edit_page))
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(close, enabled = !state.busy) { Text(stringResource(R.string.native_cancel)) }
-                    TextButton(onClick = { settings?.let {
-                        submitted = true
-                        save(NativeProjectSettingsChange(project.ref, project.revision, CommandId(command), it))
-                    } }, enabled = eligible && settings != null && settings.fingerprint() != initial.fingerprint()) {
-                        Text(stringResource(R.string.native_asset_confirm))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(close, enabled = !state.busy) { Text(stringResource(R.string.native_cancel)) }
+                        TextButton(onClick = { settings?.let {
+                            submitted = true
+                            save(NativeProjectSettingsChange(project.ref, project.revision, CommandId(command), it))
+                        } }, enabled = eligible && settings != null && settings.fingerprint() != initial.fingerprint()) {
+                            Text(stringResource(R.string.native_asset_confirm))
+                        }
                     }
                 }
             }
@@ -161,50 +169,48 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
             thumbnailFailed = true
         }
     }
-    Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.padding(16.dp).widthIn(max = 760.dp).fillMaxWidth().fillMaxHeight(.9f),
-            shape = MaterialTheme.shapes.extraLarge) {
-            Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
-                if (loadThumbnail != null) {
-                    Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
-                    when {
-                        thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
-                            contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
-                        thumbnailFailed -> Text(stringResource(R.string.native_pdf_thumbnail_failed),
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.testTag(PdfThumbnailFailedTag))
-                        else -> Row(verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text(stringResource(R.string.native_pdf_thumbnail_loading))
-                        }
+    Surface(Modifier.testTag("pdf-page-preview").padding(16.dp).widthIn(max = 760.dp).fillMaxWidth().fillMaxHeight(.9f),
+        shape = MaterialTheme.shapes.extraLarge) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
+            if (loadThumbnail != null) {
+                Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
+                when {
+                    thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
+                        contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
+                    thumbnailFailed -> Text(stringResource(R.string.native_pdf_thumbnail_failed),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.testTag(PdfThumbnailFailedTag))
+                    else -> Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.native_pdf_thumbnail_loading))
                     }
                 }
-                Text(stringResource(R.string.native_pdf_text_preview_notice), style = MaterialTheme.typography.bodySmall)
-                if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
-                else if (item == null && loadPage != null) CircularProgressIndicator()
-                item?.let { loaded ->
-                    SelectionContainer(Modifier.weight(1f)) {
-                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
-                            Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
-                            Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
-                            Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
-                            Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
-                                R.string.native_empty_result else R.string.native_empty_translation) })
-                        }
-                    }
-                }
-                if (edit != null) TextButton(onClick = edit, enabled = item != null && !failed) {
-                    Text(stringResource(R.string.native_pdf_edit_page))
-                }
-                TextButton(onClick = close, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.native_close)) }
             }
+            Text(stringResource(R.string.native_pdf_text_preview_notice), style = MaterialTheme.typography.bodySmall)
+            if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
+            else if (item == null && loadPage != null) CircularProgressIndicator()
+            item?.let { loaded ->
+                SelectionContainer(Modifier.weight(1f)) {
+                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
+                        Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
+                        Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.titleMedium)
+                        Text(loaded.translation.ifEmpty { stringResource(if (loaded.status == TextItemStatus.PROCESSED)
+                            R.string.native_empty_result else R.string.native_empty_translation) })
+                    }
+                }
+            }
+            if (edit != null) TextButton(onClick = edit, enabled = item != null && !failed) {
+                Text(stringResource(R.string.native_pdf_edit_page))
+            }
+            TextButton(onClick = close, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.native_close)) }
         }
     }
 }

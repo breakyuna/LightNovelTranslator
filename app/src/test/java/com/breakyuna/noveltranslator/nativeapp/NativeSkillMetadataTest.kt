@@ -1,31 +1,23 @@
 package com.breakyuna.noveltranslator.nativeapp
 
-import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillDraft
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStore
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreException
-import java.io.File
-import java.util.UUID
-import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import org.junit.Test
-import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.annotation.Config
 
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [35])
 class NativeSkillMetadataTest {
-    private val context: Context get() = ApplicationProvider.getApplicationContext()
+    @get:Rule val temporary = TemporaryFolder()
 
-    @Test fun editorDraftUpdatesLanguagesTagsOrderAndEnabledThroughTheExistingCasPath() = runBlocking {
-        val root = File(context.cacheDir, "skill-metadata-test-" + UUID.randomUUID())
+    @Test fun editorDraftUpdatesLanguagesTagsOrderAndEnabledThroughTheExistingCasPath() {
+        val root = temporary.newFolder("skills")
         val store = WorkspaceSkillStore(root)
         try {
             val id = WorkspaceSkillId("user-alpha")
