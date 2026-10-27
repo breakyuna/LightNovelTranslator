@@ -37,6 +37,9 @@ internal class NativeArchiveSettingsCheckpoint(private val context: Context) {
                 }
             }
         }.toString())
+        // ATTACH inherits the main connection's open flags. That connection intentionally
+        // lacks CREATE, so create only our private snapshot before attaching it.
+        SQLiteDatabase.openOrCreateDatabase(File(root, "models.db"), null).close()
         database { db ->
             tables.forEach { table -> db.execSQL("CREATE TABLE archive_rollback.$table AS SELECT * FROM main.$table") }
         }

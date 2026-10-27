@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.legacy
 
 import android.content.Context
+import android.database.sqlite.SQLiteException
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.core.quality.QualityRuleJson
@@ -42,6 +43,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.SQLiteMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -63,6 +65,24 @@ class LegacyExportServiceTest {
     fun tearDown() {
         root.deleteRecursively()
         databaseNames.forEach { context.deleteDatabase(it) }
+    }
+
+    @Test
+    @SQLiteMode(SQLiteMode.Mode.NATIVE)
+    fun corruptReadOnlySourceIsRejectedWithoutDeletingOrReplacingItsBytes() = runTest {
+        val name = "legacy_export_corrupt_${System.nanoTime()}.db"
+        databaseNames += name
+        val source = context.getDatabasePath(name)
+        source.parentFile!!.mkdirs()
+        source.writeText("not a database")
+        val originalHash = sha256(source)
+
+        val failure = runCatching { LegacyExportStore.openReadOnly(context, source).use {} }
+            .exceptionOrNull()
+
+        assertTrue("The corrupt source must fail to open", failure is SQLiteException)
+        assertTrue("The source must survive the corruption callback", source.isFile)
+        assertEquals(originalHash, sha256(source))
     }
 
     @Test

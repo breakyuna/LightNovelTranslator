@@ -204,7 +204,7 @@ class UsageCostAggregatorTest {
         val summary = UsageCostAggregator(ledger, Prices(mapOf(1L to v1))).aggregate()
 
         val known = summary.knownGroups.single()
-        assertEquals("27670116110564.327421", known.actual?.toPlainString())
+        assertEquals("27670116110564.327421000000", known.actual?.toPlainString())
         // Three exact per-receipt amounts; the unscaled sum is far beyond a 64-bit value.
         assertEquals(BigInteger("27670116110564327421000000"), known.actual?.amount?.unscaledValue())
         assertEquals(CostAmount.ofCurrency(BigDecimal("27670116110564.327421")), known.actual)

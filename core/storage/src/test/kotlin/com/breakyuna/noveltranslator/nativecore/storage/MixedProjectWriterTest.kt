@@ -543,7 +543,7 @@ class MixedProjectWriterTest {
 
         val policy = policyProposal()
         val policyInput = MixedProjectMemberInput.Policy(policy)
-        val twoMemberRequest = request(listOf(member(itemInput), member(policyInput)),
+        val twoMemberRequest = requestWithMembers(listOf(member(itemInput), member(policyInput)),
             base, ConflictPolicy.REJECT_BATCH)
         expectRefusal(MixedProjectWriteRefusal.INVALID_MEMBER_SET) {
             apply(consumed(twoMemberRequest), listOf(itemInput))

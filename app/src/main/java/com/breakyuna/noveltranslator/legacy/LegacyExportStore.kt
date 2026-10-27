@@ -3,7 +3,9 @@ package com.breakyuna.noveltranslator.legacy
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
+import android.database.DatabaseErrorHandler
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteDatabaseCorruptException
 import androidx.room.Room
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.breakyuna.noveltranslator.data.db.AppDatabase
@@ -119,6 +121,9 @@ class LegacyExportStore private constructor(
                     sourceFile.absolutePath,
                     null,
                     SQLiteDatabase.OPEN_READONLY,
+                    // Android's default corruption handler deletes databases even on a
+                    // read-only connection. Reject corruption without touching source files.
+                    DatabaseErrorHandler { throw SQLiteDatabaseCorruptException("Legacy database is corrupt") },
                 )
                 val schemaVersion = try {
                     sourceDatabase.version

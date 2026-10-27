@@ -1,9 +1,12 @@
 package com.breakyuna.noveltranslator.nativeapp
 
 import java.io.File
+import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.w3c.dom.Element
 
 /**
  * The native entry is the only production UI. Legacy packages stay in the app module so
@@ -39,8 +42,28 @@ class NativeLegacyBoundaryTest {
 
     @Test
     fun manifestKeepsTheNativeEntryAsLauncher() {
-        val manifest = File("src/main/AndroidManifest.xml").readText()
-        assertTrue(manifest.contains("android:name=\".MainActivity\""))
-        assertFalse("legacy AppNavigation must not be a manifest entry", manifest.contains("AppNavigation"))
+        val manifestFile = File("src/main/AndroidManifest.xml")
+        val manifest = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+            .newDocumentBuilder().parse(manifestFile)
+        val android = "http://schemas.android.com/apk/res/android"
+        fun Element.children(tag: String): List<Element> {
+            val nodes = getElementsByTagName(tag)
+            return (0 until nodes.length).map { nodes.item(it) as Element }
+        }
+        val launchers = manifest.documentElement.children("activity").filter { activity ->
+            activity.children("intent-filter").any { filter ->
+                filter.children("action").any {
+                    it.getAttributeNS(android, "name") == "android.intent.action.MAIN"
+                } && filter.children("category").any {
+                    it.getAttributeNS(android, "name") == "android.intent.category.LAUNCHER"
+                }
+            }
+        }
+        assertEquals("Exactly one native launcher is required", 1, launchers.size)
+        val name = launchers.single().getAttributeNS(android, "name")
+        val qualified = if (name.startsWith(".")) "com.breakyuna.noveltranslator$name" else name
+        assertEquals("com.breakyuna.noveltranslator.MainActivity", qualified)
+        assertEquals("true", launchers.single().getAttributeNS(android, "exported"))
+        assertFalse("legacy AppNavigation must not be a manifest entry", manifestFile.readText().contains("AppNavigation"))
     }
 }

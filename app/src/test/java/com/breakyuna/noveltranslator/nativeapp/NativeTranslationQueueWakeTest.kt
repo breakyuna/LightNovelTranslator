@@ -2,7 +2,6 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.breakyuna.noveltranslator.nativecore.domain.ChatId
 import com.breakyuna.noveltranslator.nativecore.domain.CommandId
 import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import com.breakyuna.noveltranslator.nativecore.domain.ModelConfigurationRef
@@ -35,7 +34,7 @@ class NativeTranslationQueueWakeTest {
     private val ref = LocalProjectRef(ProjectId("project"), ProjectInstanceId("instance"), RecoveryGeneration(1))
     private val identity = TranslationTaskQueueIdentity(
         ref = ref,
-        run = RunIdentity(ref.projectId, ChatId("chat"), RunId("run"), CommandId("command")),
+        run = RunIdentity(ref.projectId, null, RunId("run"), CommandId("command")),
         configuration = ModelConfigurationRef("model", 1),
         revision = 7,
     )

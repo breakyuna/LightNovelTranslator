@@ -37,6 +37,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /** Mixed approval planning, order, recovery and one-shot UI entry; no project or file writes. */
 class NativeMixedApprovalCoordinatorTest {
@@ -339,6 +340,7 @@ class NativeMixedApprovalCoordinatorTest {
 
 /** Durable parent tests exercise the real Room authority, not a fake store. */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class NativeMixedApprovalStoreIntegrationTest {
     @Test
     fun multiMemberPrepareConsumeSettleIsOneShot() = runBlocking {
