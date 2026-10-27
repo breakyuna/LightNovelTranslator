@@ -2,6 +2,14 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -90,7 +98,7 @@ internal fun NativeMorePage(
     var mcpVisible by remember { mutableStateOf(false) }
     LaunchedEffect(project?.ref) { refreshStorage() }
     LazyColumn(
-        Modifier.fillMaxSize().testTag("native-more-page"),
+        Modifier.fillMaxSize().wrapContentSize(Alignment.TopCenter).widthIn(max = 1000.dp).fillMaxSize().testTag("native-more-page"),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -228,7 +236,7 @@ internal fun NativeMorePage(
             ) {
                 NativeBanner(
                     text = stringResource(R.string.native_more_app_backup_credentials),
-                    tone = NativeTone.ERROR,
+                    tone = NativeTone.NEUTRAL,
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -237,14 +245,14 @@ internal fun NativeMorePage(
                     OutlinedButton(
                         onClick = onBackupExport,
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f).testTag("native-more-app-backup-export"),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 280.dp).testTag("native-more-app-backup-export"),
                     ) {
                         Text(stringResource(R.string.native_app_backup_export))
                     }
                     OutlinedButton(
                         onClick = onBackupImport,
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f).testTag("native-more-app-backup-import"),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 280.dp).testTag("native-more-app-backup-import"),
                     ) {
                         Text(stringResource(R.string.native_app_backup_import))
                     }
@@ -260,7 +268,7 @@ internal fun NativeMorePage(
                 ) {
                     NativeBanner(
                         text = stringResource(R.string.native_more_full_archive_boundary),
-                        tone = NativeTone.ERROR,
+                        tone = NativeTone.WARNING,
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -269,14 +277,14 @@ internal fun NativeMorePage(
                         OutlinedButton(
                             onClick = onFullArchiveExport,
                             enabled = !state.busy,
-                            modifier = Modifier.weight(1f).testTag("native-more-full-archive-export"),
+                            modifier = Modifier.weight(1f, fill = false).widthIn(max = 280.dp).testTag("native-more-full-archive-export"),
                         ) {
                             Text(stringResource(R.string.native_full_archive_export))
                         }
                         OutlinedButton(
                             onClick = onFullArchiveImport,
                             enabled = !state.busy,
-                            modifier = Modifier.weight(1f).testTag("native-more-full-archive-import"),
+                            modifier = Modifier.weight(1f, fill = false).widthIn(max = 280.dp).testTag("native-more-full-archive-import"),
                         ) {
                             Text(stringResource(R.string.native_full_archive_import))
                         }
@@ -298,7 +306,7 @@ internal fun NativeMorePage(
                     OutlinedButton(
                         onClick = onLegacyExport,
                         enabled = !state.busy,
-                        modifier = Modifier.fillMaxWidth().testTag("native-more-legacy-export-open"),
+                        modifier = Modifier.widthIn(max = 320.dp).fillMaxWidth().testTag("native-more-legacy-export-open"),
                     ) {
                         Text(stringResource(R.string.native_legacy_export_open))
                     }
@@ -391,6 +399,7 @@ internal fun NativeThemeDialog(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun RulesCard(
     enabled: Boolean,
@@ -424,32 +433,43 @@ private fun RulesCard(
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            NativeRuleSection.entries.forEach { section ->
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(enabled = enabled) { onRules(section) }
-                        .testTag("native-more-rules-${section.slug}"),
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val columns = if (maxWidth >= 720.dp) 3 else if (maxWidth >= 480.dp) 2 else 1
+                val entryWidth = (maxWidth - 8.dp * (columns - 1)) / columns
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Icon(
-                            imageVector = section.icon(),
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            text = stringResource(section.title()),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
+                    NativeRuleSection.entries.forEach { section ->
+                        Surface(
+                            modifier = Modifier
+                                .width(entryWidth)
+                                .heightIn(min = 48.dp)
+                                .clickable(enabled = enabled) { onRules(section) }
+                                .testTag("native-more-rules-${section.slug}"),
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Icon(
+                                    imageVector = section.icon(),
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    text = stringResource(section.title()),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -491,6 +511,10 @@ private fun MoreEntry(
                 ) {
                     Icon(icon, null, Modifier.padding(8.dp))
                 }
+            },
+            trailingContent = {
+                Icon(Icons.Default.ChevronRight, contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
             },
             headlineContent = {
                 Text(title, style = MaterialTheme.typography.titleMedium)

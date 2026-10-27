@@ -11,6 +11,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -71,7 +75,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     var showWorkspace by rememberSaveable(ref.instanceId.value, ref.generation.value,
         state.agentChatId?.value, state.agentRunId?.value) { mutableStateOf(false) }
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
-    LaunchedEffect(interrupted) { if (interrupted) runs = true }
+    var showActions by remember(ref, state.agentChatId) { mutableStateOf(false) }
     val workspaceUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { workspace?.uploadUri?.invoke(it) }
     }
@@ -103,6 +107,18 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     if (showHistory && loadHistory != null && historyDetail != null) state.agentChatId?.let { chat ->
         NativeAgentHistoryDialog(ref, chat, loadHistory, historyDetail, { showHistory = false }, prepareBranch, createBranch)
     }
+    if (runs || tools) AlertDialog(
+        onDismissRequest = { runs = false; tools = false },
+        title = { Text(stringResource(if (runs) R.string.native_runs_title else R.string.native_agent_local_tools)) },
+        text = {
+            Column(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                if (runs) NativeRunHistory(state) else NativeLocalAgentTools(state, query, prepare)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { runs = false; tools = false }) { Text(stringResource(R.string.native_close)) }
+        },
+    )
     state.agentMessageDetail?.let { NativeAgentMessageDialog(it, closeDetail) }
     val timeline = rememberLazyListState()
     val committedIds = remember(state.agentMessages) { state.agentMessages.map { it.id }.toSet() }
@@ -136,6 +152,17 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
+                        if (interrupted) TextButton(
+                            onClick = { runs = true },
+                            contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
+                            modifier = Modifier.testTag("native-agent-interrupted"),
+                        ) {
+                            Text(
+                                stringResource(R.string.native_runs_interrupted) + " · " + stringResource(R.string.native_runs_title),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                         state.agentContextStatus?.let { status ->
                             Text(
                                 text = stringResource(
@@ -163,7 +190,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             OutlinedButton(
                                 onClick = { showModel = true },
                                 enabled = !state.busy,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                             ) {
                                 Text(
@@ -195,12 +222,56 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                     }
                                 }
                             }
-                            TextButton(
-                                onClick = newChat,
-                                enabled = ready && !state.hasAgentApproval && state.agentInput.isBlank(),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                            ) {
-                                Text(stringResource(R.string.native_agent_new_chat), maxLines = 1)
+                            IconButton(onClick = newChat,
+                                enabled = ready && !state.hasAgentApproval && state.agentInput.isBlank()) {
+                                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.native_agent_new_chat))
+                            }
+                            Box {
+                                IconButton(onClick = { showActions = true }) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.native_agent_actions))
+                                }
+                                DropdownMenu(showActions, { showActions = false }) {
+                                    if (workspace != null) DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_workspace_open)) },
+                                        enabled = ready,
+                                        onClick = { showActions = false; showWorkspace = true },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0)) },
+                                        enabled = !state.busy,
+                                        onClick = { showActions = false; showQueue = true },
+                                    )
+                                    if (loadHistory != null) DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_agent_full_history)) },
+                                        enabled = !state.busy,
+                                        onClick = { showActions = false; showHistory = true },
+                                    )
+                                    if (prepareContext != null) DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_context_title)) },
+                                        enabled = ready && !state.hasAgentApproval,
+                                        onClick = { showActions = false; showContext = true },
+                                    )
+                                    if (loadSteerHistory != null) DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_steer_history)) },
+                                        enabled = !state.busy,
+                                        onClick = { showActions = false; showSteerHistory = true },
+                                    )
+                                    if (state.recentRuns.isNotEmpty()) DropdownMenuItem(
+                                        text = { Text(stringResource(if (interrupted) R.string.native_runs_interrupted else R.string.native_runs_title)) },
+                                        enabled = true,
+                                        onClick = { showActions = false; runs = true },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_open_proofreading)) },
+                                        enabled = !state.busy || state.foregroundExecutionActive,
+                                        onClick = { showActions = false; navigate(NativePage.PROOFREADING) },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_agent_local_tools)) },
+                                        enabled = !state.busy,
+                                        onClick = { showActions = false; tools = true },
+                                    )
+                                }
                             }
                         }
                     }
@@ -366,55 +437,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             )
                         }
                     }
-                    if (workspace != null) {
-                        item(key = "workspace-files") {
-                            OutlinedButton(
-                                onClick = { showWorkspace = true },
-                                enabled = ready,
-                                modifier = Modifier.fillMaxWidth().testTag("native-workspace-open"),
-                            ) {
-                                Text(stringResource(R.string.native_workspace_open))
-                            }
-                        }
-                    }
-                    item(key = "open-editor") {
-                        TextButton(
-                            onClick = { navigate(NativePage.PROOFREADING) },
-                            enabled = !state.busy || state.foregroundExecutionActive,
-                        ) {
-                            Text(stringResource(R.string.native_open_proofreading))
-                        }
-                    }
-                    if (state.recentRuns.isNotEmpty()) {
-                        item(key = "runs") {
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                TextButton(onClick = { runs = !runs }) {
-                                    Text(stringResource(R.string.native_runs_title))
-                                }
-                                if (runs) NativeRunHistory(state)
-                            }
-                        }
-                    }
-                    item(key = "local-tools") {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                if (loadHistory != null) {
-                                    TextButton(onClick = { showHistory = true }, enabled = !state.busy) {
-                                        Text(stringResource(R.string.native_agent_full_history))
-                                    }
-                                }
-                                if (prepareContext != null) {
-                                    TextButton(onClick = { showContext = true }, enabled = ready && !state.hasAgentApproval) {
-                                        Text(stringResource(R.string.native_context_title))
-                                    }
-                                }
-                                TextButton(onClick = { tools = !tools }, enabled = !state.busy) {
-                                    Text(stringResource(R.string.native_agent_local_tools))
-                                }
-                            }
-                            if (tools) NativeLocalAgentTools(state, query, prepare)
-                        }
-                    }
+
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Surface(color = MaterialTheme.colorScheme.surface) {
@@ -452,27 +475,10 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             enabled = ready && !state.hasAgentApproval && !state.agentAttachmentBusy,
                             actions = state.agentAttachmentActions,
                         )
-                        Row(
+                        if (state.agentInput.isNotBlank()) Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (loadSteerHistory != null) {
-                                TextButton(
-                                    onClick = { showSteerHistory = true },
-                                    enabled = !state.busy,
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                ) {
-                                    Text(stringResource(R.string.native_steer_history))
-                                }
-                            }
-                            TextButton(
-                                onClick = { showQueue = true },
-                                enabled = !state.busy,
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                modifier = Modifier.testTag("native-agent-queue-open"),
-                            ) {
-                                Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0))
-                            }
                             TextButton(
                                 onClick = queueInput,
                                 enabled = ready && !state.hasAgentApproval &&
@@ -508,10 +514,11 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                 value = state.agentInput,
                                 onValueChange = input,
                                 modifier = Modifier.weight(1f),
-                                minLines = 2,
+                                minLines = 1,
                                 maxLines = 5,
+                                shape = RoundedCornerShape(16.dp),
                                 enabled = (ready || state.foregroundAgentActive) && !state.hasAgentApproval,
-                                label = { Text(stringResource(R.string.native_agent_message)) },
+                                placeholder = { Text(stringResource(R.string.native_agent_message)) },
                             )
                             if (state.busy) {
                                 Button(onClick = cancel) {
@@ -538,6 +545,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     workspaceAvailable = workspace != null,
                     openWorkspace = { showWorkspace = true },
                     openQueue = { showQueue = true },
+                    openRuns = { runs = true },
                     reviewItemProposal = reviewItemProposal,
                     reviewPolicyProposal = reviewPolicyProposal,
                     reviewPdfPageProposal = reviewPdfPageProposal,
@@ -556,6 +564,7 @@ private fun NativeAgentSidePanel(
     workspaceAvailable: Boolean,
     openWorkspace: () -> Unit,
     openQueue: () -> Unit,
+    openRuns: () -> Unit,
     reviewItemProposal: ((ItemProposalSummary) -> Unit)?,
     reviewPolicyProposal: ((PolicyApprovalSummary) -> Unit)?,
     reviewPdfPageProposal: ((PdfPageProposalSummary) -> Unit)?,
@@ -574,7 +583,7 @@ private fun NativeAgentSidePanel(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item(key = "title") {
-                Text(stringResource(R.string.native_agent), style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.native_agent_resources), style = MaterialTheme.typography.titleMedium)
             }
             if (state.busy) {
                 item(key = "running") {
@@ -671,7 +680,7 @@ private fun NativeAgentSidePanel(
                 item(key = "workspace") {
                     NativeSectionCard(
                         title = stringResource(R.string.native_workspace_title),
-                        subtitle = stringResource(R.string.native_workspace_notice),
+                        subtitle = stringResource(R.string.native_agent_workspace_hint),
                     ) {
                         OutlinedButton(
                             onClick = openWorkspace,
@@ -693,7 +702,11 @@ private fun NativeAgentSidePanel(
                 }
             }
             if (state.recentRuns.isNotEmpty()) {
-                item(key = "runs") { NativeRunHistory(state) }
+                item(key = "runs") {
+                    TextButton(onClick = openRuns, modifier = Modifier.fillMaxWidth()) {
+                        Text(stringResource(R.string.native_runs_title))
+                    }
+                }
             }
         }
     }
@@ -719,12 +732,7 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
     }
     val borderColor = when (line.role) {
         "USER" -> MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-        else -> MaterialTheme.colorScheme.outlineVariant
-    }
-    val badgeTone = when (line.role) {
-        "USER" -> NativeTone.PRIMARY
-        "ASSISTANT" -> NativeTone.SECONDARY
-        else -> NativeTone.NEUTRAL
+        else -> MaterialTheme.colorScheme.surface
     }
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -733,10 +741,10 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
         Card(
             modifier = Modifier
                 .widthIn(max = 720.dp)
-                .fillMaxWidth(if (user) 0.92f else 1f),
-            shape = MaterialTheme.shapes.large,
+                .then(if (user) Modifier.widthIn(max = 560.dp) else Modifier.fillMaxWidth()),
+            shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = containerColor),
-            border = BorderStroke(1.dp, borderColor),
+            border = if (line.role == "ASSISTANT") null else BorderStroke(1.dp, borderColor),
         ) {
             Column(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -747,7 +755,7 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    NativeStatusBadge(text = roleLabel(line.role), tone = badgeTone)
+                    Text(roleLabel(line.role), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     TextButton(
                         onClick = { inspect(line.id) },
                         enabled = enabled,
@@ -760,7 +768,7 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
                     Text(
                         text = line.text.ifBlank { stringResource(R.string.native_agent_tool_activity) },
                         style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 12,
+                        maxLines = if (line.role == "TOOL") 12 else Int.MAX_VALUE,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }

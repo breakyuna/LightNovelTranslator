@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -912,6 +913,16 @@ internal fun Workbench(
     openFiles: (() -> Unit)? = null,
 ) {
     val project = requireNotNull(state.project)
+    var backupExpanded by rememberSaveable(project.ref) { mutableStateOf(false) }
+    var runsOpen by remember(project.ref) { mutableStateOf(false) }
+    if (runsOpen) AlertDialog(
+        onDismissRequest = { runsOpen = false },
+        title = { Text(stringResource(R.string.native_runs_title)) },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) { NativeRunHistory(state) }
+        },
+        confirmButton = { TextButton(onClick = { runsOpen = false }) { Text(stringResource(R.string.native_close)) } },
+    )
     var settingsOpen by remember(project.ref) { mutableStateOf(false) }
     var pdfAsset by remember(project.ref) { mutableStateOf<ProjectAssetSummary?>(null) }
     pdfAsset?.let { asset ->
@@ -961,7 +972,7 @@ internal fun Workbench(
         }
     }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize().wrapContentSize(Alignment.TopCenter).widthIn(max = 1080.dp).fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -1013,7 +1024,7 @@ internal fun Workbench(
                             OutlinedButton(
                                 onClick = openFiles,
                                 enabled = canManage,
-                                modifier = Modifier.weight(1f).testTag("native-workbench-files"),
+                                modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp).testTag("native-workbench-files"),
                             ) {
                                 Text(stringResource(R.string.native_files_title), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
@@ -1022,59 +1033,69 @@ internal fun Workbench(
                             OutlinedButton(
                                 onClick = { settingsOpen = true },
                                 enabled = canManage,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                             ) {
                                 Text(stringResource(R.string.native_project_settings), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
                 }
-                if (exportBackup != null || importBackup != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (exportBackup != null) {
-                            OutlinedButton(
-                                onClick = exportBackup,
-                                enabled = canManage,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(stringResource(R.string.native_backup_export), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (exportBackup != null || importBackup != null || exportAllBackups != null || importAllBackups != null) {
+                    TextButton(onClick = { backupExpanded = !backupExpanded }) {
+                        Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.native_backup_actions))
+                        Icon(if (backupExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
+                    }
+                }
+                if (backupExpanded) {
+                    if (exportBackup != null || importBackup != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (exportBackup != null) {
+                                OutlinedButton(
+                                    onClick = exportBackup,
+                                    enabled = canManage,
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
+                                ) {
+                                    Text(stringResource(R.string.native_backup_export), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
-                        }
-                        if (importBackup != null) {
-                            OutlinedButton(
-                                onClick = importBackup,
-                                enabled = canManage,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(stringResource(R.string.native_backup_import), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (importBackup != null) {
+                                OutlinedButton(
+                                    onClick = importBackup,
+                                    enabled = canManage,
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
+                                ) {
+                                    Text(stringResource(R.string.native_backup_import), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         }
                     }
-                }
-                if (exportAllBackups != null || importAllBackups != null) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        if (exportAllBackups != null) {
-                            OutlinedButton(
-                                onClick = exportAllBackups,
-                                enabled = canManage,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(stringResource(R.string.native_project_set_export), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    if (exportAllBackups != null || importAllBackups != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (exportAllBackups != null) {
+                                OutlinedButton(
+                                    onClick = exportAllBackups,
+                                    enabled = canManage,
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
+                                ) {
+                                    Text(stringResource(R.string.native_project_set_export), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
-                        }
-                        if (importAllBackups != null) {
-                            OutlinedButton(
-                                onClick = importAllBackups,
-                                enabled = canManage,
-                                modifier = Modifier.weight(1f),
-                            ) {
-                                Text(stringResource(R.string.native_project_set_import), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (importAllBackups != null) {
+                                OutlinedButton(
+                                    onClick = importAllBackups,
+                                    enabled = canManage,
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
+                                ) {
+                                    Text(stringResource(R.string.native_project_set_import), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
                             }
                         }
                     }
@@ -1082,7 +1103,17 @@ internal fun Workbench(
             }
         }
         if (state.recentRuns.isNotEmpty()) {
-            item(key = "workbench-runs") { NativeRunHistory(state) }
+            item(key = "workbench-runs") {
+                TextButton(onClick = { runsOpen = true }) {
+                    Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.native_runs_title))
+                    if (state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }) {
+                        Spacer(Modifier.width(8.dp))
+                        NativeStatusBadge(text = stringResource(R.string.native_runs_interrupted), tone = NativeTone.WARNING)
+                    }
+                }
+            }
         }
         val assets = state.project?.assets.orEmpty()
         item(key = "assets-header") {
@@ -1180,7 +1211,7 @@ internal fun Workbench(
                             Text(
                                 text = stringResource(R.string.native_asset_translation_enabled),
                                 style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                             )
                         }
                         val index = assets.indexOfFirst { it.id == asset.id }
@@ -1230,14 +1261,14 @@ internal fun Workbench(
                     OutlinedButton(
                         onClick = { export(NativeExport.TRANSLATION) },
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                     ) {
                         Text(stringResource(R.string.native_export_translation), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     OutlinedButton(
                         onClick = { export(NativeExport.BILINGUAL) },
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                     ) {
                         Text(stringResource(R.string.native_export_bilingual), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
@@ -1250,14 +1281,14 @@ internal fun Workbench(
                     OutlinedButton(
                         onClick = { export(NativeExport.ORIGINAL) },
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                     ) {
                         Text(stringResource(R.string.native_export_original), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     TextButton(
                         onClick = cleanup,
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
                     ) {
                         Text(stringResource(R.string.native_cleanup), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
@@ -1408,7 +1439,7 @@ internal fun Proofreading(
                             ) {
                                 FilledTonalButton(
                                     onClick = { remote = true },
-                                    modifier = Modifier.weight(1f),
+                                    modifier = Modifier.weight(1f, fill = false).widthIn(max = 280.dp),
                                     enabled = state.translationModelSettings != null && !state.policyLoadIncomplete &&
                                         state.policyDraft?.dirty != true && !state.busy && state.editor == null &&
                                         state.manualBatch == null && !state.selectingItems && !state.runLoadIncomplete &&
@@ -1609,7 +1640,7 @@ private fun ProofreadingItemCard(
     onOpen: () -> Unit,
 ) {
     val selectionLabel = stringResource(R.string.native_batch_select_row, item.row.toLong() + 1)
-    val containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface
+    val containerColor = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.06f) else MaterialTheme.colorScheme.surface
     val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
     Card(
         modifier = Modifier
@@ -1663,7 +1694,7 @@ private fun ProofreadingItemCard(
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = if (expandedPreview) Int.MAX_VALUE else 3,
                 overflow = TextOverflow.Ellipsis,
-                color = if (item.translation.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary,
+                color = if (item.translation.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
             )
         }
     }
@@ -1695,6 +1726,7 @@ private fun ProofreadingItemDetail(
         }
         return
     }
+    val selectionLabel = stringResource(R.string.native_batch_select_row, item.row.toLong() + 1)
     Column(
         modifier = modifier.testTag("native-proofreading-detail").padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -1717,6 +1749,16 @@ private fun ProofreadingItemDetail(
                     )
                 }
             }
+            if (state.selectingItems && batchActions != null) {
+                Checkbox(
+                    checked = item.id in state.selectedItems,
+                    onCheckedChange = { batchActions.toggle(item.id) },
+                    enabled = !state.busy,
+                    modifier = Modifier.semantics {
+                        contentDescription = selectionLabel
+                    },
+                )
+            }
             Button(onClick = { onEdit(item.id) }, enabled = !state.busy && !state.selectingItems) {
                 Text(stringResource(R.string.native_edit_row, item.row + 1))
             }
@@ -1727,16 +1769,29 @@ private fun ProofreadingItemDetail(
                 modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                ProofreadingItemCard(
-                    item = item,
-                    state = state,
-                    batchActions = batchActions,
-                    selected = true,
-                    expandedPreview = true,
-                    onOpen = {
-                        if (state.selectingItems && batchActions != null) batchActions.toggle(item.id) else onEdit(item.id)
-                    },
-                )
+                ProofreadingQualitySummary(state, item.id)
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surface) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(stringResource(R.string.native_source), style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(item.source.ifEmpty { stringResource(R.string.native_blank_line) },
+                                    style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                        Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surface) {
+                            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(stringResource(R.string.native_translation), style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.primary)
+                                Text(item.translation.ifEmpty {
+                                    stringResource(if (item.status == TextItemStatus.PROCESSED) R.string.native_empty_result else R.string.native_empty_translation)
+                                }, style = MaterialTheme.typography.bodyLarge,
+                                    color = if (item.translation.isEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

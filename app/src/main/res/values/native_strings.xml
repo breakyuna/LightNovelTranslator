@@ -131,7 +131,7 @@
     <string name="native_export_asset">Export</string>
     <string name="native_asset_summary">Asset %1$s, %2$d items</string>
     <string name="native_asset_empty">No fixed assets</string>
-    <string name="native_assets_description">Import a text, subtitle, JSON, EPUB, XLSX, RenPy, TRANS or RPG Maker asset (including RGSS archives and Scripts data). The source is frozen in the project.</string>
+    <string name="native_assets_description">Import TXT or EPUB files. Source files are stored in the project.</string>
     <string name="native_previous">Previous page</string>
     <string name="native_next">Next page</string>
     <string name="native_empty_items">This asset has no text entries. The original file is preserved.</string>
@@ -1541,4 +1541,8 @@
     <string name="native_legacy_export_unavailable">The export could not be completed. The legacy data and any existing output were not changed.</string>
     <string name="native_legacy_export_limit">The export exceeds its size or entry limit. No package was published.</string>
     <string name="native_legacy_export_cancelled">Export cancelled. The legacy database and existing output were not changed.</string>
+    <string name="native_agent_actions">Conversation actions</string>
+    <string name="native_agent_resources">Resources</string>
+    <string name="native_agent_workspace_hint">Browse files, materials and generated outputs.</string>
+    <string name="native_backup_actions">Backup and restore</string>
 </resources>

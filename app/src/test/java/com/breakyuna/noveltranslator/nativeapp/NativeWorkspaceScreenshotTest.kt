@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.isRoot
@@ -65,7 +66,7 @@ class NativeWorkspaceScreenshotTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             NativeAgentPage(NativeProjectUiState(project = summary), {}, { _, _ -> }, {}, {}, navigate = { selected = it })
         } } }
-        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(context.getString(R.string.native_open_proofreading)))
+        compose.onNodeWithContentDescription(context.getString(R.string.native_agent_actions)).performClick()
         compose.onNodeWithText(context.getString(R.string.native_open_proofreading)).performClick()
         assertEquals(NativePage.PROOFREADING, selected)
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-agent.png")
@@ -153,9 +154,11 @@ class NativeWorkspaceScreenshotTest {
             NativeAgentPage(NativeProjectUiState(project = summary, recentRuns = listOf(run), runLoadIncomplete = true),
                 {}, { _, _ -> }, {}, {}, {})
         } } }
-        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(context.getString(R.string.native_runs_uncertain)))
+        compose.onNodeWithTag("native-agent-interrupted").performClick()
         compose.onNodeWithText(context.getString(R.string.native_runs_uncertain)).assertExists()
-        compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-run-recovery.png")
+        compose.onNode(isRoot() and hasAnyDescendant(hasText(context.getString(R.string.native_runs_uncertain))))
+            .captureRoboImage(filePath = "src/test/screenshots/native-run-recovery.png")
+        compose.onNodeWithText(context.getString(R.string.native_close)).performClick()
         compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(context.getString(R.string.native_agent_query)))
         compose.onNodeWithText(context.getString(R.string.native_agent_query)).assertIsNotEnabled()
     }
