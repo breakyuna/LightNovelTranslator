@@ -401,7 +401,7 @@ private suspend fun executeMcpTool(
         }
     } catch (_: TimeoutCancellationException) {
         currentCoroutineContext().ensureActive()
-        NativeMcpToolJson.error(McpFailureKind.TIMEOUT.name)
+        return NativeMcpToolJson.error(McpFailureKind.TIMEOUT.name)
     } finally {
         cancellation.cancel()
         runtime.endOperation(operation)

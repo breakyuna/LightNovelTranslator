@@ -62,7 +62,6 @@ import com.breakyuna.noveltranslator.nativecore.storage.NativePdfPageProposalSto
 import com.breakyuna.noveltranslator.nativecore.storage.NativePolicyProposalStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeTextProjectStore
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceApplyStatus
-import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceChangeProposalReceipt
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -499,7 +498,7 @@ internal fun NativeProjectUiState.mixedApprovalCandidates(): List<NativeMixedApp
     }
     policyProposals.firstOrNull { it.state == TextApprovalState.PENDING }?.let {
         all += NativeMixedApprovalUiCandidate(
-            MixedApprovalMemberKind.POLICY, it.id.value, it.run, it.revision, it.policy, 1,
+            MixedApprovalMemberKind.POLICY, it.id.value, it.run, it.revision, ConflictPolicy.REJECT_BATCH, 1,
         )
     }
     pdfPageProposals.firstOrNull { it.state == PdfPageProposalState.PENDING }?.let {
@@ -709,13 +708,15 @@ internal class NativeMixedApprovalCoordinator(
         }
         val workspaceMembers = loaded
             .filter { it.member.kind == MixedApprovalMemberKind.WORKSPACE_FILE }
-            .map { member ->
+            .map { child ->
+                val member = child.member
                 workspaceReceipts.firstOrNull { it.identityKey == member.identityKey }?.let {
                     member.withOutcome(it.state, it.receiptDigest, it.rejection)
                 } ?: member.withOutcome(MixedApprovalMemberState.INDETERMINATE)
             }
         if (!NativeMixedApprovalRules.projectMayRun(consumed.policy, workspaceMembers)) {
-            val outcomes = loaded.map { member ->
+            val outcomes = loaded.map { child ->
+                val member = child.member
                 workspaceMembers.firstOrNull { it.identityKey == member.identityKey }
                     ?: member.withOutcome(MixedApprovalMemberState.INDETERMINATE)
             }
@@ -735,7 +736,8 @@ internal class NativeMixedApprovalCoordinator(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            val outcomes = loaded.map { member ->
+            val outcomes = loaded.map { child ->
+                val member = child.member
                 workspaceMembers.firstOrNull { it.identityKey == member.identityKey }
                     ?: member.withOutcome(MixedApprovalMemberState.INDETERMINATE)
             }
@@ -989,7 +991,7 @@ internal class NativeMixedApprovalCoordinator(
         )
         return NativeMixedChildSnapshot(
             MixedApprovalMemberKind.POLICY, proposal.id.value, summary.command, summary.digest,
-            proposal.ref, proposal.chat, proposal.run, proposal.revision, proposal.policy,
+            proposal.ref, proposal.chat, proposal.run, proposal.revision, ConflictPolicy.REJECT_BATCH,
             emptyList(), emptyList(), null, view,
         )
     }

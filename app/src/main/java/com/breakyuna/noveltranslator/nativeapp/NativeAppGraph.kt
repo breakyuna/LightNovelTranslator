@@ -476,7 +476,7 @@ class NativeAppGraph(context: Context) {
                     cursor = page.nextCursor
                 } while (cursor != null)
                 output.flush()
-                bytes
+                return bytes
             }
         },
         runtimeSnapshot = { runtime.snapshot() },

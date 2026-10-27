@@ -234,9 +234,9 @@ internal class LegacyJsonWriter(private val out: Writer) {
     fun name(name: String) {
         check(kinds.lastOrNull() == '{') { "JSON name outside an object" }
         check(!pendingName) { "JSON name already pending" }
-        if (counts.last() > 0) out.write(',')
+        if (counts.last() > 0) out.write(','.code)
         writeQuoted(name)
-        out.write(':')
+        out.write(':'.code)
         pendingName = true
     }
 
@@ -326,7 +326,7 @@ internal class LegacyJsonWriter(private val out: Writer) {
             check(pendingName) { "JSON object value requires a name" }
             pendingName = false
         } else {
-            if (counts.last() > 0) out.write(',')
+            if (counts.last() > 0) out.write(','.code)
         }
         counts[counts.lastIndex] = counts.last() + 1
     }

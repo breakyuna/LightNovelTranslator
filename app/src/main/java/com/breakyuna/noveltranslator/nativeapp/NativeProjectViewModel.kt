@@ -648,7 +648,7 @@ class NativeProjectViewModel internal constructor(
         refreshStatus = ::refreshOAuthStatus,
         logout = ::logoutOAuth,
     )
-    private val mutable = MutableStateFlow(NativeProjectUiState(recoveryProblems = saved["native_recovery_problems"] ?: 0, encoding =
+    private val mutable: MutableStateFlow<NativeProjectUiState> = MutableStateFlow(NativeProjectUiState(recoveryProblems = saved["native_recovery_problems"] ?: 0, encoding =
         runCatching { TxtEncoding.valueOf(saved["native_encoding"] ?: "UTF8") }.getOrDefault(TxtEncoding.UTF8),
         supportedFormats = graph.formatAdapters,
         modelCatalogActions = modelCatalogActions,
@@ -3754,7 +3754,7 @@ class NativeProjectViewModel internal constructor(
         val tree = runCatching { Uri.parse(outputDirectory) }.getOrNull()
         if (tree == null || tree.scheme != "content") {
             legacyExport.update { it.copy(status = NativeLegacyExportStatus.FAILED,
-                message = getString(R.string.native_legacy_export_unavailable)) }
+                message = getApplication<Application>().getString(R.string.native_legacy_export_unavailable)) }
             return
         }
         val command = legacyExportCommand ?: UUID.randomUUID().toString().also { legacyExportCommand = it }
@@ -3782,7 +3782,7 @@ class NativeProjectViewModel internal constructor(
         legacyExportJob = null
         legacyExport.update {
             it.copy(status = NativeLegacyExportStatus.CANCELLED,
-                message = getString(R.string.native_legacy_export_cancelled))
+                message = getApplication<Application>().getString(R.string.native_legacy_export_cancelled))
         }
     }
 
@@ -3795,7 +3795,7 @@ class NativeProjectViewModel internal constructor(
         try {
             if (withContext(Dispatchers.IO) { !legacyDatabase.isFile || !legacyDatabase.canRead() }) {
                 update { it.copy(status = NativeLegacyExportStatus.FAILED,
-                    message = getString(R.string.native_legacy_export_missing_database)) }
+                    message = getApplication<Application>().getString(R.string.native_legacy_export_missing_database)) }
                 return
             }
             val directoryName = legacyExportDirectoryName ?: newLegacyExportDirectoryName(command).also {
@@ -3847,18 +3847,18 @@ class NativeProjectViewModel internal constructor(
         } catch (cancelled: CancellationException) {
             update {
                 it.copy(status = NativeLegacyExportStatus.CANCELLED,
-                    message = getString(R.string.native_legacy_export_cancelled))
+                    message = getApplication<Application>().getString(R.string.native_legacy_export_cancelled))
             }
             throw cancelled
         } catch (failure: LegacyExportLimitException) {
             update {
                 it.copy(status = NativeLegacyExportStatus.FAILED,
-                    message = getString(R.string.native_legacy_export_limit))
+                    message = getApplication<Application>().getString(R.string.native_legacy_export_limit))
             }
         } catch (_: Exception) {
             update {
                 it.copy(status = NativeLegacyExportStatus.FAILED,
-                    message = getString(R.string.native_legacy_export_unavailable))
+                    message = getApplication<Application>().getString(R.string.native_legacy_export_unavailable))
             }
         } finally {
             if (legacyExportRunToken == token) {
@@ -4006,7 +4006,7 @@ class NativeProjectViewModel internal constructor(
                 throw cancelled
             } catch (_: Exception) {
                 projectImport.update {
-                    it.copy(error = getString(R.string.native_import_read_failed))
+                    it.copy(error = getApplication<Application>().getString(R.string.native_import_read_failed))
                 }
             } finally {
                 projectImport.update { it.copy(busy = false) }
@@ -4022,7 +4022,7 @@ class NativeProjectViewModel internal constructor(
                 val documents = withContext(Dispatchers.IO) { enumerateImportDirectory(uri) }
                 if (documents.isEmpty()) {
                     projectImport.update {
-                        it.copy(error = getString(R.string.native_import_directory_empty))
+                        it.copy(error = getApplication<Application>().getString(R.string.native_import_directory_empty))
                     }
                     return@launch
                 }
@@ -4038,7 +4038,7 @@ class NativeProjectViewModel internal constructor(
                 throw cancelled
             } catch (_: Exception) {
                 projectImport.update {
-                    it.copy(error = getString(R.string.native_import_read_failed))
+                    it.copy(error = getApplication<Application>().getString(R.string.native_import_read_failed))
                 }
             } finally {
                 projectImport.update { it.copy(busy = false) }
@@ -4057,7 +4057,7 @@ class NativeProjectViewModel internal constructor(
                 throw cancelled
             } catch (_: Exception) {
                 projectImport.update {
-                    it.copy(error = getString(R.string.native_import_read_failed))
+                    it.copy(error = getApplication<Application>().getString(R.string.native_import_read_failed))
                 }
             } finally {
                 projectImport.update { it.copy(busy = false) }
@@ -4078,7 +4078,7 @@ class NativeProjectViewModel internal constructor(
      * project. All store calls use deterministic command ids so a retried submission reuses prior
      * receipts instead of creating a duplicate project or duplicate assets.
      */
-    fun createProjectFromImport(review: NativeProjectImportReview) {
+    internal fun createProjectFromImport(review: NativeProjectImportReview) {
         if (projectImport.value.busy || !review.canCreate || review != projectImport.value.review) return
         action {
             projectImport.update { it.copy(busy = true, error = null) }
@@ -4110,7 +4110,7 @@ class NativeProjectViewModel internal constructor(
                 if (fresh != review) {
                     projectImport.update {
                         it.copy(review = fresh,
-                            error = getString(R.string.native_import_review_changed))
+                            error = getApplication<Application>().getString(R.string.native_import_review_changed))
                     }
                     return@action
                 }
@@ -4138,9 +4138,9 @@ class NativeProjectViewModel internal constructor(
                     mutable.value = mutable.value.copy(notice = R.string.native_import_created)
                 } else {
                     val failures = created.failures +
-                        if (opened.isFailure) listOf(getString(R.string.native_import_open_failed)) else emptyList()
+                        if (opened.isFailure) listOf(getApplication<Application>().getString(R.string.native_import_open_failed)) else emptyList()
                     projectImport.update {
-                        it.copy(error = getString(
+                        it.copy(error = getApplication<Application>().getString(
                             R.string.native_import_partial_failure,
                             failures.joinToString("\n"),
                         ))
@@ -4148,7 +4148,7 @@ class NativeProjectViewModel internal constructor(
                 }
             } catch (cancelled: CancellationException) {
                 projectImport.update {
-                    it.copy(error = getString(R.string.native_import_cancelled))
+                    it.copy(error = getApplication<Application>().getString(R.string.native_import_cancelled))
                 }
                 throw cancelled
             } catch (failure: Exception) {
@@ -4214,7 +4214,7 @@ class NativeProjectViewModel internal constructor(
                     } catch (_: Exception) {
                         return NativeProjectImportCreation(
                             seed.ref,
-                            listOf(getString(R.string.native_import_seed_cleanup_failed)),
+                            listOf(getApplication<Application>().getString(R.string.native_import_seed_cleanup_failed)),
                         )
                     }
                 }
@@ -4313,14 +4313,14 @@ class NativeProjectViewModel internal constructor(
     private fun projectImportErrorMessage(failure: Exception): String =
         when ((failure as? TextProjectException)?.reason) {
             TextProjectException.Reason.LIMIT_EXCEEDED ->
-                getString(R.string.native_import_error_limit)
+                getApplication<Application>().getString(R.string.native_import_error_limit)
             TextProjectException.Reason.INVALID_TEXT,
             TextProjectException.Reason.INVALID_FORMAT ->
-                getString(R.string.native_import_error_format)
+                getApplication<Application>().getString(R.string.native_import_error_format)
             TextProjectException.Reason.COMMAND_CONFLICT,
             TextProjectException.Reason.STALE_PAGE ->
-                getString(R.string.native_import_error_conflict)
-            else -> getString(R.string.native_import_error_generic)
+                getApplication<Application>().getString(R.string.native_import_error_conflict)
+            else -> getApplication<Application>().getString(R.string.native_import_error_generic)
         }
 
     private data class ImportDocument(val uri: Uri, val name: String, val size: Long)

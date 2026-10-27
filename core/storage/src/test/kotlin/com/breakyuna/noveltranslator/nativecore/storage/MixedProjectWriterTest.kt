@@ -22,6 +22,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import com.breakyuna.noveltranslator.nativecore.domain.ManualTextEdit
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApproval
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalBinding
+import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalDigest
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMember
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMemberKind
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMemberState
@@ -123,12 +124,12 @@ class MixedProjectWriterTest {
     }
 
     private suspend fun policyProposal(
-        revision: Long = projects.open(ref).revision,
+        revision: Long? = null,
     ): PolicyChangeProposal {
         val before = projects.textPolicy(ref).policy
         val after = before.changed(prompt = "mixed prompt ${++sequence}", promptEnabled = true)
         return PolicyChangeProposal(ApprovalRequestId("policy-$sequence"), ref, chat, run,
-            CommandId("policy-command-$sequence"), revision, before, after)
+            CommandId("policy-command-$sequence"), revision ?: projects.open(ref).revision, before, after)
     }
 
     private suspend fun seedPdf(): ProjectAssetSummary {
@@ -148,26 +149,26 @@ class MixedProjectWriterTest {
     private suspend fun pdfProposal(
         asset: ProjectAssetSummary,
         pages: Set<Int> = setOf(1, 2),
-        revision: Long = projects.open(ref).revision,
+        revision: Long? = null,
     ): PdfPageChangeProposal {
         val id = ++sequence
         val members = pages.sorted().map { page ->
             PdfPageChangeMember(page, PdfPageMode.TRANSLATE, PdfPageMode.OMIT)
         }
         return PdfPageChangeProposal(ApprovalRequestId("pdf-$id"), ref, chat, run,
-            CommandId("pdf-command-$id"), revision, asset.id, asset.sha256,
+            CommandId("pdf-command-$id"), revision ?: projects.open(ref).revision, asset.id, asset.sha256,
             asset.itemCount, ConflictPolicy.REJECT_BATCH, members)
     }
 
     private suspend fun assetImport(
         target: String? = null,
-        revision: Long = projects.open(ref).revision,
+        revision: Long? = null,
     ): Pair<AssetImportProposal, AssetImportPlan> {
         val id = ++sequence
         val bytes = "imported-$id".toByteArray()
         val path = RelativePath(target ?: "imported-$id.txt")
         val proposal = AssetImportProposal(ApprovalRequestId("asset-$id"), ref, chat, run,
-            CommandId("asset-command-$id"), revision, run,
+            CommandId("asset-command-$id"), revision ?: projects.open(ref).revision, run,
             AssetImportArtifactId("artifact-$id"), RelativePath("artifacts/$id.txt"),
             TextProjectFingerprint.bytes(bytes), bytes.size.toLong(), path, true, 1_000L + id)
         val plan = AssetImportPlan(proposal.command, ref, proposal.revision, path,
@@ -500,7 +501,7 @@ class MixedProjectWriterTest {
         expectRefusal(MixedProjectWriteRefusal.BINDING) {
             apply(approval, listOf(itemInput), MixedApprovalBinding(other))
         }
-        val wrongDigestBinding = MixedApprovalBinding(approval.id, fp('e'), approval.commandId,
+        val wrongDigestBinding = MixedApprovalBinding(approval.id, MixedApprovalDigest(fp('e').sha256), approval.commandId,
             approval.ref, approval.chat, approval.run, approval.baseRevision, approval.policy)
         expectRefusal(MixedProjectWriteRefusal.BINDING) {
             apply(approval, listOf(itemInput), wrongDigestBinding)

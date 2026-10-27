@@ -507,7 +507,7 @@ internal class NativeFullArchiveDataPort(
         )
     }
 
-    override suspend fun write(receipt: AppBackupRestoreReceipt) = withContext(Dispatchers.IO) {
+    override suspend fun write(receipt: AppBackupRestoreReceipt): Unit = withContext(Dispatchers.IO) {
         journalFile.parentFile?.mkdirs()
         val root = buildJsonObject {
             put("format", RECEIPT_FORMAT)
@@ -544,6 +544,7 @@ internal class NativeFullArchiveDataPort(
             }
             mapping.delete()
         }
+        Unit
     }
 
     private fun deleteHistoryDirectory(name: String) {
@@ -848,7 +849,7 @@ internal class NativeFullArchiveDataPort(
                         RecoveryGeneration(ref.getValue("generation").jsonPrimitive.long),
                     )
                 }
-                RestoreImport(
+                FullArchiveImportedProject(
                     oldRef = ref("old_ref", item),
                     commandId = item.getValue("command").jsonPrimitive.content,
                     newRef = (item["new_ref"] as? JsonObject)?.let {
@@ -954,23 +955,17 @@ internal class NativeFullArchiveDataPort(
                         put("command", imported.commandId)
                     }
                 }))
-                put("entries", JsonArray(historyEntries.map { it.path }))
+                put("entries", JsonArray(historyEntries.map { JsonPrimitive(it.path) }))
             }
             atomicWrite(File(canonicalRoot, "manifest.json"), manifest.toString().toByteArray(Charsets.UTF_8))
         }
     }
 
-    private data class RestoreImport(
-        val oldRef: LocalProjectRef,
-        val commandId: String,
-        val newRef: LocalProjectRef?,
-    )
-
     private data class RestoreMapping(
         val snapshotId: String,
         val attempt: String,
         val historyDirectory: String,
-        val imports: List<RestoreImport>,
+        val imports: List<FullArchiveImportedProject>,
         val state: String,
     )
 

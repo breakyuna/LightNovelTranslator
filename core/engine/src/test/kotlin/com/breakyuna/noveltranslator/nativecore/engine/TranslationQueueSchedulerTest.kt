@@ -499,10 +499,10 @@ class TranslationQueueSchedulerTest {
         assertEquals(1, fixture.store.queues.getValue(projectA).snapshot.task(identity)!!.batches.size)
 
         val batch = saved.batches.single()
-        val skipped = adjudicator(fixture).skip(identity, batch.id, listOf(ItemId(1)), CommandId("skip-rebuilt"))
+        val skipped = adjudicator(fixture.fixture).skip(identity, batch.id, listOf(ItemId(1)), CommandId("skip-rebuilt"))
         assertEquals(TranslationTaskQueueState.NEEDS_REVIEW,
             (skipped.queue as TranslationQueueResult.Applied).task.state)
-        val retried = adjudicator(fixture).retry(identity, batch.id, listOf(ItemId(2)), CommandId("retry-rebuilt"))
+        val retried = adjudicator(fixture.fixture).retry(identity, batch.id, listOf(ItemId(2)), CommandId("retry-rebuilt"))
         assertEquals(TranslationTaskQueueState.QUEUED,
             (retried.queue as TranslationQueueResult.Applied).task.state)
         assertTrue("Reconciliation must never launch paid work", fixture.launcher.calls.isEmpty())

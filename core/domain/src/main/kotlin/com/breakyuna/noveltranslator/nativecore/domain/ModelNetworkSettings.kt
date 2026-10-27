@@ -57,9 +57,9 @@ data class ModelHttpProxy private constructor(val host: String, val port: Int) {
 object ModelProxyCredentialReference {
     const val MAX_CHARS = 128
 
-    /** Printable ASCII without spaces; the store hashes this value before naming a file. */
+    /** Opaque printable ASCII id without spaces or credential separators; hashed by the store. */
     fun isValid(value: String): Boolean =
-        value.length in 1..MAX_CHARS && value.all { it.code in 33..126 }
+        value.length in 1..MAX_CHARS && value.all { it.code in 33..126 && it != ':' && it != '@' }
 }
 
 /**

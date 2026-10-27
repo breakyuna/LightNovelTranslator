@@ -149,7 +149,7 @@ class NativeOAuthConfigStore internal constructor(
                         throw NativeOAuthConfigurationException(NativeOAuthConfigurationException.Reason.CONFLICT)
                     expectedFingerprint != null && current == null ->
                         throw NativeOAuthConfigurationException(NativeOAuthConfigurationException.Reason.CONFLICT)
-                    expectedFingerprint != null && current.fingerprint != expectedFingerprint ->
+                    expectedFingerprint != null && current?.fingerprint != expectedFingerprint ->
                         throw NativeOAuthConfigurationException(NativeOAuthConfigurationException.Reason.CONFLICT)
                 }
                 val fingerprint = fingerprint(config)

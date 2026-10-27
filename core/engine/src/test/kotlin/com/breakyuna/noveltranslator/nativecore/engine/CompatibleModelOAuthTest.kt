@@ -76,7 +76,7 @@ class CompatibleModelOAuthTest {
 
     private fun oauthResolver(): OAuthCredentialResolver {
         val store = object : OAuthCredentialStore {
-            private var current = OAuthCredential.of("oauth-access", "oauth-refresh", Long.MAX_VALUE)
+            private var current: OAuthCredential? = OAuthCredential.of("oauth-access", "oauth-refresh", Long.MAX_VALUE)
             override suspend fun load(reference: ModelConfigurationRef) = current
             override suspend fun save(reference: ModelConfigurationRef, credential: OAuthCredential) {
                 current = credential

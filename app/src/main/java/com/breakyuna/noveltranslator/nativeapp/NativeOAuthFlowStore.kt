@@ -290,7 +290,7 @@ class NativeOAuthFlowStore internal constructor(
     }
 
     private suspend fun readPending(): NativeOAuthPendingFlow? {
-        val bytes = read(PENDING_FILE) ?: return null
+        val bytes = read(File(directory, PENDING_FILE)) ?: return null
         try {
             if (bytes.size > MAX_FILE_BYTES) throw NativeOAuthFlowException(
                 NativeOAuthFlowException.Reason.CORRUPT)
@@ -315,7 +315,7 @@ class NativeOAuthFlowStore internal constructor(
     }
 
     private suspend fun readCallback(): NativeOAuthCallbackResult? {
-        val bytes = read(CALLBACK_FILE) ?: return null
+        val bytes = read(File(directory, CALLBACK_FILE)) ?: return null
         try {
             if (bytes.size > MAX_FILE_BYTES) throw NativeOAuthFlowException(
                 NativeOAuthFlowException.Reason.CORRUPT)
