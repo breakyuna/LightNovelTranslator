@@ -14,10 +14,14 @@
 
 ### 当前源码与 CI
 
+- 2026-10-27：[Actions #209 / 40470060040](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40470060040) 对应 `bf5b92f`，Release 构建/签名/APK 上传、Lint、app/workspace API 35 设备作业通过；test 仅 `core:storage:testDebugUnitTest` 失败，App/Engine 单元测试通过，其余模块部分复用缓存。已重新下载详细报告：全部 XML 2704 项、7 个失败；Storage 387 项、7 个失败，其中 5 个类初始化失败共列出 9 个非 void 的 JUnit 方法，另有源姓名批量赋值后导入 CORRUPT_PROJECT 和价格绑定 JSONL 测试解析末尾空行失败。Lint 步骤 8 分 34.17 秒（App 编译 4 分 16.51 秒、主源码分析 3 分 24.39 秒、KSP 27.760 秒），不能认为提速已稳定。
+  - 本轮修复：XML 指出的 9 个测试/清理方法均显式返回 Unit；JSONL 测试仅移除 writer 的末尾换行，保留逐行严格 JSON 解析，并新增 header/request/complete 顺序及 footer entries=1 断言；生产 `ProjectWriteStore.editBound` 的历史 name_source 快照改为写入后的 metadata.nameSource，与本次条目指纹一致，保留完整导入校验与现有源姓名往返用例。对初始化失败类的相邻用例复核发现 `../escape` 引用未被共享校验器拒绝，故统一禁止凭据引用中的正反路径分隔符，补充领域正反斜杠边界用例；不放宽密文、身份、审批或历史指纹约束。
+  - 静态结构、差异格式和冲突标记检查通过；逐条比对 XML 中 9 个无效 JUnit 签名均已修改。静态审查，未实际构建；未在本机运行测试或 Lint。用户已授权将本轮修复提交、推送到 `refactor/translation-agent-2026-10` 并再次 dispatch，新 CI 结果待核对。
+
 - 2026-10-27：[Actions #208 / 40468285003](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40468285003) 对应 `dd5a714`，Release 构建/签名/APK 上传、Lint 和 app/workspace 两组 API 35 设备作业通过；test 失败。Storage 测试在 `MixedProjectWriterTest:546` 漏改的成员列表调用处编译失败；已产出的 XML 共 2316 项、10 个失败（不包含未编译的 storage 用例），Engine 为 12 位金额格式断言 1 项，App 为回滚快照、损坏旧库保留、Robolectric SDK/JDK、启动入口断言、固定页脚按钮滚动各 1 项，以及队列身份夹具 4 项。
   - 本轮修复：补齐 `requestWithMembers` 调用；金额断言保留 SCALE=12 与 BigInteger 精确性；Room 集成测试显式 SDK 35；队列 RunIdentity 不带 Chat；启动入口按 XML namespace/MAIN+LAUNCHER 检查唯一导出 MainActivity；固定页脚直接断言可见并点击，内容区域仍滚动定位。生产代码修复两处：回滚 snapshot 的 models.db 在只允许读写、不创建的主连接 ATTACH 前显式创建；旧库 OPEN_READONLY 使用拒绝损坏且不删除文件的 DatabaseErrorHandler，保留原有导入失败保护断言，并补充直接只读打开损坏文件后 SHA 不变的回归用例。未删除用例或放宽工程身份/审批/旧数据保留契约。
   - Lint 实测：#208 的步骤为 4 分 58.60 秒（作业约 5 分 42 秒），App 编译 2 分 24.27 秒、主源码分析 1 分 55.11 秒、KSP 8.182 秒；比 #207 的 9 分 51.34 秒缩短约 49.5%，任务摘要作业通过。核心模块编译/主源码分析缓存命中也有变化，单轮不能把全部变化归因于固定 Debug 版本号，后续仍需同输入重复运行对照。
-  - 本轮为静态审查，未实际构建；未在本机运行测试或 Lint。结构/差异格式/冲突标记静态检查通过；用户已授权将上述修复提交、推送到 `refactor/translation-agent-2026-10` 并再次 dispatch，新 CI 结果待核对。
+  - 本轮为静态审查，未实际构建；未在本机运行测试或 Lint。结构/差异格式/冲突标记静态检查通过；用户已授权将上述修复提交、推送到 `refactor/translation-agent-2026-10` 并再次 dispatch；该轮提交为 `bf5b92f`，#209 结果见上条。
 
 - 2026-10-27 CI 优化（已随 `dd5a714` 推送，#208 结果见上条）：app 增加 `lnt.versionCode` Gradle 属性，测试、两组设备测试和 Lint 统一传固定值 7，使 Debug BuildConfig/清单不随 Actions 运行序号改变；Release 命令不传该属性，仍取 `GITHUB_RUN_NUMBER`，本地默认 7。该优化针对输入无业务变化时的缓存复用，源码变化仍需重新编译/分析，不承诺可消除 #207 的全部编译耗时。Lint 增加 `--info --console=plain` 留存缓存未命中原因，并在 Actions 摘要列出已有 profile 的墙钟时间和最慢 15 个任务（并行耗时不相加）。保留各模块和测试源码检查、XML、完整 profile、签名与设备测试门槛。使用 #204/#207 下载报告核对了摘要输出；结构静态检查、工作流 YAML/内嵌 shell 语法及差异检查通过。静态审查，未实际构建；本机未运行 Kotlin 测试或 Lint；该次优化已随 `dd5a714` 提交并由 #208 验证，实际耗时与边界见上条。
 

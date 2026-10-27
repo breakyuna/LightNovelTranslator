@@ -151,7 +151,8 @@ class ModelNetworkSettingsTest {
         assertEquals(referenced.copy(proxyCredentialRef = null), decodedLegacy)
 
         assertFalse(ModelNetworkSettingsCodec.encode(configured()).contains("proxyCredentialRef"))
-        for (reference in listOf("", "has space", "user:pass@proxy", "user:pass", "user@proxy", "a".repeat(129))) {
+        for (reference in listOf("", "has space", "user:pass@proxy", "user:pass", "user@proxy",
+            "../escape", "..\\escape", "a".repeat(129))) {
             assertThrows(InvalidModelNetworkSettings::class.java) {
                 ModelNetworkSettings(proxyCredentialRef = reference)
             }

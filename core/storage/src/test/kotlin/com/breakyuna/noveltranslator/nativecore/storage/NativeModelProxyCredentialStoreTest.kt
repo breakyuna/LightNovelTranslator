@@ -59,7 +59,7 @@ class NativeModelProxyCredentialStoreTest {
         assertNull(store.load("other-ref"))
     }
 
-    @Test fun tamperedReferenceOrTransplantedCiphertextFailsClosed() = runBlocking {
+    @Test fun tamperedReferenceOrTransplantedCiphertextFailsClosed(): Unit = runBlocking {
         store.save("alpha", ModelProxyCredential.of("user-a", "password-a"))
         val alphaFile = directory.listFiles()!!.single { it.name.endsWith(".json") }
         val alpha = alphaFile.readText()
@@ -84,7 +84,7 @@ class NativeModelProxyCredentialStoreTest {
         }
     }
 
-    @Test fun corruptEnvelopeAndInvalidReferenceAreRejected() = runBlocking {
+    @Test fun corruptEnvelopeAndInvalidReferenceAreRejected(): Unit = runBlocking {
         for (content in listOf("{", "{}", "{\"format\":\"lnt-native-model-proxy-credential\"}")) {
             store.save("alpha", ModelProxyCredential.of("user", "password"))
             val file = directory.listFiles()!!.single { it.name.endsWith(".json") }

@@ -62,7 +62,7 @@ class NativeMcpSettingsStoreTest {
         assertEquals(saved, NativeMcpSettingsStore(context).load())
     }
 
-    @Test fun identicalUpsertIsIdempotentAndStaleFingerprintIsRejected() = runBlocking {
+    @Test fun identicalUpsertIsIdempotentAndStaleFingerprintIsRejected(): Unit = runBlocking {
         val store = NativeMcpSettingsStore(context)
         val first = store.upsert(record(), NativeMcpSettingsSnapshot.EMPTY.fingerprint)
         val second = store.upsert(record(), first.fingerprint)
@@ -135,7 +135,7 @@ class NativeMcpSettingsStoreTest {
         assertFalse(NativeMcpServerRecordCodec.isSecretField("allowedTools"))
     }
 
-    @Test fun corruptFileFailsClosedInsteadOfBecomingEmptyConfiguration() = runBlocking {
+    @Test fun corruptFileFailsClosedInsteadOfBecomingEmptyConfiguration(): Unit = runBlocking {
         val store = NativeMcpSettingsStore(context)
         store.upsert(record(), NativeMcpSettingsSnapshot.EMPTY.fingerprint)
         File(context.filesDir, "native-mcp-settings.json").writeText("not-json")

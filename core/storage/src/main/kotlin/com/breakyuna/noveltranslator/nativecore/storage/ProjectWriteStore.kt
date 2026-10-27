@@ -88,8 +88,8 @@ internal object ProjectWriteStore {
                     put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
                     put("command_id", command.commandId.value); put("committed_at", now)
                     if (db.version >= 5) {
-                        // A text edit keeps the item's names; the revision still snapshots them.
-                        put("name_source", NativeProjectDatabase.encodeNameSnapshot(item.metadata.nameSource))
+                        // Snapshot the names after this edit, including source-name batches.
+                        put("name_source", NativeProjectDatabase.encodeNameSnapshot(metadata.nameSource))
                         put("name_translation", NativeProjectDatabase.encodeNameSnapshot(metadata.nameTranslation))
                     }
                 })

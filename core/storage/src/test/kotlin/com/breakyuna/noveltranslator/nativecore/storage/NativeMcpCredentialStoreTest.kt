@@ -38,7 +38,7 @@ class NativeMcpCredentialStoreTest {
         directory.deleteRecursively()
     }
 
-    @Test fun saveAndLoadNeverStorePlaintext() = runBlocking {
+    @Test fun saveAndLoadNeverStorePlaintext(): Unit = runBlocking {
         store.save("alpha", 2, fingerprint, NativeMcpCredential.bearer("token-secret-value"))
         val file = directory.listFiles()!!.single { it.name.endsWith(".json") }
         val stored = file.readText()

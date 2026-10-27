@@ -255,9 +255,12 @@ class NativeUsageLedgerStoreTest {
 
         val output = java.io.ByteArrayOutputStream()
         assertEquals(1L, ledger.export(UsageLedgerQuery(ref, chat)) { output })
-        val requestLine = output.toString("UTF-8").lineSequence()
-            .map { Json.parseToJsonElement(it).jsonObject }
-            .single { it.getValue("type").jsonPrimitive.content == "request" }
+        val records = output.toString("UTF-8").removeSuffix(System.lineSeparator()).lineSequence()
+            .map { Json.parseToJsonElement(it).jsonObject }.toList()
+        assertEquals(listOf("header", "request", "complete"),
+            records.map { it.getValue("type").jsonPrimitive.content })
+        assertEquals(1L, records.last().getValue("entries").jsonPrimitive.long)
+        val requestLine = records.single { it.getValue("type").jsonPrimitive.content == "request" }
         assertEquals(priced.version, requestLine.getValue("price_version").jsonPrimitive.long)
         assertEquals("USD", requestLine.getValue("price_currency").jsonPrimitive.content)
         assertEquals(priced.fingerprint, requestLine.getValue("price_fingerprint").jsonPrimitive.content)

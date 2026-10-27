@@ -50,7 +50,7 @@ class MixedApprovalStoreTest {
         store = MixedApprovalStore(context)
     }
 
-    @After fun cleanup() = runBlocking {
+    @After fun cleanup(): Unit = runBlocking {
         store.close()
         context.deleteDatabase(databaseName)
     }
@@ -252,7 +252,7 @@ class MixedApprovalStoreTest {
         )))
     }
 
-    @Test fun activeParentIsUniquePerIdentityUntilSettled() = runBlocking {
+    @Test fun activeParentIsUniquePerIdentityUntilSettled(): Unit = runBlocking {
         val firstRequest = request(chat = "chat-a")
         val first = prepared(firstRequest)
         val busy = store.prepare(request(chat = "chat-a"))
@@ -301,7 +301,7 @@ class MixedApprovalStoreTest {
         assertTrue(store.consume(reloaded) is MixedApprovalConsumption.AlreadyConsumed)
     }
 
-    @Test fun preparedParentCanBeActivatedAndConsumed() = runBlocking {
+    @Test fun preparedParentCanBeActivatedAndConsumed(): Unit = runBlocking {
         val approval = prepared(request(), MixedApprovalState.PREPARED)
         assertEquals(MixedApprovalState.PREPARED, approval.state)
         val refused = store.consume(approval)

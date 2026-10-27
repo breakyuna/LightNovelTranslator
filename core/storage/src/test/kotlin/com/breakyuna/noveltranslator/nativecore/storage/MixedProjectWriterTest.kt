@@ -88,7 +88,7 @@ class MixedProjectWriterTest {
             "one\ntwo".toByteArray()).ref
     }
 
-    @After fun cleanup() = runBlocking {
+    @After fun cleanup(): Unit = runBlocking {
         approvals.close()
         projects.close()
         runtime.close()
