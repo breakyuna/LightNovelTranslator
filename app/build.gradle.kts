@@ -5,7 +5,14 @@ plugins {
   alias(libs.plugins.roborazzi)
 }
 
-val ciVersionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+// CI Debug jobs pass a stable code so each run does not invalidate BuildConfig/manifest inputs.
+// Release omits the override and keeps the monotonically increasing workflow run number.
+val buildVersionCode = providers.gradleProperty("lnt.versionCode")
+  .orElse(providers.environmentVariable("GITHUB_RUN_NUMBER"))
+  .map { raw ->
+    raw.toIntOrNull()?.takeIf { it > 0 }
+      ?: error("lnt.versionCode/GITHUB_RUN_NUMBER must be a positive integer")
+  }.getOrElse(7)
 val signingKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
 val signingKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
 val signingKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
@@ -29,7 +36,7 @@ android {
     applicationId = "com.breakyuna.noveltranslator"
     minSdk = libs.versions.androidMinSdk.get().toInt()
     targetSdk = libs.versions.androidTargetSdk.get().toInt()
-    versionCode = ciVersionCode ?: 7
+    versionCode = buildVersionCode
     versionName = "0.7.0-beta"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

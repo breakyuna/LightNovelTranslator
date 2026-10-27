@@ -54,9 +54,10 @@ jobs:
       - name: Check native rebuild module boundaries
         run: python3 tools/rebuild/check_structure.py
 
+      # Debug 固定版本号，避免每轮 GITHUB_RUN_NUMBER 改变 BuildConfig/清单使编译缓存失效。
       # 任务失败后继续执行依赖正常的其他模块；最终仍以非零退出码报告失败。
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest :core:domain:test :core:engine:test --continue --profile -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew testDebugUnitTest :core:domain:test :core:engine:test -Plnt.versionCode=7 --continue --profile -Pkotlin.compiler.execution.strategy=daemon
 
       # 测试失败也保留已下载的依赖，后续修复无需重新下载。
       - name: Save Robolectric android-all jars
@@ -128,7 +129,7 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: ./gradlew ${{ matrix.task }} --continue --profile -Pkotlin.compiler.execution.strategy=daemon
+          script: ./gradlew ${{ matrix.task }} -Plnt.versionCode=7 --continue --profile -Pkotlin.compiler.execution.strategy=daemon
 
       - name: Upload device test and build timing reports
         if: always()
@@ -164,7 +165,12 @@ jobs:
         run: chmod +x gradlew
 
       - name: Lint
-        run: ./gradlew lintDebug --profile -Pkotlin.compiler.execution.strategy=daemon
+        run: ./gradlew lintDebug -Plnt.versionCode=7 --info --console=plain --profile -Pkotlin.compiler.execution.strategy=daemon
+
+      # --info 保留缓存未命中的原因；摘要直接展示最慢任务，完整 profile 仍上传。
+      - name: Summarize lint task timings
+        if: always()
+        run: python3 tools/ci/gradle_profile_summary.py build/reports/profile >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload lint and build timing reports
         if: always()

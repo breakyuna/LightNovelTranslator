@@ -211,7 +211,7 @@ class UsageCostAggregatorTest {
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun cursorThatDoesNotAdvanceIsRejected() = runBlocking {
+    fun cursorThatDoesNotAdvanceIsRejected(): Unit = runBlocking {
         val ledger = object : UsageLedgerReadPort {
             override suspend fun summary(query: UsageLedgerQuery): DurableUsageSummary =
                 DurableUsageSummary(0, 0, 0, RequestUsageTotals())

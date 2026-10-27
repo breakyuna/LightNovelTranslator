@@ -427,8 +427,8 @@ class NativeFullArchiveDataPortTest {
             FullArchiveEntry.bytes(
                 AppBackupPaths.MODEL_SETTINGS,
                 FullArchiveEntryKind.MODEL_SETTINGS,
-                "{\"schema\":1,\"endpoint\":\"http://127.0.0.1:1234/v1\",\"model\":\"local\"," +
-                    "\"protocol\":\"OPENAI_CHAT_COMPLETIONS\",\"credentialsExcluded\":true}"
+                ("{\"schema\":1,\"endpoint\":\"http://127.0.0.1:1234/v1\",\"model\":\"local\"," +
+                    "\"protocol\":\"OPENAI_CHAT_COMPLETIONS\",\"credentialsExcluded\":true}")
                     .toByteArray(Charsets.UTF_8),
             ),
         )

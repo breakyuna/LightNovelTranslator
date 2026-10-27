@@ -2,7 +2,7 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import com.breakyuna.noveltranslator.nativecore.agent.AgentToolPort
+import com.breakyuna.noveltranslator.nativecore.domain.AgentToolPort
 import com.breakyuna.noveltranslator.nativecore.domain.AgentToolCall
 import com.breakyuna.noveltranslator.nativecore.domain.AgentToolOutcome
 import com.breakyuna.noveltranslator.nativecore.domain.ChatIdentity

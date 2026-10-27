@@ -75,7 +75,7 @@ class CompatibleHttpTransportHeadersTest {
         }
     }
 
-    @Test fun failuresKeepTheirClassifiedRetryAfterWithoutExposingBodies() = runBlocking {
+    @Test fun failuresKeepTheirClassifiedRetryAfterWithoutExposingBodies(): Unit = runBlocking {
         val transport = CompatibleHttpTransport(client(429, "private-body") { header("Retry-After", "30") })
         assertThrows(AgentModelFailure::class.java) {
             runBlocking { transport.executeWithHeaders(request()) }

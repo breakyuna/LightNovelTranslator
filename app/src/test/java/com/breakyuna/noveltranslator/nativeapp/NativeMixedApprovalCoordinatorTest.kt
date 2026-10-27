@@ -37,7 +37,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
-import androidx.test.core.app.ApplicationProvider
 
 /** Mixed approval planning, order, recovery and one-shot UI entry; no project or file writes. */
 class NativeMixedApprovalCoordinatorTest {

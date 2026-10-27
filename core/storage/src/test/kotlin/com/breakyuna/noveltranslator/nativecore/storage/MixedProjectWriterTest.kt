@@ -205,7 +205,7 @@ class MixedProjectWriterTest {
     ): MixedApprovalMember = MixedApprovalMember(input.kind, input.childId, childDigest, childCommand,
         selection, emptyList(), workspaceRoot)
 
-    private fun request(
+    private fun requestWithMembers(
         members: List<MixedApprovalMember>,
         base: Long,
         policy: ConflictPolicy,
@@ -216,7 +216,7 @@ class MixedProjectWriterTest {
         inputs: List<MixedProjectMemberInput>,
         base: Long,
         policy: ConflictPolicy,
-    ): MixedApprovalRequest = request(inputs.map { member(it) }, base, policy)
+    ): MixedApprovalRequest = requestWithMembers(inputs.map { member(it) }, base, policy)
 
     private fun consumed(request: MixedApprovalRequest): MixedApproval =
         MixedApproval(request, request.members, MixedApprovalState.CONSUMED,
@@ -512,20 +512,20 @@ class MixedProjectWriterTest {
             apply(approval, listOf(itemInput), wrongBaseBinding)
         }
 
-        val wrongCommandRequest = request(listOf(
+        val wrongCommandRequest = requestWithMembers(listOf(
             member(itemInput, childCommand = CommandId("wrong-command-${++sequence}"))),
             base, ConflictPolicy.REJECT_BATCH)
         expectRefusal(MixedProjectWriteRefusal.CHILD_COMMAND) {
             apply(consumed(wrongCommandRequest), listOf(itemInput))
         }
 
-        val wrongDigestRequest = request(listOf(member(itemInput, childDigest = fp('f'))),
+        val wrongDigestRequest = requestWithMembers(listOf(member(itemInput, childDigest = fp('f'))),
             base, ConflictPolicy.REJECT_BATCH)
         expectRefusal(MixedProjectWriteRefusal.CHILD_DIGEST) {
             apply(consumed(wrongDigestRequest), listOf(itemInput))
         }
 
-        val wrongSelectionRequest = request(listOf(member(itemInput, selection = listOf("999"))),
+        val wrongSelectionRequest = requestWithMembers(listOf(member(itemInput, selection = listOf("999"))),
             base, ConflictPolicy.REJECT_BATCH)
         expectRefusal(MixedProjectWriteRefusal.CHILD_SELECTION) {
             apply(consumed(wrongSelectionRequest), listOf(itemInput))
