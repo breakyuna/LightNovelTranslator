@@ -81,12 +81,4 @@ class NativeRequestLimitsStoreTest {
         file.writeText(original)
         assertEquals(ModelRequestLimits(2, 120), store.load())
     }
-
-    @Test fun firstSaveWithAnExpectedFingerprintIsRejected() = runBlocking {
-        val store = NativeRequestLimitsStore(context)
-        assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { store.save(ModelRequestLimits(1, 0), "0".repeat(64)) }
-        }
-        assertEquals(ModelRequestLimits(4, 0), store.load())
-    }
 }

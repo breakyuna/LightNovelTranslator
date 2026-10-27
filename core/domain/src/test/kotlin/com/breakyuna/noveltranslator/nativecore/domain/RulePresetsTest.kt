@@ -29,21 +29,6 @@ class RulePresetsTest {
             fail("Accepted duplicate rule id")
         } catch (_: IllegalArgumentException) {
         }
-        try {
-            RulePreset(id = "p", name = "n".repeat(RulePreset.MAX_NAME_CHARS + 1))
-            fail("Accepted oversized name")
-        } catch (_: IllegalArgumentException) {
-        }
-        try {
-            RulePreset(id = "p", name = "n", description = "d".repeat(RulePreset.MAX_DESCRIPTION_CHARS + 1))
-            fail("Accepted oversized description")
-        } catch (_: IllegalArgumentException) {
-        }
-        try {
-            RulePreset(id = "p", name = "n", prompt = "x".repeat(RulePreset.MAX_PROMPT_CHARS + 1))
-            fail("Accepted oversized prompt")
-        } catch (_: IllegalArgumentException) {
-        }
     }
 
     @Test

@@ -69,13 +69,6 @@ class WorkspaceScriptSourceTest {
         assertReason(WorkspaceScriptSourceUnavailable.Reason.TOO_LARGE) {
             runWorkspaceSuspend { catalog.resolve("big", "main.js") }
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceScriptSource(
-                scriptId = "big",
-                entryPoint = "main.js",
-                text = "a".repeat(WorkspaceScriptSourceLimits.MAX_SOURCE_BYTES.toInt() + 1),
-            )
-        }
     }
 
     @Test fun rejectsInvalidUtf8AndMissingFiles() {

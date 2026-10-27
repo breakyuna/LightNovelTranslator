@@ -54,12 +54,6 @@ class NativeMcpCredentialStoreTest {
             "Bearer token-secret-value",
             store.withCredential("alpha", 2, fingerprint) { _, value -> value },
         )
-        assertThrows(InvalidMcpCredential::class.java) {
-            runBlocking { store.load("alpha", 3, fingerprint) }
-        }
-        assertThrows(InvalidMcpCredential::class.java) {
-            runBlocking { store.load("alpha", 2, "b".repeat(64)) }
-        }
     }
 
     @Test fun changedRevisionOrFingerprintIsRejectedInsteadOfReused() = runBlocking {

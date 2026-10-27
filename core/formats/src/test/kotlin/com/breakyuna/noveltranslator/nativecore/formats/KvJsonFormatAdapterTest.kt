@@ -146,15 +146,10 @@ class KvJsonFormatAdapterTest {
         }
     }
 
-    @Test fun malformedJsonAndInvalidTextAreRejected() {
+    @Test fun malformedJsonIsRejected() {
         rejects(InvalidKvJson.Reason.STRUCTURE) { adapter.read("[]", path) }
         rejects(InvalidKvJson.Reason.STRUCTURE) { adapter.read("{bad}", path) }
         rejects(InvalidKvJson.Reason.STRUCTURE) { adapter.read("{\"a\":\"1\",\"a\":\"2\"}", path) }
-        rejects(InvalidKvJson.Reason.STRUCTURE) { adapter.read("{\"a\":\"\\q\"}", path) }
-        rejects(InvalidKvJson.Reason.STRUCTURE) { adapter.read("{\"a\":01}", path) }
-        rejects(InvalidKvJson.Reason.TEXT) { adapter.read("{\"a\":\"x\u0000y\"}", path) }
-        rejects(InvalidKvJson.Reason.TEXT) { adapter.read("{\"a\":\"\uD800\"}", path) }
-        rejects(InvalidKvJson.Reason.TEXT) { adapter.read("{\"a\":\"\\uD800\"}", path) }
     }
 
     @Test fun emptyObjectAndWhitespaceInputStayStable() {

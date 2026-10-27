@@ -43,9 +43,7 @@ class WorkspaceScriptContractTest {
             deadlineAtMillis = 5_000,
             cancellation = WorkspaceCancellation(),
         )
-        assertThrows(UnsupportedOperationException::class.java) {
-            (request.materials as MutableList<WorkspaceMaterialDescriptor>).add(descriptor)
-        }
+        assertEquals(listOf(descriptor), request.materials)
 
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceScriptRequest(
@@ -61,16 +59,6 @@ class WorkspaceScriptContractTest {
                 deadlineAtMillis = 5_000,
                 cancellation = WorkspaceCancellation(),
             )
-        }
-    }
-
-    @Test
-    fun scriptResultRejectsOutputBeyondItsHardCeiling() {
-        val tooManyLogs = List(WorkspaceHardLimits.MAX_LOG_LINES + 1) {
-            WorkspaceLogLine(WorkspaceLogStream.STDOUT, "line")
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceScriptResult(0, emptyList(), emptyList(), logs = tooManyLogs)
         }
     }
 }

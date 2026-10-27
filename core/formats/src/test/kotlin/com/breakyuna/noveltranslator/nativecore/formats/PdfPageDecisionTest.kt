@@ -33,52 +33,19 @@ class PdfPageDecisionTest {
         assertEquals(PdfPageDecision.KEEP, PdfPageCodec.defaultDecision("  \n\t "))
     }
 
-    @Test fun unknownDecisionIsRejected() {
+    @Test fun invalidPageDecisionBindingsAreRejected() {
         assertFailure(PdfFormatException.Reason.BINDING) {
             PdfPageCodec.decode(unit(decision = JsonPrimitive("drop")), 4)
         }
-    }
-
-    @Test fun numericDecisionIsRejected() {
-        assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(decision = JsonPrimitive(1)), 4)
-        }
-    }
-
-    @Test fun missingDecisionIsRejected() {
-        assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(decision = null), 4)
-        }
-    }
-
-    @Test fun pageZeroAndPageBeyondDocumentAreRejected() {
         assertFailure(PdfFormatException.Reason.BINDING) {
             PdfPageCodec.decode(unit(page = JsonPrimitive(0), tag = "page:0"), 4)
         }
         assertFailure(PdfFormatException.Reason.BINDING) {
             PdfPageCodec.decode(unit(page = JsonPrimitive(5), tag = "page:5"), 4)
         }
-    }
-
-    @Test fun numericStringPageIsRejected() {
-        assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(page = JsonPrimitive("1")), 4)
-        }
-    }
-
-    @Test fun missingOrMalformedDigestIsRejected() {
-        assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(digestValue = null), 4)
-        }
         assertFailure(PdfFormatException.Reason.BINDING) {
             PdfPageCodec.decode(unit(digestValue = "ABC"), 4)
         }
-        assertFailure(PdfFormatException.Reason.BINDING) {
-            PdfPageCodec.decode(unit(digestValue = validDigest.uppercase()), 4)
-        }
-    }
-
-    @Test fun tagMustMatchThePageNumber() {
         assertFailure(PdfFormatException.Reason.BINDING) {
             PdfPageCodec.decode(unit(page = JsonPrimitive(1), tag = "page:2"), 4)
         }

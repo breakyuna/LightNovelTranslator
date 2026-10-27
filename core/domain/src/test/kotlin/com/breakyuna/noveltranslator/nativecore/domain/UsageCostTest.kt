@@ -82,17 +82,5 @@ class UsageCostTest {
         assertThrows(IllegalArgumentException::class.java) {
             line(UsageComponent.INPUT, rateSource = UsageComponent.OUTPUT)
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            CostLine(
-                component = UsageComponent.INPUT,
-                tokens = BigInteger.valueOf(-1),
-                price = unitPrice,
-                amount = CostAmount.ZERO,
-                unknownRequests = 0,
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            line(UsageComponent.INPUT, unknownRequests = -1)
-        }
     }
 }

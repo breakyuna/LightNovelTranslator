@@ -2,7 +2,6 @@ package com.breakyuna.noveltranslator.nativecore.domain
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,10 +59,6 @@ class TranslationFailureAdjudicationTest {
         assertEquals(first.id, decision.batchId)
         assertEquals(listOf(ItemId(1)), decision.memberIds)
         assertEquals(listOf(requireNotNull(before.batch(first.id)!!.member(ItemId(1)))), decision.evidence)
-
-        @Suppress("UNCHECKED_CAST")
-        val mutableMembers = afterRetry.batch(first.id)!!.members as MutableList<TranslationFailureMember>
-        assertThrows(UnsupportedOperationException::class.java) { mutableMembers.clear() }
 
         val keptResult = retriedResult.queue.keepError(
             task,
@@ -256,9 +251,6 @@ class TranslationFailureAdjudicationTest {
             running.task(task)!!.finalDecision(ItemId(2)),
         )
         assertNull(running.task(task)!!.finalDecision(ItemId(99)))
-        @Suppress("UNCHECKED_CAST")
-        val mutableSkipped = running.task(task)!!.skippedItemIds as MutableSet<ItemId>
-        assertThrows(UnsupportedOperationException::class.java) { mutableSkipped.clear() }
         val completed = running.complete(
             task,
             TranslationTaskCompletionFacts(

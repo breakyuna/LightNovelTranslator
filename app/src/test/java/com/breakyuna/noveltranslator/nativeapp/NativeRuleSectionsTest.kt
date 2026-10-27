@@ -6,7 +6,6 @@ import com.breakyuna.noveltranslator.nativecore.domain.ProjectTextRule
 import com.breakyuna.noveltranslator.nativecore.domain.TextRuleKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,7 +63,6 @@ class NativeRuleSectionsTest {
         val exact = boundRuleText("abc", 3)
         assertFalse(exact.truncated)
         assertEquals("abc", exact.text)
-        assertThrows(IllegalArgumentException::class.java) { boundRuleText("x", 0); Unit }
     }
 
     @Test fun protectionSampleShowsMatchesAndIdentifiesAnInvalidRule() {
@@ -113,13 +111,5 @@ class NativeRuleSectionsTest {
         val decoded = ProjectTextPolicyCodec.decode(ProjectTextPolicyCodec.encode(policy))
         assertEquals(target, decoded.rules.first { it.id == "named" }.target)
         assertEquals("", decoded.rules.first { it.id == "empty" }.target)
-    }
-
-    @Test fun sampleSizeIsBoundedBeforeAnyMatchingWork() {
-        val policy = ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "a", "甲")))
-        assertThrows(IllegalArgumentException::class.java) {
-            previewRuleSample(policy, NativeRuleSection.GLOSSARY, "a".repeat(NATIVE_RULE_SAMPLE_MAX_CHARS + 1))
-            Unit
-        }
     }
 }

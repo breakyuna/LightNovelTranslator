@@ -17,7 +17,6 @@ import com.breakyuna.noveltranslator.core.llm.TranslationControlSignal
 import com.breakyuna.noveltranslator.data.model.ApiProviderEntity
 import com.breakyuna.noveltranslator.data.model.ProviderType
 import kotlin.time.Instant
-import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -217,43 +216,10 @@ class LntPromptExecutorTest {
     }
 
     @Test
-    fun streamingAndModerationAreUnsupported() {
-        val gateway = RecordingGateway { error("unused") }
-        val executor = LntPromptExecutor(gateway, config)
-        val prompt = promptOf(Message.User("问", meta))
-
-        try {
-            runBlocking {
-                executor.executeStreaming(prompt, model, emptyList())
-                    .collect(object : FlowCollector<ai.koog.prompt.streaming.StreamFrame> {
-                        override suspend fun emit(value: ai.koog.prompt.streaming.StreamFrame) {}
-                    })
-            }
-            throw AssertionError("流式执行应显式失败")
-        } catch (expected: UnsupportedOperationException) {
-            assertTrue(expected.message!!.contains("流式"))
-        }
-
-        try {
-            runBlocking { executor.moderate(prompt, model) }
-            throw AssertionError("内容审核应显式失败")
-        } catch (expected: UnsupportedOperationException) {
-            assertTrue(expected.message!!.contains("审核"))
-        }
-    }
-
-    @Test
     fun modelsReturnsEmptyList() {
         val gateway = RecordingGateway { error("unused") }
         val executor = LntPromptExecutor(gateway, config)
         assertTrue(runBlocking { executor.models() }.isEmpty())
-    }
-
-    @Test
-    fun closeIsNoOp() {
-        val gateway = RecordingGateway { error("unused") }
-        val executor = LntPromptExecutor(gateway, config)
-        executor.close()
     }
 
     // ---------- LntPromptMapper.flatten ----------

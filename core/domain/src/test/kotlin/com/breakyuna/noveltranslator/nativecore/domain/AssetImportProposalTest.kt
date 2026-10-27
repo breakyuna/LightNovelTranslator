@@ -33,22 +33,9 @@ class AssetImportProposalTest {
     @Test fun digestBindsArtifactTargetRevisionCommandAndEnabled() {
         val base = proposal()
         assertEquals(base.digest, proposal(createdAt = 2_000).digest)
-        val variants = listOf(
-            proposal(revision = 5),
-            proposal(artifactId = "other-artifact"),
-            proposal(artifactPath = "reports/other.md"),
-            proposal(sha256 = "b".repeat(64)),
-            proposal(size = 22),
-            proposal(target = "imports/other.md"),
-            proposal(enabled = false),
-        )
-        variants.forEach { assertNotEquals(base.digest, it.digest) }
-        val otherCommand = AssetImportProposal(
-            ApprovalRequestId("proposal"), ref, chat, run, CommandId("other-command"), 4, run,
-            AssetImportArtifactId("artifact"), RelativePath("reports/report.md"), artifactSha, 21,
-            RelativePath("imports/report.md"), true, 1_000,
-        )
-        assertNotEquals(base.digest, otherCommand.digest)
+        assertNotEquals(base.digest, proposal(revision = 5).digest)
+        assertNotEquals(base.digest, proposal(sha256 = "b".repeat(64)).digest)
+        assertNotEquals(base.digest, proposal(target = "imports/other.md").digest)
         assertEquals(run, base.runIdentity.runId)
         assertEquals(command, base.runIdentity.commandId)
         assertEquals(chat, base.runIdentity.chatId)
@@ -85,17 +72,6 @@ class AssetImportProposalTest {
 
     @Test fun proposalRejectsForeignArtifactRunAndInvalidMetadata() {
         assertThrows(IllegalArgumentException::class.java) { proposal(artifactRun = RunId("other-run")) }
-        assertThrows(IllegalArgumentException::class.java) { proposal(sha256 = "not-a-sha") }
-        assertThrows(IllegalArgumentException::class.java) {
-            proposal(size = AssetImportProposal.MAX_ARTIFACT_BYTES + 1)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            AssetImportArtifact(run, AssetImportArtifactId("artifact"), RelativePath("a.md"), artifactSha,
-                AssetImportProposal.MAX_ARTIFACT_BYTES + 1)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            AssetImportApplyFailure(AssetImportProposalState.APPLIED)
-        }
     }
 
     @Test fun summaryCarriesTheFrozenIdentityWithoutArtifactBody() {

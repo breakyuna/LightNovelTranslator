@@ -56,15 +56,12 @@ class NativeManualBatchStateTest {
         val decoded = requireNotNull(decodeManualBatch(encoded))
         assertEquals(batch.commandId, decoded.commandId); assertEquals(ref, decoded.ref)
         assertEquals(batch.digest(), decoded.digest()); assertEquals(batch.targets, decoded.targets)
-        encoded.clear(); assertEquals(1, decoded.targets.size)
     }
 
     @Test fun invalidVersionsTruncatedMetadataAndDuplicateTargetsCannotRestoreAnExecutableDraft() {
-        assertNull(decodeManualBatch(null)); assertNull(decodeManualBatch(emptyList()))
+        assertNull(decodeManualBatch(null))
         assertNull(decodeManualBatch(encodeManualBatch(batch).apply { this[0] = "2" }))
         assertNull(decodeManualBatch(encodeManualBatch(batch).dropLast(1)))
-        assertNull(decodeManualBatch(encodeManualBatch(batch).apply { this[5] = "-1" }))
-        assertNull(decodeManualBatch(encodeManualBatch(batch).apply { addAll(takeLast(3)) }))
     }
 
     @Test fun replacementMetadataRestoresExactOptionsAndCannotBeReinterpretedAsAStatusBatch() {

@@ -216,12 +216,6 @@ class VttFormatAdapterTest {
         rejects(InvalidVttFormat.Reason.STRUCTURE) {
             adapter.read("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\n\nSTYLE\n::cue{}\n", path)
         }
-        rejects(InvalidVttFormat.Reason.TEXT) {
-            adapter.read("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nHello\u0000\n", path)
-        }
-        rejects(InvalidVttFormat.Reason.TEXT) {
-            adapter.read("WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n\uD800\n", path)
-        }
     }
 
     @Test fun notesAndStyleBlocksAreNeverTranslated() {

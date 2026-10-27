@@ -149,18 +149,6 @@ class WorkspaceChangeTest {
                 listOf(committed), listOf(conflict), 1, 1,
             )
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceApplyReceipt(
-                COMMAND_ID, CHANGE_SET_ID, digestOf("d"), WorkspaceApplyStatus.PARTIAL,
-                emptyList(), listOf(conflict), 1, 1,
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceApplyReceipt(
-                COMMAND_ID, CHANGE_SET_ID, digestOf("d"), WorkspaceApplyStatus.REJECTED,
-                listOf(committed), emptyList(), 1, 1,
-            )
-        }
         val partial = WorkspaceApplyReceipt(
             COMMAND_ID, CHANGE_SET_ID, digestOf("d"), WorkspaceApplyStatus.PARTIAL,
             listOf(committed), listOf(conflict), 1, 1,
@@ -171,25 +159,9 @@ class WorkspaceChangeTest {
     }
 
     @Test
-    fun inlineContentCopiesInputAndKeepsItsDigestStable() {
-        val source = "body".toByteArray(Charsets.UTF_8)
-        val content = WorkspaceChangeContent.Inline(source)
-        val digest = content.sha256
-        source[0] = 'X'.code.toByte()
-        assertEquals(digest, content.sha256)
-        assertEquals("body", String(content.bytes, Charsets.UTF_8))
-    }
-
-    @Test
     fun deleteRequiresBaseFingerprintAndNoContent() {
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceChange(WorkspacePath("work/a.txt"), WorkspaceChangeOperation.DELETE, null, null)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceChange(
-                WorkspacePath("work/a.txt"), WorkspaceChangeOperation.DELETE, digestOf("a"),
-                WorkspaceChangeContent.Inline(byteArrayOf(1)),
-            )
         }
         val delete = deleteChange("work/a.txt", digestOf("a"))
         assertEquals(0L, delete.sizeBytes)

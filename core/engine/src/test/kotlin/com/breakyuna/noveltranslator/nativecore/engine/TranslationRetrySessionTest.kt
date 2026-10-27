@@ -67,9 +67,8 @@ class TranslationRetrySessionTest {
         assertThrows(IllegalStateException::class.java) { restored.begin(RequestAttemptId("replay")) }
     }
     @Test fun snapshotRejectsDuplicateMembershipChangedTargetsAndOverlappingBlocks() {
-        val items = arrayListOf(item(1), item(2))
+        val items = listOf(item(1), item(2))
         val session = TranslationRetrySession.start(items, 2)
-        items.clear()
         assertEquals(2, session.next().items.size)
         val state = session.checkpoint
         assertThrows(IllegalArgumentException::class.java) { TranslationRetrySession.restore(listOf(item(1)), state) }

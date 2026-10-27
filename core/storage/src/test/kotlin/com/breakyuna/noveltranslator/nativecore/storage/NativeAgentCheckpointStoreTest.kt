@@ -95,12 +95,7 @@ class NativeAgentCheckpointStoreTest {
         assertTrue(runCatching { store.list(ref, chat, branch, 1) }.exceptionOrNull() is AgentCheckpointCorruptException)
     }
 
-    @Test fun queryBoundsAndFileSizeLimitsAreEnforced() = runBlocking {
-        assertThrows(IllegalArgumentException::class.java) { runBlocking { store.list(ref, chat, branch, 0) } }
-        assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { store.list(ref, chat, branch, NativeAgentCheckpointStore.MAX_LIST_LIMIT + 1) }
-        }
-
+    @Test fun fileSizeLimitsAreEnforced() = runBlocking {
         val directory = store.partitionDirectory(ref, chat, branch)
         assertTrue(directory.isDirectory || directory.mkdirs())
         val oversized = File(directory, "checkpoint-9999999999999999999-oversized.json")

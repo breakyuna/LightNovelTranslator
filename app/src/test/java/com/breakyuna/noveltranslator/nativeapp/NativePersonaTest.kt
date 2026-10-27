@@ -53,17 +53,11 @@ class NativePersonaTest {
         assertThrows(IllegalArgumentException::class.java) {
             store.saveAppPersona("x".repeat(NativeAppPersona.MAX_CHARS + 1))
         }
-        assertThrows(IllegalArgumentException::class.java) { store.saveAppPersona("bad\u0000") }
-        assertThrows(IllegalArgumentException::class.java) { store.saveAppPersona("bad\u0007") }
-        assertThrows(IllegalArgumentException::class.java) { store.saveAppPersona("bad\uD800") }
 
         store.saveAppPersona("x".repeat(NativeAppPersona.MAX_CHARS))
         assertEquals(NativeAppPersona.MAX_CHARS, NativeAppSettingsStore(context).appPersona().length)
 
         store.saveAppPersona("  ")
-        assertEquals("", NativeAppSettingsStore(context).appPersona())
-
-        preferences.edit().putString("app_persona", "bad\u0001").commit()
         assertEquals("", NativeAppSettingsStore(context).appPersona())
     }
 

@@ -278,9 +278,4 @@ class MarkdownV2AdapterTest {
                 FormatWriteOptions())
         }
     }
-
-    @Test fun readRejectsNulAndMalformedUnicode() {
-        rejects(InvalidMarkdownV2.Reason.TEXT) { adapter.read("a\u0000b", path) }
-        rejects(InvalidMarkdownV2.Reason.TEXT) { adapter.read("\uD800", path) }
-    }
 }

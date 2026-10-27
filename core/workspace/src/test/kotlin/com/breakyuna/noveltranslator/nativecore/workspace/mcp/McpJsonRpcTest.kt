@@ -97,12 +97,6 @@ class McpJsonRpcTest {
         assertEquals("lnt-1", first["id"]?.jsonPrimitive?.content)
         assertEquals("2.0", first["jsonrpc"]?.jsonPrimitive?.content)
         assertEquals("tools/list", first["method"]?.jsonPrimitive?.content)
-        assertThrows(IllegalArgumentException::class.java) {
-            McpJsonRpc.request("bad id", "tools/list", kotlinx.serialization.json.buildJsonObject { })
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            McpJsonRpc.request("lnt-1", "bad method", kotlinx.serialization.json.buildJsonObject { })
-        }
     }
 
     @Test

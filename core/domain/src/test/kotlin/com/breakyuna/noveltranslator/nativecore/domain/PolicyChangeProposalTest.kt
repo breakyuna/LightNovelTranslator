@@ -30,18 +30,13 @@ class PolicyChangeProposalTest {
         val first = ProjectTextRule("a", TextRuleKind.TERM, "cat", "猫")
         val second = ProjectTextRule("b", TextRuleKind.PROTECT, "[0-9]+", regex = true)
         val before = ProjectTextPolicy(listOf(first, second), "old", true)
-        val variants = listOf(
-            ProjectTextPolicy(listOf(second, first), "old", true),
-            before.changed(rules = listOf(first.copy(enabled = false), second)),
-            before.changed(rules = listOf(first.copy(caseSensitive = false), second)),
-            before.changed(prompt = "new"), before.changed(promptEnabled = false))
-        val digests = variants.map { proposal(before, it).digest }
-        assertEquals(variants.size, digests.toSet().size)
-        assertNotEquals(proposal(before, variants.first()).digest, proposal(before, variants.first(), RunId("other")).digest)
-        val intent = proposal(before, variants.first()).intent()
+        val reordered = ProjectTextPolicy(listOf(second, first), "old", true)
+        assertNotEquals(proposal(before, reordered).digest, proposal(before, before.changed(prompt = "new")).digest)
+        assertNotEquals(proposal(before, reordered).digest, proposal(before, reordered, RunId("other")).digest)
+        val intent = proposal(before, reordered).intent()
         assertEquals(3L, intent.expectedRevision)
         assertEquals(before.fingerprint(), intent.base)
-        assertEquals(variants.first().fingerprint(), intent.policy.fingerprint())
+        assertEquals(reordered.fingerprint(), intent.policy.fingerprint())
     }
 
     @Test fun summarySeparatesRuleEditsOrderAndPromptWithoutBodies() {

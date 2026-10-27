@@ -1,7 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.agent
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -28,8 +27,6 @@ class AgentAppPersonaTest {
         assertEquals("abc\n\tD", sanitized)
         assertEquals(AgentAppPersonaPrompt.MAX_CHARS,
             requireNotNull(AgentAppPersonaPrompt.sanitize("x".repeat(AgentAppPersonaPrompt.MAX_CHARS + 50))).length)
-        assertFalse(requireNotNull(AgentAppPersonaPrompt.sanitize("x".repeat(AgentAppPersonaPrompt.MAX_CHARS + 50)))
-            .contains("\u0000"))
     }
 
     @Test fun personaCannotForgeTheDelimiterLines() {

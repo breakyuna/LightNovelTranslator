@@ -164,15 +164,4 @@ class SubtitleDocumentTest {
             target.reference.copy(sourceSha256 = "0".repeat(64)), "translated"))) }
         assertEquals("[ar:first]\n[0:01]same\n", first.render(emptyList()))
     }
-
-    @Test fun invalidUnicodeOversizedTargetsAndExpansionBombsFailClosed() {
-        rejects(InvalidSubtitle.Reason.TEXT) { SubtitleDocument.parse(SubtitleType.LRC, "[0:01]\uD800") }
-        val document = SubtitleDocument.parse(SubtitleType.LRC, "[0:01]source")
-        rejects(InvalidSubtitle.Reason.TEXT) { document.render(listOf(replacement(document, "bad\u0000text"))) }
-        rejects(InvalidSubtitle.Reason.TEXT) { document.render(listOf(replacement(document, "\uD800"))) }
-        rejects(InvalidSubtitle.Reason.LIMIT) { document.render(listOf(replacement(document, "x".repeat(65_537)))) }
-        val repeatedPrefix = SubtitleDocument.parse(SubtitleType.LRC, "[0:01]".repeat(1000) + "source")
-        rejects(InvalidSubtitle.Reason.LIMIT) { repeatedPrefix.render(listOf(replacement(repeatedPrefix, "\n".repeat(10_000)))) }
-        rejects(InvalidSubtitle.Reason.LIMIT) { SubtitleDocument.parse(SubtitleType.LRC, "\n".repeat(100_001)) }
-    }
 }

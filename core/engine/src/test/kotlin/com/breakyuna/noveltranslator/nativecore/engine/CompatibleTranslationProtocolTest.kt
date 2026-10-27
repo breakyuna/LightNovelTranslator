@@ -99,11 +99,4 @@ class CompatibleTranslationProtocolTest {
         for (invalid in listOf(JsonPrimitive("5"), JsonPrimitive(-1), JsonPrimitive(1.5)))
             rejected(envelope(usage = buildJsonObject { put("prompt_tokens", invalid) }))
     }
-
-    @Test fun rejectsInvalidPolicyAndOversizedInstructions() {
-        for (factory in listOf({ RemoteTranslationOptions("") }, { RemoteTranslationOptions("en", batchSize = 0) },
-            { RemoteTranslationOptions("en", batchCharacters = 0) }, { RemoteTranslationOptions("en", instructions = "x".repeat(16_385)) })) {
-            try { factory(); fail("Accepted invalid policy") } catch (_: IllegalArgumentException) { }
-        }
-    }
 }

@@ -64,10 +64,8 @@ class NativeManualBatchTest {
         val project = create()
         edit(project.ref, 1)
         var revision = store.open(project.ref).revision
-        val names = mutableListOf("first", "second")
         val assignment = requireNotNull(store.prepareNameAssignmentBatch(CommandId("assign-names"), project.ref,
-            revision, TextItemQuery(), names))
-        names.clear()
+            revision, TextItemQuery(), listOf("first", "second")))
         assertEquals(listOf("first", "second"), assignment.nameAssignment)
         assertEquals(3, assignment.targets.size)
         val receipt = store.editBatch(assignment)
@@ -95,10 +93,8 @@ class NativeManualBatchTest {
         store.editName(ManualNameEdit(CommandId("seed-source-names"), project.ref, ItemId(1), first.revision,
             first.item.fingerprint, listOf("译名"), listOf("旧原名")))
         var revision = store.open(project.ref).revision
-        val sourceNames = mutableListOf("源一", "源二")
         val batch = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("source-names"), project.ref,
-            revision, TextItemQuery(), sourceNames))
-        sourceNames.clear()
+            revision, TextItemQuery(), listOf("源一", "源二")))
         assertEquals(TextBatchChange.ASSIGN_SOURCE_NAMES, batch.change)
         assertEquals(listOf("源一", "源二"), batch.nameAssignment)
         assertEquals(3, batch.targets.size)

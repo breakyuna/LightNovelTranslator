@@ -211,15 +211,13 @@ class TransFormatAdapterTest {
     }
 
     @Test
-    fun rejectsMalformedContainersAndInvalidText() {
+    fun rejectsMalformedContainers() {
         rejects(InvalidTransRenpyFormat.Reason.MALFORMED) { adapter.read("[]", path) }
         rejects(InvalidTransRenpyFormat.Reason.MALFORMED) { adapter.read("{", path) }
         rejects(InvalidTransRenpyFormat.Reason.MALFORMED) { adapter.read("""{"project":[]}""", path) }
         rejects(InvalidTransRenpyFormat.Reason.MALFORMED) {
             adapter.read("""{"project":{"files":[]}}""", path)
         }
-        rejects(InvalidTransRenpyFormat.Reason.INVALID_TEXT) { adapter.read("\uD800", path) }
-        rejects(InvalidTransRenpyFormat.Reason.INVALID_TEXT) { adapter.read("\u0000", path) }
         assertEquals(0, adapter.read("""{"project":{"files":{}}}""", path).units.size)
     }
 

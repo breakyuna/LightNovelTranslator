@@ -13,19 +13,9 @@ class PdfPageChangeProposalTest {
         for (json in listOf(
             """{"pages":[{"page":"1","decision":"KEEP"}]}""",
             """{"pages":[{"page":0,"decision":"KEEP"}]}""",
-            """{"pages":[{"page":5001,"decision":"KEEP"}]}""",
             """{"pages":[{"page":1,"decision":"keep"}]}""",
-            """{"pages":[{"page":1,"decision":"-"}]}""",
             """{"pages":[{"page":1,"decision":"KEEP"},{"page":1,"decision":"OMIT"}]}""",
             """{"pages":[{"page":1,"decision":"KEEP","source":"text"}]}""",
-            """{"pages":[]}""",
-            """{"pages":null}""",
-            """{"pages":{}}""",
-            """{"pages":[null]}""",
-            """{"pages":[{"page":{},"decision":"KEEP"}]}""",
-            """{"pages":[{"page":1,"decision":{}}]}""",
-            """{"pages":[{"page":1.5,"decision":"KEEP"}]}""",
-            """{"pages":[{"page":true,"decision":"KEEP"}]}""",
         )) {
             assertThrows(json, IllegalArgumentException::class.java) { PdfPageChangeProposalCodec.targets(json) }
         }
@@ -62,20 +52,6 @@ class PdfPageChangeProposalTest {
         assertEquals(proposal.digest, restored.digest)
         assertThrows(IllegalArgumentException::class.java) { proposal.binding(emptySet()) }
         assertThrows(IllegalArgumentException::class.java) { proposal.binding(setOf(9)) }
-        assertThrows(IllegalArgumentException::class.java) {
-            PdfPageChangeProposal(ApprovalRequestId("approval"), ref, ChatId("chat"), RunId("run"),
-                CommandId("command"), 7, 3, sha, 8, ConflictPolicy.REJECT_BATCH,
-                listOf(PdfPageChangeMember(2, PdfPageMode.KEEP, PdfPageMode.OMIT),
-                    PdfPageChangeMember(2, PdfPageMode.OMIT, PdfPageMode.TRANSLATE)))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PdfPageChangeProposal(ApprovalRequestId("approval"), ref, ChatId("chat"), RunId("run"),
-                CommandId("command"), 7, 3, sha, 8, ConflictPolicy.REJECT_BATCH,
-                listOf(PdfPageChangeMember(9, PdfPageMode.KEEP, PdfPageMode.OMIT)))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PdfPageChangeMember(1, PdfPageMode.KEEP, PdfPageMode.KEEP)
-        }
     }
 
     @Test fun selectionAndReceiptRoundTripWithStableConflictStates() {

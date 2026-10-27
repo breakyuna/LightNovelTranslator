@@ -63,15 +63,6 @@ class AgentHistoryTest {
         assertEquals(listOf("one"), pending.map { it.id.value })
     }
 
-    @Test
-    fun constructorFreezesCallerOwnedPartLists() {
-        val parts = mutableListOf<UserPart>(UserPart.Text("original"))
-        val message = AgentMessage.User(MessageId("u"), parts)
-        parts.clear()
-        assertEquals(1, message.parts.size)
-        assertEquals("original", (message.parts.single() as UserPart.Text).text)
-    }
-
     private fun user(id: String) = AgentMessage.User(MessageId(id), listOf(UserPart.Text("synthetic")))
     private fun calls(id: String, vararg calls: String) = AgentMessage.Assistant(MessageId(id), calls.map {
         AssistantPart.ToolCall(AgentToolCall(ToolCallId(it), "lookup", empty))

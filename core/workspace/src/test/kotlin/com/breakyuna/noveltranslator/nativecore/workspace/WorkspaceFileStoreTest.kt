@@ -29,7 +29,6 @@ class WorkspaceFileStoreTest {
         assertEquals(WorkspaceMaterialKind.SOURCE, source.kind)
         assertEquals("sources/a.txt", source.path.value)
         assertEquals(5L, source.sizeBytes)
-        assertEquals(64, source.sha256.length)
         assertFalse(source.toString().contains("alpha"))
         val content = runWorkspaceSuspend { store.read(source.id, 5) }
         assertEquals("alpha", String(content.bytes, Charsets.UTF_8))

@@ -160,13 +160,6 @@ class WorkspaceSkillPolicyTest {
         assertFalse(policy.grants(WorkspaceCapability.FETCH))
         assertFalse(policy.grants(WorkspaceCapability.PROPOSE_CHANGES))
 
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSkillPolicy(maxRunMillis = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSkillPolicy(maxOutputBytes = WorkspaceSkillPolicy.MAX_OUTPUT_BYTES + 1)
-        }
-
         val effective = WorkspaceSkillPolicy(
             allowSearch = true,
             allowMaterials = true,

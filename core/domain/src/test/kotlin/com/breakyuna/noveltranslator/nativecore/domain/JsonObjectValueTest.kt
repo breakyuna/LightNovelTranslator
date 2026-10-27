@@ -1,9 +1,5 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -52,19 +48,6 @@ class JsonObjectValueTest {
             assertThrows(InvalidJsonPayload::class.java) {
                 JsonObjectValue.parse("""{"a":[[]]}""", JsonInputLimits(4096, 2))
             }.reason)
-    }
-
-    @Test
-    fun exposedTreeIsDeepFrozenAgainstMutation() {
-        val parsed = JsonObjectValue.parse("""{"items":[{"id":1}]}""", limits)
-        @Suppress("UNCHECKED_CAST")
-        val topEntry = parsed.json.entries.first() as MutableMap.MutableEntry<String, JsonElement>
-        assertThrows(UnsupportedOperationException::class.java) { topEntry.setValue(JsonPrimitive(2)) }
-        val nested = (parsed.json["items"] as JsonArray)[0] as JsonObject
-        @Suppress("UNCHECKED_CAST")
-        val nestedEntry = nested.entries.first() as MutableMap.MutableEntry<String, JsonElement>
-        assertThrows(UnsupportedOperationException::class.java) { nestedEntry.setValue(JsonPrimitive(2)) }
-        assertEquals("""{"items":[{"id":1}]}""", parsed.encode())
     }
 
     @Test

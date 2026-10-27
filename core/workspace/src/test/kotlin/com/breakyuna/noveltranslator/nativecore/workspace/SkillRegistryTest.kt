@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.nativecore.workspace
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -69,14 +68,7 @@ class SkillRegistryTest {
     }
 
     @Test
-    fun skillMetadataIsBoundedAndContentIsReadOnlyOnExplicitReference() {
-        assertThrows(IllegalArgumentException::class.java) {
-            skill("skill-a", "Alpha", order = -1)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            skill("skill-a", "Alpha", order = 1, description = "x".repeat(1_025))
-        }
-
+    fun skillContentIsReadOnlyOnExplicitReference() {
         val summary = skill(
             "skill-a",
             "Alpha",

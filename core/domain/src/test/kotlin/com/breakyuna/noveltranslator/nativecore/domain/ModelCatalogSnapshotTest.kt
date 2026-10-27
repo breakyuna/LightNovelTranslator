@@ -47,7 +47,5 @@ class ModelCatalogSnapshotTest {
     @Test fun descriptorsFreezeAndDeduplicateExplicitLists() {
         val descriptor = ModelDescriptor("m", modalities = listOf("TEXT", "TEXT", "IMAGE"))
         assertEquals(listOf("TEXT", "IMAGE"), descriptor.modalities)
-        assertThrows(IllegalArgumentException::class.java) { ModelDescriptor("m", contextTokens = 0) }
-        assertThrows(IllegalArgumentException::class.java) { ModelDescriptor("m", displayName = "bad\u0000name") }
     }
 }

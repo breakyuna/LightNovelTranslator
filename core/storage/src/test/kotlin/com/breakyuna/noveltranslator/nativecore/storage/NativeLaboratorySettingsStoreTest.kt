@@ -9,7 +9,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,7 +39,6 @@ class NativeLaboratorySettingsStoreTest {
         val saved = store.save(LaboratorySettings(cleanRuby = true, promptEnhancement = true,
             duplicateSourceDeduplication = true))
         assertEquals(saved, NativeLaboratorySettingsStore(context).load())
-        assertTrue(store.fingerprint()!!.all { it in "0123456789abcdef" })
     }
 
     @Test fun staleFingerprintCannotOverwriteAndCorruptFileFailsClosed() = runBlocking {

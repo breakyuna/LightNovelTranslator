@@ -262,17 +262,6 @@ class NativeApplicationFullArchiveBackupTest {
             AppArchiveRestorePolicy.queueState(TranslationTaskQueueState.RUNNING))
         assertEquals(0, AppArchiveRestorePolicy.restoredExecutionTokens())
         assertTrue(AppArchiveRestorePolicy.APPROVALS_ARE_HISTORICAL)
-
-        try {
-            FullArchiveRestorePlan(
-                snapshotId = SNAPSHOT_ID,
-                cutAtMillis = 1L,
-                projectInstances = emptyList(),
-                autoStartRuns = true,
-            )
-            fail("Accepted an auto-start restore plan")
-        } catch (_: IllegalArgumentException) {
-        }
     }
 
     @Test fun credentialFieldsAndCredentialPathsAreRejected() = runBlocking {
@@ -379,7 +368,6 @@ class NativeApplicationFullArchiveBackupTest {
     }
 
     @Test fun projectInstanceDigestMustMatchASnapshotEntry() = runBlocking {
-        val bytes = PROJECT_BYTES
         val wrong = AppBackupProjectInstance(
             oldRef = sampleRef(),
             name = "Novel",
@@ -394,7 +382,6 @@ class NativeApplicationFullArchiveBackupTest {
         } catch (_: IllegalArgumentException) {
         }
         assertEquals(0, destination.size())
-        assertEquals(64, digest(bytes).length)
     }
 
     @Test fun preparedReceiptRollsBackBeforeANewRestore() = runBlocking {

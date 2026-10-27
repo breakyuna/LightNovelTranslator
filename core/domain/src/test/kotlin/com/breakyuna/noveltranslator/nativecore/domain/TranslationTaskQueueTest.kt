@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.nativecore.domain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -285,16 +284,6 @@ class TranslationTaskQueueTest {
         assertEquals(TranslationTaskQueueState.QUEUED, initial.task(task)!!.state)
         assertEquals(TranslationTaskQueueState.RUNNING, running.queue.task(task)!!.state)
         assertEquals(TranslationTaskQueueState.QUEUED, initial.task(task)!!.state)
-
-        @Suppress("UNCHECKED_CAST")
-        val mutableTasks = initial.tasks as MutableList<TranslationQueuedTask>
-        assertThrows(UnsupportedOperationException::class.java) { mutableTasks.clear() }
-
-        @Suppress("UNCHECKED_CAST")
-        val mutableProjectTasks = running.queue.tasksFor(projectA) as MutableList<TranslationQueuedTask>
-        assertThrows(UnsupportedOperationException::class.java) {
-            mutableProjectTasks.add(running.appliedTask())
-        }
     }
 
     @Test

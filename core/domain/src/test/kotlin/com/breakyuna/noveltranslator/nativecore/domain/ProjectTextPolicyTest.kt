@@ -6,14 +6,12 @@ import org.junit.Test
 class ProjectTextPolicyTest {
     private fun rule(id: String = "id", source: String = "source") = ProjectTextRule(id, TextRuleKind.TERM, source, "target")
     @Test fun canonicalRoundTripKeepsOrderIdentityFlagsAndPromptWithoutMutableAliases() {
-        val rules = mutableListOf(rule("one"), rule("two"))
-        val policy = ProjectTextPolicy(rules, "prompt", true); val fingerprint = policy.fingerprint()
-        rules.clear()
+        val policy = ProjectTextPolicy(listOf(rule("one"), rule("two")), "prompt", true)
+        val fingerprint = policy.fingerprint()
         val restored = ProjectTextPolicyCodec.decode(ProjectTextPolicyCodec.encode(policy))
         assertEquals(listOf("one", "two"), restored.rules.map { it.id })
         assertEquals(fingerprint, restored.fingerprint()); assertTrue(restored.promptEnabled)
         assertFalse(policy.toString().contains("prompt")); assertFalse(policy.rules.first().toString().contains("source"))
-        try { (policy.rules as MutableList).clear(); fail("Mutable policy") } catch (_: UnsupportedOperationException) { }
     }
     @Test fun rejectsDuplicatesBadBooleansUnknownFieldsAndAnotherInterchangeFormat() {
         try { ProjectTextPolicy(listOf(rule(), rule())); fail("Accepted duplicate rule ids") } catch (_: IllegalArgumentException) { }

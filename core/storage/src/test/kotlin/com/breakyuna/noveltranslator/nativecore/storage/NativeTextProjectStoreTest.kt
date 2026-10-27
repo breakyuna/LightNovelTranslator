@@ -141,18 +141,16 @@ class NativeTextProjectStoreTest {
         }
     }
 
-    @Test fun originalIsChunkedAndSurvivesCallerBufferMutation() = runBlocking {
+    @Test fun originalIsChunkedAndExportedIntact() = runBlocking {
         val bytes = ("x".repeat(65_000) + "\n" + "y".repeat(65_000)).toByteArray()
-        val expected = bytes.copyOf()
         val project = store.createTxt(CommandId("create"), "Chunks", RelativePath("source.txt"), bytes)
-        bytes.fill(0)
         NativeProjectDatabase.open(file(project)).use {
             assertTrue(NativeProjectDatabase.scalar(it, "SELECT COUNT(*) FROM asset_chunks") > 1)
             assertTrue(NativeProjectDatabase.scalar(it, "SELECT MAX(length(data)) FROM asset_chunks") <= 65536)
         }
         val original = ByteArrayOutputStream()
         store.exportOriginal(project.ref) { original }
-        assertArrayEquals(expected, original.toByteArray())
+        assertArrayEquals(bytes, original.toByteArray())
     }
 
     @Test fun emptyAssetRemainsPresentWithoutInventingAnItem() = runBlocking {

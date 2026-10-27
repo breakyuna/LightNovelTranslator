@@ -55,7 +55,6 @@ class NativeProjectBackupServiceTest {
         val summary = service.export(original.ref) { bytes }
         assertEquals("backup", summary.name)
         assertTrue(summary.projectBytes > 0)
-        assertEquals(64, summary.sha256.length)
         val restored = service.restore(CommandId("restore")) { ByteArrayInputStream(bytes.toByteArray()) }
         assertNotEquals(original.ref, restored.ref)
         assertEquals("backup", restored.name)

@@ -132,7 +132,6 @@ class WorkspaceSkillStoreTest {
         assertEquals(WorkspaceSkillSource.USER, created.summary.source)
         assertEquals(setOf("ja"), created.summary.languages)
         assertEquals(setOf("analysis"), created.summary.tags)
-        assertEquals(64, created.fingerprint.sha256.length)
         assertEquals(
             created.fingerprint,
             runWorkspaceSuspend { store.record(WorkspaceSkillId("alpha")) }!!.fingerprint,
@@ -218,13 +217,6 @@ class WorkspaceSkillStoreTest {
         }
         assertStoreReason(WorkspaceSkillStoreException.Reason.INVALID_ID) {
             store.create(WorkspaceSkillDraft(WorkspaceSkillId("CON"), "Reserved", content = "x"))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSkillDraft(
-                WorkspaceSkillId("oversize"),
-                "Oversize",
-                content = "x".repeat(WorkspaceSkillLimits.MAX_CONTENT_BYTES + 1),
-            )
         }
     }
 

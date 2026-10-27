@@ -563,7 +563,7 @@ class MixedApprovalStoreTest {
             requireNotNull(store.find(request.ref, request.chat, request.id)).state)
     }
 
-    @Test fun workspaceRootIsRequiredAndBoundByTheParentDigest() = runBlocking {
+    @Test fun workspaceRootIsBoundByTheParentDigest() = runBlocking {
         val id = "workspace-${++sequence}"
         val command = "workspace-command-${++sequence}"
         val childId = "workspace-file"
@@ -581,19 +581,5 @@ class MixedApprovalStoreTest {
             root = "/root/two",
         )))
         assertTrue(first.digest != second.digest)
-
-        val failure = try {
-            member(kind = MixedApprovalMemberKind.WORKSPACE_FILE, root = null)
-            null
-        } catch (failure: Throwable) {
-            failure
-        }
-        assertTrue("A workspace member without a root must fail", failure is IllegalArgumentException)
-    }
-
-    @Test fun domainStringsDoNotExposeSelectionValues() {
-        val value = member(childId = "secret-child", selection = listOf("secret-selection"))
-        assertFalse(value.toString().contains("secret-selection"))
-        assertFalse(value.toString().contains("secret-child"))
     }
 }

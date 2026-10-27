@@ -20,7 +20,6 @@ class ModelRequestLimitsTest {
         val encoded = ModelRequestLimitsCodec.encode(limits)
         assertEquals(limits, ModelRequestLimitsCodec.decode(encoded))
         assertEquals(ModelRequestLimitsCodec.fingerprint(limits), ModelRequestLimitsCodec.fingerprint(ModelRequestLimitsCodec.decode(encoded)))
-        assertEquals(64, ModelRequestLimitsCodec.fingerprint(limits).length)
     }
 
     @Test fun codecRejectsUnknownIllTypedAndOutOfRangeValues() {

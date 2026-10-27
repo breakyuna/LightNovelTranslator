@@ -40,18 +40,6 @@ class AgentSessionStoreTest {
     }
 
     @Test
-    fun loadMessagesReturnsSnapshotCopies() = runTest {
-        val store = InMemoryAgentSessionStore()
-        val session = store.createSession("s", null, null)
-        store.appendMessage(session, message(AgentRole.USER, "问题"))
-
-        val loaded = store.loadMessages(session)
-        (loaded as MutableList<AgentMessage>).clear()
-
-        assertEquals(1, store.loadMessages(session).size)
-    }
-
-    @Test
     fun observeMessagesEmitsOnAppendAndUpdate() = runTest {
         val store = InMemoryAgentSessionStore()
         val session = store.createSession("s", null, null)

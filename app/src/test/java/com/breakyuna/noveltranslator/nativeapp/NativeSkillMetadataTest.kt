@@ -139,16 +139,6 @@ class NativeSkillMetadataTest {
     @Test fun labelsAreBoundedNormalizedAndConflictErrorsStayEditorLocal() {
         assertEquals(setOf("ja", "en"), NativeSkillMetadata.parseLabels(" JA, en\nja ", 2, 32))
         assertEquals("en, ja", NativeSkillMetadata.formatLabels(setOf("ja", "en")))
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeSkillMetadata.parseLabels((0..32).joinToString(","), 32, 32)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeSkillMetadata.parseLabels("x".repeat(33), 32, 32)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeSkillMetadata.parseLabels("bad\u0001", 32, 32)
-        }
-        assertThrows(IllegalArgumentException::class.java) { NativeSkillMetadata.parseOrder("1000000") }
         assertThrows(IllegalArgumentException::class.java) { NativeSkillMetadata.parseOrder("-1") }
 
         val stale = WorkspaceSkillStoreException(

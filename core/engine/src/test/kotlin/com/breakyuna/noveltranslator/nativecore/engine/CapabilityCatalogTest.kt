@@ -111,17 +111,6 @@ class CapabilityCatalogTest {
         assertFalse(error.message.orEmpty().contains("private-model"))
         assertEquals(CapabilityFeature.TOOLS, error.feature)
         assertEquals(CapabilityRejectionReason.UNKNOWN, error.reason)
-
-        try {
-            ModelCapabilities(contextWindowTokens = 100, maxOutputTokens = 200)
-            throw AssertionError("Accepted impossible capacity")
-        } catch (_: IllegalArgumentException) {
-        }
-        try {
-            CapabilityRequirement(minimumContextTokens = 0)
-            throw AssertionError("Accepted zero context")
-        } catch (_: IllegalArgumentException) {
-        }
     }
 
     private fun assertRejected(

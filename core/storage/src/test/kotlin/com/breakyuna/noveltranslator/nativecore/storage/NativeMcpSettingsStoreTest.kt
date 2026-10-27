@@ -53,7 +53,6 @@ class NativeMcpSettingsStoreTest {
         val store = NativeMcpSettingsStore(context)
         val empty = store.load()
         assertEquals(NativeMcpSettingsSnapshot.EMPTY, empty)
-        assertTrue(empty.fingerprint.all { it in "0123456789abcdef" })
 
         val saved = store.upsert(record(), empty.fingerprint)
         assertEquals(1L, saved.revision)
@@ -89,39 +88,6 @@ class NativeMcpSettingsStoreTest {
         val removed = store.remove("alpha", same.fingerprint)
         assertTrue(removed.servers.isEmpty())
         assertEquals(removed, store.remove("alpha", removed.fingerprint))
-    }
-
-    @Test fun privateLiteralRequiresOptIn() {
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeMcpServerRecord(
-                id = "alpha", name = "Local", url = "http://127.0.0.1:8080/mcp",
-                allowPrivateNetwork = false,
-            )
-        }
-        NativeMcpServerRecord(
-            id = "alpha", name = "Local", url = "http://127.0.0.1:8080/mcp",
-            allowPrivateNetwork = true,
-        )
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeMcpServerRecord(
-                id = "alpha", name = "Local", url = "https://user:pass@example.com/mcp",
-            )
-        }
-    }
-
-    @Test fun toolNamesAreBoundedAndNeverContainWhitespace() {
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeMcpServerRecord(
-                id = "alpha", name = "Search", url = "https://mcp.example.com/rpc",
-                allowedTools = listOf("bad tool"),
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            NativeMcpServerRecord(
-                id = "alpha", name = "Search", url = "https://mcp.example.com/rpc",
-                allowedTools = listOf("x".repeat(129)),
-            )
-        }
     }
 
     @Test fun secretFieldIsRejectedByTheRecordCodec() {

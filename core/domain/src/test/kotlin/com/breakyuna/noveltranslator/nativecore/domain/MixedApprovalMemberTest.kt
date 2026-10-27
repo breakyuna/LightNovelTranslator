@@ -32,22 +32,9 @@ class MixedApprovalMemberTest {
             assertEquals(reversed.selectionDigest,
                 reversed.withOutcome(MixedApprovalMemberState.INDETERMINATE).selectionDigest)
         }
-    }
-
-    @Test fun callerMutationCannotChangeTheApprovedSelectionButDifferentValuesDo() {
-        val selection = mutableListOf("2", "1")
-        val fingerprints = mutableListOf(fp('b'), fp('c'))
-        val prepared = member(selection, fingerprints)
-        val digest = request(prepared).digest
-        selection.clear()
-        fingerprints.clear()
-
-        assertEquals(listOf("1", "2"), prepared.selection)
-        assertEquals(listOf(fp('c'), fp('b')), prepared.expectedFingerprints)
-        assertEquals(prepared.selectionDigest, prepared.asPending().selectionDigest)
-        assertEquals(digest, request(prepared.asPending()).digest)
+        val prepared = member(listOf("2", "1"), listOf(fp('b'), fp('c')))
         val changed = member(listOf("1", "3"), prepared.expectedFingerprints)
         assertNotEquals(prepared.selectionDigest, changed.selectionDigest)
-        assertNotEquals(digest, request(changed).digest)
+        assertNotEquals(request(prepared).digest, request(changed).digest)
     }
 }

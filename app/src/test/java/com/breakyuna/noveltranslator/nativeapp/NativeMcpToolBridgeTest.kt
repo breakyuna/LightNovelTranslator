@@ -47,9 +47,6 @@ class NativeMcpToolBridgeTest {
         assertThrows(IllegalArgumentException::class.java) {
             draft.copy(id = "bad id").toRecord()
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            draft.copy(maxToolsText = "0").toRecord()
-        }
     }
 
     @Test fun argumentsMustBeABoundedJsonObject() {

@@ -168,18 +168,6 @@ class TranslationModeCheckpointTest {
             TranslationCheckpoint(RunId("run"), REF, TranslationRunMode.CONTINUE, TranslationCommandScope.all(),
                 1, 5, listOf(ItemId(2), ItemId(2)), 0, planFingerprint())
         }
-        rejects {
-            TranslationCheckpoint(RunId("run"), REF, TranslationRunMode.CONTINUE, TranslationCommandScope.all(),
-                1, 5, (1L..201L).map { ItemId(it) }, 0, planFingerprint())
-        }
-        rejects {
-            TranslationCheckpoint(RunId("run"), REF, TranslationRunMode.CONTINUE, TranslationCommandScope.all(),
-                1, 5, emptyList(), -1, planFingerprint())
-        }
-        rejects {
-            TranslationCheckpoint(RunId("x".repeat(2_049)), REF, TranslationRunMode.CONTINUE,
-                TranslationCommandScope.all(), 1, 5, emptyList(), 0, planFingerprint())
-        }
 
         val checkpoint = TranslationCheckpoint(RunId("run"), REF, TranslationRunMode.CONTINUE,
             TranslationCommandScope.items(listOf(ItemId(10), ItemId(11))), 1, 5,

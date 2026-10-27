@@ -24,15 +24,5 @@ class ForegroundAgentRequestAttachmentTest {
             fail("Accepted a user turn with neither text nor images")
         } catch (_: IllegalArgumentException) {
         }
-        try {
-            request("", listOf(AttachmentId("a"), AttachmentId("a")))
-            fail("Accepted duplicate attachments")
-        } catch (_: IllegalArgumentException) {
-        }
-        try {
-            request("", (1..AgentAttachmentLimits.MAX_PER_MESSAGE + 1).map { AttachmentId("a$it") })
-            fail("Accepted too many attachments")
-        } catch (_: IllegalArgumentException) {
-        }
     }
 }

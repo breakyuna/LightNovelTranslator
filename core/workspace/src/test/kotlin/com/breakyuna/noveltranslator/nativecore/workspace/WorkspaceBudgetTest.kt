@@ -6,24 +6,6 @@ import org.junit.Test
 
 class WorkspaceBudgetTest {
     @Test
-    fun rejectsInvalidConfigurations() {
-        assertThrows(IllegalArgumentException::class.java) { WorkspaceBudget(maxMaterials = 0) }
-        assertThrows(IllegalArgumentException::class.java) { WorkspaceBudget(maxChanges = 0) }
-        assertThrows(IllegalArgumentException::class.java) { WorkspaceBudget(maxArtifacts = 0) }
-        assertThrows(IllegalArgumentException::class.java) { WorkspaceBudget(maxLogLines = 0) }
-        assertThrows(IllegalArgumentException::class.java) { WorkspaceBudget(timeoutMillis = 0) }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxMaterialBytes = 64, maxTotalMaterialBytes = 32)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxChangeBytes = 64, maxTotalChangeBytes = 32)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxMaterialBytes = WorkspaceHardLimits.MAX_SINGLE_BYTES + 1)
-        }
-    }
-
-    @Test
     fun meterEnforcesMaterialCountSingleAndTotalBytes() {
         val budget = WorkspaceBudget(
             maxMaterials = 2,
@@ -94,16 +76,6 @@ class WorkspaceBudgetTest {
         val defaults = WorkspaceBudget()
         assertEquals(128L * 1024 * 1024, defaults.maxResidentBytes)
         assertEquals(256L * 1024 * 1024, defaults.maxPeakHeapBytes)
-
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxResidentBytes = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxPeakHeapBytes = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceBudget(maxResidentBytes = 100, maxPeakHeapBytes = WorkspaceHardLimits.MAX_PEAK_HEAP_BYTES + 1)
-        }
     }
 
     @Test

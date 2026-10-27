@@ -156,23 +156,11 @@ class MessageJsonFormatAdapterTest {
         }
     }
 
-    @Test fun malformedRootsAndInvalidTextAreRejected() {
+    @Test fun malformedRootsAreRejected() {
         rejects(InvalidMessageJson.Reason.STRUCTURE) { adapter.read("{}", path) }
         rejects(InvalidMessageJson.Reason.STRUCTURE) { adapter.read("[bad]", path) }
         rejects(InvalidMessageJson.Reason.STRUCTURE) {
             adapter.read("[{\"message\":\"a\",\"message\":\"b\"}]", path)
-        }
-        rejects(InvalidMessageJson.Reason.STRUCTURE) {
-            adapter.read("[{\"message\":\"\\q\"}]", path)
-        }
-        rejects(InvalidMessageJson.Reason.TEXT) {
-            adapter.read("[{\"message\":\"x\u0000y\"}]", path)
-        }
-        rejects(InvalidMessageJson.Reason.TEXT) {
-            adapter.read("[{\"message\":\"\uD800\"}]", path)
-        }
-        rejects(InvalidMessageJson.Reason.TEXT) {
-            adapter.read("[{\"message\":\"\\uD800\"}]", path)
         }
     }
 

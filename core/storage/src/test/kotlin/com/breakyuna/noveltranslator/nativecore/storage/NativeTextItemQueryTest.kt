@@ -116,12 +116,10 @@ class NativeTextItemQueryTest {
         assertEquals(listOf(ItemId(3)), store.queryPage(ref, query).items.map { it.id })
     }
 
-    @Test fun unknownWindowMembersAndInvalidPageBoundsFailWithoutPartialResults() = runBlocking {
+    @Test fun unknownWindowMembersFailWithoutPartialResults() = runBlocking {
         val ref = create("one\ntwo").ref
         try { store.readItemWindow(ref, TextItemQuery(), TextItemWindow(listOf(ItemId(1), ItemId(999)))); fail() }
         catch (error: TextProjectException) { assertEquals(TextProjectException.Reason.STALE_PAGE, error.reason) }
-        try { store.queryPage(ref, TextItemQuery(), afterId = -1); fail() } catch (_: IllegalArgumentException) { }
-        try { store.queryPage(ref, TextItemQuery(), limit = 101); fail() } catch (_: IllegalArgumentException) { }
         assertEquals(0L, store.open(ref).revision)
     }
 

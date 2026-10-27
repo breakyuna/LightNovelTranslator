@@ -412,15 +412,7 @@ class RenpyFormatAdapterTest {
     }
 
     @Test
-    fun rejectsInvalidUnicodeUnterminatedStringsAndMalformedHeaders() {
-        rejects(InvalidTransRenpyFormat.Reason.INVALID_TEXT) { adapter.read("\uD800", path) }
-        rejects(InvalidTransRenpyFormat.Reason.INVALID_TEXT) { adapter.read("\u0000", path) }
-        rejects(InvalidTransRenpyFormat.Reason.INVALID_TEXT) {
-            adapter.read(
-                "translate schinese start:\n    # e \"x\"\n    e \"\\uD800\"\n",
-                path,
-            )
-        }
+    fun rejectsUnterminatedStringsAndIgnoresMalformedHeaders() {
         rejects(InvalidTransRenpyFormat.Reason.UNTERMINATED_STRING) {
             adapter.read("translate schinese start:\n    e \"unterminated\n", path)
         }

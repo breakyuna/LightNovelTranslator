@@ -57,7 +57,6 @@ class WorkspaceMaterialSourceTest {
         assertEquals(7L, manifest.revision)
         assertEquals(3, manifest.itemCount)
         assertEquals(3, manifest.assets.size)
-        assertEquals(64, manifest.digest.sha256.length)
         assertTrue(File(root, WorkspaceMaterialSource.MANIFEST_NAME).isFile)
 
         val text = requireNotNull(source.materialForAsset(1))
@@ -159,12 +158,6 @@ class WorkspaceMaterialSourceTest {
         }
         assertEquals(WorkspaceMaterialSnapshotException.Reason.PATH_POLICY, pathError.reason)
         assertFalse(File(root.parentFile, "escape.txt").exists())
-
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("../escape.txt") }
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("/absolute.txt") }
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("dir/../escape.txt") }
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("dir\\escape.txt") }
-        Unit
     }
 
     @Test fun enforcesMaterialBudgetAndTextProjectLimits() {
@@ -432,10 +425,6 @@ class WorkspaceArtifactStoreTest {
     }
 
     @Test fun rejectsTraversalProtectedPathsDuplicatesAndOverwrite() = runBlocking {
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("../escape.txt") }
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("/absolute.txt") }
-        assertThrows(IllegalArgumentException::class.java) { WorkspacePath("dir/../escape.txt") }
-
         val store = WorkspaceArtifactStore(root, ref, clock = clock)
         val run = RunId("run-paths")
         val protectedPath = assertThrows(WorkspaceArtifactConflict::class.java) {

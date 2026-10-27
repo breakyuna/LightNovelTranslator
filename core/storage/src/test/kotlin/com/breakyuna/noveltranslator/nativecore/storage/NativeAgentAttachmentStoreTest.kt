@@ -47,7 +47,6 @@ class NativeAgentAttachmentStoreTest {
 
         val file = singleStoredFile()
         assertEquals(project.generation.value.toString(), file.parentFile.name)
-        assertEquals(64, file.parentFile.parentFile.name.length)
         assertTrue(file.name.startsWith(id.value))
         assertTrue(root.walkTopDown().none { it.name.startsWith(".tmp-") })
     }

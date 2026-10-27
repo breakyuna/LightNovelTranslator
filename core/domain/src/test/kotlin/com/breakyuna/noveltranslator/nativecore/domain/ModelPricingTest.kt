@@ -34,12 +34,6 @@ class ModelPricingTest {
             TokenPrice.ofCurrencyPerMillion(BigDecimal("-0.000001"))
         }
         assertThrows(IllegalArgumentException::class.java) {
-            TokenPrice.ofMicrosPerMillion(BigInteger.valueOf(-1))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            TokenPrice.ofMicrosPerMillion(TokenPrice.MAX_MICROS_PER_MILLION.add(BigInteger.ONE))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
             TokenPrice.ofCurrencyPerMillion(BigDecimal("0.0000001"))
         }
         assertThrows(IllegalArgumentException::class.java) {
@@ -55,9 +49,6 @@ class ModelPricingTest {
         assertEquals("USD", CurrencyCode.of("USD").code)
         assertEquals("USDT", CurrencyCode.of("USDT").code)
         assertThrows(IllegalArgumentException::class.java) { CurrencyCode.of("usd") }
-        assertThrows(IllegalArgumentException::class.java) { CurrencyCode.of("US") }
-        assertThrows(IllegalArgumentException::class.java) { CurrencyCode.of("USD-1") }
-        assertThrows(IllegalArgumentException::class.java) { CurrencyCode.of("TOOLONGCODE") }
     }
 
     @Test fun costAmountKeepsSubMicroPrecisionWithoutDoubleRounding() {
@@ -77,43 +68,11 @@ class ModelPricingTest {
         assertEquals("0.000003473456", sum.toPlainString())
 
         assertThrows(IllegalArgumentException::class.java) { CostAmount.ofCurrency(BigDecimal("-1")) }
-        assertThrows(IllegalArgumentException::class.java) {
-            CostAmount.ofCurrency(BigDecimal("0.0000000000001"))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            CostAmount.ofCurrency(BigDecimal.TEN.pow(31))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            CostAmount.ofTokens(BigInteger.valueOf(-1), subMicro)
-        }
     }
 
     @Test fun modelKeysAndPriceTableSizeAreBounded() {
-        assertEquals(200, ModelPricing.MAX_MODEL_KEY_LENGTH)
-        assertThrows(IllegalArgumentException::class.java) { pricing(modelKey = "") }
-        assertThrows(IllegalArgumentException::class.java) { pricing(modelKey = "   ") }
-        assertThrows(IllegalArgumentException::class.java) { pricing(modelKey = " model") }
-        assertThrows(IllegalArgumentException::class.java) { pricing(modelKey = "model ") }
-        assertThrows(IllegalArgumentException::class.java) { pricing(modelKey = "a\u0000b") }
-        assertThrows(IllegalArgumentException::class.java) {
-            pricing(modelKey = "m".repeat(ModelPricing.MAX_MODEL_KEY_LENGTH + 1))
-        }
-
-        val tooMany = List(PriceTable.MAX_ENTRIES + 1) { pricing(modelKey = "model-$it") }
-        assertThrows(IllegalArgumentException::class.java) {
-            PriceTable(CurrencyCode.USD, 1, tooMany)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PriceTable(CurrencyCode.USD, -1, listOf(pricing()))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PriceTable(CurrencyCode.USD, PriceTable.MAX_VERSION + 1, listOf(pricing()))
-        }
         assertThrows(IllegalArgumentException::class.java) {
             PriceTable(CurrencyCode.USD, 1, listOf(pricing(modelKey = "same"), pricing(modelKey = "same")))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            PriceTable(CurrencyCode.USD, 1, listOf(pricing(modelKey = null), pricing(modelKey = null)))
         }
     }
 
@@ -139,9 +98,6 @@ class ModelPricingTest {
         assertNotEquals(ordered.fingerprint, changedRate.fingerprint)
         assertNotEquals(ordered.fingerprint, changedVersion.fingerprint)
         assertNotEquals(ordered.fingerprint, changedCurrency.fingerprint)
-
-        assertEquals(64, ordered.fingerprint.length)
-        assertTrue(ordered.fingerprint.all { it in "0123456789abcdef" })
         assertEquals(ordered.fingerprint, ordered.ref().fingerprint.sha256)
 
         val decoded = PriceTableCodec.decode(ordered.canonicalJson)

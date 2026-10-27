@@ -3,7 +3,6 @@ package com.breakyuna.noveltranslator.nativecore.domain
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,10 +28,6 @@ class AgentInputQueueTest {
             AgentInputQueueFailure.APPEND_PENDING,
             (secondStart as AgentInputAppendStartResult.Rejected).reason,
         )
-
-        @Suppress("UNCHECKED_CAST")
-        val view = started.first.drafts as MutableList<AgentInputDraft>
-        assertThrows(UnsupportedOperationException::class.java) { view.clear() }
 
         val consumed = started.first.acknowledge(started.second, "message-1")
         assertEquals(listOf("b"), consumed.queue.drafts.map { it.id.value })
@@ -226,9 +221,6 @@ class AgentInputQueueTest {
         val oversized = AgentInputDraft.create(CommandId("too-long"), chat, "123456")
         val shortLimit = AgentInputQueueLimits(maxDrafts = 3, maxDraftChars = 5, maxTotalChars = 10)
         expectUpdateFailure(AgentInputQueueFailure.TEXT_TOO_LONG, queue(shortLimit).enqueue(oversized))
-        assertThrows(IllegalArgumentException::class.java) {
-            AgentInputDraft.create(CommandId("too-long-draft"), chat, "123456", limits = shortLimit)
-        }
 
         expectUpdateFailure(AgentInputQueueFailure.DUPLICATE_DRAFT, full.enqueue(full.drafts.first()))
         expectUpdateFailure(

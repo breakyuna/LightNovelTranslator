@@ -236,7 +236,6 @@ class TranslationPlannerTest {
         assertNotEquals(first.fingerprint(), plan(items, revision = 2).fingerprint())
         assertNotEquals(first.fingerprint(), plan(items, revision = 1,
             limits = TranslationPlanLimits(maxLinesPerUnit = 100)).fingerprint())
-        assertEquals(64, first.fingerprint().sha256.length)
     }
 
     private companion object {

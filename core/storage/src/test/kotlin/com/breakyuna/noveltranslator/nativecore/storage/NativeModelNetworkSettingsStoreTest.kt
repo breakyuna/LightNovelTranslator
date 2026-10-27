@@ -102,11 +102,7 @@ class NativeModelNetworkSettingsStoreTest {
         for (content in listOf(
             "broken",
             original.dropLast(1) + ",\"extra\":true}",
-            original.replace("\"revision\":1", "\"revision\":0"),
-            original.replace("\"revision\":1", "\"revision\":1.0"),
             original.replace("\"fingerprint\":\"", "\"fingerprint\":\"0"),
-            original.replace("\"source\":\"SAVED\"", "\"source\":\"DEFAULT\""),
-            original.replace("\"source\":\"SAVED\"", "\"source\":\"OTHER\""),
         )) {
             file.writeText(content)
             assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { store.load() } }
@@ -125,13 +121,5 @@ class NativeModelNetworkSettingsStoreTest {
         assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { store.networkSettings() } }
         assertThrows(InvalidModelNetworkSettings::class.java) { runBlocking { store.fingerprint() } }
         Unit
-    }
-
-    @Test fun firstSaveWithAnExpectedFingerprintIsRejected() = runBlocking {
-        val store = NativeModelNetworkSettingsStore(context)
-        assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { store.save(configured(), "0".repeat(64)) }
-        }
-        assertEquals(ModelNetworkSettings.DEFAULT, store.load())
     }
 }

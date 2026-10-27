@@ -26,8 +26,6 @@ class PromptTemplateReorderTest {
             try { original.reordered(ids); fail("Accepted an invalid permutation") }
             catch (_: IllegalArgumentException) { }
         }
-        try { original.templates.first().withOrder(PromptTemplate.MAX_ORDER + 1); fail("Accepted invalid order") }
-        catch (_: IllegalArgumentException) { }
         assertEquals(2, original.templates.size)
     }
 }

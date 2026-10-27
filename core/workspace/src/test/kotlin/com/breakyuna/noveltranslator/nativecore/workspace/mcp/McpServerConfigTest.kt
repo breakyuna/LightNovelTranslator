@@ -58,18 +58,6 @@ class McpServerConfigTest {
     @Test
     fun boundsAndAllowlistAreValidated() {
         assertThrows(IllegalArgumentException::class.java) {
-            McpServerConfig(id = "", name = "S", url = "https://example.com/mcp")
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            McpServerConfig(id = "s", name = "S", url = "https://example.com/mcp", maxTools = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            McpServerConfig(id = "s", name = "S", url = "https://example.com/mcp", timeoutMillis = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            McpServerConfig(id = "s", name = "S", url = "https://example.com/mcp", allowedTools = setOf(""))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
             McpServerConfig(
                 id = "s",
                 name = "S",

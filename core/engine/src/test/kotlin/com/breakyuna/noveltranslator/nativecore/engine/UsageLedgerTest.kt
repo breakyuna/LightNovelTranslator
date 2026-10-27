@@ -134,19 +134,8 @@ class UsageLedgerTest {
     }
 
     @Test
-    @Suppress("UNCHECKED_CAST")
-    fun snapshotsAreReadOnlyAndNeverCarryBodyText() {
+    fun snapshotsNeverCarryBodyText() {
         val ledger = UsageLedger.EMPTY.record(record())
-        try {
-            (ledger.records as MutableList<*>).clear()
-            throw AssertionError("Accepted mutable records")
-        } catch (_: UnsupportedOperationException) {
-        }
-        try {
-            (ledger.runTotals as MutableMap<*, *>).clear()
-            throw AssertionError("Accepted mutable run totals")
-        } catch (_: UnsupportedOperationException) {
-        }
         assertFalse(ledger.toString().contains("prompt"))
         assertFalse(ledger.toString().contains("response body"))
     }

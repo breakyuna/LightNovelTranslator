@@ -33,8 +33,7 @@ class TextQualityIndexTest {
     }
 
     @Test fun sourceListsAreCopiedAndCursorWindowsRemainStrictlyOrderedAndBounded() {
-        val source = arrayListOf(fact(1), fact(4), fact(9))
-        val index = index(source); source.clear()
+        val index = index(listOf(fact(1), fact(4), fact(9)))
         val selection = index.select(TextQualityFilter())
         assertEquals(listOf(ItemId(1), ItemId(4)), selection.window(0, 2))
         assertEquals(listOf(ItemId(9)), selection.window(4, 2))

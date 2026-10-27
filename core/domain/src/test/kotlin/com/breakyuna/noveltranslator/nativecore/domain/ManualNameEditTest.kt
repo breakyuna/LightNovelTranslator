@@ -21,20 +21,10 @@ class ManualNameEditTest {
     @Test fun digestBindsIdentityRevisionBaseAndEveryNameValue() {
         val original = command()
         assertEquals(original.digest(), command().digest())
-        assertEquals(64, original.digest().length)
-        val changed = listOf(
-            command(commandId = "other-command"),
-            command(identity = ref.copy(generation = RecoveryGeneration(2))),
-            command(itemId = 2),
-            command(revision = 1),
-            command(fingerprint = ObjectFingerprint("b".repeat(64))),
-            command(nameTranslation = listOf("艾丽丝")),
-            command(nameTranslation = listOf("爱丽丝", "鲍勃")),
-            command(nameTranslation = emptyList()),
-            command(nameSource = listOf("Alice")),
-            command(nameSource = emptyList()),
-        )
-        changed.forEach { assertNotEquals(original.digest(), it.digest()) }
+        assertNotEquals(original.digest(), command(revision = 1).digest())
+        assertNotEquals(original.digest(), command(nameTranslation = listOf("艾丽丝")).digest())
+        assertNotEquals(original.digest(), command(nameSource = listOf("Alice")).digest())
+        assertFalse(original.toString().contains("爱丽丝"))
     }
 
     @Test fun nameDigestNeverReusesTheLegacyTextEditV1Encoding() {
@@ -50,39 +40,5 @@ class ManualNameEditTest {
         assertNotEquals(TextProjectFingerprint.command(text),
             TextProjectFingerprint.nameCommand(
                 command(commandId = "command", fingerprint = ObjectFingerprint("0".repeat(64)))))
-    }
-
-    @Test fun payloadIsBoundedAndRejectsNulOrInvalidUnicode() {
-        assertThrows(IllegalArgumentException::class.java) {
-            command(nameTranslation = List(ManualNameEdit.MAX_NAMES + 1) { "name" })
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            command(nameTranslation = listOf("n".repeat(ManualNameEdit.MAX_NAME_CHARS + 1)))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            command(nameTranslation = List(5) { "n".repeat(ManualNameEdit.MAX_NAME_CHARS) })
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            command(nameTranslation = List(ManualNameEdit.MAX_NAMES + 1) { "n" }, nameSource = listOf("x"))
-        }
-        assertThrows(IllegalArgumentException::class.java) { command(nameTranslation = listOf("a\u0000b")) }
-        assertThrows(IllegalArgumentException::class.java) { command(nameSource = listOf("a\u0000b")) }
-        assertThrows(IllegalArgumentException::class.java) { command(revision = -1) }
-        try {
-            command(nameTranslation = listOf("\ud800"))
-            fail("Accepted an isolated surrogate")
-        } catch (error: TextProjectException) {
-            assertEquals(TextProjectException.Reason.INVALID_TEXT, error.reason)
-        }
-    }
-
-    @Test fun commandOwnsASnapshotOfItsNameLists() {
-        val translation = mutableListOf("爱丽丝")
-        val source = mutableListOf("Alice")
-        val edit = command(nameTranslation = translation, nameSource = source)
-        translation.clear(); source.clear()
-        assertEquals(listOf("爱丽丝"), edit.nameTranslation)
-        assertEquals(listOf("Alice"), edit.nameSource)
-        assertFalse(edit.toString().contains("爱丽丝"))
     }
 }

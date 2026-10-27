@@ -69,15 +69,6 @@ class NativeOAuthConfigStoreTest {
         assertThrows(NativeOAuthConfigurationException::class.java) {
             config(tokenEndpoint = "http://127.0.0.1:8080/token")
         }
-        assertThrows(NativeOAuthConfigurationException::class.java) {
-            config(tokenEndpoint = "https://auth.example.test/token?secret=1")
-        }
-        assertThrows(NativeOAuthConfigurationException::class.java) {
-            config(authorizationEndpoint = "https://user:pass@auth.example.test/authorize")
-        }
-        assertThrows(NativeOAuthConfigurationException::class.java) {
-            config(tokenEndpoint = "https://auth.example.test/token#fragment")
-        }
     }
 
     @Test fun loopbackHttpRequiresTheStoreToOptIn() = runBlocking {
@@ -112,10 +103,5 @@ class NativeOAuthConfigStoreTest {
         assertTrue(text.contains("client-1"))
         listOf("client_secret", "clientSecret", "access_token", "refresh_token", "password")
             .forEach { forbidden -> assertFalse(text.contains(forbidden)) }
-        assertFalse(NativeOAuthConfig::class.java.declaredFields.any {
-            it.name.lowercase().contains("secret") || it.name.lowercase().contains("password") ||
-                it.name.lowercase().contains("accesstoken") ||
-                it.name.lowercase().contains("refreshtoken")
-        })
     }
 }

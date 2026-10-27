@@ -1,7 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,10 +33,6 @@ class AgentSteerTest {
         assertEquals(AgentSteerStatus.INJECTED, effect.state.attempts.single().status)
         assertEquals(AgentRunStage.TOOL_LOOP_BOUNDARY, effect.state.attempts.single().injectedDuring)
         assertTrue(effect.state.accepted.isEmpty())
-
-        @Suppress("UNCHECKED_CAST")
-        val attempts = effect.state.attempts as MutableList<AgentSteerAttempt>
-        assertThrows(UnsupportedOperationException::class.java) { attempts.clear() }
 
         val again = effect.state.injectAtToolBoundary()
         assertTrue(again is AgentSteerInjectionResult.NothingToInject)

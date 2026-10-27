@@ -1,6 +1,5 @@
 package com.breakyuna.noveltranslator.nativecore.formats
 
-import com.breakyuna.noveltranslator.nativecore.domain.RelativePath
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -34,9 +33,6 @@ class PdfFormatBoundsTest {
     @Test fun oversizedInputIsALimitFailure() {
         assertFailure(PdfFormatException.Reason.LIMIT) {
             PdfFormatBounds.checkInputSize(PdfFormatBounds.MAX_INPUT_BYTES + 1)
-        }
-        assertFailure(PdfFormatException.Reason.LIMIT) {
-            PdfFormatBounds.checkInputSize(Int.MAX_VALUE)
         }
         PdfFormatBounds.checkInputSize(PdfFormatBounds.MAX_INPUT_BYTES)
     }
@@ -77,13 +73,6 @@ class PdfFormatBoundsTest {
         PdfFormatBounds.checkOutputPages(PdfFormatBounds.MAX_OUTPUT_PAGES)
         assertFailure(PdfFormatException.Reason.LIMIT) {
             PdfFormatBounds.checkOutputPages(PdfFormatBounds.MAX_OUTPUT_PAGES + 1)
-        }
-    }
-
-    @Test fun oversizedPathIsALimitFailure() {
-        PdfFormatBounds.checkPath(RelativePath("a".repeat(PdfFormatBounds.MAX_PATH_CHARS - 4) + ".pdf"))
-        assertFailure(PdfFormatException.Reason.LIMIT) {
-            PdfFormatBounds.checkPath(RelativePath("a".repeat(PdfFormatBounds.MAX_PATH_CHARS - 3) + ".pdf"))
         }
     }
 

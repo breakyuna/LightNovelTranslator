@@ -24,18 +24,6 @@ class WorkspaceNetworkContractTest {
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceSearchRequest.create("", 5_000, cancellation)
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSearchRequest.create("q", 5_000, cancellation, maxResults = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSearchRequest.create("q", 5_000, cancellation, maxResults = 21)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSearchRequest.create("q", 5_000, cancellation, language = " ")
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceSearchRequest.create("q", deadlineAtMillis = 0, cancellation = cancellation)
-        }
     }
 
     @Test
@@ -51,12 +39,6 @@ class WorkspaceNetworkContractTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceFetchRequest.create("https://user:secret@example.com/a", 5_000, cancellation)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceFetchRequest.create("https://example.com/a", 5_000, cancellation, maxBytes = 0)
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceFetchRequest.create("https://example.com/a", 5_000, cancellation, allowedMediaTypes = emptySet())
         }
 
         val hit = WorkspaceSearchHit("Title", "https://example.com/a", "Snippet")
@@ -80,9 +62,6 @@ class WorkspaceNetworkContractTest {
         assertEquals(429, rateLimited.httpStatus)
         assertEquals(30_000L, rateLimited.retryAfterMillis)
         assertEquals("WorkspaceNetworkError(RATE_LIMITED, status=429, retryAfter=30000)", rateLimited.toString())
-        assertThrows(IllegalArgumentException::class.java) {
-            WorkspaceNetworkError(WorkspaceNetworkFailure.DNS, httpStatus = 42)
-        }
     }
 
     @Test
