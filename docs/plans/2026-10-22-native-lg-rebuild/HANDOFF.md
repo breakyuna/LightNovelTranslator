@@ -14,9 +14,13 @@
 
 ### 当前源码与 CI
 
+- 2026-10-27：[Actions #210 / 40472172742](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40472172742) 对应 `b4fd735`，Release 构建/签名/APK 上传、Lint、app/workspace API 35 设备作业通过；XML 共 2746 项、1 项失败，仅 `MixedApprovalStoreTest.preparePersistsOrderedReferencesAndIsIdempotent` 读取持久成员时抛 `Mixed member selection digest changed`，Storage 429 项中其余 428 项通过。Lint 步骤 6 分 46 秒；上一轮 9 个 JUnit 签名、JSONL 末尾换行及源姓名快照失败均已解除。
+  - 根因与本轮修复：`MixedApprovalMember` 已将选择和对象指纹成对排序并冻结，但选择摘要初始化读取同名构造参数中的原始顺序；保存规范列表与原序摘要后，重读会计算出不同摘要。摘要改为显式读取 `this@MixedApprovalMember.selection`，统一绑定规范顺序。新增领域回归覆盖带/不带指纹的重排、父审批摘要等价、成员复制/状态转换、调用方集合突变及不同选择值摘要不等价；原 Storage 持久化往返用例补充指纹配对顺序与重读一致性断言。保留读取时的成员/选择/父审批摘要及绑定校验，不改写已有无效审批或重放授权。
+  - 静态结构、差异格式和冲突标记检查通过。静态审查，未实际构建；未在本机运行测试或 Lint。用户已授权提交、推送到 `refactor/translation-agent-2026-10` 并再次 dispatch，新 CI 结果待核对。
+
 - 2026-10-27：[Actions #209 / 40470060040](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40470060040) 对应 `bf5b92f`，Release 构建/签名/APK 上传、Lint、app/workspace API 35 设备作业通过；test 仅 `core:storage:testDebugUnitTest` 失败，App/Engine 单元测试通过，其余模块部分复用缓存。已重新下载详细报告：全部 XML 2704 项、7 个失败；Storage 387 项、7 个失败，其中 5 个类初始化失败共列出 9 个非 void 的 JUnit 方法，另有源姓名批量赋值后导入 CORRUPT_PROJECT 和价格绑定 JSONL 测试解析末尾空行失败。Lint 步骤 8 分 34.17 秒（App 编译 4 分 16.51 秒、主源码分析 3 分 24.39 秒、KSP 27.760 秒），不能认为提速已稳定。
   - 本轮修复：XML 指出的 9 个测试/清理方法均显式返回 Unit；JSONL 测试仅移除 writer 的末尾换行，保留逐行严格 JSON 解析，并新增 header/request/complete 顺序及 footer entries=1 断言；生产 `ProjectWriteStore.editBound` 的历史 name_source 快照改为写入后的 metadata.nameSource，与本次条目指纹一致，保留完整导入校验与现有源姓名往返用例。对初始化失败类的相邻用例复核发现 `../escape` 引用未被共享校验器拒绝，故统一禁止凭据引用中的正反路径分隔符，补充领域正反斜杠边界用例；不放宽密文、身份、审批或历史指纹约束。
-  - 静态结构、差异格式和冲突标记检查通过；逐条比对 XML 中 9 个无效 JUnit 签名均已修改。静态审查，未实际构建；未在本机运行测试或 Lint。用户已授权将本轮修复提交、推送到 `refactor/translation-agent-2026-10` 并再次 dispatch，新 CI 结果待核对。
+  - 静态结构、差异格式和冲突标记检查通过；逐条比对 XML 中 9 个无效 JUnit 签名均已修改。静态审查，未实际构建；未在本机运行测试或 Lint。该轮已随 `b4fd735` 提交推送，#210 结果见上条。
 
 - 2026-10-27：[Actions #208 / 40468285003](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40468285003) 对应 `dd5a714`，Release 构建/签名/APK 上传、Lint 和 app/workspace 两组 API 35 设备作业通过；test 失败。Storage 测试在 `MixedProjectWriterTest:546` 漏改的成员列表调用处编译失败；已产出的 XML 共 2316 项、10 个失败（不包含未编译的 storage 用例），Engine 为 12 位金额格式断言 1 项，App 为回滚快照、损坏旧库保留、Robolectric SDK/JDK、启动入口断言、固定页脚按钮滚动各 1 项，以及队列身份夹具 4 项。
   - 本轮修复：补齐 `requestWithMembers` 调用；金额断言保留 SCALE=12 与 BigInteger 精确性；Room 集成测试显式 SDK 35；队列 RunIdentity 不带 Chat；启动入口按 XML namespace/MAIN+LAUNCHER 检查唯一导出 MainActivity；固定页脚直接断言可见并点击，内容区域仍滚动定位。生产代码修复两处：回滚 snapshot 的 models.db 在只允许读写、不创建的主连接 ATTACH 前显式创建；旧库 OPEN_READONLY 使用拒绝损坏且不删除文件的 DatabaseErrorHandler，保留原有导入失败保护断言，并补充直接只读打开损坏文件后 SHA 不变的回归用例。未删除用例或放宽工程身份/审批/旧数据保留契约。

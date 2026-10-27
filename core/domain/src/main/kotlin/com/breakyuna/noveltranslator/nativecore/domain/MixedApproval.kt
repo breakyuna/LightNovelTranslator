@@ -130,7 +130,8 @@ class MixedApprovalMember(
     val selectionDigest: ObjectFingerprint = ObjectFingerprint(sha256Text(buildJsonObject {
         put("version", 1)
         put("format", "mixed-selection")
-        put("selection", JsonArray(selection.map { JsonPrimitive(it) }))
+        // The constructor parameter can be unsorted; bind the canonical frozen property.
+        put("selection", JsonArray(this@MixedApprovalMember.selection.map { JsonPrimitive(it) }))
     }.toString()))
 
     fun hasSameReferences(other: MixedApprovalMember): Boolean =
