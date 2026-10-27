@@ -5,41 +5,21 @@ import com.breakyuna.noveltranslator.nativecore.domain.JsonObjectValue
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthCredential
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthFailure
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthFailureKind
-import com.breakyuna.noveltranslator.nativecore.engine.OAuthRefresher
 import com.breakyuna.noveltranslator.nativecore.domain.ModelConfigurationRef
-import java.io.ByteArrayOutputStream
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthHttpExecutor
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthRefresher
+import com.breakyuna.noveltranslator.nativecore.engine.OkHttpOAuthHttpExecutor
 import java.io.IOException
 import java.net.URLEncoder
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-
-internal data class NativeOAuthHttpResult(val status: Int, val body: String) {
-    override fun toString(): String = "NativeOAuthHttpResult(status=$status, body=redacted)"
-}
-
-/** Test seam only: production uses [OkHttpNativeOAuthHttpExecutor]. */
-internal fun interface NativeOAuthHttpExecutor {
-    suspend fun postForm(url: String, form: String): NativeOAuthHttpResult
-}
 
 /**
  * Authorization-code and refresh-token client for public OAuth clients. Requests are
@@ -47,10 +27,10 @@ internal fun interface NativeOAuthHttpExecutor {
  * closes the call. No request body, response body, token or header is logged.
  */
 class NativeOAuthTokenClient internal constructor(
-    private val executor: NativeOAuthHttpExecutor,
+    private val executor: OAuthHttpExecutor,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
-    constructor() : this(OkHttpNativeOAuthHttpExecutor())
+    constructor() : this(OkHttpOAuthHttpExecutor())
 
     suspend fun exchange(
         config: NativeOAuthConfig,
@@ -217,77 +197,6 @@ private fun string(value: JsonObject, key: String): String =
 private val EXPIRES_IN = Regex("[0-9]{1,10}")
 private const val MAX_EXPIRES_SECONDS = 315_360_000L
 private const val MAX_RESPONSE_CHARS = 64 * 1024
-
-/** Default token transport. Redirects stay disabled so a code or token cannot be replayed elsewhere. */
-internal class OkHttpNativeOAuthHttpExecutor(
-    private val client: OkHttpClient = OkHttpClient.Builder()
-        .retryOnConnectionFailure(false)
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS)
-        .build(),
-) : NativeOAuthHttpExecutor {
-    override suspend fun postForm(url: String, form: String): NativeOAuthHttpResult =
-        withContext(Dispatchers.IO) {
-            val request = Request.Builder()
-                .url(url)
-                .header("Accept", "application/json")
-                .post(form.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
-                .build()
-            val call = client.newCall(request)
-            coroutineScope {
-                val canceller = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
-                    try { awaitCancellation() } finally { call.cancel() }
-                }
-                try {
-                    call.execute().use { response ->
-                        currentCoroutineContext().ensureActive()
-                        val body = response.body ?: throw OAuthFailure(OAuthFailureKind.MALFORMED_RESPONSE)
-                        NativeOAuthHttpResult(response.code, readBounded(body.byteStream()))
-                    }
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: OAuthFailure) {
-                    throw failure
-                } catch (error: IOException) {
-                    currentCoroutineContext().ensureActive()
-                    throw if (error is java.net.SocketTimeoutException ||
-                        error is java.io.InterruptedIOException) {
-                        OAuthFailure(OAuthFailureKind.TIMEOUT)
-                    } else {
-                        OAuthFailure(OAuthFailureKind.NETWORK)
-                    }
-                } finally {
-                    canceller.cancel()
-                    withContext(NonCancellable) { canceller.join() }
-                }
-            }
-        }
-
-    private suspend fun readBounded(input: java.io.InputStream): String {
-        val output = ByteArrayOutputStream()
-        val buffer = ByteArray(8 * 1024)
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            val count = input.read(buffer)
-            if (count < 0) break
-            if (output.size().toLong() + count > MAX_RESPONSE_CHARS) {
-                throw OAuthFailure(OAuthFailureKind.MALFORMED_RESPONSE)
-            }
-            output.write(buffer, 0, count)
-        }
-        return try {
-            Charsets.UTF_8.newDecoder()
-                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
-                .decode(java.nio.ByteBuffer.wrap(output.toByteArray())).toString()
-        } catch (_: Exception) {
-            throw OAuthFailure(OAuthFailureKind.MALFORMED_RESPONSE)
-        }
-    }
-}
 
 /** Uses the saved endpoint configuration for a refresh; the token store is owned by OAuthTokenProvider. */
 class NativeOAuthRefresher(

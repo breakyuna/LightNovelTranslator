@@ -408,7 +408,7 @@ class NativeAppGraph(context: Context) {
             override suspend fun registered() = this@NativeAppGraph.projects.registeredProjects(101)
             override suspend fun save(ref: LocalProjectRef, destination: () -> java.io.OutputStream) =
                 this@NativeAppGraph.projects.saveProjectForArchive(ref, destination, requireNotNull(cut))
-            override suspend fun import(commandId: CommandId, source: () -> java.io.InputStream) =
+            override suspend fun importProject(commandId: CommandId, source: () -> java.io.InputStream) =
                 this@NativeAppGraph.projects.importProject(commandId, source)
         },
         settings = NativeFullArchiveSettingsPort(

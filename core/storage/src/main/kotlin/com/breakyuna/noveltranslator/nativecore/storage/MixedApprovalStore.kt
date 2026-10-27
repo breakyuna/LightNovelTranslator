@@ -354,8 +354,9 @@ class MixedApprovalStore(context: Context) {
                     MixedApprovalRefusalReason.IDENTITY, current,
                 )
             }
+            val claimedAtMillis = current.claimedAtMillis
             if (at < current.createdAtMillis ||
-                (current.claimedAtMillis != null && at < current.claimedAtMillis)) {
+                (claimedAtMillis != null && at < claimedAtMillis)) {
                 return@transaction MixedApprovalSettlement.Refused(MixedApprovalRefusalReason.TIME, current)
             }
             if (current.state.terminal) {

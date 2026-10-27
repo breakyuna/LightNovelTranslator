@@ -9,6 +9,8 @@ import com.breakyuna.noveltranslator.nativecore.domain.NativeModelProfilePort
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettings
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthCredential
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthCredentialStore
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthHttpExecutor
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthHttpResult
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,9 +71,9 @@ class NativeOAuthControllerTest {
             """{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3600}"""),
     ): Fixture {
         val credentials = Credentials()
-        val executor = object : NativeOAuthHttpExecutor {
-            override suspend fun postForm(url: String, form: String): NativeOAuthHttpResult =
-                NativeOAuthHttpResult(200, responses.removeAt(0))
+        val executor = object : OAuthHttpExecutor {
+            override suspend fun postForm(url: String, form: String): OAuthHttpResult =
+                OAuthHttpResult(200, responses.removeAt(0))
         }
         val configDirectory = temporary.newFolder()
         val controller = NativeOAuthController(

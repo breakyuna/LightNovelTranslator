@@ -83,11 +83,12 @@ class OAuthTokenProvider(
             // Providers commonly omit expires_in on refresh responses. Never turn
             // that into an immediately-expired credential or a refresh loop.
             val completedNow = now()
-            if (refreshed.expiresAtMillis != null && refreshed.expiresAtMillis <= completedNow) {
+            val expiresAtMillis = refreshed.expiresAtMillis
+            if (expiresAtMillis != null && expiresAtMillis <= completedNow) {
                 throw authenticationFailure(OAuthFailureKind.MALFORMED_RESPONSE)
             }
             val next = if (refreshed.refreshToken == null) OAuthCredential.of(
-                refreshed.accessToken, current.refreshToken, refreshed.expiresAtMillis,
+                refreshed.accessToken, current.refreshToken, expiresAtMillis,
                 refreshed.scopes, refreshed.tokenType) else refreshed
             try {
                 store.save(reference, next)

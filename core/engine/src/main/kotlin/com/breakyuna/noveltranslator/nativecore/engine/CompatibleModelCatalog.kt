@@ -269,6 +269,6 @@ class CompatibleModelCatalog(private val settings: NativeModelSettingsPort, priv
         const val ANTHROPIC_VERSION = "2023-06-01"
         const val MAX_MODELS = 1000
         val INTEGER = Regex("0|[1-9][0-9]*")
-        val MODEL_ORDER = compareBy<ModelDescriptor>(String.CASE_INSENSITIVE_ORDER) { it.id }
+        val MODEL_ORDER = compareBy<ModelDescriptor, String>(String.CASE_INSENSITIVE_ORDER) { it.id }
     }
 }

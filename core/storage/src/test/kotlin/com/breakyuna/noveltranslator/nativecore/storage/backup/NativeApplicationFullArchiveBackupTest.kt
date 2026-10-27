@@ -253,8 +253,8 @@ class NativeApplicationFullArchiveBackupTest {
         service(full = idleWithHistory).restore { ByteArrayInputStream(exported.toByteArray()) }
         val plan = requireNotNull(idleWithHistory.plan)
         assertTrue(plan.clearPendingApprovals && plan.clearExecutionTokens)
-        assertEquals(StoredRunState.NEEDS_REVIEW, AppArchiveRestorePolicy.runState(StoredRunState.RUNNING))
-        assertEquals(StoredRunState.NEEDS_REVIEW, AppArchiveRestorePolicy.runState(StoredRunState.WAITING_APPROVAL))
+        assertEquals(StoredRunState.INTERRUPTED, AppArchiveRestorePolicy.runState(StoredRunState.RUNNING))
+        assertEquals(StoredRunState.INTERRUPTED, AppArchiveRestorePolicy.runState(StoredRunState.WAITING_APPROVAL))
         assertEquals(StoredRunState.PAUSED, AppArchiveRestorePolicy.runState(StoredRunState.PAUSED))
         assertEquals(TranslationTaskQueueState.PAUSED,
             AppArchiveRestorePolicy.queueState(TranslationTaskQueueState.QUEUED))

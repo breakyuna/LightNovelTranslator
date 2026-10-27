@@ -22,14 +22,11 @@ import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import com.breakyuna.noveltranslator.nativecore.domain.ManualTextEdit
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApproval
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalBinding
-import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalConsumption
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMember
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMemberKind
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalMemberState
-import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalPreparation
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalRejection
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalRequest
-import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalSettlement
 import com.breakyuna.noveltranslator.nativecore.domain.MixedApprovalState
 import com.breakyuna.noveltranslator.nativecore.domain.NativeImportLimits
 import com.breakyuna.noveltranslator.nativecore.domain.NativeProjectFormat

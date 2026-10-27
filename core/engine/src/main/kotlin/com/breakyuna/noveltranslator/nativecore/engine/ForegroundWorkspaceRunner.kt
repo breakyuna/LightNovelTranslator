@@ -442,17 +442,17 @@ class ForegroundWorkspaceRunner(
     /** Rejects an unacknowledged start exactly once. Later stop calls keep the failed outcome. */
     fun startFailed(token: String) {
         val session = synchronized(monitor) {
-            current?.takeIf {
+            val active = current?.takeIf {
                 it.handle.token == token && !it.finished && it.startFailure == null &&
                     it.snapshot.phase == ForegroundWorkspacePhase.PREPARING && !it.ready.isCompleted
             } ?: return
-            it.startFailure = ForegroundWorkspaceStartFailed()
-            it.snapshot = it.snapshot.copy(
+            active.startFailure = ForegroundWorkspaceStartFailed()
+            active.snapshot = active.snapshot.copy(
                 revision = ++revision,
                 phase = ForegroundWorkspacePhase.STOPPING,
                 failure = ForegroundWorkspaceFailureReason.START_FAILED,
             )
-            it
+            active
         }
         publish(session.snapshot)
         session.ready.completeExceptionally(requireNotNull(session.startFailure))

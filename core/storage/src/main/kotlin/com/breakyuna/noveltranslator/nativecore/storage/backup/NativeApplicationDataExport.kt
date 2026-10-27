@@ -461,7 +461,7 @@ interface FullArchiveDataPort {
  */
 object AppArchiveRestorePolicy {
     fun runState(state: StoredRunState): StoredRunState = when (state) {
-        StoredRunState.RUNNING, StoredRunState.WAITING_APPROVAL -> StoredRunState.NEEDS_REVIEW
+        StoredRunState.RUNNING, StoredRunState.WAITING_APPROVAL -> StoredRunState.INTERRUPTED
         else -> state
     }
 

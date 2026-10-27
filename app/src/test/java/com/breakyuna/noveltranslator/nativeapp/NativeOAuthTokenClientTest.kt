@@ -2,6 +2,8 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthFailure
 import com.breakyuna.noveltranslator.nativecore.domain.OAuthFailureKind
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthHttpExecutor
+import com.breakyuna.noveltranslator.nativecore.engine.OAuthHttpResult
 import java.net.SocketTimeoutException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -20,12 +22,12 @@ class NativeOAuthTokenClientTest {
     )
 
     private class FakeExecutor(
-        private val response: NativeOAuthHttpResult? = null,
+        private val response: OAuthHttpResult? = null,
         private val failure: Exception? = null,
-    ) : NativeOAuthHttpExecutor {
+    ) : OAuthHttpExecutor {
         var url: String? = null
         var form: String? = null
-        override suspend fun postForm(url: String, form: String): NativeOAuthHttpResult {
+        override suspend fun postForm(url: String, form: String): OAuthHttpResult {
             this.url = url
             this.form = form
             failure?.let { throw it }
@@ -52,7 +54,7 @@ class NativeOAuthTokenClientTest {
     }
 
     @Test fun authorizationCodeExchangeUsesFormPkceAndNoClientSecret() = runBlocking {
-        val executor = FakeExecutor(NativeOAuthHttpResult(200, """
+        val executor = FakeExecutor(OAuthHttpResult(200, """
             {"access_token":"access-1","refresh_token":"refresh-1",
              "expires_in":3600,"scope":"read write","token_type":"Bearer"}
         """.trimIndent()))
@@ -102,19 +104,19 @@ class NativeOAuthTokenClientTest {
 
     @Test fun httpErrorsMapToSanitizedOAuthFailureKinds() = runBlocking {
         assertEquals(OAuthFailureKind.REFRESH_REJECTED,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(400, "")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(400, "")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.REFRESH_REJECTED,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(401, "")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(401, "")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.TIMEOUT,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(408, "")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(408, "")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.REFRESH_UNAVAILABLE,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(503, "")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(503, "")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.REFRESH_UNAVAILABLE,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(429, "")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(429, "")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
     }
 
@@ -126,13 +128,13 @@ class NativeOAuthTokenClientTest {
             requestFailure { NativeOAuthTokenClient(FakeExecutor(failure = java.io.IOException("offline")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.MALFORMED_RESPONSE,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(200, "not json")))
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(200, "not json")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
         assertEquals(OAuthFailureKind.MALFORMED_RESPONSE,
-            requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(200,
+            requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(200,
                 """{"access_token":"${"a".repeat(70 * 1024)}"}""")))
                 .exchange(config, "code", "verifier", config.scopes) }.kind)
-        val rejected = requestFailure { NativeOAuthTokenClient(FakeExecutor(NativeOAuthHttpResult(200,
+        val rejected = requestFailure { NativeOAuthTokenClient(FakeExecutor(OAuthHttpResult(200,
             """{"error":"invalid_grant"}""")))
             .exchange(config, "code", "verifier", config.scopes) }
         assertEquals(OAuthFailureKind.REFRESH_REJECTED, rejected.kind)
@@ -140,7 +142,7 @@ class NativeOAuthTokenClientTest {
     }
 
     @Test fun refreshOmitsTheAuthorizationCodeAndRequiresARefreshToken() = runBlocking {
-        val executor = FakeExecutor(NativeOAuthHttpResult(200,
+        val executor = FakeExecutor(OAuthHttpResult(200,
             """{"access_token":"access-2","expires_in":60}"""))
         val client = NativeOAuthTokenClient(executor, clock = { 0L })
         val refreshed = client.refresh(config,

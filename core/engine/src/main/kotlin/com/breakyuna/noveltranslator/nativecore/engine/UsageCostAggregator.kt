@@ -123,7 +123,8 @@ class UsageCostAggregator(
             group(totals, entry.priceCurrency, UsageCostState.UNKNOWN).addUnknown(version)
             return
         }
-        if (entry.priceFingerprint != null && entry.priceFingerprint.sha256 != table.fingerprint) {
+        val fingerprint = entry.priceFingerprint
+        if (fingerprint != null && fingerprint.sha256 != table.fingerprint) {
             group(totals, table.currency, UsageCostState.UNKNOWN).addUnknown(version)
             return
         }

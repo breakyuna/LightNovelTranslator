@@ -389,7 +389,7 @@ class NativeFullArchiveDataPortTest {
             destination().use { it.write(requireNotNull(bytes(ref))) }
         }
 
-        override suspend fun import(commandId: CommandId, source: () -> InputStream): TextProjectSummary {
+        override suspend fun importProject(commandId: CommandId, source: () -> InputStream): TextProjectSummary {
             importCalls += 1
             if (failImportAt == importCalls) throw IOException("simulated import failure")
             val bytes = source().use { it.readBytes() }

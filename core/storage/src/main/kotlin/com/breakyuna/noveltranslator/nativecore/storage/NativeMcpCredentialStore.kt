@@ -368,7 +368,8 @@ private class AndroidKeystoreMcpCredentialSealer : NativeMcpCredentialSealer {
     private companion object {
         const val ALIAS = "lnt_native_mcp_credentials_v1"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val IV_BYTES = 12
         const val TAG_BITS = 128
     }
 }
+
+private const val IV_BYTES = 12

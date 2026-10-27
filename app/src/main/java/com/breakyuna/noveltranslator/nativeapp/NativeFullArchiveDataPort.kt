@@ -88,7 +88,7 @@ internal interface FullArchiveProjectSource {
     fun beginCut(): AutoCloseable = AutoCloseable {}
     suspend fun registered(): List<RegisteredProject>
     suspend fun save(ref: LocalProjectRef, destination: () -> OutputStream)
-    suspend fun import(commandId: CommandId, source: () -> InputStream): TextProjectSummary
+    suspend fun importProject(commandId: CommandId, source: () -> InputStream): TextProjectSummary
 }
 
 /** User-visible Agent material only. Checkpoints are deliberately not part of this boundary. */
@@ -881,7 +881,7 @@ internal class NativeFullArchiveDataPort(
                     imports += FullArchiveImportedProject(instance.oldRef, commandId)
                     persist("PREPARED")
                     val summary = entry.open().use { input ->
-                        projects.import(CommandId(commandId)) { input }
+                        projects.importProject(CommandId(commandId)) { input }
                     }
                     require(summary.ref.instanceId.value != instance.oldRef.instanceId.value) {
                         "Project import did not create a new local instance"

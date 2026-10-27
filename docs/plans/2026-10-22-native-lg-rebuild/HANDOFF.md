@@ -14,6 +14,8 @@
 
 ### 当前源码与 CI
 
+- 2026-10-27：[Actions #205 / 40458139231](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40458139231) 对应 `c2bedc2`，`test` 在模块边界静态检查失败、单元测试未执行；`lint`/`release`/app 设备作业均在 `:core:engine` 与 `:core:storage` 编译失败，仅 workspace 设备作业通过。原因包括 `compareBy` 类型参数不足、`ForegroundWorkspaceRunner.startFailed` 缺失 `also` 链、三处跨模块智能转换、`IV_BYTES` 作用域、`StoredRunState.NEEDS_REVIEW` 不存在、测试包导入、`fun import` 硬关键字，以及 nativeapp 直接依赖 OkHttp。本轮已修复上述编译问题，并把 token HTTP 传输移到 `core:engine` 的 `OAuthHttpExecutor`；随本提交再次推送并 dispatch，CI 结果待核对。静态审查，未实际构建；未运行测试或 Lint。
+
 - 2026-10-27：[Actions #204 / 40361934256](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40361934256) 对应 `4dd4b21`，`test`、`lint`、`release`、两组 API 35 设备作业全部通过；该提交移除 warning 配色对旧 `ui.theme.LocalAppColors` 的依赖，在 `NativeTheme` 内按主题模式提供原生警告色。此前 [Actions #203 / 40358823290](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40358823290) 对应 `25217b2`，test 在模块边界静态检查失败、单元测试未执行，由 `4dd4b21` 修复。#204 结论只覆盖 `4dd4b21`，不覆盖其后的工作区增量。
 
 - 2026-10-27：本轮修复前 HEAD 为 `a4c86b5`，[Actions #202 / 40357740599](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40357740599) 总体为 cancelled，但 lint 作业实际在 `:app:compileDebugKotlin` 报错：`NativeLogsPage` / `NativeRunHistory` 引用未定义的 `NativeTone.WARNING`，`NativeModelsPage` 缺少 `FontWeight` 导入；Unit tests 和 Release 构建步骤失败，设备测试取消，签名 APK 未上传。本轮修复补齐 WARNING 枚举及两个共享组件的主题警告色映射，补上 FontWeight 导入。静态审查，未实际构建；未运行测试或 Lint；用户已授权再次提交，随本轮提交推送当前分支并触发 CI，结果待核对。下述 `1d3dd1c` / #201 仅为上一绿色基线，不覆盖 `a4c86b5` 或本轮修复。
@@ -33,9 +35,9 @@
 
 ### 2026-10-27 本轮增量（已提交推送，CI 待核对）
 
-- 审查修复增量：预算兼容构造显式指定内存参数、混合审批 UI 投影可见性、MCP 搜索后备鲜读目录并验证只读、生成探测传 OAuth 模式、同响应最多 8 次工具调用收集同 Run 提案后等待审批（新发送仍阻断）、工作区执行重附着所有权。完整备份冻结真实用量 JSONL 与历史定价绑定；持有队列跨进程文件锁和运行时归档保留，工程快照使用专用保留句柄，诊断在释放前冻结。完整恢复在发布设置前保存私有回滚快照（加密模型行保持密文、价格及历史/模板/预设/网络/限额/实验室/偏好），失败及中断恢复回滚，提交后清理；两种备份均清除代理凭据引用。新增保留边界和中断回滚回归测试源码，未执行。静态审查，未实际构建；未运行测试或 Lint；本轮已随提交推送并手动 dispatch CI，结果待核对。
+- 审查修复增量：预算兼容构造显式指定内存参数、混合审批 UI 投影可见性、MCP 搜索后备鲜读目录并验证只读、生成探测传 OAuth 模式、同响应最多 8 次工具调用收集同 Run 提案后等待审批（新发送仍阻断）、工作区执行重附着所有权。完整备份冻结真实用量 JSONL 与历史定价绑定；持有队列跨进程文件锁和运行时归档保留，工程快照使用专用保留句柄，诊断在释放前冻结。完整恢复在发布设置前保存私有回滚快照（加密模型行保持密文、价格及历史/模板/预设/网络/限额/实验室/偏好），失败及中断恢复回滚，提交后清理；两种备份均清除代理凭据引用。新增保留边界和中断回滚回归测试源码，未执行。静态审查，未实际构建；未运行测试或 Lint；已随提交推送；#205 失败后修复并再次 dispatch，结果待核对（失败项见本节首条 CI 记录）。
 
-- 本轮在 `4dd4b21` 之上新增源码增量（约 205 个文件），随本轮提交推送当前分支；本分支 push 不自动触发 Actions，已手动 dispatch。只做静态检查，未运行 Gradle/构建/单测/Lint。下表及本节旧描述保留 10-26 基线；本轮增量以本节为准，**不等于功能完成**。
+- 本轮在 `4dd4b21` 之上新增源码增量（约 205 个文件），随本轮提交推送当前分支；本分支 push 不自动触发 Actions，已手动 dispatch；#205 静态检查与编译失败后已修复重跑。只做静态检查，未运行 Gradle/构建/单测/Lint。下表及本节旧描述保留 10-26 基线；本轮增量以本节为准，**不等于功能完成**。
 - vision：`core/engine` 已支持 USER 图片 part、OpenAI Chat/Responses、Anthropic、Gemini 编码、纯 Kotlin Base64、`AgentImageResolver` 与能力门禁；app 已接文件型附件存储、SAF 选择、缩略图/删除、纯图片发送、五语。真实供应商图片兼容、设备 SAF/内存未验收。
 - MCP：core 客户端/JSON-RPC/HTTP/SSE/搜索 + app 配置存储、独立 Keystore 凭据、DuckDuckGo 后备、`mcp_list_tools`/`mcp_call` 只读工具、More 页配置 UI。只暴露 `readOnlyHint=true` 工具，有副作用工具不暴露；未连接真实 MCP server。
 - OAuth：通用 OAuth2 + PKCE、回调 Activity、token 交换/刷新/退出、配置 CAS、模型 resolver 注入、模型页认证区；OAuth 传输改为 Bearer，API key 旧头不变。真实 provider、浏览器回调、Keystore 设备行为未验收。
