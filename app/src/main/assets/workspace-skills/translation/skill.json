@@ -1,0 +1,14 @@
+{
+  "name": "translation",
+  "description": "翻译、补译、重译工程内 TXT/EPUB 文本，或检查、审校和修正工程译文。",
+  "enabled": true,
+  "order": 200,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "translation",
+    "review"
+  ],
+  "contentSha256": "616e0967ef1694021e6cada5f942661fa314a3fa64f7549ac6af88ac78740087"
+}

@@ -1,5 +1,6 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
+import com.breakyuna.noveltranslator.nativecore.domain.ArchiveReadLease
 import com.breakyuna.noveltranslator.nativecore.domain.ActiveRun
 import com.breakyuna.noveltranslator.nativecore.domain.AuthenticationWriteLease
 import com.breakyuna.noveltranslator.nativecore.domain.ChatIdentity
@@ -41,6 +42,25 @@ class RuntimeCoordinator : RuntimePort {
     private class SkillWrite : SkillWriteLease
     private class AuthenticationWrite : AuthenticationWriteLease
 
+    private class ArchiveRead : ArchiveReadLease
+    private var archiveRead: ArchiveRead? = null
+
+    override fun beginArchiveRead(): ArchiveReadLease = mutate {
+        ensureOpen()
+        if (archiveRead != null || active != null || projectWrite != null || skillWrite != null || authenticationWrite != null) unavailable(Reason.BUSY)
+        ArchiveRead().also { archiveRead = it; advanceLocked() }
+    }
+
+    override fun endArchiveRead(lease: ArchiveReadLease): Unit = mutate {
+        if (archiveRead === lease) { archiveRead = null; advanceLocked() }
+    }
+
+    override fun beginArchiveProjectWrite(lease: ArchiveReadLease): ProjectWriteLease = mutate {
+        ensureOpen()
+        if (archiveRead !== lease || projectWrite != null) unavailable(Reason.BUSY)
+        Write(null).also { projectWrite = it; advanceLocked() }
+    }
+
     private val monitor = Any()
     private var revision = 0L
     private var selected: ChatIdentity? = null
@@ -73,7 +93,7 @@ class RuntimeCoordinator : RuntimePort {
 
     private fun reserveRunLocked(identity: RunIdentity, owner: RuntimeOwner, chat: ChatIdentity?): RunLease {
         ensureOpen()
-        if (active != null || projectWrite != null || authenticationWrite != null ||
+        if (archiveRead != null || active != null || projectWrite != null || authenticationWrite != null ||
             (owner == RuntimeOwner.AGENT && skillWrite != null)
         ) unavailable(Reason.BUSY)
         if (chat == null || identity.projectId != chat.projectId ||
@@ -140,7 +160,7 @@ class RuntimeCoordinator : RuntimePort {
 
     override fun beginRunMetadataWrite(run: RunLease): ProjectWriteLease = mutate {
         ensureOpen()
-        if (projectWrite != null) unavailable(Reason.BUSY)
+        if (archiveRead != null || projectWrite != null) unavailable(Reason.BUSY)
         val current = currentRun(run)
         if (current.owner != RuntimeOwner.AGENT) unavailable(Reason.BUSY)
         Write(current).also { projectWrite = it; advanceLocked() }
@@ -148,7 +168,7 @@ class RuntimeCoordinator : RuntimePort {
 
     override fun beginProjectWrite(run: RunLease?): ProjectWriteLease = mutate {
         ensureOpen()
-        if (projectWrite != null) unavailable(Reason.BUSY)
+        if (archiveRead != null || projectWrite != null) unavailable(Reason.BUSY)
         val current = if (run != null) {
             currentRun(run).also {
                 if (!(it.owner == RuntimeOwner.TRANSLATION && it.phase == RuntimePhase.PAUSING)) ensureRunning(it)
@@ -174,7 +194,7 @@ class RuntimeCoordinator : RuntimePort {
 
     override fun beginSkillWrite(): SkillWriteLease = mutate {
         ensureOpen()
-        if (skillWrite != null || active?.owner == RuntimeOwner.AGENT) unavailable(Reason.BUSY)
+        if (archiveRead != null || skillWrite != null || active?.owner == RuntimeOwner.AGENT) unavailable(Reason.BUSY)
         SkillWrite().also {
             skillWrite = it
             advanceLocked()
@@ -190,7 +210,7 @@ class RuntimeCoordinator : RuntimePort {
 
     override fun beginAuthenticationWrite(): AuthenticationWriteLease = mutate {
         ensureOpen()
-        if (active != null || authenticationWrite != null) unavailable(Reason.BUSY)
+        if (archiveRead != null || active != null || authenticationWrite != null) unavailable(Reason.BUSY)
         AuthenticationWrite().also {
             authenticationWrite = it
             advanceLocked()

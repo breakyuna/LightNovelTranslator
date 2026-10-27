@@ -11,13 +11,19 @@ import kotlinx.coroutines.flow.update
 data class ForegroundAgentRequest(
     val ref: LocalProjectRef, val identity: RunIdentity,
     val configuration: ModelConfigurationRef, val input: String,
+    /** Already persisted attachments for this message; empty keeps the text-only path. */
+    val attachmentIds: List<AttachmentId> = emptyList(),
 ) {
     init {
         require(identity.projectId == ref.projectId && identity.chatId != null)
-        require(input.isNotBlank() && input.length <= 8000)
+        require(input.length <= 8000)
+        require(input.isNotBlank() || attachmentIds.isNotEmpty())
+        require(attachmentIds.size <= AgentAttachmentLimits.MAX_PER_MESSAGE)
+        require(attachmentIds.distinct().size == attachmentIds.size)
         TextProjectFingerprint.utf8(input)
     }
-    override fun toString() = "ForegroundAgentRequest(run=${identity.runId}, input=<redacted>)"
+    override fun toString() =
+        "ForegroundAgentRequest(run=${identity.runId}, input=<redacted>, attachments=${attachmentIds.size})"
 }
 
 /** Presentation metadata; request acceptance is a persisted user message, not a paid dispatch. */

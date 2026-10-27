@@ -613,6 +613,95 @@ class NativeAgentStoreTest {
         assertEquals(0L, projects.open(project.ref).revision)
     }
 
+    @Test fun imageTurnsResolveBeforeAppendAndHistoricalImagesAreNotUploadedAgain() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        val bytes = byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4)
+        val sha = TextProjectFingerprint.bytes(bytes)
+        val attachmentId = AttachmentId("attachment-1")
+        var resolutions = 0
+        val attachments = object : AgentAttachmentStorePort {
+            override suspend fun save(bytes: ByteArray, mimeType: String, project: LocalProjectRef,
+                                      displayName: String?): AttachmentId = error("Unexpected save")
+            override suspend fun resolve(project: LocalProjectRef, id: AttachmentId): AgentAttachmentData {
+                resolutions++
+                assertEquals(attachmentId, id)
+                return AgentAttachmentData(id, "image/png", sha, bytes, "page.png")
+            }
+        }
+        val requests = mutableListOf<AgentModelRequest>()
+        val model = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+                requests += request
+                return AgentModelResponse(AgentMessage.Assistant(MessageId("image-response-${requests.size}"),
+                    listOf(AssistantPart.Text("ok"))),
+                    RequestUsage(TokenMeasurement(null, UsageSource.UNKNOWN), TokenMeasurement(null, UsageSource.UNKNOWN),
+                        TokenMeasurement(null, UsageSource.UNKNOWN), TokenMeasurement(null, UsageSource.UNKNOWN),
+                        TokenMeasurement(null, UsageSource.UNKNOWN)), ModelStopReason.COMPLETE)
+            }
+        }
+        try {
+            val conversation = NativeKoogConversation(runtime, projects, agent, agent, agent, model,
+                attachments = attachments)
+            conversation.send(lease, project.ref, ModelConfigurationRef("fixture", 1), "plain text")
+            conversation.send(lease, project.ref, ModelConfigurationRef("fixture", 1), "",
+                attachmentIds = listOf(attachmentId))
+            conversation.send(lease, project.ref, ModelConfigurationRef("fixture", 1), "follow up")
+        } finally { runtime.finishRun(lease) }
+
+        assertEquals(1, resolutions)
+        assertEquals(3, requests.size)
+        val firstUser = requests[0].history.last() as AgentMessage.User
+        assertEquals(listOf("plain text"), firstUser.parts.filterIsInstance<UserPart.Text>().map { it.text })
+        assertTrue(firstUser.parts.none { it is UserPart.Image })
+
+        val imageRequestUser = requests[1].history.last() as AgentMessage.User
+        val requestedImage = imageRequestUser.parts.filterIsInstance<UserPart.Image>().single().image
+        assertEquals(attachmentId, requestedImage.attachmentId)
+        assertEquals(sha, requestedImage.sha256)
+        assertEquals("image/png", requestedImage.mimeType)
+
+        val thirdRequest = requests[2].history
+        assertTrue(thirdRequest.none { message ->
+            message is AgentMessage.User && message.parts.any { it is UserPart.Image }
+        })
+        assertTrue(thirdRequest.any { message ->
+            message is AgentMessage.User && message.parts.any {
+                it is UserPart.Text && it.text.contains("Earlier image attachment")
+            }
+        })
+
+        val stored = agent.history(project.ref, chat)
+        val storedImage = stored.filterIsInstance<AgentMessage.User>()
+            .flatMap { it.parts }.filterIsInstance<UserPart.Image>().single().image
+        assertEquals(attachmentId, storedImage.attachmentId)
+        assertEquals(sha, storedImage.sha256)
+        val encoded = AgentMessageCodec.encode(stored.first { message ->
+            message is AgentMessage.User && message.parts.any { it is UserPart.Image }
+        })
+        assertFalse(encoded.contains("page.png"))
+    }
+
+    @Test fun attachmentIdsWithoutStoreFailBeforeAppendOrModelRequest() = runBlocking {
+        val project = project(); val lease = begin(project.ref)
+        var calls = 0
+        val model = object : AgentModelPort {
+            override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+                calls++
+                error("A missing attachment must not reach the model")
+            }
+        }
+        try {
+            try {
+                NativeKoogConversation(runtime, projects, agent, agent, agent, model).send(lease, project.ref,
+                    ModelConfigurationRef("fixture", 1), "", attachmentIds = listOf(AttachmentId("missing")))
+                fail("Sent an unresolved attachment")
+            } catch (_: AgentAttachmentException.Unavailable) {
+            }
+        } finally { runtime.finishRun(lease) }
+        assertEquals(0, calls)
+        assertTrue(agent.history(project.ref, chat).isEmpty())
+    }
+
     private class RecordingAgentCheckpoints : AgentCheckpointPort {
         val saved = mutableListOf<CheckpointEnvelope>()
         override suspend fun save(envelope: CheckpointEnvelope) { saved += envelope }

@@ -27,7 +27,9 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     loadMembers: (suspend (LocalProjectRef, RunIdentity, Long) -> TranslationTaskMemberPage)? = null,
     prepareRetry: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> NativeTranslationResumePreview)? = null,
     keepErrors: (suspend (TranslationTaskReview, Long, List<TranslationTaskMemberReview>, CommandId) -> Unit)? = null,
-    queueManagedRuns: Set<String> = emptySet()) {
+    queueManagedRuns: Set<String> = emptySet(),
+    queueReviewableRuns: Set<String> = emptySet(),
+    reviewQueueTask: ((RunIdentity) -> Unit)? = null) {
     var tasks by remember(ref) { mutableStateOf<List<TranslationTaskSummary>?>(null) }
     var cursor by remember(ref) { mutableStateOf<Long?>(null) }
     var loading by remember(ref) { mutableStateOf(false) }
@@ -40,6 +42,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     var decisionCommand by remember(ref) { mutableStateOf<CommandId?>(null) }
     var deciding by remember(ref) { mutableStateOf(false) }
     var decisionFailed by remember(ref) { mutableStateOf(false) }
+    val managedRuns = queueManagedRuns + queueReviewableRuns
     val scope = rememberCoroutineScope()
     suspend fun fetch(append: Boolean) {
         if (loading) return
@@ -56,6 +59,12 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
         finally { loading = false }
     }
     LaunchedEffect(ref) { fetch(false) }
+    // A task that enters the durable queue never keeps an open legacy decision dialog.
+    LaunchedEffect(managedRuns) {
+        if (decision?.run?.runId?.value?.let { it in managedRuns } == true) decision = null
+        if (retryReview?.run?.runId?.value?.let { it in managedRuns } == true) retryReview = null
+        if (confirmation?.spec?.run?.runId?.value?.let { it in managedRuns } == true) confirmation = null
+    }
     retryReview?.let { snapshot ->
         if (loadMembers != null && prepareRetry != null) {
             NativeTaskRetryDialog(snapshot, loadMembers, prepareRetry, { retryReview = null }, { preview ->
@@ -116,9 +125,16 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
                         if (task.stage == "NEEDS_REVIEW") Text(stringResource(R.string.native_tasks_review),
                             Modifier.testTag("native-task-uncertain-${task.run.commandId.value}"))
                         if (task.stage == "CANCELLED") Text(stringResource(R.string.native_tasks_terminated))
-                        val queueManaged = task.run.runId.value in queueManagedRuns
-                        if (queueManaged) Text(stringResource(R.string.native_tasks_queue_managed),
-                            style = MaterialTheme.typography.bodySmall)
+                        val queueManaged = task.run.runId.value in managedRuns
+                        if (queueManaged) {
+                            Text(stringResource(R.string.native_tasks_queue_managed),
+                                style = MaterialTheme.typography.bodySmall)
+                            if (reviewQueueTask != null && task.run.runId.value in queueReviewableRuns)
+                                TextButton(onClick = { reviewQueueTask(task.run) },
+                                    modifier = Modifier.testTag("native-task-queue-review-${task.run.commandId.value}")) {
+                                    Text(stringResource(R.string.native_tasks_queue_review))
+                                }
+                        }
                         if (!queueManaged && task.stage != "COMPLETE" && inspectReview != null && terminate != null)
                             TextButton(enabled = !checking && !task.active, onClick = {
                                 checking = true; review = false
@@ -131,7 +147,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
                                     catch (_: Exception) { review = true }
                                     finally { checking = false }
                                 }
-                            }) { Text(stringResource(R.string.native_tasks_review_title)) }
+                            }, modifier = Modifier.testTag("native-task-legacy-review-${task.run.commandId.value}")) { Text(stringResource(R.string.native_tasks_review_title)) }
                         if (!queueManaged && task.stage !in setOf("COMPLETE", "CANCELLED", "FAILED", "NEEDS_REVIEW")) TextButton(onClick = {
                             checking = true; review = false
                             scope.launch {

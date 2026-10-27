@@ -91,6 +91,32 @@ class NativeManualBatchUiTest {
         assertEquals(query, prepared!!.second.query); assertEquals(0, confirmed)
     }
 
+    @Test fun nameAssignmentScopeDefaultsToTranslatedNamesAndSourceIsExplicit() {
+        var prepared: Triple<List<String>, NativeQueryReplacementScope, TextBatchChange>? = null
+        val state = NativeProjectUiState(project = summary, matchingItems = 2)
+        val actions = NativeBatchActions({}, {}, {}, {}, { fail("Implicit confirmation") }, {}, prepareQuery = {},
+            prepareNames = { names, scope, change -> prepared = Triple(names, scope, change) })
+        compose.setContent { NativeTheme { NativeQueryBatchButton(state, actions) } }
+        compose.onNodeWithTag("native-query-batch-actions").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_batch_assign_names)).performClick()
+        compose.onNodeWithTag("native-name-assignment-scope-translation").assertIsSelected()
+        compose.onNodeWithTag("native-name-assignment-input").performScrollTo().performTextInput("translated")
+        compose.onNodeWithTag("native-policy-apply").performScrollTo().performClick()
+        assertEquals(listOf("translated"), prepared!!.first)
+        assertEquals(TextBatchChange.ASSIGN_NAMES, prepared!!.third)
+
+        compose.onNodeWithTag("native-query-batch-actions").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_batch_assign_names)).performClick()
+        compose.onNodeWithTag("native-name-assignment-scope-source").performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_batch_assign_names_source_notice)).assertExists()
+        compose.onNodeWithTag("native-name-assignment-input").performScrollTo().performTextReplacement("source-1\nsource-2")
+        compose.onNodeWithTag("native-policy-apply").performScrollTo().performClick()
+        assertEquals(listOf("source-1", "source-2"), prepared!!.first)
+        assertEquals(TextBatchChange.ASSIGN_SOURCE_NAMES, prepared!!.third)
+        assertEquals(ref, prepared!!.second.ref); assertEquals(0L, prepared!!.second.revision)
+        assertEquals(TextItemQuery(), prepared!!.second.query)
+    }
+
     @Test fun replacementBatchShowsTheActualParametersAndRequiresItsOwnConfirmation() {
         val replacement = ManualTextBatch(CommandId("replace"), ref, 0, TextBatchChange.REPLACE_TRANSLATION,
             batch.targets, TextReplacementOptions("old", "new", false))

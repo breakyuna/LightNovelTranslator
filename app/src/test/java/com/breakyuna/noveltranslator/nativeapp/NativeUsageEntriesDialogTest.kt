@@ -20,6 +20,28 @@ class NativeUsageEntriesDialogTest {
     private fun entry(id: String) = UsageLedgerEntry(id, UsageReceiptChannel.TRANSLATION, RequestAttemptId(id), null,
         RunIdentity(ProjectId("p"), null, RunId("run"), CommandId("command")), ModelConfigurationRef("model", 1),
         "fixture-model", UsageReceiptState.DISPATCHED, null, null, null)
+
+    @Test fun legacyReceiptWithoutPriceVersionShowsUnknownAndIsNeverRepriced() {
+        val zero = TokenMeasurement(0, UsageSource.ACTUAL)
+        val usage = RequestUsage(TokenMeasurement(1_000_000, UsageSource.ACTUAL), zero, zero, zero, zero)
+        val legacy = UsageLedgerEntry("legacy", UsageReceiptChannel.TRANSLATION,
+            RequestAttemptId("legacy"), null,
+            RunIdentity(ProjectId("p"), null, RunId("run"), CommandId("command")),
+            ModelConfigurationRef("model", 1), "fixture-model", UsageReceiptState.RECEIVED,
+            usage, null, null, priceVersion = null, priceCurrency = null,
+            costState = UsageCostState.UNKNOWN)
+        compose.setContent { NativeTheme {
+            NativeUsageEntriesDialog(query, { _, _ -> UsageLedgerPage(listOf(legacy), null) }, {})
+        } }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("native-ledger-entry-cost-legacy").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("native-ledger-entry-cost-legacy")
+            .assertTextContains("no version", substring = true)
+            .assertTextContains("currency unknown", substring = true)
+            .assertTextContains("cost unknown", substring = true)
+        compose.onNodeWithText("Current price", substring = true).assertDoesNotExist()
+    }
     @Test fun failedOlderPageKeepsVisibleFactsAndRetriesTheSameCursor() {
         var calls = 0
         compose.setContent { NativeTheme {

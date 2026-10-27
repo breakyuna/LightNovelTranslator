@@ -3,6 +3,9 @@ package com.breakyuna.noveltranslator.nativeapp
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.*
 import com.breakyuna.noveltranslator.nativecore.storage.NativeRunStore
+import com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationQueueControlIntent
+import com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationQueueControlKind
+import com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationQueueControlStore
 import com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationTaskStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +34,21 @@ data class TranslationQueueSchedulerEvent(
  * Pause/stop from a notification reach the same runner and the queue outcome is recorded by the
  * application scope even after the Activity/ViewModel is gone.
  */
+/** Result of one cross-process wake pass. Only an explicit queued remainder asks for a new job. */
+enum class NativeTranslationQueueWakeResult {
+    /** Another process owns the OS file lease; this process must not touch the queue. */
+    LOCKED,
+
+    /** Recovery ran, but no task was queued. */
+    IDLE,
+
+    /** A live execution already owns the runtime slot; do not start or reschedule another. */
+    ACTIVE,
+
+    /** A queued task still remains with no live execution; schedule the unique job again. */
+    QUEUED,
+}
+
 class NativeTranslationQueueScheduler(
     private val scope: CoroutineScope,
     private val coordinator: TranslationQueueCoordinator,
@@ -41,6 +59,10 @@ class NativeTranslationQueueScheduler(
     private val runtime: RuntimePort,
     private val startService: (String) -> Unit,
     processLeaseFile: java.io.File,
+    /** Durable pause/cancel intents; real application storage is injected by NativeAppGraph. */
+    controlIntents: TranslationQueueControlIntentPort = NoTranslationQueueControlIntents,
+    /** Schedules the unique boot-safe queue job; never starts paid work directly. */
+    private val requestWake: () -> Unit = {},
 ) {
     private val processLease = TranslationQueueProcessLease(processLeaseFile)
     private val mutableEvents = MutableSharedFlow<TranslationQueueSchedulerEvent>(extraBufferCapacity = 16)
@@ -75,12 +97,13 @@ class NativeTranslationQueueScheduler(
         onSettled = { dispatch -> publish(dispatch.identity) },
         failures = tasks,
         decisions = tasks,
+        controlIntents = controlIntents,
     )
 
     /** Coalesced application-scope kick; concurrent enqueues share the active drain loop. */
     fun kick(): Job? {
         synchronized(startLock) {
-            drainJob?.takeIf { it.isActive }?.let { return it }
+            drainJob?.takeIf { it.isActive }?.let { requestWake(); return it }
             val job = scope.launch {
                 val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
                 try {
@@ -100,18 +123,65 @@ class NativeTranslationQueueScheduler(
                         mutableEvents.tryEmit(TranslationQueueSchedulerEvent(
                             snapshot.request.ref, null, null))
                     }
+                    // The pass may have left a durable QUEUED remainder (foreign slot, launch
+                    // retry). The unique job re-reads facts; it never assumes success here.
+                    requestWake()
                 }
             }
             drainJob = job
+            // A durable queue write must still be recoverable if this process dies before the
+            // in-process drain starts or completes. The unique JobScheduler job is idempotent.
+            requestWake()
             return job
         }
     }
 
+    /** Requests the boot/process-death-safe job without starting any paid request here. */
+    fun scheduleWake() {
+        try {
+            requestWake()
+        } catch (_: Exception) {
+            // Scheduling is a durability aid; the in-process kick remains the primary path.
+        }
+    }
+
     /**
-     * Recovery that must not run beside a drain in another process. The boot/package-replace
-     * receiver and the initial application load call this; [kick] already holds the same lease
-     * while it runs the core [TranslationQueueScheduler.recover], so this method is the only
-     * public recovery entry point.
+     * Cross-process wake pass used by [NativeTranslationQueueWake]. It takes the same OS file
+     * lease as a foreground drain, replays durable control intents, recovers abandoned RUNNING
+     * facts, and only claims explicit QUEUED tasks. It never turns PAUSED or NEEDS_REVIEW into
+     * QUEUED and never replays an old paid authorization. Another process holding the lease is a
+     * successful skip, not a retry loop.
+     */
+    suspend fun wake(): NativeTranslationQueueWakeResult {
+        val token = withContext(Dispatchers.IO) { processLease.tryAcquire() } ?: return NativeTranslationQueueWakeResult.LOCKED
+        return try {
+            scheduler.recover()
+            if (!hasQueuedWork()) return NativeTranslationQueueWakeResult.IDLE
+            if (hasActiveExecution()) return NativeTranslationQueueWakeResult.ACTIVE
+            scheduler.drain()
+            if (hasQueuedWork() && !hasActiveExecution()) {
+                NativeTranslationQueueWakeResult.QUEUED
+            } else {
+                NativeTranslationQueueWakeResult.IDLE
+            }
+        } finally {
+            processLease.release(token)
+        }
+    }
+
+    /** Reads only durable task states; a read failure is a retryable job failure, not IDLE. */
+    private suspend fun hasQueuedWork(): Boolean = coordinator.snapshot().any { snapshot ->
+        snapshot.queue.tasks.any { it.state == TranslationTaskQueueState.QUEUED }
+    }
+
+    private fun hasActiveExecution(): Boolean =
+        runtime.snapshot().activeRun != null || runner.state.value?.phase?.active == true
+
+    /**
+     * Recovery that must not run beside a drain in another process. The initial application load
+     * calls this; [kick] already holds the same lease while it runs the core
+     * [TranslationQueueScheduler.recover], so this method is the only public recovery entry point.
+     * A successful pass asks the unique job to continue any durable QUEUED remainder.
      */
     suspend fun recoverExclusive(): List<TranslationQueueRecoveryResult> {
         val token = withContext(Dispatchers.IO) { processLease.tryAcquire() } ?: return emptyList()
@@ -119,6 +189,7 @@ class NativeTranslationQueueScheduler(
             scheduler.recover()
         } finally {
             processLease.release(token)
+            scheduleWake()
         }
     }
 
@@ -127,6 +198,7 @@ class NativeTranslationQueueScheduler(
      * durable queue outcome. The job claims the exact global head before opening any paid work.
      */
     fun start(identity: TranslationTaskQueueIdentity) {
+        scheduleWake()
         scope.launch {
             val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
             try {
@@ -140,16 +212,16 @@ class NativeTranslationQueueScheduler(
                 // The queue projection stays authoritative; a later kick/recovery can retry.
             } finally {
                 token?.let { processLease.release(it) }
+                scheduleWake()
             }
         }
     }
 
     suspend fun pause(identity: TranslationTaskQueueIdentity, command: CommandId): TranslationQueueResult =
-        scheduler.pause(identity, command).also { publish(identity) }
+        scheduler.pause(identity, command).also { publish(identity); scheduleWake() }
 
     suspend fun cancel(identity: TranslationTaskQueueIdentity, command: CommandId): TranslationQueueResult =
-        scheduler.cancel(identity, command).also { publish(identity) }
-
+        scheduler.cancel(identity, command).also { publish(identity); scheduleWake() }
     /** Bounded failure-member facts for review; never source text. */
     suspend fun failureEvidence(
         identity: TranslationTaskQueueIdentity,
@@ -191,6 +263,7 @@ class NativeTranslationQueueScheduler(
      * project the task stays QUEUED and this job drains once that slot is free.
      */
     fun resume(ref: LocalProjectRef, command: CommandId? = null) {
+        scheduleWake()
         scope.launch {
             val token = withContext(Dispatchers.IO) { processLease.tryAcquire() }
             try {
@@ -204,6 +277,7 @@ class NativeTranslationQueueScheduler(
                 // Durable state remains; the user can retry from the queue dialog.
             } finally {
                 token?.let { processLease.release(it) }
+                scheduleWake()
             }
         }
     }
@@ -449,4 +523,45 @@ class NativeTranslationQueueScheduler(
             handle.token,
         )
     }
+}
+
+/**
+ * Adapts the independent atomic-file control store to the engine's narrow intent port. The store
+ * keeps one redacted identity/command/kind document per task and [clear] is compare-and-clear, so
+ * a finishing pause can never erase a newer cancel.
+ */
+internal class NativeTranslationQueueControlIntentAdapter(
+    private val store: NativeTranslationQueueControlStore,
+) : TranslationQueueControlIntentPort {
+    override suspend fun pending(): List<TranslationQueueControlIntent> = store.load().map { intent ->
+        TranslationQueueControlIntent(
+            identity = intent.identity,
+            command = intent.command,
+            kind = when (intent.kind) {
+                NativeTranslationQueueControlKind.PENDING_PAUSE ->
+                    TranslationQueueControlIntentKind.PENDING_PAUSE
+                NativeTranslationQueueControlKind.PENDING_CANCEL ->
+                    TranslationQueueControlIntentKind.PENDING_CANCEL
+            },
+        )
+    }
+
+    override suspend fun save(intent: TranslationQueueControlIntent) {
+        store.save(intent.toStored())
+    }
+
+    override suspend fun clear(intent: TranslationQueueControlIntent) {
+        store.clear(intent.toStored())
+    }
+
+    private fun TranslationQueueControlIntent.toStored() = NativeTranslationQueueControlIntent(
+        identity = identity,
+        command = command,
+        kind = when (kind) {
+            TranslationQueueControlIntentKind.PENDING_PAUSE ->
+                NativeTranslationQueueControlKind.PENDING_PAUSE
+            TranslationQueueControlIntentKind.PENDING_CANCEL ->
+                NativeTranslationQueueControlKind.PENDING_CANCEL
+        },
+    )
 }

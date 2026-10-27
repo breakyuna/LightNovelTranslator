@@ -7,6 +7,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class WorkspaceRuntimeTest {
     @Test
@@ -100,6 +104,83 @@ class WorkspaceRuntimeTest {
         assertEquals(WorkspaceRunStage.MATERIALS, (outcome as WorkspaceRunOutcome.Cancelled).stage)
         assertEquals(0, fixture.engine.calls)
         assertEquals(0, fixture.approvals.calls)
+    }
+
+    @Test
+    fun memoryBudgetIsCheckedBeforeScriptExecution() {
+        val fixture = RuntimeFixture(memorySampler = WorkspaceMemorySampler { 64L })
+
+        val outcome = fixture.run(
+            runRequest(budget = WorkspaceBudget(maxResidentBytes = 32, maxPeakHeapBytes = 64)),
+        )
+
+        assertTrue(outcome is WorkspaceRunOutcome.BudgetBlocked)
+        val blocked = outcome as WorkspaceRunOutcome.BudgetBlocked
+        assertEquals(WorkspaceBudgetKind.RESIDENT_BYTES, blocked.kind)
+        assertEquals(WorkspaceRunStage.MATERIALS, blocked.stage)
+        assertEquals(0, fixture.engine.calls)
+        assertEquals(0, fixture.approvals.calls)
+    }
+
+    @Test
+    fun cancellingTheCallerJobCancelsTheRunToken() = runBlocking {
+        val fixture = RuntimeFixture()
+        val started = CompletableDeferred<Unit>()
+        fixture.engine.onExecuteSuspend = {
+            started.complete(Unit)
+            awaitCancellation()
+        }
+        val token = WorkspaceCancellation()
+        var outcome: WorkspaceRunOutcome? = null
+        val job = launch {
+            outcome = fixture.runtime.run(runRequest(), token)
+        }
+        started.await()
+        job.cancel()
+        job.join()
+
+        assertTrue(token.isCancelled)
+        assertTrue(outcome == null || outcome is WorkspaceRunOutcome.Cancelled)
+        assertEquals(0, fixture.approvals.calls)
+        assertEquals(0, fixture.apply.calls)
+    }
+
+    @Test
+    fun applyPortReceivesTheRunCancellationAndDeadline() {
+        val fixture = RuntimeFixture()
+        fixture.engine.resultFactory = {
+            WorkspaceScriptResult(0, listOf(createChange("work/a.txt", "body")), emptyList())
+        }
+
+        val outcome = fixture.run()
+
+        assertTrue(outcome is WorkspaceRunOutcome.Completed)
+        assertEquals(fixture.engine.lastRequest!!.deadlineAtMillis, fixture.apply.lastDeadlineAtMillis!!)
+        assertTrue(fixture.apply.lastCancellation === fixture.engine.lastRequest!!.cancellation)
+    }
+
+    @Test
+    fun cancellationDuringApplyRetainsIntentAndNeverReportsSuccess() {
+        val fixture = RuntimeFixture()
+        fixture.engine.resultFactory = {
+            WorkspaceScriptResult(0, listOf(createChange("work/a.txt", "body")), emptyList())
+        }
+        val token = WorkspaceCancellation()
+        fixture.apply.onApply = { approved ->
+            fixture.apply.retainedIntent = approved
+            fixture.apply.lastCancellation?.cancel()
+        }
+        fixture.apply.failure = CancellationException("cancelled during apply")
+
+        val outcome = fixture.run(cancellation = token)
+
+        assertTrue(outcome is WorkspaceRunOutcome.ApplyIndeterminate)
+        assertEquals(
+            WorkspaceApplyIndeterminateReason.CANCELLED_DURING_APPLY,
+            (outcome as WorkspaceRunOutcome.ApplyIndeterminate).reason,
+        )
+        assertEquals(fixture.apply.retainedIntent, fixture.apply.lastApproved)
+        assertNotNull(fixture.apply.retainedIntent)
     }
 
     @Test
@@ -309,6 +390,23 @@ class WorkspaceRuntimeTest {
         assertTrue(outcome is WorkspaceRunOutcome.ApplyIndeterminate)
         assertEquals(
             WorkspaceApplyIndeterminateReason.STORE_EXCEPTION,
+            (outcome as WorkspaceRunOutcome.ApplyIndeterminate).reason,
+        )
+    }
+
+    @Test
+    fun timeoutDuringApplyIsIndeterminateAndNotASuccessClaim() {
+        val fixture = RuntimeFixture()
+        fixture.engine.resultFactory = {
+            WorkspaceScriptResult(0, listOf(createChange("work/a.txt", "body")), emptyList())
+        }
+        fixture.apply.failure = WorkspaceScriptTimeoutException(WorkspaceRunStage.APPLY)
+
+        val outcome = fixture.run()
+
+        assertTrue(outcome is WorkspaceRunOutcome.ApplyIndeterminate)
+        assertEquals(
+            WorkspaceApplyIndeterminateReason.TIMED_OUT_DURING_APPLY,
             (outcome as WorkspaceRunOutcome.ApplyIndeterminate).reason,
         )
     }

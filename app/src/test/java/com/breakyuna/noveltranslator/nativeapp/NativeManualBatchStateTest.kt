@@ -20,6 +20,23 @@ class NativeManualBatchStateTest {
         assertNull(decodeManualBatch(encoded.toMutableList().apply { this[7] = "[7]" }))
     }
 
+    @Test fun sourceNameAssignmentArrayRestoresItsChangeAndScope() {
+        val source = ManualTextBatch(CommandId("assign-source"), ref, 7, TextBatchChange.ASSIGN_SOURCE_NAMES,
+            batch.targets, nameAssignment = listOf("", "源", "third"))
+        val encoded = encodeManualBatch(source)
+        assertEquals("5", encoded[0])
+        val restored = requireNotNull(decodeManualBatch(encoded))
+        assertEquals(TextBatchChange.ASSIGN_SOURCE_NAMES, restored.change)
+        assertTrue(restored.assignsSourceNames)
+        assertEquals(source.nameAssignment, restored.nameAssignment)
+        assertEquals(source.digest(), restored.digest())
+        val retargeted = requireNotNull(decodeManualBatch(encoded.toMutableList().apply {
+            this[6] = TextBatchChange.ASSIGN_NAMES.name
+        }))
+        assertEquals(TextBatchChange.ASSIGN_NAMES, retargeted.change)
+        assertNotEquals(source.digest(), retargeted.digest())
+    }
+
     @Test fun nameTargetsRestoreWithoutChangingTheBoundDigestOrRegexMode() {
         for (target in listOf(TextReplacementTarget.NAMES, TextReplacementTarget.BOTH)) {
             val command = ManualTextBatch(CommandId("name-target"), ref, 7, TextBatchChange.REPLACE_TRANSLATION,

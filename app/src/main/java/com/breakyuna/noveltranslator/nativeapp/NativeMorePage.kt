@@ -52,6 +52,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.breakyuna.noveltranslator.BuildConfig
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.TextProjectSummary
@@ -81,8 +82,12 @@ internal fun NativeMorePage(
     onAppSettings: (() -> Unit)? = null,
     onExpertSettings: (() -> Unit)? = null,
     onFiles: (() -> Unit)? = null,
+    onFullArchiveExport: (() -> Unit)? = null,
+    onFullArchiveImport: (() -> Unit)? = null,
+    onLegacyExport: (() -> Unit)? = null,
 ) {
     val project = state.project
+    var mcpVisible by remember { mutableStateOf(false) }
     LaunchedEffect(project?.ref) { refreshStorage() }
     LazyColumn(
         Modifier.fillMaxSize().testTag("native-more-page"),
@@ -205,6 +210,16 @@ internal fun NativeMorePage(
                 tag = "native-more-skills",
             )
         }
+        item(key = "mcp") {
+            MoreEntry(
+                icon = Icons.Default.Extension,
+                title = stringResource(R.string.native_more_mcp),
+                description = stringResource(R.string.native_more_mcp_description),
+                enabled = !state.busy,
+                onClick = { mcpVisible = true },
+                tag = "native-more-mcp",
+            )
+        }
         item(key = "app-backup") {
             NativeSectionCard(
                 modifier = Modifier.testTag("native-more-app-backup"),
@@ -232,6 +247,60 @@ internal fun NativeMorePage(
                         modifier = Modifier.weight(1f).testTag("native-more-app-backup-import"),
                     ) {
                         Text(stringResource(R.string.native_app_backup_import))
+                    }
+                }
+            }
+        }
+        if (onFullArchiveExport != null && onFullArchiveImport != null) {
+            item(key = "full-archive") {
+                NativeSectionCard(
+                    modifier = Modifier.testTag("native-more-full-archive"),
+                    title = stringResource(R.string.native_more_full_archive),
+                    subtitle = stringResource(R.string.native_more_full_archive_description),
+                ) {
+                    NativeBanner(
+                        text = stringResource(R.string.native_more_full_archive_boundary),
+                        tone = NativeTone.ERROR,
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = onFullArchiveExport,
+                            enabled = !state.busy,
+                            modifier = Modifier.weight(1f).testTag("native-more-full-archive-export"),
+                        ) {
+                            Text(stringResource(R.string.native_full_archive_export))
+                        }
+                        OutlinedButton(
+                            onClick = onFullArchiveImport,
+                            enabled = !state.busy,
+                            modifier = Modifier.weight(1f).testTag("native-more-full-archive-import"),
+                        ) {
+                            Text(stringResource(R.string.native_full_archive_import))
+                        }
+                    }
+                }
+            }
+        }
+        if (onLegacyExport != null) {
+            item(key = "legacy-export") {
+                NativeSectionCard(
+                    modifier = Modifier.testTag("native-more-legacy-export"),
+                    title = stringResource(R.string.native_more_legacy_export),
+                    subtitle = stringResource(R.string.native_more_legacy_export_description),
+                ) {
+                    NativeBanner(
+                        text = stringResource(R.string.native_more_legacy_export_boundary),
+                        tone = NativeTone.NEUTRAL,
+                    )
+                    OutlinedButton(
+                        onClick = onLegacyExport,
+                        enabled = !state.busy,
+                        modifier = Modifier.fillMaxWidth().testTag("native-more-legacy-export-open"),
+                    ) {
+                        Text(stringResource(R.string.native_legacy_export_open))
                     }
                 }
             }
@@ -278,6 +347,10 @@ internal fun NativeMorePage(
                 )
             }
         }
+    }
+    if (mcpVisible) {
+        val model: NativeProjectViewModel = viewModel()
+        NativeMcpSettingsDialog(model.mcpActions, dismiss = { mcpVisible = false })
     }
 }
 

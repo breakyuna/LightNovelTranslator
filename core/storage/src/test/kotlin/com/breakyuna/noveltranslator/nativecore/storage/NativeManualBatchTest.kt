@@ -88,6 +88,97 @@ class NativeManualBatchTest {
         assertEquals(emptyList<String>(), store.item(restored.ref, ItemId(3))!!.item.metadata.nameTranslation)
     }
 
+    @Test fun sourceNameAssignmentChangesOnlySourceSlotsAndSharesOneRevision() = runBlocking {
+        val project = create()
+        edit(project.ref, 1)
+        val first = store.item(project.ref, ItemId(1))!!
+        store.editName(ManualNameEdit(CommandId("seed-source-names"), project.ref, ItemId(1), first.revision,
+            first.item.fingerprint, listOf("译名"), listOf("旧原名")))
+        var revision = store.open(project.ref).revision
+        val sourceNames = mutableListOf("源一", "源二")
+        val batch = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("source-names"), project.ref,
+            revision, TextItemQuery(), sourceNames))
+        sourceNames.clear()
+        assertEquals(TextBatchChange.ASSIGN_SOURCE_NAMES, batch.change)
+        assertEquals(listOf("源一", "源二"), batch.nameAssignment)
+        assertEquals(3, batch.targets.size)
+        val receipt = store.editBatch(batch)
+        assertEquals(revision + 3, receipt.revision)
+        assertEquals(receipt, store.editBatch(batch))
+        var item = store.item(project.ref, ItemId(1))!!.item
+        assertEquals("saved-1", item.translation)
+        assertEquals(TextItemStatus.PROCESSED, item.status)
+        assertEquals(listOf("译名"), item.metadata.nameTranslation)
+        assertEquals(listOf("源一", "源二"), item.metadata.nameSource)
+        item = store.item(project.ref, ItemId(2))!!.item
+        assertNull(item.metadata.nameTranslation)
+        assertEquals(listOf("源一", "源二"), item.metadata.nameSource)
+        assertEquals(TextItemStatus.NONE, item.status)
+
+        val translated = requireNotNull(store.prepareNameAssignmentBatch(CommandId("translated-names"), project.ref,
+            receipt.revision, TextItemQuery(), listOf("新译名")))
+        store.editBatch(translated)
+        item = store.item(project.ref, ItemId(1))!!.item
+        assertEquals(listOf("源一", "源二"), item.metadata.nameSource)
+        assertEquals(listOf("新译名"), item.metadata.nameTranslation)
+        val filtered = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("filtered-source"),
+            project.ref, store.open(project.ref).revision,
+            TextItemQuery(status = TextItemStatus.PROCESSED), listOf("filtered")))
+        assertEquals(listOf(ItemId(1)), filtered.targets.map { it.id })
+        val output = ByteArrayOutputStream(); store.saveProject(project.ref) { output }
+        val imported = store.importProject(CommandId("import-source-names")) { ByteArrayInputStream(output.toByteArray()) }
+        assertEquals(listOf("源一", "源二"), store.item(imported.ref, ItemId(1))!!.item.metadata.nameSource)
+        assertEquals(listOf("新译名"), store.item(imported.ref, ItemId(1))!!.item.metadata.nameTranslation)
+        revision = store.open(project.ref).revision
+        val clear = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("clear-source-names"), project.ref,
+            revision, TextItemQuery(), emptyList()))
+        store.editBatch(clear)
+        item = store.item(project.ref, ItemId(1))!!.item
+        assertEquals(emptyList<String>(), item.metadata.nameSource)
+        assertEquals(listOf("新译名"), item.metadata.nameTranslation)
+        assertNull(store.prepareSourceNameAssignmentBatch(CommandId("clear-source-noop"), project.ref,
+            store.open(project.ref).revision, TextItemQuery(), emptyList()))
+    }
+
+    @Test fun staleSourceNameBatchCannotOverwriteANewerTranslationNameBatch() = runBlocking {
+        val project = create()
+        edit(project.ref, 1)
+        val revision = store.open(project.ref).revision
+        val source = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("stale-source"), project.ref,
+            revision, TextItemQuery(), listOf("source")))
+        val translated = requireNotNull(store.prepareNameAssignmentBatch(CommandId("newer-translated"), project.ref,
+            revision, TextItemQuery(), listOf("translated")))
+        assertEquals(3, translated.targets.size)
+        store.editBatch(translated)
+        val rejected = store.editBatch(source)
+        assertEquals(ManualEditStatus.STALE_REVISION, rejected.status)
+        assertEquals(0, rejected.affectedItems)
+        val item = store.item(project.ref, ItemId(1))!!.item
+        assertNull(item.metadata.nameSource)
+        assertEquals(listOf("translated"), item.metadata.nameTranslation)
+        assertEquals(rejected, store.editBatch(source))
+    }
+
+    @Test fun sourceNameAssignmentHonoursTheFrozenQualitySelection() = runBlocking {
+        val project = create()
+        val policy = store.textPolicy(project.ref)
+        store.editTextPolicy(ProjectPolicyEdit(CommandId("source-glossary"), project.ref, policy.revision, policy.fingerprint,
+            ProjectTextPolicy(listOf(ProjectTextRule("term", TextRuleKind.TERM, "one", "expected")))))
+        edit(project.ref, 1); edit(project.ref, 2)
+        val revision = store.open(project.ref).revision
+        val scanner = com.breakyuna.noveltranslator.nativecore.engine.ProjectQualityScanner(store, store)
+        val index = scanner.scan(project.ref, revision, TextItemQuery(), TextProofreadingOptions())
+        val quality = index.select(TextQualityFilter(TextQualityOutcome.ANY_WARNING, TextWarningCode.GLOSSARY))
+        val batch = requireNotNull(store.prepareSourceNameAssignmentBatch(CommandId("quality-source"), project.ref,
+            revision, TextItemQuery(), listOf("source"), quality))
+        assertEquals(listOf(ItemId(1)), batch.targets.map { it.id })
+        try {
+            store.prepareSourceNameAssignmentBatch(CommandId("stale-quality-source"), project.ref, revision + 1,
+                TextItemQuery(), listOf("wrong"), quality)
+            fail("Accepted an outdated quality index")
+        } catch (failure: TextProjectException) { assertEquals(TextProjectException.Reason.STALE_PAGE, failure.reason) }
+    }
+
     @Test fun bodyAndNameReplacementSharesOneRevisionAndSurvivesExportImport() = runBlocking {
         val project = create()
         edit(project.ref, 1)

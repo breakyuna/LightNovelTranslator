@@ -17,35 +17,42 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
     /** Exact provider facts; EMPTY intentionally rejects tool-bearing non-chat requests. */
     private val capabilities: CapabilityCatalog = CapabilityCatalog.EMPTY,
     /** Saved per-profile facts override the static fallback for this immutable revision. */
-    private val profiles: suspend (ModelConfigurationRef) -> NativeModelProfile? = { null }) : AgentModelPort {
+    private val profiles: suspend (ModelConfigurationRef) -> NativeModelProfile? = { null },
+    /** Required only when a user turn contains an image; no image is ever silently dropped. */
+    private val imageResolver: AgentImageResolver? = null,
+    /** Optional auth boundary; the default keeps the historical API-key pool path. */
+    private val credentials: ModelCredentialResolver = ApiKeyModelCredentialResolver(keys)) : AgentModelPort {
     override suspend fun complete(request: AgentModelRequest, emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         var reference: ModelConfigurationRef? = null
-        var selection: KeySelection? = null
+        var credential: ModelCredential? = null
         try {
             currentCoroutineContext().ensureActive()
             val config = settings.resolve(request.configuration)
             reference = config.reference
             val profile = profiles(request.configuration)
-            selection = keys.select(request.configuration)
             val protocol = config.protocol.toModelProtocol()
+            val hasImages = request.hasUserImages()
+            requireVisionCapability(protocol, config, profile, hasImages)
+            credential = credentials.resolve(request.configuration)
             if (protocol != ModelProtocol.OPENAI_CHAT_COMPLETIONS) {
-                val result = completeProtocol(request, config, profile, protocol, selection?.credential.orEmpty(), emit)
+                val result = completeProtocol(request, config, profile, protocol, credential, emit)
                 withContext(NonCancellable) {
-                    keys.success(config.reference, selection)
+                    credentials.success(config.reference, credential)
                     runCatching { usage?.record(UsageRequestRecord(request.run, request.attemptId,
                         UsageModelRef(config.reference, config.model), result.usage, result.stopReason)) }
                 }
                 return result
             }
-            val secret = selection?.credential.orEmpty()
+            val secret = credential.token
             if (request.tools.isNotEmpty() && profile?.capabilities?.tools == false)
                 throw AgentModelFailure(ModelFailureKind.CONTENT)
             val providerIds = request.history.filterIsInstance<AgentMessage.Assistant>().flatMap { it.parts }
                 .filterIsInstance<AssistantPart.ToolCall>().associate { it.call.id to requireNotNull(it.call.providerCallId) }
+            val userImages = resolveUserImages(request)
             val body = applyProfileRequestOverrides(buildJsonObject {
                 put("model", config.model); put("stream", true)
                 put("stream_options", buildJsonObject { put("include_usage", true) })
-                put("messages", JsonArray(request.history.map { message(it, providerIds) }))
+                put("messages", JsonArray(request.history.map { message(it, providerIds, userImages[it.id].orEmpty()) }))
                 if (request.tools.isNotEmpty()) put("tools", JsonArray(request.tools.map {
                     buildJsonObject { put("type", "function"); put("function", buildJsonObject {
                         put("name", it.name); put("description", it.description); put("parameters", it.inputSchema.json)
@@ -53,7 +60,7 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                 }))
             }.toString(), profile, protocol)
             if (TextProjectFingerprint.utf8(body).size > 2 * 1024 * 1024) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
-            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).apply {
+            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret, credential.mode).apply {
                 header("Accept", "text/event-stream")
                 profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
             }.post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
@@ -75,7 +82,7 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
             catch (classified: AgentModelFailure) { throw classified }
             catch (_: Exception) { throw AgentModelFailure(ModelFailureKind.PARSING) }
             withContext(NonCancellable) {
-                keys.success(config.reference, selection)
+                credentials.success(config.reference, credential)
                 runCatching { usage?.record(UsageRequestRecord(request.run, request.attemptId,
                     UsageModelRef(config.reference, config.model), parsed.usage, parsed.stopReason)) }
             }
@@ -83,12 +90,13 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (local: InvalidModelNetworkSettings) { throw local }
         catch (local: ModelNetworkSettingsUnavailable) { throw local }
+        catch (local: InvalidModelProxyCredential) { throw local }
         catch (classified: AgentModelFailure) {
-            reference?.let { keys.failure(it, selection, classified.kind, classified.retryAfterMillis) }
+            reference?.let { credentials.failure(it, credential, classified.kind, classified.retryAfterMillis) }
             throw classified
         }
         catch (_: Exception) {
-            reference?.let { keys.failure(it, selection, ModelFailureKind.UNKNOWN) }
+            reference?.let { credentials.failure(it, credential, ModelFailureKind.UNKNOWN) }
             throw AgentModelFailure(ModelFailureKind.UNKNOWN)
         }
     }
@@ -99,7 +107,7 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
      * stream can never become a persisted assistant message.
      */
     private suspend fun completeProtocol(request: AgentModelRequest, config: NativeModelSettings,
-        profile: NativeModelProfile?, protocol: ModelProtocol, secret: String,
+        profile: NativeModelProfile?, protocol: ModelProtocol, credential: ModelCredential,
         emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
         val system = request.history.filterIsInstance<AgentMessage.System>()
             .joinToString("\n") { it.text }.takeIf { it.isNotBlank() }
@@ -115,13 +123,21 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
                     ?: throw AgentModelFailure(ModelFailureKind.PARSING)
             }
         }
+        var totalImageBytes = 0L
         val messages = conversation.map { value ->
             when (value) {
                 is AgentMessage.User -> {
-                    if (value.parts.any { it !is UserPart.Text }) throw AgentModelFailure(ModelFailureKind.CONTENT)
-                    val text = value.parts.joinToString("\n") { (it as UserPart.Text).text }
-                    if (text.isBlank()) throw AgentModelFailure(ModelFailureKind.CONTENT)
-                    ModelProtocolMessage(ModelMessageRole.USER, text)
+                    if (value.parts.any { it !is UserPart.Text && it !is UserPart.Image }) {
+                        throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    }
+                    val text = value.parts.filterIsInstance<UserPart.Text>().joinToString("\n") { it.text }
+                    val images = value.parts.filterIsInstance<UserPart.Image>().map { resolveImage(it.image) }
+                    totalImageBytes += images.sumOf { it.size.toLong() }
+                    if (totalImageBytes > ModelProtocolImage.MAX_TOTAL_IMAGE_BYTES) {
+                        throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    }
+                    if (text.isBlank() && images.isEmpty()) throw AgentModelFailure(ModelFailureKind.CONTENT)
+                    ModelProtocolMessage(ModelMessageRole.USER, text, images = images)
                 }
                 is AgentMessage.Assistant -> {
                     val text = value.parts.filterIsInstance<AssistantPart.Text>().joinToString("") { it.text }
@@ -144,8 +160,8 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         } catch (_: IllegalArgumentException) { throw AgentModelFailure(ModelFailureKind.CONTENT) }
         val response = try {
             ModelProtocolTransport(transport, capabilities)
-                .complete(protocol, config, secret, protocolRequest,
-                    CapabilityRequirement(tools = tools.isNotEmpty()), profile)
+                .complete(protocol, config, credential.token, protocolRequest,
+                    CapabilityRequirement(tools = tools.isNotEmpty()), profile, credential.mode)
         } catch (failure: UnsupportedModelCapability) {
             throw AgentModelFailure(ModelFailureKind.CONTENT)
         }
@@ -165,12 +181,71 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         return AgentModelResponse(message, response.usage, response.stopReason)
     }
 
-    private fun message(value: AgentMessage, providerIds: Map<ToolCallId, String>): JsonObject = buildJsonObject {
+    /** Vision is a property of the actual request history, never of a profile flag alone. */
+    private fun AgentModelRequest.hasUserImages(): Boolean = history.any { message ->
+        message is AgentMessage.User && message.parts.any { it is UserPart.Image }
+    }
+
+    private fun requireVisionCapability(protocol: ModelProtocol, config: NativeModelSettings,
+        profile: NativeModelProfile?, hasImages: Boolean) {
+        if (!hasImages) return
+        val catalog = profile?.capabilityCatalog(protocol) ?: capabilities
+        try {
+            catalog.requireSupported(protocol, config.model, CapabilityRequirement(vision = true))
+        } catch (_: UnsupportedModelCapability) {
+            throw AgentModelFailure(ModelFailureKind.CONTENT)
+        }
+    }
+
+    /**
+     * Resolves all image parts once, in history order, and enforces the same total
+     * budget as [ModelProtocolRequest]. Failure happens before the HTTP request is
+     * constructed; the encoded Base64 exists only in the transient request body.
+     */
+    private suspend fun resolveUserImages(request: AgentModelRequest): Map<MessageId, List<ModelProtocolImage>> {
+        val resolved = LinkedHashMap<MessageId, List<ModelProtocolImage>>()
+        var totalBytes = 0L
+        for (message in request.history) {
+            if (message !is AgentMessage.User) continue
+            val images = message.parts.filterIsInstance<UserPart.Image>().map { resolveImage(it.image) }
+            if (images.isEmpty()) continue
+            totalBytes += images.sumOf { it.size.toLong() }
+            if (totalBytes > ModelProtocolImage.MAX_TOTAL_IMAGE_BYTES) {
+                throw AgentModelFailure(ModelFailureKind.CONTENT)
+            }
+            resolved[message.id] = images
+        }
+        return resolved
+    }
+
+    private suspend fun resolveImage(image: FrozenImageRef): ModelProtocolImage {
+        val resolver = imageResolver ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
+        val bytes = try {
+            resolver.resolve(image)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (classified: AgentModelFailure) {
+            throw classified
+        } catch (_: Exception) {
+            throw AgentModelFailure(ModelFailureKind.CONTENT)
+        }
+        return try {
+            ModelProtocolImage(image.mimeType, bytes, image.sha256)
+        } catch (_: Exception) {
+            throw AgentModelFailure(ModelFailureKind.CONTENT)
+        }
+    }
+
+    private fun message(value: AgentMessage, providerIds: Map<ToolCallId, String>,
+        images: List<ModelProtocolImage>): JsonObject = buildJsonObject {
         when (value) {
             is AgentMessage.System -> { put("role", "system"); put("content", value.text) }
             is AgentMessage.User -> {
-                if (value.parts.any { it !is UserPart.Text }) throw AgentModelFailure(ModelFailureKind.CONTENT)
-                put("role", "user"); put("content", value.parts.joinToString("\n") { (it as UserPart.Text).text })
+                if (value.parts.any { it !is UserPart.Text && it !is UserPart.Image }) {
+                    throw AgentModelFailure(ModelFailureKind.CONTENT)
+                }
+                val text = value.parts.filterIsInstance<UserPart.Text>().joinToString("\n") { it.text }
+                put("role", "user"); put("content", chatUserContent(text, images))
             }
             is AgentMessage.Assistant -> {
                 if (value.continuation != null || value.parts.filterIsInstance<AssistantPart.Thinking>().any { it.continuation != null })

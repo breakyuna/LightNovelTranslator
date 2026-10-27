@@ -14,69 +14,79 @@ import kotlinx.serialization.json.put
 internal object ProjectAssetWriteStore {
     fun importAsset(db: SQLiteDatabase, plan: AssetImportPlan, maximumItems: Int, beforeCommit: () -> Unit): AssetMutationReceipt =
         NativeProjectDatabase.transaction(db) {
-            val summary = NativeProjectDatabase.summary(db, plan.ref)
-            val prior = receipt(db, plan.ref, plan.commandId)
-            if (prior != null) {
-                if (prior.first != plan.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.second
-            }
-            if (plan.expectedRevision != summary.revision) {
-                return@transaction reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
-                    AssetMutationStatus.STALE_REVISION, summary.revision, null, plan.digest())
-            }
-            if (pathExists(db, plan.path.value)) {
-                return@transaction reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
-                    AssetMutationStatus.CONFLICT, summary.revision, null, plan.digest())
-            }
-            val retained = NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM items") +
-                if (db.version >= 4) NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM archived_items") else 0L
-            if (retained + plan.units.size > maximumItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
-            val ordinal = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM assets").toInt()
-            val assetId = db.insertOrThrow("assets", null, ContentValues().apply {
-                put("path", plan.path.value); put("file_type", plan.format.name); put("codec", "raw-v1")
-                put("original_size", plan.bytes.size); put("sha256", TextProjectFingerprint.bytes(plan.bytes))
-                put("ordinal", ordinal); put("enabled", if (plan.enabled) 1 else 0); put("metadata", plan.metadata)
-            })
-            NativeProjectDatabase.insertChunks(db, assetId, plan.bytes, beforeCommit)
-            var nextId = Math.addExact(NativeProjectDatabase.scalar(db,
-                "SELECT MAX(value) FROM (SELECT COALESCE(MAX(id),0) AS value FROM items " +
-                    "UNION ALL SELECT COALESCE(MAX(seq),0) FROM sqlite_sequence WHERE name='items')"), 1L)
-            for (unit in plan.units) {
-                val id = ItemId(nextId++)
-                val fingerprint = TextProjectFingerprint.item(id, unit.row, unit.source, unit.translation,
-                    unit.status, TextItemMetadata(unit.tag, unit.nameSource, unit.nameTranslation,
-                        unit.extraField, unit.skipInternalFilter), assetId, unit.slot)
-                db.insertOrThrow("items", null, ContentValues().apply {
-                    put("id", id.value); put("asset_id", assetId); put("row_index", unit.row)
-                    put("slot", unit.slot); put("source", unit.source); put("translation", unit.translation)
-                    put("status", unit.status.name); put("fingerprint", fingerprint.sha256)
-                    put("tag", unit.tag); put("name_source", NativeProjectDatabase.encodeNames(unit.nameSource))
-                    put("name_translation", NativeProjectDatabase.encodeNames(unit.nameTranslation))
-                    put("extra_field", unit.extraField); put("skip_internal_filter", if (unit.skipInternalFilter) 1 else 0)
-                })
-            }
-            val revision = Math.addExact(summary.revision, 1)
-            db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(revision))
-            db.insertOrThrow("asset_revisions", null, ContentValues().apply {
-                put("revision", revision); put("kind", AssetMutationKind.IMPORT.name); put("asset_id", assetId)
-                put("payload", buildJsonObject {
-                    put("path", plan.path.value); put("format", plan.format.name)
-                    put("sha256", TextProjectFingerprint.bytes(plan.bytes)); put("units", plan.units.size)
-                }.toString())
-                put("instance_id", plan.ref.instanceId.value); put("generation", plan.ref.generation.value)
-                put("command_id", plan.commandId.value); put("committed_at", now())
-            })
-            val at = now()
-            db.insertOrThrow("asset_receipts", null, ContentValues().apply {
-                put("instance_id", plan.ref.instanceId.value); put("generation", plan.ref.generation.value)
-                put("command_id", plan.commandId.value); put("digest", plan.digest())
-                put("outcome", AssetMutationStatus.COMMITTED.name); put("revision", revision)
-                put("asset_id", assetId); put("kind", AssetMutationKind.IMPORT.name); put("committed_at", at)
-            })
-            beforeCommit()
-            AssetMutationReceipt(plan.commandId, plan.ref, AssetMutationKind.IMPORT,
-                AssetMutationStatus.COMMITTED, revision, assetId, at)
+            importAssetInTransaction(db, plan, maximumItems, beforeCommit)
         }
+
+    /**
+     * Transaction-internal asset import. [transactionStartRevision] is the mixed parent's
+     * pre-write revision so earlier members do not turn an approved import into a false stale.
+     */
+    fun importAssetInTransaction(db: SQLiteDatabase, plan: AssetImportPlan, maximumItems: Int,
+                                 beforeCommit: () -> Unit, transactionStartRevision: Long? = null): AssetMutationReceipt {
+        val summary = NativeProjectDatabase.summary(db, plan.ref)
+        val prior = receipt(db, plan.ref, plan.commandId)
+        if (prior != null) {
+            if (prior.first != plan.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+            return prior.second
+        }
+        val batchRevision = transactionStartRevision ?: summary.revision
+        if (plan.expectedRevision != batchRevision) {
+            return reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
+                AssetMutationStatus.STALE_REVISION, summary.revision, null, plan.digest())
+        }
+        if (pathExists(db, plan.path.value)) {
+            return reject(db, plan.commandId, plan.ref, AssetMutationKind.IMPORT,
+                AssetMutationStatus.CONFLICT, summary.revision, null, plan.digest())
+        }
+        val retained = NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM items") +
+            if (db.version >= 4) NativeProjectDatabase.scalar(db, "SELECT COUNT(*) FROM archived_items") else 0L
+        if (retained + plan.units.size > maximumItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+        val ordinal = NativeProjectDatabase.scalar(db, "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM assets").toInt()
+        val assetId = db.insertOrThrow("assets", null, ContentValues().apply {
+            put("path", plan.path.value); put("file_type", plan.format.name); put("codec", "raw-v1")
+            put("original_size", plan.bytes.size); put("sha256", TextProjectFingerprint.bytes(plan.bytes))
+            put("ordinal", ordinal); put("enabled", if (plan.enabled) 1 else 0); put("metadata", plan.metadata)
+        })
+        NativeProjectDatabase.insertChunks(db, assetId, plan.bytes, beforeCommit)
+        var nextId = Math.addExact(NativeProjectDatabase.scalar(db,
+            "SELECT MAX(value) FROM (SELECT COALESCE(MAX(id),0) AS value FROM items " +
+                "UNION ALL SELECT COALESCE(MAX(seq),0) FROM sqlite_sequence WHERE name='items')"), 1L)
+        for (unit in plan.units) {
+            val id = ItemId(nextId++)
+            val fingerprint = TextProjectFingerprint.item(id, unit.row, unit.source, unit.translation,
+                unit.status, TextItemMetadata(unit.tag, unit.nameSource, unit.nameTranslation,
+                    unit.extraField, unit.skipInternalFilter), assetId, unit.slot)
+            db.insertOrThrow("items", null, ContentValues().apply {
+                put("id", id.value); put("asset_id", assetId); put("row_index", unit.row)
+                put("slot", unit.slot); put("source", unit.source); put("translation", unit.translation)
+                put("status", unit.status.name); put("fingerprint", fingerprint.sha256)
+                put("tag", unit.tag); put("name_source", NativeProjectDatabase.encodeNames(unit.nameSource))
+                put("name_translation", NativeProjectDatabase.encodeNames(unit.nameTranslation))
+                put("extra_field", unit.extraField); put("skip_internal_filter", if (unit.skipInternalFilter) 1 else 0)
+            })
+        }
+        val revision = Math.addExact(summary.revision, 1)
+        db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(revision))
+        db.insertOrThrow("asset_revisions", null, ContentValues().apply {
+            put("revision", revision); put("kind", AssetMutationKind.IMPORT.name); put("asset_id", assetId)
+            put("payload", buildJsonObject {
+                put("path", plan.path.value); put("format", plan.format.name)
+                put("sha256", TextProjectFingerprint.bytes(plan.bytes)); put("units", plan.units.size)
+            }.toString())
+            put("instance_id", plan.ref.instanceId.value); put("generation", plan.ref.generation.value)
+            put("command_id", plan.commandId.value); put("committed_at", now())
+        })
+        val at = now()
+        db.insertOrThrow("asset_receipts", null, ContentValues().apply {
+            put("instance_id", plan.ref.instanceId.value); put("generation", plan.ref.generation.value)
+            put("command_id", plan.commandId.value); put("digest", plan.digest())
+            put("outcome", AssetMutationStatus.COMMITTED.name); put("revision", revision)
+            put("asset_id", assetId); put("kind", AssetMutationKind.IMPORT.name); put("committed_at", at)
+        })
+        beforeCommit()
+        return AssetMutationReceipt(plan.commandId, plan.ref, AssetMutationKind.IMPORT,
+            AssetMutationStatus.COMMITTED, revision, assetId, at)
+    }
 
     fun remove(db: SQLiteDatabase, commandId: CommandId, ref: LocalProjectRef, revision: Long,
                assetId: Long, beforeCommit: () -> Unit): AssetMutationReceipt =

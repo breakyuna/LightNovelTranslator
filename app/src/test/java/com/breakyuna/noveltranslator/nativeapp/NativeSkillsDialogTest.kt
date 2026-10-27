@@ -80,6 +80,7 @@ class NativeSkillsDialogTest {
         compose.waitForIdle()
         compose.onAllNodes(isDialog()).assertCountEquals(1)
         compose.onNodeWithTag("native-skills-catalog").assertDoesNotExist()
+        compose.onNodeWithTag("native-skill-policy").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("native-skill-content").performScrollTo()
             .assertTextContains("body", substring = true)
     }

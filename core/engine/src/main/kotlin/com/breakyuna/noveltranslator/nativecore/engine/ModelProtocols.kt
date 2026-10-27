@@ -39,6 +39,57 @@ enum class ModelProtocol {
 enum class ModelMessageRole { USER, ASSISTANT, TOOL }
 
 /**
+ * One immutable, bounded image part for a protocol request. Only the explicit
+ * MIME whitelist is accepted; binary payloads may contain arbitrary octets, but
+ * MIME/digest metadata never may contain NUL or other controls. The bytes are
+ * copied on construction and exposed only through [bytes] (a defensive copy) or
+ * the package-local encoder. [toString] never prints the payload or a data URL.
+ *
+ * The raw limits are deliberately below the shared 2 MiB JSON request budget:
+ * Base64 inflates an image by 4/3, so [MAX_TOTAL_IMAGE_BYTES] keeps the image
+ * contribution within that budget while leaving room for JSON structure and text.
+ */
+class ModelProtocolImage(
+    mimeType: String,
+    bytes: ByteArray,
+    expectedSha256: String? = null,
+) {
+    val mimeType: String = mimeType.lowercase()
+    val size: Int
+    val sha256: String
+    private val content: ByteArray
+
+    init {
+        require(this.mimeType in SUPPORTED_MIME_TYPES &&
+            this.mimeType.none { it.isWhitespace() || it.isISOControl() }) {
+            "Unsupported image MIME type"
+        }
+        require(bytes.isNotEmpty() && bytes.size <= MAX_IMAGE_BYTES) { "Image bytes out of bounds" }
+        require(expectedSha256 == null || (expectedSha256.length == 64 &&
+            expectedSha256.all { it in '0'..'9' || it in 'a'..'f' })) { "Invalid image digest" }
+        content = bytes.copyOf()
+        val digest = TextProjectFingerprint.bytes(content)
+        require(expectedSha256 == null || expectedSha256 == digest) { "Image digest mismatch" }
+        size = content.size
+        sha256 = digest
+    }
+
+    /** Returns a copy so callers cannot mutate the frozen request payload. */
+    fun bytes(): ByteArray = content.copyOf()
+
+    internal fun encodedBytes(): ByteArray = content
+
+    override fun toString(): String = "ModelProtocolImage(mimeType=$mimeType, size=$size, sha256=$sha256)"
+
+    companion object {
+        const val MAX_IMAGE_BYTES: Int = 1_048_576
+        const val MAX_TOTAL_IMAGE_BYTES: Int = 1_400_000
+        val SUPPORTED_MIME_TYPES: Set<String> =
+            Collections.unmodifiableSet(linkedSetOf("image/jpeg", "image/png", "image/webp"))
+    }
+}
+
+/**
  * Provider tool-call identity and the exact argument string returned by the
  * provider. The string is preserved verbatim for Chat Completions replay; it is
  * validated as a bounded JSON object but never re-encoded here.
@@ -83,6 +134,8 @@ class ModelToolSpec(name: String, description: String, parameters: JsonObject) {
  * [ModelProtocolRequest] because Anthropic and Gemini use protocol-specific system
  * channels. Tool results require both the provider call id and the tool name:
  * Gemini identifies results by name, while OpenAI and Anthropic use the id.
+ * Only USER messages may carry an ordered list of bounded images; a user turn is
+ * valid when it has non-blank text or at least one image.
  */
 class ModelProtocolMessage(
     val role: ModelMessageRole,
@@ -90,24 +143,32 @@ class ModelProtocolMessage(
     toolCalls: List<ModelToolCall> = emptyList(),
     toolCallId: String? = null,
     toolName: String? = null,
+    images: List<ModelProtocolImage> = emptyList(),
 ) {
     val text: String = text
     val toolCalls: List<ModelToolCall> = Collections.unmodifiableList(ArrayList(toolCalls))
     val toolCallId: String? = toolCallId
     val toolName: String? = toolName
+    val images: List<ModelProtocolImage> = Collections.unmodifiableList(ArrayList(images))
 
     init {
         require(text.length <= MAX_TEXT_CHARS && '\u0000' !in text)
         requireValidUtf8(text)
+        require(this.images.sumOf { it.size.toLong() } <= ModelProtocolImage.MAX_TOTAL_IMAGE_BYTES) {
+            "Total image bytes out of bounds"
+        }
         when (role) {
             ModelMessageRole.USER -> {
-                require(text.isNotBlank() && this.toolCalls.isEmpty() && toolCallId == null && toolName == null)
+                require((text.isNotBlank() || this.images.isNotEmpty()) &&
+                    this.toolCalls.isEmpty() && toolCallId == null && toolName == null)
             }
             ModelMessageRole.ASSISTANT -> {
+                require(this.images.isEmpty())
                 require((text.isNotEmpty() || this.toolCalls.isNotEmpty()) && toolCallId == null && toolName == null)
                 require(this.toolCalls.map { it.id }.toSet().size == this.toolCalls.size)
             }
             ModelMessageRole.TOOL -> {
+                require(this.images.isEmpty())
                 require(this.toolCalls.isEmpty() && toolCallId != null && toolCallId.isNotBlank())
                 val callId = requireNotNull(toolCallId)
                 require(callId.length <= MAX_TOOL_ID_CHARS && callId.none(Char::isISOControl))
@@ -117,7 +178,8 @@ class ModelProtocolMessage(
     }
 
     override fun toString(): String =
-        "ModelProtocolMessage(role=$role, text=redacted, toolCalls=${toolCalls.size}, toolCallId=$toolCallId, toolName=$toolName)"
+        "ModelProtocolMessage(role=$role, text=redacted, images=${images.size}, toolCalls=${toolCalls.size}, " +
+            "toolCallId=$toolCallId, toolName=$toolName)"
 }
 
 /**
@@ -135,6 +197,7 @@ class ModelProtocolRequest(
     val system: String? = system?.takeIf { it.isNotBlank() }
     val messages: List<ModelProtocolMessage> = Collections.unmodifiableList(ArrayList(messages))
     val tools: List<ModelToolSpec> = Collections.unmodifiableList(ArrayList(tools))
+    val hasImages: Boolean = this.messages.any { it.images.isNotEmpty() }
 
     init {
         require(model.isNotBlank() && model.length <= MAX_MODEL_CHARS && model.none(Char::isISOControl))
@@ -147,6 +210,8 @@ class ModelProtocolRequest(
         require(this.messages.first().role == ModelMessageRole.USER)
         require(this.messages.any { it.role == ModelMessageRole.USER })
         require(this.tools.map { it.name }.toSet().size == this.tools.size)
+        require(this.messages.sumOf { message -> message.images.sumOf { it.size.toLong() } } <=
+            ModelProtocolImage.MAX_TOTAL_IMAGE_BYTES) { "Total image bytes out of bounds" }
         val usesTools = this.messages.any { it.role == ModelMessageRole.TOOL || it.toolCalls.isNotEmpty() }
         require(!usesTools || this.tools.isNotEmpty()) { "Tool history requires tool definitions" }
         require(maxOutputTokens == null || maxOutputTokens in 1..1_000_000)
@@ -167,7 +232,8 @@ class ModelProtocolRequest(
     }
 
     override fun toString(): String =
-        "ModelProtocolRequest(model=$model, messages=${messages.size}, tools=${tools.size}, maxOutputTokens=$maxOutputTokens, system=redacted)"
+        "ModelProtocolRequest(model=$model, messages=${messages.size}, tools=${tools.size}, " +
+            "images=${messages.sumOf { it.images.size }}, maxOutputTokens=$maxOutputTokens, system=redacted)"
 }
 
 /** Parsed response. [toString] deliberately never exposes model text or arguments. */
@@ -310,10 +376,10 @@ private object OpenAiChatCodec : BoundedProtocolCodec() {
 
 private object SakuraLlmCodec : BoundedProtocolCodec() {
     override fun encodeRequest(request: ModelProtocolRequest): JsonObject {
-        // SakuraLLM is a pure text translation model; do not silently drop tool history.
+        // SakuraLLM is a pure text translation model; do not silently drop images or tool history.
         val usesTools = request.tools.isNotEmpty() ||
             request.messages.any { it.role == ModelMessageRole.TOOL || it.toolCalls.isNotEmpty() }
-        if (usesTools) fail(ModelFailureKind.CONTENT)
+        if (usesTools || request.hasImages) fail(ModelFailureKind.CONTENT)
         return buildJsonObject {
             put("model", request.model)
             put("stream", false)
@@ -334,7 +400,7 @@ private fun chatMessage(message: ModelProtocolMessage): JsonObject = buildJsonOb
     when (message.role) {
         ModelMessageRole.USER -> {
             put("role", "user")
-            put("content", message.text)
+            put("content", chatUserContent(message.text, message.images))
         }
         ModelMessageRole.ASSISTANT -> {
             put("role", "assistant")
@@ -357,6 +423,64 @@ private fun chatMessage(message: ModelProtocolMessage): JsonObject = buildJsonOb
             put("tool_call_id", requireNotNull(message.toolCallId))
             put("content", message.text)
         }
+    }
+}
+
+/**
+ * Chat keeps a plain string for text-only user turns (the historical wire shape)
+ * and only switches to an ordered content array when images are present.
+ */
+internal fun chatUserContent(text: String, images: List<ModelProtocolImage>): JsonElement {
+    if (images.isEmpty()) return JsonPrimitive(text)
+    return buildJsonArray {
+        if (text.isNotEmpty()) add(buildJsonObject { put("type", "text"); put("text", text) })
+        images.forEach { image ->
+            add(buildJsonObject {
+                put("type", "image_url")
+                put("image_url", buildJsonObject { put("url", image.dataUrl()) })
+            })
+        }
+    }
+}
+
+internal fun ModelProtocolImage.base64Data(): String = ModelProtocolBase64.encode(encodedBytes())
+
+internal fun ModelProtocolImage.dataUrl(): String = "data:$mimeType;base64,${base64Data()}"
+
+/** Pure Kotlin Base64; core/engine must stay usable on plain JVM without the JDK Base64 helper. */
+internal object ModelProtocolBase64 {
+    private const val ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    fun encode(bytes: ByteArray): String {
+        val output = StringBuilder(((bytes.size + 2) / 3) * 4)
+        var index = 0
+        while (index + 2 < bytes.size) {
+            val chunk = ((bytes[index].toInt() and 0xFF) shl 16) or
+                ((bytes[index + 1].toInt() and 0xFF) shl 8) or
+                (bytes[index + 2].toInt() and 0xFF)
+            output.append(ALPHABET[(chunk ushr 18) and 0x3F])
+            output.append(ALPHABET[(chunk ushr 12) and 0x3F])
+            output.append(ALPHABET[(chunk ushr 6) and 0x3F])
+            output.append(ALPHABET[chunk and 0x3F])
+            index += 3
+        }
+        when (bytes.size - index) {
+            1 -> {
+                val chunk = (bytes[index].toInt() and 0xFF) shl 16
+                output.append(ALPHABET[(chunk ushr 18) and 0x3F])
+                output.append(ALPHABET[(chunk ushr 12) and 0x3F])
+                output.append("==")
+            }
+            2 -> {
+                val chunk = ((bytes[index].toInt() and 0xFF) shl 16) or
+                    ((bytes[index + 1].toInt() and 0xFF) shl 8)
+                output.append(ALPHABET[(chunk ushr 18) and 0x3F])
+                output.append(ALPHABET[(chunk ushr 12) and 0x3F])
+                output.append(ALPHABET[(chunk ushr 6) and 0x3F])
+                output.append('=')
+            }
+        }
+        return output.toString()
     }
 }
 
@@ -525,7 +649,17 @@ private object OpenAiResponsesCodec : BoundedProtocolCodec() {
 private fun responsesInput(message: ModelProtocolMessage): List<JsonObject> = when (message.role) {
     ModelMessageRole.USER -> listOf(buildJsonObject {
         put("role", "user")
-        put("content", buildJsonArray { add(buildJsonObject { put("type", "input_text"); put("text", message.text) }) })
+        put("content", buildJsonArray {
+            if (message.text.isNotEmpty() || message.images.isEmpty()) {
+                add(buildJsonObject { put("type", "input_text"); put("text", message.text) })
+            }
+            message.images.forEach { image ->
+                add(buildJsonObject {
+                    put("type", "input_image")
+                    put("image_url", image.dataUrl())
+                })
+            }
+        })
     })
     ModelMessageRole.ASSISTANT -> buildList<JsonObject> {
         if (message.text.isNotEmpty()) add(buildJsonObject {
@@ -655,7 +789,19 @@ private fun geminiContent(message: ModelProtocolMessage): JsonObject = buildJson
     when (message.role) {
         ModelMessageRole.USER -> {
             put("role", "user")
-            put("parts", buildJsonArray { add(buildJsonObject { put("text", message.text) }) })
+            put("parts", buildJsonArray {
+                if (message.text.isNotEmpty() || message.images.isEmpty()) {
+                    add(buildJsonObject { put("text", message.text) })
+                }
+                message.images.forEach { image ->
+                    add(buildJsonObject {
+                        put("inline_data", buildJsonObject {
+                            put("mime_type", image.mimeType)
+                            put("data", image.base64Data())
+                        })
+                    })
+                }
+            })
         }
         ModelMessageRole.ASSISTANT -> {
             put("role", "model")
@@ -787,7 +933,23 @@ private fun anthropicMessage(message: ModelProtocolMessage): JsonObject = buildJ
     when (message.role) {
         ModelMessageRole.USER -> {
             put("role", "user")
-            put("content", message.text)
+            if (message.images.isEmpty()) {
+                put("content", message.text)
+            } else {
+                put("content", buildJsonArray {
+                    if (message.text.isNotEmpty()) add(buildJsonObject { put("type", "text"); put("text", message.text) })
+                    message.images.forEach { image ->
+                        add(buildJsonObject {
+                            put("type", "image")
+                            put("source", buildJsonObject {
+                                put("type", "base64")
+                                put("media_type", image.mimeType)
+                                put("data", image.base64Data())
+                            })
+                        })
+                    }
+                })
+            }
         }
         ModelMessageRole.ASSISTANT -> {
             put("role", "assistant")

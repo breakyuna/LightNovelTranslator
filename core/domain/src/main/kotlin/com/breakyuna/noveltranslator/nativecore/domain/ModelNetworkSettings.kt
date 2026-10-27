@@ -50,6 +50,55 @@ data class ModelHttpProxy private constructor(val host: String, val port: Int) {
 }
 
 /**
+ * Opaque, non-secret identity used to look up one encrypted proxy credential.
+ * It is safe to persist with the network policy, but it never is the username or
+ * password. The format is shared by settings validation and the Keystore store.
+ */
+object ModelProxyCredentialReference {
+    const val MAX_CHARS = 128
+
+    /** Printable ASCII without spaces; the store hashes this value before naming a file. */
+    fun isValid(value: String): Boolean =
+        value.length in 1..MAX_CHARS && value.all { it.code in 33..126 }
+}
+
+/**
+ * HTTP proxy Basic credentials for one resolved request. The password exists only
+ * in memory and is never serialized by this type; [toString] redacts both fields.
+ */
+data class ModelProxyCredential private constructor(
+    val username: String,
+    val password: String,
+) {
+    init {
+        require(isValidPart(username) && ':' !in username) { "Invalid proxy username" }
+        require(isValidPart(password)) { "Invalid proxy password" }
+    }
+
+    override fun toString(): String = "ModelProxyCredential(username=redacted, password=redacted)"
+
+    companion object {
+        const val MAX_PART_CHARS = 512
+
+        fun of(username: String, password: String): ModelProxyCredential =
+            ModelProxyCredential(username, password)
+
+        private fun isValidPart(value: String): Boolean =
+            value.length in 1..MAX_PART_CHARS && value == value.trim() &&
+                value.all { it.code in 0x20..0x7e }
+    }
+}
+
+/** Sanitized proxy-credential failure. It never carries a username, password or file path. */
+class InvalidModelProxyCredential : IllegalStateException("Invalid model proxy credential")
+
+/** Optional process-level source for an encrypted proxy credential. */
+interface ModelProxyCredentialPort {
+    /** Returns null only when the reference has no saved credential; corruption must throw. */
+    suspend fun load(reference: String): ModelProxyCredential?
+}
+
+/**
  * Immutable request policy for every compatible-model HTTP call. [source] records
  * whether this value came from [DEFAULT] or from an explicitly saved policy; the
  * storage boundary marks edited values with [saved] before writing, and [DEFAULT]
@@ -58,6 +107,8 @@ data class ModelHttpProxy private constructor(val host: String, val port: Int) {
  * Timeouts are explicit bounded seconds. Redirects stay disabled unless the user
  * opts in; enabling them applies to both same-scheme and TLS redirects. An explicit
  * proxy is used for HTTP and HTTPS (CONNECT); there is no fallback to direct access.
+ * [proxyCredentialRef] is only an opaque lookup key for the encrypted credential
+ * store; a proxy password is never part of this schema.
  */
 data class ModelNetworkSettings(
     val connectTimeoutSeconds: Int = 10,
@@ -67,12 +118,14 @@ data class ModelNetworkSettings(
     val proxy: ModelHttpProxy? = null,
     val followRedirects: Boolean = false,
     val source: ModelNetworkSettingsSource = ModelNetworkSettingsSource.DEFAULT,
+    val proxyCredentialRef: String? = null,
 ) {
     init {
         if (connectTimeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS ||
             readTimeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS ||
             writeTimeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS ||
-            callTimeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS) {
+            callTimeoutSeconds !in MIN_TIMEOUT_SECONDS..MAX_TIMEOUT_SECONDS ||
+            (proxyCredentialRef != null && !ModelProxyCredentialReference.isValid(proxyCredentialRef))) {
             throw InvalidModelNetworkSettings()
         }
     }
@@ -84,7 +137,9 @@ data class ModelNetworkSettings(
     override fun toString(): String =
         "ModelNetworkSettings(connect=${connectTimeoutSeconds}s, read=${readTimeoutSeconds}s, " +
             "write=${writeTimeoutSeconds}s, call=${callTimeoutSeconds}s, " +
-            "proxy=${if (proxy == null) "none" else "set"}, redirects=$followRedirects, source=$source)"
+            "proxy=${if (proxy == null) "none" else "set"}, " +
+            "proxyCredential=${if (proxyCredentialRef == null) "none" else "set"}, " +
+            "redirects=$followRedirects, source=$source)"
 
     companion object {
         const val MIN_TIMEOUT_SECONDS = 1
@@ -102,8 +157,9 @@ interface ModelNetworkSettingsProvider {
 
 /**
  * Versioned non-secret encoding of [ModelNetworkSettings]. Credentials, proxy
- * passwords, headers and endpoints are not part of this schema, and unknown fields
- * are rejected so a future secret field cannot be silently written here.
+ * passwords, headers and endpoints are not part of this schema; the optional
+ * [ModelNetworkSettings.proxyCredentialRef] is only an opaque lookup key. Unknown
+ * fields are rejected so a future secret field cannot be silently written here.
  */
 object ModelNetworkSettingsCodec {
     const val FORMAT = "lnt-model-network-settings"
@@ -114,6 +170,8 @@ object ModelNetworkSettingsCodec {
         "format", "formatVersion", "connectTimeoutSeconds", "readTimeoutSeconds",
         "writeTimeoutSeconds", "callTimeoutSeconds", "proxy", "followRedirects", "source",
     )
+    /** Added after v1; omitted when null so existing files keep their exact fingerprint. */
+    private val OPTIONAL_ROOT_KEYS = setOf("proxyCredentialRef")
     private val PROXY_KEYS = setOf("host", "port")
     private val INTEGER = Regex("0|[1-9][0-9]*")
 
@@ -132,6 +190,7 @@ object ModelNetworkSettingsCodec {
             })
             put("followRedirects", settings.followRedirects)
             put("source", settings.source.name)
+            settings.proxyCredentialRef?.let { put("proxyCredentialRef", it) }
         }.toString()
         if (encoded.length > MAX_CHARS) throw InvalidModelNetworkSettings()
         return encoded
@@ -145,7 +204,7 @@ object ModelNetworkSettingsCodec {
     fun decode(text: String): ModelNetworkSettings {
         try {
             val root = JsonObjectValue.parse(text, JsonInputLimits(MAX_CHARS, 8)).json
-            require(root.keys == ROOT_KEYS)
+            require(root.keys == ROOT_KEYS || root.keys == ROOT_KEYS + OPTIONAL_ROOT_KEYS)
             require(string(root, "format") == FORMAT)
             require(integer(root, "formatVersion") == FORMAT_VERSION.toLong())
             val proxyElement = root.getValue("proxy")
@@ -164,6 +223,14 @@ object ModelNetworkSettingsCodec {
                 ModelNetworkSettingsSource.SAVED.name -> ModelNetworkSettingsSource.SAVED
                 else -> throw InvalidModelNetworkSettings()
             }
+            val proxyCredentialRef = when (val reference = root["proxyCredentialRef"]) {
+                null, JsonNull -> null
+                is JsonPrimitive -> {
+                    require(reference.isString)
+                    reference.content
+                }
+                else -> throw InvalidModelNetworkSettings()
+            }
             return ModelNetworkSettings(
                 connectTimeoutSeconds = timeout(root, "connectTimeoutSeconds"),
                 readTimeoutSeconds = timeout(root, "readTimeoutSeconds"),
@@ -172,6 +239,7 @@ object ModelNetworkSettingsCodec {
                 proxy = proxy,
                 followRedirects = redirects,
                 source = source,
+                proxyCredentialRef = proxyCredentialRef,
             )
         } catch (invalid: InvalidModelNetworkSettings) {
             throw invalid

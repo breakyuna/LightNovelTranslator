@@ -6,9 +6,13 @@ import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.security.MessageDigest
+import java.util.concurrent.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -17,6 +21,22 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+
+/**
+ * Optional extension for run-scoped cancellation. The runtime uses it when available so a
+ * cancelled or timed-out apply stops between chunks, leaves its durable intent in place and
+ * lets the next submission reconcile the actual committed files. It is deliberately separate
+ * from [WorkspaceApplyPort] so existing adapters stay source-compatible.
+ */
+interface WorkspaceApplyCancellationPort : WorkspaceApplyPort {
+    /** [deadlineAtMillis] uses [Long.MAX_VALUE] as the no-deadline sentinel. */
+    suspend fun apply(
+        approved: ApprovedWorkspaceChangeSet,
+        conflictPolicy: WorkspaceConflictPolicy,
+        cancellation: WorkspaceCancellation,
+        deadlineAtMillis: Long,
+    ): WorkspaceApplyReceipt
+}
 
 /**
  * File-backed [WorkspaceApplyPort] for approved workspace mutations.
@@ -35,7 +55,7 @@ class WorkspaceFileApplyStore(
     receiptRoot: File,
     private val policy: PathPolicy = PathPolicy.DEFAULT,
     private val now: () -> Long = { System.currentTimeMillis().coerceAtLeast(0) },
-) : WorkspaceApplyPort {
+) : WorkspaceApplyCancellationPort {
     private val base = WorkspaceStorageSupport.openRoot(root)
     private val receipts = WorkspaceStorageSupport.openRoot(receiptRoot)
     private val lock = Mutex()
@@ -43,11 +63,26 @@ class WorkspaceFileApplyStore(
     override suspend fun apply(
         approved: ApprovedWorkspaceChangeSet,
         conflictPolicy: WorkspaceConflictPolicy,
+    ): WorkspaceApplyReceipt = apply(
+        approved,
+        conflictPolicy,
+        WorkspaceCancellation(),
+        Long.MAX_VALUE,
+    )
+
+    override suspend fun apply(
+        approved: ApprovedWorkspaceChangeSet,
+        conflictPolicy: WorkspaceConflictPolicy,
+        cancellation: WorkspaceCancellation,
+        deadlineAtMillis: Long,
     ): WorkspaceApplyReceipt = withContext(Dispatchers.IO) {
         lock.withLock {
             require(approved.changeSet.projectId == ref.projectId) {
                 "Workspace change set belongs to another project"
             }
+            // A receipt or intent is the existing durable evidence. Reconcile it before
+            // checking cancellation so a retry after a cancelled/timed-out attempt cannot leave
+            // the same command permanently stuck, and never starts a fresh write.
             val existing = readReceipt(approved.commandId)
             if (existing != null) {
                 require(existing.changeSetId == approved.changeSet.id && existing.digest == approved.changeSet.digest) {
@@ -75,9 +110,11 @@ class WorkspaceFileApplyStore(
                 writeReceipt(rejected)
                 return@withLock rejected
             }
+            checkActive(cancellation, deadlineAtMillis)
             val conflicts = ArrayList<WorkspaceConflict>()
             val accepted = ArrayList<WorkspaceChange>()
             for (change in approved.changeSet.changes) {
+                checkActive(cancellation, deadlineAtMillis)
                 val path = change.path
                 if (!isWritableArea(path)) {
                     conflicts += WorkspaceConflict(path, WorkspaceConflictReason.PATH_POLICY, "read_only_area")
@@ -107,9 +144,15 @@ class WorkspaceFileApplyStore(
                 writeReceipt(rejected)
                 return@withLock rejected
             }
+            checkActive(cancellation, deadlineAtMillis)
+            // The intent is durable before the first mutation. Cancellation after this point
+            // leaves it in place for recover(), which verifies actual files and never reports an
+            // unattempted change as committed.
             writeIntent(approved, accepted, conflicts)
+            checkActive(cancellation, deadlineAtMillis)
             val committed = ArrayList<WorkspaceCommittedChange>()
             for (change in accepted) {
+                checkActive(cancellation, deadlineAtMillis)
                 val target = WorkspaceStorageSupport.resolve(base, change.path, createParents = change.operation != WorkspaceChangeOperation.DELETE)
                 try {
                     when (change.operation) {
@@ -119,7 +162,7 @@ class WorkspaceFileApplyStore(
                                 conflicts += WorkspaceConflict(change.path, WorkspaceConflictReason.STALE_FINGERPRINT, "update")
                                 continue
                             }
-                            WorkspaceStorageSupport.writeAtomically(target, bytes)
+                            writeChecked(target, bytes, cancellation, deadlineAtMillis)
                             val after = fingerprint(target)
                             if (after != change.content.sha256) {
                                 conflicts += WorkspaceConflict(change.path, WorkspaceConflictReason.STALE_FINGERPRINT, "verify")
@@ -135,10 +178,15 @@ class WorkspaceFileApplyStore(
                             }
                         }
                     }
-                } catch (_: Exception) {
-                    conflicts += WorkspaceConflict(change.path, WorkspaceConflictReason.BUDGET, "write_failed")
+                } catch (failure: CancellationException) {
+                    throw failure
+                } catch (failure: WorkspaceScriptTimeoutException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    conflicts += writeConflict(change.path, failure)
                 }
             }
+            checkActive(cancellation, deadlineAtMillis)
             val status = when {
                 committed.isEmpty() && conflicts.isNotEmpty() -> WorkspaceApplyStatus.REJECTED
                 conflicts.isEmpty() && committed.isNotEmpty() -> WorkspaceApplyStatus.COMMITTED
@@ -150,6 +198,64 @@ class WorkspaceFileApplyStore(
             deleteIntent(approved.commandId)
             result
         }
+    }
+
+    private suspend fun checkActive(cancellation: WorkspaceCancellation, deadlineAtMillis: Long) {
+        currentCoroutineContext().ensureActive()
+        cancellation.throwIfCancelled()
+        if (deadlineAtMillis != Long.MAX_VALUE && now() > deadlineAtMillis) {
+            throw WorkspaceScriptTimeoutException(WorkspaceRunStage.APPLY)
+        }
+    }
+
+    private suspend fun writeChecked(
+        target: File,
+        bytes: ByteArray,
+        cancellation: WorkspaceCancellation,
+        deadlineAtMillis: Long,
+    ) {
+        checkActive(cancellation, deadlineAtMillis)
+        val parent = target.parentFile ?: throw IOException("Workspace apply target has no parent")
+        require(parent.isDirectory) { "Workspace apply target parent is unavailable" }
+        require(WorkspaceStorageSupport.isSafeRegularTarget(target)) {
+            "Workspace apply target is not a regular file"
+        }
+        val temporary = File.createTempFile(".lnt-apply-", ".tmp", parent)
+        try {
+            FileOutputStream(temporary).use { output ->
+                var offset = 0
+                while (offset < bytes.size) {
+                    checkActive(cancellation, deadlineAtMillis)
+                    val count = minOf(WRITE_CHUNK_BYTES, bytes.size - offset)
+                    output.write(bytes, offset, count)
+                    offset += count
+                }
+                checkActive(cancellation, deadlineAtMillis)
+                output.flush()
+                output.fd.sync()
+            }
+            checkActive(cancellation, deadlineAtMillis)
+            require(temporary.length() == bytes.size.toLong()) { "Workspace apply write was incomplete" }
+            if (!temporary.renameTo(target)) {
+                if (target.exists()) {
+                    require(WorkspaceStorageSupport.isSafeRegularTarget(target)) {
+                        "Workspace apply target changed during publication"
+                    }
+                    require(target.delete()) { "Workspace apply target could not be replaced" }
+                }
+                if (!temporary.renameTo(target)) throw IOException("Workspace apply publication failed")
+            }
+        } finally {
+            if (temporary.exists()) temporary.delete()
+        }
+    }
+
+    private fun writeConflict(path: WorkspacePath, failure: Exception): WorkspaceConflict = when (failure) {
+        is WorkspaceBudgetExceeded -> WorkspaceConflict(path, WorkspaceConflictReason.BUDGET, "budget")
+        is IllegalArgumentException, is SecurityException ->
+            WorkspaceConflict(path, WorkspaceConflictReason.PATH_POLICY, "path")
+        is IOException -> WorkspaceConflict(path, WorkspaceConflictReason.STALE_FINGERPRINT, "io_failed")
+        else -> WorkspaceConflict(path, WorkspaceConflictReason.STALE_FINGERPRINT, "write_failed")
     }
 
     private fun isWritableArea(path: WorkspacePath): Boolean =
@@ -409,6 +515,7 @@ class WorkspaceFileApplyStore(
     private companion object {
         const val MAX_INTENT_BYTES = 2L * 1024 * 1024
         const val MAX_RECEIPT_BYTES = 64L * 1024
+        const val WRITE_CHUNK_BYTES = 64 * 1024
         val EMPTY_DIGEST = WorkspaceDigest(
             MessageDigest.getInstance("SHA-256").digest(ByteArray(0))
                 .joinToString("") { ((it.toInt() and 255).toString(16)).padStart(2, '0') },

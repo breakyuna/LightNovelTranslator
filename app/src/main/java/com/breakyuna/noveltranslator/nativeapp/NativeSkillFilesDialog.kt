@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -15,23 +16,61 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.R
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundWorkspaceFailureReason
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundWorkspacePhase
+import com.breakyuna.noveltranslator.nativecore.engine.ForegroundWorkspaceSnapshot
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillFile
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillRecord
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
-/** Resource browsing and version-checked user-file edits; execution uses the Agent tool. */
+/**
+ * Application-owned skill execution handle supplied by the project screen. The dialog only starts
+ * or stops through this port; it never owns the execution coroutine.
+ */
+internal val LocalNativeSkillExecution = staticCompositionLocalOf<NativeSkillExecutionActions?> { null }
+
+private val NoSkillExecutionState = MutableStateFlow<ForegroundWorkspaceSnapshot?>(null)
+
+/** Script resources of the same skill cannot be edited while its direct run is active. */
+internal fun skillExecutionLocksResources(
+    snapshot: ForegroundWorkspaceSnapshot?,
+    record: WorkspaceSkillRecord,
+): Boolean = snapshot?.phase?.active == true && snapshot.request.skillId == record.summary.id.value
+
+/** Localized short status for the dialog and the app-wide execution banner. */
+internal fun skillExecutionPhaseLabel(snapshot: ForegroundWorkspaceSnapshot?): Int? = when (snapshot?.phase) {
+    ForegroundWorkspacePhase.PREPARING -> R.string.native_skill_execution_starting
+    ForegroundWorkspacePhase.RUNNING -> R.string.native_skill_execution_running
+    ForegroundWorkspacePhase.STOPPING -> R.string.native_skill_execution_stopping
+    ForegroundWorkspacePhase.COMPLETED -> R.string.native_skill_execution_completed
+    ForegroundWorkspacePhase.CANCELLED -> R.string.native_skill_execution_cancelled
+    ForegroundWorkspacePhase.FAILED -> when (snapshot?.failure) {
+        ForegroundWorkspaceFailureReason.START_FAILED,
+        ForegroundWorkspaceFailureReason.START_TIMEOUT,
+        -> R.string.native_skill_execution_start_failed
+        ForegroundWorkspaceFailureReason.EXECUTION_TIMEOUT -> R.string.native_skill_execution_timeout
+        else -> R.string.native_skill_run_failed
+    }
+    ForegroundWorkspacePhase.INTERRUPTED -> R.string.native_skill_execution_interrupted
+    null -> null
+}
+
+/** Resource browsing and version-checked user-file edits; execution uses the app-owned runner. */
 @Composable
 internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: WorkspaceSkillRecord,
     dismiss: () -> Unit) {
@@ -45,7 +84,11 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
     var execution by remember(record.summary.id) { mutableStateOf<NativeSkillExecutionTarget?>(null) }
     var runUnavailable by remember(record.summary.id) { mutableStateOf(false) }
     var refresh by remember(record.summary.id) { mutableStateOf(0) }
-    val canEdit = record.summary.source == WorkspaceSkillSource.USER && actions.writeResource != null
+    val controller = LocalNativeSkillExecution.current
+    val executionState by (controller?.state ?: NoSkillExecutionState).collectAsState()
+    val resourcesLocked = skillExecutionLocksResources(executionState, record)
+    val canEdit = record.summary.source == WorkspaceSkillSource.USER &&
+        actions.writeResource != null && !resourcesLocked
     val scope = rememberCoroutineScope()
     val binaryLabel = stringResource(R.string.native_skill_file_binary)
     LaunchedEffect(record.summary.id, refresh) {
@@ -65,7 +108,9 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
             catch (_: Exception) { failed = true } finally { loading = false }
         }
     }
-    execution?.let { target -> NativeSkillExecutionDialog(actions, target) { execution = null } }
+    if (execution != null && controller != null) {
+        NativeSkillExecutionDialog(controller, execution!!) { execution = null }
+    }
     if (editorVisible) NativeSkillResourceEditor(actions, record, editing,
         dismiss = { editorVisible = false },
         changed = { refresh++; preview = null; selected = null })
@@ -74,6 +119,13 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()).testTag("native-skill-files"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (runUnavailable) Text(stringResource(R.string.native_skill_run_unavailable), color = MaterialTheme.colorScheme.error)
+                if (resourcesLocked) Text(stringResource(R.string.native_skill_execution_locked),
+                    style = MaterialTheme.typography.bodySmall)
+                NativeSkillPolicySummary(
+                    policy = record.summary.policy,
+                    builtIn = record.summary.source == WorkspaceSkillSource.BUILT_IN,
+                    modifier = Modifier.testTag("native-skill-files-policy"),
+                )
                 if (failed) Text(stringResource(R.string.native_skill_file_load_error),
                     color = MaterialTheme.colorScheme.error)
                 when {
@@ -90,7 +142,7 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
                             style = MaterialTheme.typography.bodySmall)
                     }
                     if (record.summary.enabled && relative.startsWith("scripts/") && file.text &&
-                        actions.prepareExecution != null && actions.execute != null) TextButton(onClick = {
+                        actions.prepareExecution != null && controller != null && !resourcesLocked) TextButton(onClick = {
                             execution = actions.prepareExecution.invoke(record, file)
                             runUnavailable = execution == null
                         }) { Text(stringResource(R.string.native_skill_run)) }
@@ -108,6 +160,90 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
             }
         },
         confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) } })
+}
+
+@Composable
+private fun NativeSkillExecutionDialog(
+    controller: NativeSkillExecutionActions,
+    target: NativeSkillExecutionTarget,
+    close: () -> Unit,
+) {
+    var input by remember(target) { mutableStateOf("{}") }
+    var network by remember(target) { mutableStateOf(false) }
+    var attempted by remember(target) { mutableStateOf(false) }
+    var invalid by remember(target) { mutableStateOf(false) }
+    var token by remember(target) { mutableStateOf<String?>(null) }
+    val snapshot by controller.state.collectAsState()
+    val current = snapshot?.takeIf { it.request.identity == target.identity }
+    val active = current?.phase?.active == true
+    val policy = target.skill.summary.policy
+    val networkAllowed = nativeSkillNetworkCheckboxEnabled(policy)
+    // A recomposed dialog can adopt the still-live token without replaying the Run.
+    LaunchedEffect(current?.token) {
+        if (token == null && current != null) token = current.token
+    }
+    AlertDialog(onDismissRequest = close,
+        title = { Text(stringResource(R.string.native_skill_run)) },
+        text = {
+            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(target.file.path.value)
+                Text(stringResource(R.string.native_workspace_revision, target.revision))
+                Text(stringResource(R.string.native_skill_run_notice))
+                Text(stringResource(R.string.native_skill_execution_background),
+                    style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(input, { if (it.length <= 16_384) input = it }, enabled = !attempted && !active,
+                    label = { Text(stringResource(R.string.native_skill_run_input)) }, modifier = Modifier.fillMaxWidth())
+                Text(stringResource(R.string.native_skill_run_policy_notice),
+                    style = MaterialTheme.typography.bodySmall)
+                Text(
+                    stringResource(
+                        if (networkAllowed) R.string.native_skill_run_network_allowed
+                        else R.string.native_skill_run_network_denied,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (networkAllowed) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.error,
+                )
+                Checkbox(network, { network = it }, enabled = !attempted && !active && networkAllowed,
+                    modifier = Modifier.testTag("native-skill-run-network"))
+                Text(stringResource(R.string.native_skill_run_network))
+                skillExecutionPhaseLabel(current)?.let {
+                    Text(stringResource(it), style = MaterialTheme.typography.titleSmall)
+                }
+                if (invalid) Text(stringResource(R.string.native_skill_run_failed), color = MaterialTheme.colorScheme.error)
+                current?.observation?.logs?.forEach { line ->
+                    Text(line, style = MaterialTheme.typography.bodySmall)
+                }
+                current?.observation?.artifacts?.forEach { artifact ->
+                    Text(artifact.path, style = MaterialTheme.typography.bodySmall)
+                }
+                if (current?.phase == ForegroundWorkspacePhase.COMPLETED) {
+                    Text(stringResource(R.string.native_skill_run_result))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !attempted && !active, onClick = {
+                val started = try {
+                    controller.start(target, input, nativeDirectExecutionFetchAllowed(policy, network))
+                } catch (_: Exception) {
+                    null
+                }
+                token = started
+                attempted = true
+                invalid = started == null
+            }) { Text(stringResource(R.string.native_skill_run)) }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                val liveToken = token ?: current?.token
+                if (active && liveToken != null) TextButton(onClick = { controller.stop(liveToken) }) {
+                    Text(stringResource(R.string.native_skill_execution_stop))
+                }
+                TextButton(onClick = close) { Text(stringResource(R.string.native_close)) }
+            }
+        })
 }
 
 @Composable
@@ -180,49 +316,4 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             onClick = { mutate { requireNotNull(actions.writeResource)(record.summary.id, path, text,
                 record.fingerprint, file?.sha256) } }) { Text(stringResource(R.string.native_save)) } },
         dismissButton = { TextButton(enabled = !busy, onClick = ::close) { Text(stringResource(R.string.native_cancel)) } })
-}
-
-@Composable
-private fun NativeSkillExecutionDialog(actions: NativeSkillActions, target: NativeSkillExecutionTarget,
-    close: () -> Unit) {
-    var input by remember(target) { mutableStateOf("{}") }
-    var network by remember(target) { mutableStateOf(false) }
-    var busy by remember(target) { mutableStateOf(false) }
-    var attempted by remember(target) { mutableStateOf(false) }
-    var failed by remember(target) { mutableStateOf(false) }
-    var result by remember(target) { mutableStateOf<com.breakyuna.noveltranslator.nativecore.workspace.ProjectWorkspaceAnalysisRun?>(null) }
-    val scope = rememberCoroutineScope()
-    AlertDialog(onDismissRequest = { if (!busy) close() },
-        title = { Text(stringResource(R.string.native_skill_run)) },
-        text = {
-            Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(target.file.path.value)
-                Text(stringResource(R.string.native_workspace_revision, target.revision))
-                Text(stringResource(R.string.native_skill_run_notice))
-                OutlinedTextField(input, { if (it.length <= 16_384) input = it }, enabled = !attempted,
-                    label = { Text(stringResource(R.string.native_skill_run_input)) }, modifier = Modifier.fillMaxWidth())
-                Checkbox(network, { network = it }, enabled = !attempted)
-                Text(stringResource(R.string.native_skill_run_network))
-                if (busy) Text(stringResource(R.string.native_working))
-                if (failed) Text(stringResource(R.string.native_skill_run_failed), color = MaterialTheme.colorScheme.error)
-                result?.let { completed ->
-                    for (line in completed.result.logs) Text(line.text, style = MaterialTheme.typography.bodySmall)
-                    for (artifact in completed.artifacts) Text(artifact.path.value, style = MaterialTheme.typography.bodySmall)
-                    Text(stringResource(R.string.native_skill_run_result))
-                }
-            }
-        },
-        confirmButton = { TextButton(enabled = !attempted && actions.execute != null, onClick = {
-            busy = true; attempted = true
-            scope.launch {
-                try { result = requireNotNull(actions.execute)(target, input, network) }
-                catch (_: CancellationException) { failed = true }
-                catch (_: Exception) { failed = true }
-                finally { busy = false }
-            }
-        }) { Text(stringResource(R.string.native_skill_run)) } },
-        dismissButton = { TextButton(onClick = {
-            if (busy) actions.stopExecution?.invoke(target.identity) else close()
-        }) { Text(stringResource(if (busy) R.string.native_cancel else R.string.native_close)) } })
 }

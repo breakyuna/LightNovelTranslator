@@ -34,6 +34,11 @@ class NativeUsageLedgerStoreTest {
         context = ApplicationProvider.getApplicationContext()
         context.deleteDatabase("lnt_native_app.db")
         File(context.filesDir, "native_projects").deleteRecursively()
+        for (name in listOf("native-model-prices.json", "native-model-prices.json.bak",
+            "native-model-prices-history.json", "native-model-prices-history.json.bak")) {
+            File(context.filesDir, name).delete()
+        }
+        File(context.filesDir, "native-model-prices-history").deleteRecursively()
         runtime = RuntimeCoordinator(); projects = NativeTextProjectStore(context, runtime)
         agent = NativeAgentStore(context, projects, runtime); audit = NativeTranslationAuditStore(context, runtime, projects)
         ledger = NativeUsageLedgerStore(context)
@@ -70,6 +75,8 @@ class NativeUsageLedgerStoreTest {
         assertEquals(10L, usage.getValue("input").jsonObject.getValue("tokens").jsonPrimitive.long)
         assertEquals(JsonNull, usage.getValue("output").jsonObject.getValue("tokens"))
         assertTrue(requests.filter { it.getValue("state").jsonPrimitive.content != "RECEIVED" }.all { it["usage"] == JsonNull })
+        assertTrue(requests.all { it["price_version"] == JsonNull && it["price_currency"] == JsonNull })
+        assertTrue(requests.all { it.getValue("cost_state").jsonPrimitive.content == "UNKNOWN" })
         assertFalse(text.contains("private body")); assertFalse(text.contains("private response")); assertFalse(text.contains("Authorization"))
         val empty = java.io.ByteArrayOutputStream()
         assertEquals(0L, ledger.export(UsageLedgerQuery(ref, ChatId("other"))) { empty })
@@ -179,6 +186,83 @@ class NativeUsageLedgerStoreTest {
         val snapshot = ledger.summary(UsageLedgerQuery(ref))
         assertEquals(205L, snapshot.totals.responses)
         assertEquals(BigInteger.valueOf(Long.MAX_VALUE).multiply(BigInteger.valueOf(205)), snapshot.totals.input.actual)
+    }
+
+    private suspend fun fixtureModel() = withContext(Dispatchers.IO) {
+        val db = NativeAppDatabase.open(context)
+        try {
+            db.models().insert(NativeModelSettingsRow(1, "fixture", "https://example.invalid/v1",
+                "fixture-model", "", NativeModelProtocol.OPENAI_CHAT_COMPLETIONS.name, "", 0))
+        } finally { db.close() }
+    }
+
+    private fun fullyKnownUsage(tokens: Long): RequestUsage = RequestUsage(
+        TokenMeasurement(tokens, UsageSource.ACTUAL),
+        TokenMeasurement(0, UsageSource.ACTUAL),
+        TokenMeasurement(0, UsageSource.ACTUAL),
+        TokenMeasurement(0, UsageSource.ACTUAL),
+        TokenMeasurement(0, UsageSource.ACTUAL),
+    )
+
+    @Test fun historicalCostAggregationPricesByReceiptVersionRatherThanCurrentTable() = runBlocking {
+        val ref = project().ref; val chat = agent.currentChat(ref)
+        fixtureModel()
+        val prices = NativePriceTableStore(context)
+        val v1 = prices.save(prices.load().fingerprint, CurrencyCode.USD, ModelPricing(
+            TokenPrice.ofMicrosPerMillion(1_000_000), TokenPrice.ZERO,
+            TokenPrice.ZERO, TokenPrice.ZERO, modelKey = "fixture-model"))
+        val request = request(ref, chat, "historical-cost")
+        agent.reserveRequest(request); agent.markDispatched(request.key())
+        agent.completeRequest(request.key(), response(fullyKnownUsage(1_000_000)))
+        prices.save(v1.fingerprint, CurrencyCode.USD, ModelPricing(
+            TokenPrice.ofMicrosPerMillion(5_000_000), TokenPrice.ZERO,
+            TokenPrice.ZERO, TokenPrice.ZERO, modelKey = "fixture-model"))
+
+        val summary = com.breakyuna.noveltranslator.nativecore.engine.UsageCostAggregator(ledger, prices)
+            .aggregate(UsageLedgerQuery(ref, chat))
+        val known = summary.knownGroups.single()
+        assertEquals(CurrencyCode.USD, known.currency)
+        assertEquals(v1.version, known.priceVersions.single())
+        assertEquals("1.000000000000", known.actual?.toPlainString())
+    }
+
+    @Test fun receiptsCaptureThePriceVersionAtReservationAndExportTheBinding() = runBlocking {
+        val ref = project().ref; val chat = agent.currentChat(ref)
+        fixtureModel()
+        val prices = NativePriceTableStore(context)
+        val priced = prices.save(prices.load().fingerprint, CurrencyCode.USD, ModelPricing(
+            TokenPrice.ofMicrosPerMillion(1), TokenPrice.ofMicrosPerMillion(2),
+            TokenPrice.ZERO, TokenPrice.ZERO, modelKey = "fixture-model"))
+        val request = request(ref, chat, "priced")
+        agent.reserveRequest(request)
+        val prepared = ledger.entries(UsageLedgerQuery(ref, chat)).entries.single()
+        assertEquals(priced.version, prepared.priceVersion)
+        assertEquals(CurrencyCode.USD, prepared.priceCurrency)
+        assertEquals(priced.fingerprint, prepared.priceFingerprint?.sha256)
+        assertEquals("fixture-model", prepared.pricedModelKey)
+        assertEquals(UsageCostState.KNOWN, prepared.costState)
+
+        // A later edit must not rewrite the receipt's historical binding.
+        val next = prices.save(priced.fingerprint, CurrencyCode.USD, ModelPricing(
+            TokenPrice.ofMicrosPerMillion(9), TokenPrice.ofMicrosPerMillion(10),
+            TokenPrice.ZERO, TokenPrice.ZERO, modelKey = "fixture-model"))
+        assertEquals(priced.version + 1, next.version)
+        agent.markDispatched(request.key()); agent.completeRequest(request.key(), response())
+        val received = ledger.entries(UsageLedgerQuery(ref, chat)).entries.single()
+        assertEquals(priced.version, received.priceVersion)
+        assertEquals(priced.fingerprint, received.priceFingerprint?.sha256)
+        assertEquals(UsageCostState.KNOWN, received.costState)
+
+        val output = java.io.ByteArrayOutputStream()
+        assertEquals(1L, ledger.export(UsageLedgerQuery(ref, chat)) { output })
+        val requestLine = output.toString("UTF-8").lineSequence()
+            .map { Json.parseToJsonElement(it).jsonObject }
+            .single { it.getValue("type").jsonPrimitive.content == "request" }
+        assertEquals(priced.version, requestLine.getValue("price_version").jsonPrimitive.long)
+        assertEquals("USD", requestLine.getValue("price_currency").jsonPrimitive.content)
+        assertEquals(priced.fingerprint, requestLine.getValue("price_fingerprint").jsonPrimitive.content)
+        assertEquals("fixture-model", requestLine.getValue("priced_model_key").jsonPrimitive.content)
+        assertEquals("KNOWN", requestLine.getValue("cost_state").jsonPrimitive.content)
     }
 
     @Test fun migrationFromV5PreservesCanonicalFactsWithoutInventingPastLedgerEntries() = runBlocking {

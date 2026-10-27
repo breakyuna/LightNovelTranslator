@@ -34,7 +34,8 @@ class ProjectFormatService(
 ) {
     suspend fun importAsset(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long,
         path: RelativePath, bytes: ByteArray, enabled: Boolean = true): AssetMutationReceipt = io {
-        require(expectedRevision >= 0 && bytes.size <= MAX_INPUT_BYTES)
+        require(expectedRevision >= 0)
+        if (bytes.size > MAX_INPUT_BYTES) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
         val format = resolveImportFormat(path.value, bytes)
         if (format == ProjectAssetFormat.BINARY) fail(TextProjectException.Reason.INVALID_FORMAT)
         val document = when (format) {
@@ -73,7 +74,10 @@ class ProjectFormatService(
         val output = when (asset.format) {
             ProjectAssetFormat.TXT -> {
                 val decoded = FormatTextCodec.decode(original)
-                decoded.encode(txtWrite(decoded.text, units, options))
+                // Match the whole-project export: keep the source charset/BOM when possible and
+                // fall back to a complete UTF-8 file when a translation introduces a character the
+                // original charset cannot represent.
+                decoded.encodeOrFallbackUtf8(txtWrite(decoded.text, units, options))
             }
             else -> {
                 val textAdapter = com.breakyuna.noveltranslator.nativecore.domain.FormatAdapterRegistry.text(asset.format)
@@ -177,9 +181,10 @@ class ProjectFormatService(
         val newline = when {
             original.contains("\r\n") -> "\r\n"
             original.contains('\r') -> "\r"
-            else -> "\n"
+            original.contains('\n') -> "\n"
+            else -> original.firstOrNull { isLineSeparator(it) }?.toString() ?: "\n"
         }
-        val endsWithNewline = original.endsWith("\r\n") || original.endsWith("\r") || original.endsWith("\n")
+        val endsWithNewline = original.isNotEmpty() && isLineSeparator(original.last())
         val lines = splitLines(original)
         val byRow = units.filter { it.row in lines.indices }.associateBy { it.row }
         val output = StringBuilder()
@@ -203,10 +208,18 @@ class ProjectFormatService(
         var start = 0
         var index = 0
         while (index < text.length) {
-            if (text[index] == '\n' || text[index] == '\r') {
+            val character = text[index]
+            if (character == '\r' && text.getOrNull(index + 1) == '\n') {
                 result.add(text.substring(start, index))
-                if (text[index] == '\r' && text.getOrNull(index + 1) == '\n') index++
-                start = index + 1
+                index += 2
+                start = index
+                continue
+            }
+            if (isLineSeparator(character)) {
+                result.add(text.substring(start, index))
+                index++
+                start = index
+                continue
             }
             index++
         }
@@ -214,10 +227,21 @@ class ProjectFormatService(
         return result
     }
 
+    /**
+     * LG also treats the Unicode separator controls as TXT line boundaries besides CR/LF.
+     * VT/FF, the file/group/record separators, NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR
+     * therefore keep their own rows instead of being silently merged into neighbouring text.
+     */
+    private fun isLineSeparator(character: Char): Boolean =
+        character == '\n' || character == '\r' || character == '\u000b' || character == '\u000c' ||
+            character in '\u001c'..'\u001e' || character == '\u0085' ||
+            character == '\u2028' || character == '\u2029'
+
     private fun fail(reason: TextProjectException.Reason): Nothing = throw TextProjectException(reason)
 
     companion object {
-        const val MAX_INPUT_BYTES = 64 * 1024 * 1024
+        /** Shared with [FormatTextCodec.MAX_BYTES] so an asset cannot pass here and fail in decode. */
+        const val MAX_INPUT_BYTES = FormatTextCodec.MAX_BYTES
         const val MAX_OUTPUT_BYTES = 128 * 1024 * 1024
         private const val PAGE = 100
         private const val MAX_WARNINGS = 64

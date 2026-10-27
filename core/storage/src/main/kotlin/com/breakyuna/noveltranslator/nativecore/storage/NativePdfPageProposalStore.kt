@@ -88,6 +88,28 @@ class NativePdfPageProposalStore(context: Context, private val projects: NativeT
         summary(requireNotNull(db.pdfPageProposals().find(id.value)), ref).also { require(it.chat == chat) }
     }
 
+    /** Read-only mixed-approval loader; it never claims or settles the proposal. */
+    internal suspend fun loadMixedProposal(ref: LocalProjectRef, chat: ChatId,
+                                           id: ApprovalRequestId): PdfPageChangeProposal = io {
+        projects.open(ref)
+        val row = requireNotNull(db.pdfPageProposals().find(id.value))
+        require(row.chatId == chat.value)
+        payload(row, ref)
+    }
+
+    /** Frozen page selection of a claimed proposal, checked against its exact binding. */
+    internal suspend fun loadMixedSelection(ref: LocalProjectRef, chat: ChatId,
+                                            id: ApprovalRequestId): Set<Int> = io {
+        projects.open(ref)
+        val row = requireNotNull(db.pdfPageProposals().find(id.value))
+        require(row.chatId == chat.value)
+        val proposal = payload(row, ref)
+        val encoded = requireNotNull(row.selected) { "Proposal selection is not frozen" }
+        selection(encoded).also { selected ->
+            require(row.binding == proposal.binding(selected).sha256) { "Approval selection mismatch" }
+        }
+    }
+
     suspend fun members(view: PdfPageProposalSummary): List<PdfPageChangeMemberSummary> = io {
         verifyView(view)
         pageRows(view).map { row ->

@@ -893,6 +893,149 @@ class EpubFormatAdapterTest {
             "OEBPS/toc.ncx", "OEBPS/content.opf"), document.units.map { it.tag })
     }
 
+    @Test fun linearSpineNavDocumentKeepsBodyTextSeparateFromNavLabels() {
+        val contentOpf = opf().replace(
+            "<itemref idref=\"chap\"/>",
+            "<itemref idref=\"chap\"/><itemref idref=\"nav\"/>",
+        )
+        val nav = "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Navigation</title></head>" +
+            "<body><h1>Visible Chapter</h1><p>Body paragraph</p>" +
+            "<nav epub:type=\"toc\"><ol><li><a href=\"text/ch1.xhtml\">Contents Link</a></li>" +
+            "</ol></nav><p>Tail paragraph</p></body></html>"
+        val original = epub(contentOpf = contentOpf, navDocument = nav)
+        val document = adapter.read(original, path)
+        val navUnits = document.units.filter { it.tag == "OEBPS/nav.xhtml" }
+        assertEquals(listOf("Visible Chapter", "Body paragraph", "Tail paragraph"),
+            navUnits.filter { extraKind(it) == null }.map { it.source })
+        assertEquals(listOf("Contents Link"),
+            navUnits.filter { extraKind(it) == "nav_text" }.map { it.source })
+
+        val output = adapter.write(original, translated(document, mapOf(
+            "Visible Chapter" to "Chapitre Visible",
+            "Body paragraph" to "Corps",
+            "Contents Link" to "Sommaire",
+            "Tail paragraph" to "Queue",
+        )), FormatWriteOptions(targetLanguage = "fr"))
+        val navText = FormatArchiveFixtures.text(
+            FormatArchiveFixtures.unzip(output).getValue("OEBPS/nav.xhtml"))
+        assertTrue(navText.contains("<h1>Chapitre Visible</h1>"))
+        assertTrue(navText.contains("<p>Corps</p>"))
+        assertTrue(navText.contains(">Sommaire<"))
+        assertTrue(navText.contains("<p>Queue</p>"))
+        assertEquals(1, Regex("Chapitre Visible").findAll(navText).count())
+        assertEquals(1, Regex(">Sommaire<").findAll(navText).count())
+    }
+
+    @Test fun opfTitleTranslationSynchronizesOnlyMatchingHeadTitlesAcrossTheSpine() {
+        val contentOpf = opf(title = "A &amp; B")
+            .replace(
+                "<item id=\"chap\" href=\"text/ch1.xhtml\" media-type=\"application/xhtml+xml\"/>",
+                "<item id=\"chap\" href=\"text/ch1.xhtml\" media-type=\"application/xhtml+xml\"/>" +
+                    "<item id=\"chap2\" href=\"text/ch2.xhtml\" media-type=\"application/xhtml+xml\"/>",
+            )
+            .replace(
+                "<itemref idref=\"chap\"/>",
+                "<itemref idref=\"chap\"/><itemref idref=\"chap2\"/>",
+            )
+        val original = epub(
+            contentOpf = contentOpf,
+            chapter = chapterHtml("<p>Hello</p>", headTitle = "Chapter"),
+            entries = listOf(
+                "OEBPS/text/ch2.xhtml" to
+                    chapterHtml("<p>Second</p>", headTitle = "A &amp; B").toByteArray(),
+            ),
+        )
+        val document = adapter.read(original, path)
+        assertEquals("A & B", document.units.last().source)
+        val output = adapter.write(
+            original,
+            translated(document, mapOf("A & B" to "Titre & Cie")),
+            FormatWriteOptions(targetLanguage = "ja"),
+        )
+        val result = FormatArchiveFixtures.unzip(output)
+        val chapter1 = FormatArchiveFixtures.text(result.getValue("OEBPS/text/ch1.xhtml"))
+        val chapter2 = FormatArchiveFixtures.text(result.getValue("OEBPS/text/ch2.xhtml"))
+        assertTrue(chapter1.contains("<title>Chapter</title>"))
+        assertTrue(chapter2.contains("<title>Titre &amp; Cie</title>"))
+        assertTrue(FormatArchiveFixtures.text(result.getValue("OEBPS/content.opf"))
+            .contains("<dc:title>Titre &amp; Cie</dc:title>"))
+    }
+
+    @Test fun targetLanguageControlsRtlAndVerticalWritingMarkers() {
+        val contentOpf = opf().replace(
+            "<spine toc=\"ncx\">",
+            "<spine toc=\"ncx\" page-progression-direction=\"rtl\">",
+        )
+        val chapter = chapterHtml(
+            "<style>.vrtl { writing-mode: vertical-rl; color: black; } " +
+                ".normal { margin: 0; }</style><p>Hello</p>",
+            htmlAttributes = " class=\"vrtl hrtl body\" " +
+                "style=\"writing-mode: vertical-rl; color: #111\"",
+        )
+        val css = "body.vrtl { writing-mode: vertical-rl; color: black; }\n" +
+            ".hrtl { -epub-writing-mode: vertical-rl; }\n" +
+            ".normal { margin: 0; }\n"
+        val original = epub(
+            contentOpf = contentOpf,
+            chapter = chapter,
+            entries = listOf("OEBPS/vertical.css" to css.toByteArray()),
+        )
+        val document = adapter.read(original, path)
+
+        val horizontal = adapter.write(
+            original,
+            translated(document, mapOf("Hello" to "Bonjour")),
+            FormatWriteOptions(targetLanguage = "en"),
+        )
+        val horizontalParts = FormatArchiveFixtures.unzip(horizontal)
+        val horizontalOpf = FormatArchiveFixtures.text(horizontalParts.getValue("OEBPS/content.opf"))
+        val horizontalChapter = FormatArchiveFixtures.text(
+            horizontalParts.getValue("OEBPS/text/ch1.xhtml"))
+        val horizontalCss = FormatArchiveFixtures.text(
+            horizontalParts.getValue("OEBPS/vertical.css"))
+        assertFalse(horizontalOpf.contains("page-progression-direction"))
+        assertFalse(horizontalChapter.contains("vertical-rl"))
+        assertFalse(horizontalChapter.contains("vrtl"))
+        assertFalse(horizontalChapter.contains("hrtl"))
+        assertTrue(horizontalChapter.contains("writing-mode: horizontal-tb"))
+        assertTrue(horizontalChapter.contains("color: #111"))
+        assertTrue(horizontalChapter.contains("color: black"))
+        assertTrue(horizontalChapter.contains("margin: 0"))
+        assertTrue(horizontalChapter.contains("<p>Bonjour</p>"))
+        assertFalse(horizontalCss.contains("vertical-rl"))
+        assertFalse(horizontalCss.contains("vrtl"))
+        assertFalse(horizontalCss.contains("hrtl"))
+        assertTrue(horizontalCss.contains(".normal { margin: 0; }"))
+
+        // An explicit horizontal target applies the layout projection even when no text was
+        // changed, while a default blank target still keeps a truly untouched write byte-equal.
+        val layoutOnly = FormatArchiveFixtures.unzip(
+            adapter.write(original, document.units, FormatWriteOptions(targetLanguage = "en")))
+        assertFalse(FormatArchiveFixtures.text(layoutOnly.getValue("OEBPS/content.opf"))
+            .contains("page-progression-direction"))
+        assertFalse(FormatArchiveFixtures.text(layoutOnly.getValue("OEBPS/vertical.css"))
+            .contains("vertical-rl"))
+        assertArrayEquals(original,
+            adapter.write(original, document.units, FormatWriteOptions()))
+
+        for (language in listOf("ja", "zh-Hant")) {
+            val preserved = adapter.write(
+                original,
+                translated(document, mapOf("Hello" to "こんにちは")),
+                FormatWriteOptions(targetLanguage = language),
+            )
+            val parts = FormatArchiveFixtures.unzip(preserved)
+            assertTrue(FormatArchiveFixtures.text(parts.getValue("OEBPS/content.opf"))
+                .contains("page-progression-direction=\"rtl\""))
+            val preservedChapter = FormatArchiveFixtures.text(
+                parts.getValue("OEBPS/text/ch1.xhtml"))
+            assertTrue(preservedChapter.contains("writing-mode: vertical-rl"))
+            assertTrue(preservedChapter.contains("class=\"vrtl hrtl body\""))
+            assertTrue(FormatArchiveFixtures.text(parts.getValue("OEBPS/vertical.css"))
+                .contains(".vrtl { writing-mode: vertical-rl;"))
+        }
+    }
+
     @Test fun epub2NcxIsDiscoveredWithoutANavDocumentOrSpineTocAttribute() {
         val contentOpf = opf()
             .replace("<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>", "")
@@ -1015,10 +1158,14 @@ class EpubFormatAdapterTest {
         return FormatArchiveFixtures.zip(content, stored = setOf("mimetype"))
     }
 
-    private fun chapterHtml(body: String): String =
+    private fun chapterHtml(
+        body: String,
+        headTitle: String = "Chapter",
+        htmlAttributes: String = "",
+    ): String =
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
-            "<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>Chapter</title></head>" +
-            "<body>$body</body></html>"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\"$htmlAttributes>" +
+            "<head><title>$headTitle</title></head><body>$body</body></html>"
 
     private fun container(opfPath: String): String =
         "<?xml version=\"1.0\"?><container version=\"1.0\" " +

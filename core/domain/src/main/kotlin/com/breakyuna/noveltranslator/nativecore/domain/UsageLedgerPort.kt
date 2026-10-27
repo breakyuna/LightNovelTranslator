@@ -41,17 +41,37 @@ interface UsageLedgerReadPort {
 enum class UsageReceiptState { PREPARED, DISPATCHED, RECEIVED }
 enum class UsageReceiptChannel { AGENT, TRANSLATION }
 
+/**
+ * Price availability of a historical receipt. A legacy receipt has no price version and is
+ * always UNKNOWN; it is never priced with whichever table happens to be current now.
+ */
+enum class UsageCostState { KNOWN, UNKNOWN, MISSING_VERSION }
+
+/** Loads the immutable price table version captured by a receipt; absence must be explicit. */
+interface PriceTableVersionSource {
+    suspend fun loadPriceTable(version: Long): PriceTable
+}
+
 /** Metadata only; missing usage is never converted into zero. */
 class UsageLedgerEntry(
     val id: String, val channel: UsageReceiptChannel, val attempt: RequestAttemptId,
     val ref: LocalProjectRef?, val run: RunIdentity, val configuration: ModelConfigurationRef,
     val model: String?, val state: UsageReceiptState, val usage: RequestUsage?,
     val stop: ModelStopReason?, val failure: ModelFailureKind?,
+    val priceVersion: Long? = null,
+    val priceCurrency: CurrencyCode? = null,
+    val priceFingerprint: ObjectFingerprint? = null,
+    val pricedModelKey: String? = null,
+    val costState: UsageCostState? = null,
 ) {
     init {
         require((state == UsageReceiptState.RECEIVED) == (usage != null))
         require(ref == null || ref.projectId == run.projectId)
         require(state == UsageReceiptState.RECEIVED || stop == null && failure == null)
+        require(priceVersion == null || priceVersion in 0L..PriceTable.MAX_VERSION)
+        require(costState != UsageCostState.KNOWN || priceVersion != null) {
+            "A known cost state requires a price version"
+        }
     }
 }
 

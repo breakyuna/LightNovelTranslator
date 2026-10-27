@@ -20,6 +20,7 @@ import kotlinx.coroutines.withTimeout
 import okhttp3.Request
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -41,9 +42,11 @@ class NativeAppGraphSettingsTest {
 
     private val networkFile get() = File(app.filesDir, "native_model_network_settings.json")
     private val limitsFile get() = File(app.filesDir, "native_model_request_limits.json")
+    private val credentialDirectory get() = File(app.filesDir, "native_model_proxy_credentials")
 
     @Before fun setup() {
         app = ApplicationProvider.getApplicationContext()
+        credentialDirectory.deleteRecursively()
         graph = app.nativeGraph
         networkFile.delete()
         File(networkFile.path + ".bak").delete()
@@ -57,7 +60,12 @@ class NativeAppGraphSettingsTest {
         File(networkFile.path + ".bak").delete()
         limitsFile.delete()
         File(limitsFile.path + ".bak").delete()
+        credentialDirectory.deleteRecursively()
         }
+    }
+
+    @Test fun graphConstructionDoesNotReadOrCreateEncryptedProxyCredentials() {
+        assertFalse(credentialDirectory.exists())
     }
 
     @Test fun corruptNetworkStateFailsClosedInsteadOfDirectlyConnecting() = runBlocking {

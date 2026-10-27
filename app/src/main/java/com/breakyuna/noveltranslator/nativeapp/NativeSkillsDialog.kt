@@ -36,6 +36,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillLimits
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillPolicy
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillRecord
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSource
 import java.util.UUID
@@ -149,7 +150,8 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                     R.string.native_skills_source_builtin
                 else R.string.native_skills_source_user,
             )
-            val input = NativeSkillEditorInput(name, description, content, enabled, order, languages, tags)
+            val input = NativeSkillEditorInput(name, description, content, enabled, order, languages, tags,
+                policy = current?.summary?.policy ?: WorkspaceSkillPolicy.DEFAULT)
             val metadataValid = remember(input, current?.summary?.id) {
                 runCatching {
                     input.toDraft(current?.summary?.id ?: WorkspaceSkillId("draft-validation"))
@@ -164,6 +166,11 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                     ) {
                         Text(stringResource(R.string.native_skills_source_value, sourceLabel),
                             style = MaterialTheme.typography.bodySmall)
+                        NativeSkillPolicySummary(
+                            policy = current?.summary?.policy ?: WorkspaceSkillPolicy.DEFAULT,
+                            builtIn = readOnly,
+                            modifier = Modifier.testTag("native-skill-policy"),
+                        )
                         if (!metadataValid) {
                             Text(stringResource(R.string.native_skills_metadata_invalid),
                                 color = MaterialTheme.colorScheme.error,
@@ -226,6 +233,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                                 try {
                                     val draft = NativeSkillEditorInput(
                                         name, description, content, enabled, order, languages, tags,
+                                        policy = record?.summary?.policy ?: WorkspaceSkillPolicy.DEFAULT,
                                     ).toDraft(record?.summary?.id ?: WorkspaceSkillId("user-" + UUID.randomUUID()))
                                     if (record == null) actions.create(draft)
                                     else actions.update(record.summary.id, draft, record.fingerprint)
@@ -334,5 +342,68 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                     TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) }
                 }
             })
+    }
+}
+
+/**
+ * Read-only policy projection. Built-in packages define their own grants; user edits preserve
+ * whatever the store has already validated. No control here can widen a policy.
+ */
+@Composable
+internal fun NativeSkillPolicySummary(
+    policy: WorkspaceSkillPolicy,
+    builtIn: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val materials = stringResource(R.string.native_skills_policy_materials)
+    val artifacts = stringResource(R.string.native_skills_policy_artifacts)
+    val search = stringResource(R.string.native_skills_policy_search)
+    val fetch = stringResource(R.string.native_skills_policy_fetch)
+    val proposals = stringResource(R.string.native_skills_policy_proposals)
+    val print = stringResource(R.string.native_skills_policy_print)
+    val allowed = listOfNotNull(
+        materials.takeIf { policy.allowMaterials },
+        artifacts.takeIf { policy.allowArtifacts },
+        search.takeIf { policy.allowSearch },
+        fetch.takeIf { policy.allowFetch },
+        proposals.takeIf { policy.allowProposeChanges },
+        print.takeIf { policy.allowPrint },
+    )
+    val denied = listOfNotNull(
+        materials.takeIf { !policy.allowMaterials },
+        artifacts.takeIf { !policy.allowArtifacts },
+        search.takeIf { !policy.allowSearch },
+        fetch.takeIf { !policy.allowFetch },
+        proposals.takeIf { !policy.allowProposeChanges },
+        print.takeIf { !policy.allowPrint },
+    )
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(stringResource(R.string.native_skills_policy_title),
+            style = MaterialTheme.typography.labelLarge)
+        if (allowed.isNotEmpty()) Text(
+            stringResource(R.string.native_skills_policy_allowed, allowed.joinToString(", ")),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (denied.isNotEmpty()) Text(
+            stringResource(R.string.native_skills_policy_denied, denied.joinToString(", ")),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            stringResource(
+                R.string.native_skills_policy_limits,
+                policy.maxRunMillis,
+                policy.maxOutputBytes,
+                policy.maxArtifactBytes,
+                policy.maxChangeBytes,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            stringResource(
+                if (builtIn) R.string.native_skills_policy_builtin
+                else R.string.native_skills_policy_preserved,
+            ),
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }

@@ -16,12 +16,19 @@ object WorkspaceHardLimits {
     const val MAX_LOG_LINES: Int = 10_000
     const val MAX_LOG_LINE_CHARS: Int = 8_192
     const val MAX_TIMEOUT_MILLIS: Long = 30L * 60 * 1000
+    const val MAX_RESIDENT_BYTES: Long = 1024L * 1024 * 1024
+    const val MAX_PEAK_HEAP_BYTES: Long = 1536L * 1024 * 1024
 }
 
 /**
  * One workspace execution budget. Every field is validated at construction so a caller
  * cannot configure an unbounded run; [WorkspaceBudgetMeter] enforces the same class at run
  * time without giving scripts a mutable budget object.
+ *
+ * [maxResidentBytes] and [maxPeakHeapBytes] are cooperative observation limits, not an OS or
+ * VM hard memory cap. They bound the used Java/Kotlin heap sampled by [WorkspaceMemoryMeter];
+ * native allocations, the engine process, and an allocation between two samples are outside
+ * that observation. Both fields default conservatively so existing constructions stay valid.
  */
 class WorkspaceBudget(
     val maxMaterials: Int = 64,
@@ -36,6 +43,8 @@ class WorkspaceBudget(
     val maxOutputBytes: Long = 1L * 1024 * 1024,
     val maxLogLines: Int = 2_000,
     val timeoutMillis: Long = 120_000,
+    val maxResidentBytes: Long = 128L * 1024 * 1024,
+    val maxPeakHeapBytes: Long = 256L * 1024 * 1024,
 ) {
     init {
         require(maxMaterials in 1..WorkspaceHardLimits.MAX_MATERIALS)
@@ -50,7 +59,43 @@ class WorkspaceBudget(
         require(maxOutputBytes in 1..WorkspaceHardLimits.MAX_OUTPUT_BYTES)
         require(maxLogLines in 1..WorkspaceHardLimits.MAX_LOG_LINES)
         require(timeoutMillis in 1_000..WorkspaceHardLimits.MAX_TIMEOUT_MILLIS)
+        require(maxResidentBytes in 1..WorkspaceHardLimits.MAX_RESIDENT_BYTES)
+        require(maxPeakHeapBytes in 1..WorkspaceHardLimits.MAX_PEAK_HEAP_BYTES)
     }
+
+    /**
+     * Keeps the pre-memory-budget constructor shape available to already compiled callers.
+     * New code should use the primary constructor and name only the fields it changes.
+     */
+    constructor(
+        maxMaterials: Int,
+        maxMaterialBytes: Long,
+        maxTotalMaterialBytes: Long,
+        maxChanges: Int,
+        maxChangeBytes: Long,
+        maxTotalChangeBytes: Long,
+        maxArtifacts: Int,
+        maxArtifactBytes: Long,
+        maxTotalArtifactBytes: Long,
+        maxOutputBytes: Long,
+        maxLogLines: Int,
+        timeoutMillis: Long,
+    ) : this(
+        maxMaterials = maxMaterials,
+        maxMaterialBytes = maxMaterialBytes,
+        maxTotalMaterialBytes = maxTotalMaterialBytes,
+        maxChanges = maxChanges,
+        maxChangeBytes = maxChangeBytes,
+        maxTotalChangeBytes = maxTotalChangeBytes,
+        maxArtifacts = maxArtifacts,
+        maxArtifactBytes = maxArtifactBytes,
+        maxTotalArtifactBytes = maxTotalArtifactBytes,
+        maxOutputBytes = maxOutputBytes,
+        maxLogLines = maxLogLines,
+        timeoutMillis = timeoutMillis,
+        maxResidentBytes = 128L * 1024 * 1024,
+        maxPeakHeapBytes = 256L * 1024 * 1024,
+    )
 }
 
 enum class WorkspaceBudgetKind {
@@ -65,6 +110,8 @@ enum class WorkspaceBudgetKind {
     TOTAL_ARTIFACT_BYTES,
     OUTPUT_BYTES,
     LOG_LINES,
+    RESIDENT_BYTES,
+    PEAK_HEAP_BYTES,
 }
 
 class WorkspaceBudgetExceeded(
@@ -73,6 +120,56 @@ class WorkspaceBudgetExceeded(
     val actual: Long,
 ) : IllegalStateException("Workspace budget exceeded: $kind") {
     override fun toString(): String = "WorkspaceBudgetExceeded($kind, limit=$limit, actual=$actual)"
+}
+
+/**
+ * Samples the used Java/Kotlin heap for one workspace run. It is intentionally a narrow,
+ * synchronous observation point: it cannot reserve memory or force a garbage collection, and
+ * the returned value is a sample rather than an allocation guarantee.
+ */
+fun interface WorkspaceMemorySampler {
+    fun sampleUsedHeapBytes(): Long
+
+    companion object {
+        /** Used heap of the current process, the same value Android exposes through Runtime. */
+        val HEAP: WorkspaceMemorySampler = WorkspaceMemorySampler {
+            val runtime = Runtime.getRuntime()
+            (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
+        }
+    }
+}
+
+/**
+ * Cooperative memory accounting for one run. [check] samples once and rejects a run whose
+ * sample is above [WorkspaceBudget.maxResidentBytes] or whose observed peak is above
+ * [WorkspaceBudget.maxPeakHeapBytes]. This is not a hard memory limit: a caller that allocates
+ * between two checks can still exceed the budget before the next sample.
+ */
+class WorkspaceMemoryMeter(
+    val budget: WorkspaceBudget,
+    private val sampler: WorkspaceMemorySampler = WorkspaceMemorySampler.HEAP,
+) {
+    var observedPeakBytes: Long = 0
+        private set
+
+    fun check(): Long {
+        val sample = sampler.sampleUsedHeapBytes().coerceAtLeast(0L)
+        if (sample > observedPeakBytes) observedPeakBytes = sample
+        if (sample > budget.maxResidentBytes) {
+            throw WorkspaceBudgetExceeded(WorkspaceBudgetKind.RESIDENT_BYTES, budget.maxResidentBytes, sample)
+        }
+        if (observedPeakBytes > budget.maxPeakHeapBytes) {
+            throw WorkspaceBudgetExceeded(WorkspaceBudgetKind.PEAK_HEAP_BYTES, budget.maxPeakHeapBytes, observedPeakBytes)
+        }
+        return sample
+    }
+
+    /** Samples without rejecting; used after an irreversible commit to keep terminal facts. */
+    fun sample(): Long {
+        val sample = sampler.sampleUsedHeapBytes().coerceAtLeast(0L)
+        if (sample > observedPeakBytes) observedPeakBytes = sample
+        return sample
+    }
 }
 
 /**

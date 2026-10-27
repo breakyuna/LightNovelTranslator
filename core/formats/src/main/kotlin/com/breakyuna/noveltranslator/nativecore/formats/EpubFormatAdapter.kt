@@ -21,19 +21,30 @@ import org.w3c.dom.Element
  * `belongs-to-collection` value, spine text/`alt`/`title` slots, nav text plus nav `alt`/`title`
  * attributes and NCX `<text>` labels are exposed as units and written back with UTF-16 offset
  * splices into the original member bytes, never a DOM re-serialization. Every other member
- * (images, fonts, CSS, OPF markup outside those slots) is copied literally. A locator stores its
+ * (images, fonts, OPF markup outside those slots, ordinary CSS) is copied literally except for the
+ * explicit direction cleanup described below. A locator stores its
  * member path, exact UTF-16 range, a raw-slot digest and a kind discriminator; `read()` emits
  * navigation labels in a stable order (spine documents, then nav text, nav attributes, NCX labels,
  * then OPF metadata in document order), and `write()` rejects stale, foreign, overlapping or
  * duplicate locators instead of writing into the package.
  *
  * Spine items marked `linear="no"` are auxiliary/non-reading-order pages. Their body text is not
- * exposed for translation and `read()` emits `epub.spine_non_linear` instead. Fixed-layout OPFs
- * (`rendition:layout` with `pre-paginated`/`fixed`, Apple `fixed-layout` metadata or a
- * `fixed-layout`/`rendition:layout-pre-paginated` manifest property) are still imported, but
- * `read()` emits `epub.fixed_layout` because reflow-based translation cannot preserve page
- * positioning. Unknown named entities are skipped and reported as `epub.unknown_entity`; common
- * HTML entities are decoded.
+ * exposed for translation and `read()` emits `epub.spine_non_linear` instead. A linear spine item
+ * that is also the EPUB3 navigation document contributes its visible body text outside `<nav>`
+ * landmarks, while the landmarks themselves stay navigation units; the two sets never duplicate
+ * the same slot. Fixed-layout OPFs (`rendition:layout` with `pre-paginated`/`fixed`, Apple
+ * `fixed-layout` metadata or a `fixed-layout`/`rendition:layout-pre-paginated` manifest property)
+ * are still imported, but `read()` emits `epub.fixed_layout` because reflow-based translation
+ * cannot preserve page positioning. Unknown named entities are skipped and reported as
+ * `epub.unknown_entity`; common HTML entities are decoded.
+ *
+ * When a written OPF `<dc:title>` gets a translation, every spine document whose
+ * `<head><title>` exactly equals the old metadata title receives the same target. A different
+ * head title is a chapter/section label and remains literal. For non-Japanese/non-Chinese target
+ * languages `write()` also removes the OPF spine `page-progression-direction="rtl"` attribute and
+ * neutralizes only explicit `writing-mode: vertical-rl` declarations plus `vrtl`/`hrtl` class
+ * markers in spine/nav XHTML, `<style>` blocks and CSS files. Ordinary CSS, prose, `dir`
+ * attributes and identity metadata are copied literally.
  *
  * OPF `dc:creator` is intentionally not exposed. An author name is identity metadata rather than
  * prose, and a generic translation flow would rename a person. The writer therefore never touches
@@ -72,6 +83,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         }
         val processedPaths = HashSet<String>()
         val linearPaths = packageInfo.linearSpinePaths.toHashSet()
+        val navBodyPath = packageInfo.navPath?.takeIf { it in linearPaths }
         val warnedNonLinear = HashSet<String>()
         for (spineItem in packageInfo.spineItems) {
             val documentPath = spineItem.path
@@ -86,7 +98,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 continue
             }
             if (!isHtmlDocumentPath(documentPath)) continue
-            if (documentPath == packageInfo.navPath || documentPath == packageInfo.ncxPath) continue
+            if (documentPath == packageInfo.ncxPath) continue
             if (!processedPaths.add(documentPath)) continue
             val member = archive[documentPath]
             if (member == null) {
@@ -111,7 +123,13 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 continue
             }
             val onUnknownEntity = unknownEntityWarning(warnings, documentPath)
-            for (node in XhtmlTextScanner.scan(text, onUnknownEntity = onUnknownEntity)) {
+            // A nav document that is also a linear spine item contributes its visible body text.
+            // Only its <nav> landmark subtree is excluded here because readNavDocument() exposes
+            // those labels separately as navigation units, avoiding duplicate rows.
+            val skipNavigation = documentPath == navBodyPath
+            for (node in XhtmlTextScanner.scan(text, onUnknownEntity = onUnknownEntity,
+                skipNavigationSubtrees = skipNavigation)
+            ) {
                 if (units.size >= ContainerLimits.MAX_UNITS) {
                     limited = true
                     break
@@ -140,9 +158,10 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         }
         val navPath = packageInfo.navPath
         if (!limited && navPath != null && navPath != packageInfo.opfPath &&
-            isHtmlDocumentPath(navPath) && processedPaths.add(navPath)
+            isHtmlDocumentPath(navPath)
         ) {
-            limited = readNavDocument(archive, navPath, units, warnings)
+            limited = readNavDocument(archive, navPath, units, warnings,
+                restrictToNavigationLandmarks = navPath == navBodyPath)
         }
         val ncxPath = packageInfo.ncxPath
         if (!limited && ncxPath != null && ncxPath != packageInfo.opfPath &&
@@ -179,6 +198,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         documentPath: String,
         units: MutableList<FormatUnit>,
         warnings: MutableList<FormatWarning>,
+        restrictToNavigationLandmarks: Boolean = false,
     ): Boolean {
         val member = archive[documentPath]
         if (member == null || member.directory) {
@@ -197,7 +217,16 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 "Navigation document is not valid UTF-8")
             return false
         }
-        val slots = scanNavigationSlots(text, unknownEntityWarning(warnings, documentPath))
+        // When the nav document is also linear spine content, the surrounding body text is
+        // exposed as ordinary spine units. Restrict nav units to the actual <nav> landmarks so
+        // that body paragraphs are not duplicated as navigation labels.
+        val navRanges = if (restrictToNavigationLandmarks) {
+            NavigationContentScanner.find(text)
+        } else {
+            null
+        }
+        val slots = scanNavigationSlots(text, unknownEntityWarning(warnings, documentPath),
+            restrictTo = navRanges)
         val labels = slots.filter { it.kind == ScannedNodeKind.NAV_TEXT }
         val attributes = slots.filter { it.kind == ScannedNodeKind.NAV_ATTRIBUTE }
         if (appendNavigationUnits(documentPath, labels, ScannedNodeKind.NAV_TEXT, units, warnings)) {
@@ -277,10 +306,12 @@ class EpubFormatAdapter : BinaryFormatAdapter {
     private fun scanNavigationSlots(
         text: String,
         onUnknownEntity: (() -> Unit)? = null,
+        restrictTo: List<IntRange>? = null,
     ): List<ScannedTextNode> {
         val result = ArrayList<ScannedTextNode>()
         for (node in XhtmlTextScanner.scan(text, tolerantEntities = true,
             onUnknownEntity = onUnknownEntity)) {
+            if (restrictTo != null && restrictTo.none { node.start in it }) continue
             when (node.kind) {
                 ScannedNodeKind.TEXT -> result.add(node.withKind(ScannedNodeKind.NAV_TEXT))
                 ScannedNodeKind.ATTRIBUTE -> result.add(node.withKind(ScannedNodeKind.NAV_ATTRIBUTE))
@@ -367,6 +398,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         }
         val navDocumentPath = packageInfo.navPath
             ?.takeIf { it != packageInfo.opfPath && isHtmlDocumentPath(it) }
+        val navBodyPath = navDocumentPath?.takeIf { it in packageInfo.linearSpinePaths }
         val ncxDocumentPath = packageInfo.ncxPath
             ?.takeIf { it != packageInfo.opfPath && it != navDocumentPath }
         val navigationPaths = buildSet {
@@ -391,56 +423,23 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         val opfUnits = if (opfMetadata.isEmpty()) emptyList() else units.filter { it.tag == opfPath }
         val navUnits = navDocumentPath?.let { path -> units.filter { it.tag == path } } ?: emptyList()
         val ncxUnits = ncxDocumentPath?.let { path -> units.filter { it.tag == path } } ?: emptyList()
-        if (byDocument.isEmpty() && opfUnits.isEmpty() && navUnits.isEmpty() && ncxUnits.isEmpty()) {
+        val keepsVerticalWriting = preservesVerticalWriting(options.targetLanguage)
+        val explicitHorizontalTarget = options.targetLanguage.isNotBlank() && !keepsVerticalWriting
+        if (byDocument.isEmpty() && opfUnits.isEmpty() && navUnits.isEmpty() &&
+            ncxUnits.isEmpty() && !explicitHorizontalTarget
+        ) {
             return original
         }
         val output = LinkedHashMap<String, ZipMember>(archive)
         var changed = false
+        val titleUpdates = LinkedHashMap<String, String>()
         for ((documentPath, documentUnits) in byDocument) {
             val member = archive[documentPath] ?: continue
             if (member.bytes.size > ContainerLimits.MAX_TEXT_ENTRY_BYTES) continue
             val text = decodeUtf8OrNull(member.bytes) ?: continue
-            val textNodes = XhtmlTextScanner.scan(text).associateBy {
-                ScannedNodeKey(it.start, it.end, it.kind)
-            }
-            val replacements = ArrayList<TextReplacement>()
-            val claimed = HashSet<Int>()
-            for (unit in documentUnits) {
-                val extra = parseJsonObject(unit.extraField) ?: continue
-                val start = extraInt(extra, "start") ?: continue
-                val end = extraInt(extra, "end") ?: continue
-                if (start < 0 || end <= start || end > text.length) continue
-                if (start in claimed) continue
-                val kind = ScannedNodeKind.fromExtra(extraString(extra, "kind"))
-                    ?: continue
-                val node = textNodes[ScannedNodeKey(start, end, kind)] ?: continue
-                if (extraString(extra, "digest") != containerSha256Hex(node.raw)) continue
-                val target = effectiveTarget(unit, options) ?: continue
-                claimed.add(start)
-                val canonicalSource = normalizeInlineWhitespace(node.text)
-                val replacement = if (options.bilingual) canonicalSource + "\n" + target else target
-                val encoded = if (kind == ScannedNodeKind.ATTRIBUTE) {
-                    escapeXmlAttribute(replacement)
-                } else {
-                    escapeXmlText(replacement)
-                }
-                replacements.add(TextReplacement(start, end, encoded))
-            }
-            if (replacements.isEmpty()) continue
-            replacements.sortBy { it.start }
-            var cursor = 0
-            val accepted = ArrayList<TextReplacement>(replacements.size)
-            for (replacement in replacements) {
-                if (replacement.start < cursor) continue
-                accepted.add(replacement)
-                cursor = replacement.end
-            }
-            if (accepted.isEmpty()) continue
-            val builder = StringBuilder(text)
-            for (replacement in accepted.asReversed()) {
-                builder.replace(replacement.start, replacement.end, replacement.text)
-            }
-            val encoded = encodeUtf8(builder.toString())
+            val replacements = bodyReplacements(text, documentUnits, options)
+            val updated = applyReplacements(text, replacements) ?: continue
+            val encoded = encodeUtf8(updated)
             if (!encoded.contentEquals(member.bytes)) {
                 output[documentPath] = member.withBytes(encoded)
                 changed = true
@@ -449,8 +448,15 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         if (navDocumentPath != null && navUnits.isNotEmpty()) {
             val member = archive[navDocumentPath]
             if (member != null && !member.directory) {
-                val encoded = writeNavigationDocument(member, navUnits) { text ->
-                    scanNavigationSlots(text)
+                // A nav document that is also linear spine content needs both its ordinary body
+                // text and its <nav> labels applied to the same original offsets in one splice.
+                // Writing one set first would shift every later locator in the same member.
+                val encoded = if (navDocumentPath == navBodyPath) {
+                    writeNavigationBodyDocument(member, navUnits, options)
+                } else {
+                    writeNavigationDocument(member, navUnits) { text ->
+                        scanNavigationSlots(text)
+                    }
                 }
                 if (encoded != null && encoded.size <= ContainerLimits.MAX_TEXT_ENTRY_BYTES &&
                     !encoded.contentEquals(member.bytes)
@@ -515,6 +521,12 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                         if (escaped.isBlank()) continue
                         if (!claimed.add(start)) continue
                         replacements.add(TextReplacement(start, end, escaped))
+                        if (kind == OpfMetadataKind.TITLE) {
+                            // The exact old title value is the only head <title> text that may be
+                            // synchronized; a chapter heading that merely resembles the book
+                            // title must stay untouched.
+                            titleUpdates.putIfAbsent(slot.normalizedText, target)
+                        }
                     }
                     if (replacements.isNotEmpty()) {
                         replacements.sortBy { it.start }
@@ -542,8 +554,186 @@ class EpubFormatAdapter : BinaryFormatAdapter {
                 }
             }
         }
+        // Direction cleanup is an export projection of translated content. An untouched project
+        // (all paragraphs still NONE) keeps the source layout byte-identical unless the caller
+        // explicitly supplied a non-Japanese/non-Chinese target language.
+        val cleanWritingDirection = (changed || options.targetLanguage.isNotBlank()) &&
+            !keepsVerticalWriting
+        if (cleanWritingDirection) {
+            val opfMember = output[opfPath] ?: archive[opfPath]
+            if (opfMember != null && !opfMember.directory &&
+                opfMember.bytes.size <= ContainerLimits.MAX_TEXT_ENTRY_BYTES
+            ) {
+                val text = decodeUtf8OrNull(opfMember.bytes)
+                val cleaned = text?.let { PageProgressionSanitizer.removeRtl(it) }
+                if (cleaned != null) {
+                    val encoded = encodeUtf8(cleaned)
+                    if (encoded.size <= ContainerLimits.MAX_TEXT_ENTRY_BYTES &&
+                        !encoded.contentEquals(opfMember.bytes)
+                    ) {
+                        output[opfPath] = opfMember.withBytes(encoded)
+                        changed = true
+                    }
+                }
+            }
+        }
+        val spineHtmlPaths = packageInfo.spinePaths
+            .asSequence()
+            .filter(::isHtmlDocumentPath)
+            .toCollection(LinkedHashSet<String>())
+        val xhtmlPaths = LinkedHashSet(spineHtmlPaths)
+        navDocumentPath?.let(xhtmlPaths::add)
+        for (documentPath in xhtmlPaths) {
+            val member = output[documentPath] ?: archive[documentPath] ?: continue
+            if (member.directory || member.bytes.size > ContainerLimits.MAX_TEXT_ENTRY_BYTES) continue
+            val text = decodeUtf8OrNull(member.bytes) ?: continue
+            var updated = text
+            if (cleanWritingDirection) {
+                XhtmlWritingDirectionSanitizer.sanitize(updated)?.let { updated = it }
+            }
+            if (documentPath in spineHtmlPaths && titleUpdates.isNotEmpty()) {
+                syncHeadTitles(updated, titleUpdates)?.let { updated = it }
+            }
+            if (updated == text) continue
+            val encoded = encodeUtf8(updated)
+            if (encoded.size <= ContainerLimits.MAX_TEXT_ENTRY_BYTES &&
+                !encoded.contentEquals(member.bytes)
+            ) {
+                output[documentPath] = member.withBytes(encoded)
+                changed = true
+            }
+        }
+        if (cleanWritingDirection) {
+            for (cssPath in archive.keys.filter { it.lowercase().endsWith(".css") }) {
+                val member = output[cssPath] ?: archive[cssPath] ?: continue
+                if (member.directory || member.bytes.size > ContainerLimits.MAX_TEXT_ENTRY_BYTES) continue
+                val text = decodeUtf8OrNull(member.bytes) ?: continue
+                val cleaned = CssWritingModeSanitizer.sanitize(text) ?: continue
+                val encoded = encodeUtf8(cleaned)
+                if (encoded.size <= ContainerLimits.MAX_TEXT_ENTRY_BYTES &&
+                    !encoded.contentEquals(member.bytes)
+                ) {
+                    output[cssPath] = member.withBytes(encoded)
+                    changed = true
+                }
+            }
+        }
         if (!changed) return original
         return ZipContainer.write(output, firstEntry = "mimetype", forcedStored = setOf("mimetype"))
+    }
+
+    /**
+     * Chapter head titles are book titles only when they exactly repeat the old OPF dc:title.
+     * Any other head title is a chapter/section label and is deliberately left byte-identical.
+     */
+    private fun syncHeadTitles(text: String, updates: Map<String, String>): String? {
+        val replacements = ArrayList<TextReplacement>()
+        for (node in HeadTitleScanner.find(text)) {
+            val target = updates[node.text] ?: continue
+            val escaped = escapeXmlText(target)
+            if (escaped.isBlank() || escaped == node.raw) continue
+            replacements.add(TextReplacement(node.start, node.end, escaped))
+        }
+        if (replacements.isEmpty()) return null
+        val builder = StringBuilder(text)
+        for (replacement in replacements.asReversed()) {
+            builder.replace(replacement.start, replacement.end, replacement.text)
+        }
+        return builder.toString()
+    }
+
+    /**
+     * Japanese and Chinese targets keep the source's vertical writing and RTL page progression.
+     * Everything else clears only explicit RTL/vertical markers; unknown or blank target language
+     * is treated as a horizontal target because no CJK reading direction can be assumed.
+     */
+    private fun preservesVerticalWriting(targetLanguage: String): Boolean {
+        val normalized = targetLanguage.trim().lowercase()
+        if (normalized.isEmpty()) return false
+        val primary = normalized.substringBefore('-').substringBefore('_')
+        if (primary in setOf("ja", "jp", "jpn", "zh", "zho", "chi", "cmn", "yue")) return true
+        return normalized.startsWith("japanese") || normalized.startsWith("chinese") ||
+            normalized.contains("中文") || normalized.contains("日文") ||
+            normalized.contains("日本語") || normalized.contains("汉语") ||
+            normalized.contains("漢語")
+    }
+
+    /** Apply ordinary spine-text locators, optionally excluding a nav document's landmarks. */
+    private fun bodyReplacements(
+        text: String,
+        documentUnits: List<FormatUnit>,
+        options: FormatWriteOptions,
+        skipNavigation: Boolean = false,
+    ): List<TextReplacement> {
+        val textNodes = XhtmlTextScanner.scan(text,
+            skipNavigationSubtrees = skipNavigation).associateBy {
+            ScannedNodeKey(it.start, it.end, it.kind)
+        }
+        val replacements = ArrayList<TextReplacement>()
+        val claimed = HashSet<Int>()
+        for (unit in documentUnits) {
+            val extra = parseJsonObject(unit.extraField) ?: continue
+            val start = extraInt(extra, "start") ?: continue
+            val end = extraInt(extra, "end") ?: continue
+            if (start < 0 || end <= start || end > text.length) continue
+            if (start in claimed) continue
+            val kind = ScannedNodeKind.fromExtra(extraString(extra, "kind")) ?: continue
+            val node = textNodes[ScannedNodeKey(start, end, kind)] ?: continue
+            if (extraString(extra, "digest") != containerSha256Hex(node.raw)) continue
+            val target = effectiveTarget(unit, options) ?: continue
+            claimed.add(start)
+            val canonicalSource = normalizeInlineWhitespace(node.text)
+            val replacement = if (options.bilingual) canonicalSource + "\n" + target else target
+            val encoded = if (kind == ScannedNodeKind.ATTRIBUTE) {
+                escapeXmlAttribute(replacement)
+            } else {
+                escapeXmlText(replacement)
+            }
+            replacements.add(TextReplacement(start, end, encoded))
+        }
+        return replacements
+    }
+
+    /** Sort, drop overlaps and splice accepted ranges into a fresh string. */
+    private fun applyReplacements(text: String, replacements: List<TextReplacement>): String? {
+        if (replacements.isEmpty()) return null
+        val sorted = replacements.sortedBy { it.start }
+        var cursor = 0
+        val accepted = ArrayList<TextReplacement>(sorted.size)
+        for (replacement in sorted) {
+            if (replacement.start < cursor) continue
+            accepted.add(replacement)
+            cursor = replacement.end
+        }
+        if (accepted.isEmpty()) return null
+        val builder = StringBuilder(text)
+        for (replacement in accepted.asReversed()) {
+            builder.replace(replacement.start, replacement.end, replacement.text)
+        }
+        return builder.toString()
+    }
+
+    /**
+     * Combined write for a nav document that is also linear spine content. Both sets of locators
+     * are resolved against the original member and spliced once, because applying the nav labels
+     * first would invalidate the ordinary body offsets (and vice versa). The body scan excludes
+     * `<nav>` landmarks and the nav scan is restricted to them, so no range can be claimed twice.
+     */
+    private fun writeNavigationBodyDocument(
+        member: ZipMember,
+        units: List<FormatUnit>,
+        options: FormatWriteOptions,
+    ): ByteArray? {
+        if (units.isEmpty()) return null
+        if (member.bytes.size > ContainerLimits.MAX_TEXT_ENTRY_BYTES) return null
+        val text = decodeUtf8OrNull(member.bytes) ?: return null
+        val replacements = ArrayList<TextReplacement>()
+        replacements.addAll(bodyReplacements(text, units, options, skipNavigation = true))
+        val navRanges = NavigationContentScanner.find(text)
+        replacements.addAll(navigationReplacements(text,
+            scanNavigationSlots(text, restrictTo = navRanges), units))
+        val updated = applyReplacements(text, replacements) ?: return null
+        return encodeUtf8(updated)
     }
 
     /** Decode one navigation member and splice only locators that still match the raw document. */
@@ -570,7 +760,17 @@ class EpubFormatAdapter : BinaryFormatAdapter {
         slots: List<ScannedTextNode>,
         units: List<FormatUnit>,
     ): ByteArray? {
-        if (slots.isEmpty()) return null
+        val updated = applyReplacements(text,
+            navigationReplacements(text, slots, units)) ?: return null
+        return encodeUtf8(updated)
+    }
+
+    private fun navigationReplacements(
+        text: String,
+        slots: List<ScannedTextNode>,
+        units: List<FormatUnit>,
+    ): List<TextReplacement> {
+        if (slots.isEmpty()) return emptyList()
         val byKey = HashMap<ScannedNodeKey, ScannedTextNode>(slots.size)
         for (slot in slots) byKey[ScannedNodeKey(slot.start, slot.end, slot.kind)] = slot
         val replacements = ArrayList<TextReplacement>()
@@ -600,21 +800,7 @@ class EpubFormatAdapter : BinaryFormatAdapter {
             if (escaped.isBlank()) continue
             replacements.add(TextReplacement(start, end, escaped))
         }
-        if (replacements.isEmpty()) return null
-        replacements.sortBy { it.start }
-        var cursor = 0
-        val accepted = ArrayList<TextReplacement>(replacements.size)
-        for (replacement in replacements) {
-            if (replacement.start < cursor) continue
-            accepted.add(replacement)
-            cursor = replacement.end
-        }
-        if (accepted.isEmpty()) return null
-        val builder = StringBuilder(text)
-        for (replacement in accepted.asReversed()) {
-            builder.replace(replacement.start, replacement.end, replacement.text)
-        }
-        return encodeUtf8(builder.toString())
+        return replacements
     }
 
     private fun navigationTarget(unit: FormatUnit): String? {
@@ -810,6 +996,432 @@ class EpubFormatAdapter : BinaryFormatAdapter {
 
     private fun safeWarningPath(value: String): String =
         if (value.length <= 4_096 && value.none(Char::isISOControl)) value else ""
+}
+
+/**
+ * Locates only `<head><title>` content slots. Body headings and section titles are not touched,
+ * and a title slot containing child markup is ignored rather than guessed at.
+ */
+private object HeadTitleScanner {
+    fun find(text: String): List<ScannedTextNode> {
+        val result = ArrayList<ScannedTextNode>()
+        var inHead = false
+        var index = 0
+        while (index < text.length) {
+            val open = text.indexOf('<', index)
+            if (open < 0) break
+            when {
+                text.startsWith("<!--", open) -> {
+                    val close = text.indexOf("-->", open + 4)
+                    index = if (close < 0) text.length else close + 3
+                }
+                text.startsWith("<![CDATA[", open) -> {
+                    val close = text.indexOf("]]>", open + 9)
+                    index = if (close < 0) text.length else close + 3
+                }
+                text.startsWith("<?", open) -> {
+                    val close = text.indexOf("?>", open + 2)
+                    index = if (close < 0) text.length else close + 2
+                }
+                text.startsWith("<!", open) -> index = XhtmlTextScanner.declarationEnd(text, open)
+                text.startsWith("</", open) -> {
+                    val close = text.indexOf('>', open + 2)
+                    if (close < 0) break
+                    val name = XhtmlTextScanner.closingName(text.substring(open + 2, close))
+                    if (name == "head") inHead = false
+                    index = close + 1
+                }
+                else -> {
+                    val close = XhtmlTextScanner.tagEnd(text, open + 1)
+                    if (close < 0) break
+                    val inside = text.substring(open + 1, close)
+                    val selfClosing = inside.trimEnd().endsWith('/')
+                    val name = XhtmlTextScanner.startName(inside)
+                    if (!selfClosing && (name == "script" || name == "style")) {
+                        val closing = text.indexOf("</$name", close + 1, ignoreCase = true)
+                        if (closing < 0) break
+                        val closingEnd = text.indexOf('>', closing + 2 + name.length)
+                        if (closingEnd < 0) break
+                        index = closingEnd + 1
+                        continue
+                    }
+                    if (name == "body") inHead = false
+                    if (inHead && name == "title" && !selfClosing) {
+                        val contentStart = close + 1
+                        val next = text.indexOf('<', contentStart)
+                        if (next < 0) break
+                        val titleClose = text.indexOf('>', next + 2)
+                        if (titleClose < 0) break
+                        val closesTitle = text.startsWith("</", next) &&
+                            XhtmlTextScanner.closingName(text.substring(next + 2, titleClose)) == "title"
+                        if (closesTitle) {
+                            val raw = text.substring(contentStart, next)
+                            if ('<' !in raw) {
+                                val decoded = XhtmlTextScanner.decodeText(raw)
+                                if (decoded != null) {
+                                    result.add(ScannedTextNode(contentStart, next, raw, decoded,
+                                        ScannedNodeKind.TEXT))
+                                }
+                            }
+                            index = titleClose + 1
+                            continue
+                        }
+                    }
+                    if (name == "head" && !selfClosing) inHead = true
+                    index = close + 1
+                }
+            }
+        }
+        return result
+    }
+}
+
+/** Content ranges of `<nav>` landmarks, used to keep nav labels out of spine body extraction. */
+private object NavigationContentScanner {
+    fun find(text: String): List<IntRange> {
+        val result = ArrayList<IntRange>()
+        var index = 0
+        while (index < text.length) {
+            val open = text.indexOf('<', index)
+            if (open < 0) break
+            when {
+                text.startsWith("<!--", open) -> {
+                    val close = text.indexOf("-->", open + 4)
+                    index = if (close < 0) text.length else close + 3
+                }
+                text.startsWith("<![CDATA[", open) -> {
+                    val close = text.indexOf("]]>", open + 9)
+                    index = if (close < 0) text.length else close + 3
+                }
+                text.startsWith("<?", open) -> {
+                    val close = text.indexOf("?>", open + 2)
+                    index = if (close < 0) text.length else close + 2
+                }
+                text.startsWith("<!", open) -> index = XhtmlTextScanner.declarationEnd(text, open)
+                text.startsWith("</", open) -> {
+                    val close = text.indexOf('>', open + 2)
+                    if (close < 0) break
+                    index = close + 1
+                }
+                else -> {
+                    val close = XhtmlTextScanner.tagEnd(text, open + 1)
+                    if (close < 0) break
+                    val inside = text.substring(open + 1, close)
+                    val selfClosing = inside.trimEnd().endsWith('/')
+                    val name = XhtmlTextScanner.startName(inside)
+                    if (name != "nav" || selfClosing) {
+                        index = close + 1
+                        continue
+                    }
+                    val contentStart = close + 1
+                    var depth = 1
+                    var cursor = contentStart
+                    var contentEnd = -1
+                    var after = text.length
+                    navSearch@ while (cursor < text.length) {
+                        val nested = text.indexOf('<', cursor)
+                        if (nested < 0) break
+                        when {
+                            text.startsWith("<!--", nested) -> {
+                                val commentEnd = text.indexOf("-->", nested + 4)
+                                cursor = if (commentEnd < 0) text.length else commentEnd + 3
+                            }
+                            text.startsWith("<![CDATA[", nested) -> {
+                                val cdataEnd = text.indexOf("]]>", nested + 9)
+                                cursor = if (cdataEnd < 0) text.length else cdataEnd + 3
+                            }
+                            text.startsWith("<?", nested) -> {
+                                val piEnd = text.indexOf("?>", nested + 2)
+                                cursor = if (piEnd < 0) text.length else piEnd + 2
+                            }
+                            text.startsWith("<!", nested) ->
+                                cursor = XhtmlTextScanner.declarationEnd(text, nested)
+                            text.startsWith("</", nested) -> {
+                                val closingEnd = text.indexOf('>', nested + 2)
+                                if (closingEnd < 0) break@navSearch
+                                val closing = XhtmlTextScanner.closingName(
+                                    text.substring(nested + 2, closingEnd))
+                                if (closing == "nav") {
+                                    depth -= 1
+                                    if (depth == 0) {
+                                        contentEnd = nested
+                                        after = closingEnd + 1
+                                        break@navSearch
+                                    }
+                                }
+                                cursor = closingEnd + 1
+                            }
+                            else -> {
+                                val nestedEnd = XhtmlTextScanner.tagEnd(text, nested + 1)
+                                if (nestedEnd < 0) break@navSearch
+                                val nestedInside = text.substring(nested + 1, nestedEnd)
+                                val nestedSelfClosing = nestedInside.trimEnd().endsWith('/')
+                                if (!nestedSelfClosing &&
+                                    XhtmlTextScanner.startName(nestedInside) == "nav"
+                                ) {
+                                    depth += 1
+                                }
+                                cursor = nestedEnd + 1
+                            }
+                        }
+                    }
+                    if (contentEnd < 0) {
+                        result.add(contentStart until text.length)
+                        break
+                    }
+                    result.add(contentStart until contentEnd)
+                    index = after
+                }
+            }
+        }
+        return result
+    }
+}
+
+/** Removes only the explicit RTL page progression attribute from the OPF spine start tag. */
+private object PageProgressionSanitizer {
+    private val RTL_PROGRESSION = Regex(
+        """(?i)(<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?spine\b[^>]*?)\s+page-progression-direction\s*=\s*(?:"rtl"|'rtl'|rtl(?=[\s/>]))""",
+    )
+
+    fun removeRtl(text: String): String? {
+        val cleaned = RTL_PROGRESSION.replace(text, "$1")
+        return if (cleaned != text) cleaned else null
+    }
+}
+
+/**
+ * Removes explicit vertical-writing markers from XHTML. Only `<style>` bodies and `style`/`class`
+ * attribute values are edited; text, ordinary CSS declarations and chapter markup stay literal.
+ */
+private object XhtmlWritingDirectionSanitizer {
+    private val STYLE_ATTRIBUTE = Regex("""(?i)(\sstyle\s*=\s*)(["'])([\s\S]*?)\2""")
+    private val CLASS_ATTRIBUTE = Regex("""(?i)(\sclass\s*=\s*)(["'])([\s\S]*?)\2""")
+
+    fun sanitize(text: String): String? {
+        var changed = false
+        val output = StringBuilder(text.length)
+        var index = 0
+        while (index < text.length) {
+            val open = text.indexOf('<', index)
+            if (open < 0) {
+                output.append(text, index, text.length)
+                break
+            }
+            output.append(text, index, open)
+            when {
+                text.startsWith("<!--", open) -> {
+                    val close = text.indexOf("-->", open + 4)
+                    val end = if (close < 0) text.length else close + 3
+                    output.append(text, open, end)
+                    index = end
+                }
+                text.startsWith("<![CDATA[", open) -> {
+                    val close = text.indexOf("]]>", open + 9)
+                    val end = if (close < 0) text.length else close + 3
+                    output.append(text, open, end)
+                    index = end
+                }
+                text.startsWith("<?", open) -> {
+                    val close = text.indexOf("?>", open + 2)
+                    val end = if (close < 0) text.length else close + 2
+                    output.append(text, open, end)
+                    index = end
+                }
+                text.startsWith("<!", open) -> {
+                    val end = XhtmlTextScanner.declarationEnd(text, open)
+                    output.append(text, open, end)
+                    index = end
+                }
+                text.startsWith("</", open) -> {
+                    val close = text.indexOf('>', open + 2)
+                    if (close < 0) {
+                        output.append(text, open, text.length)
+                        break
+                    }
+                    output.append(text, open, close + 1)
+                    index = close + 1
+                }
+                else -> {
+                    val close = XhtmlTextScanner.tagEnd(text, open + 1)
+                    if (close < 0) {
+                        output.append(text, open, text.length)
+                        break
+                    }
+                    val rawTag = text.substring(open, close + 1)
+                    val cleanedTag = cleanTag(rawTag)
+                    if (cleanedTag != null) {
+                        output.append(cleanedTag)
+                        changed = true
+                    } else {
+                        output.append(rawTag)
+                    }
+                    val inside = text.substring(open + 1, close)
+                    val selfClosing = inside.trimEnd().endsWith('/')
+                    val name = XhtmlTextScanner.startName(inside)
+                    index = close + 1
+                    if (!selfClosing && (name == "style" || name == "script")) {
+                        val closing = text.indexOf("</$name", index, ignoreCase = true)
+                        if (closing >= 0) {
+                            if (name == "style") {
+                                val content = text.substring(index, closing)
+                                val cleanedCss = CssWritingModeSanitizer.sanitize(content)
+                                if (cleanedCss != null) {
+                                    output.append(cleanedCss)
+                                    changed = true
+                                } else {
+                                    output.append(content)
+                                }
+                            } else {
+                                output.append(text, index, closing)
+                            }
+                            index = closing
+                        }
+                    }
+                }
+            }
+        }
+        return if (changed) output.toString() else null
+    }
+
+    private fun cleanTag(tag: String): String? {
+        val styled = STYLE_ATTRIBUTE.replace(tag) { match ->
+            val value = match.groupValues[3]
+            val cleaned = CssWritingModeSanitizer.sanitize(value)
+            if (cleaned == null) {
+                match.value
+            } else {
+                match.groupValues[1] + match.groupValues[2] + cleaned + match.groupValues[2]
+            }
+        }
+        val cleanedTag = CLASS_ATTRIBUTE.replace(styled) { match ->
+            val value = match.groupValues[3]
+            val tokens = value.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            val kept = tokens.filter { it != "vrtl" && it != "hrtl" }
+            when {
+                kept.size == tokens.size -> match.value
+                kept.isEmpty() -> ""
+                else -> match.groupValues[1] + match.groupValues[2] +
+                    kept.joinToString(" ") + match.groupValues[2]
+            }
+        }
+        return if (cleanedTag != tag) cleanedTag else null
+    }
+}
+
+/**
+ * Neutralizes only explicit vertical-writing declarations and `vrtl`/`hrtl` class selectors.
+ * Comments and strings are copied verbatim so ordinary CSS is not rewritten.
+ */
+private object CssWritingModeSanitizer {
+    private const val WRITING_MODE = "writing-mode"
+    private const val VERTICAL_RL = "vertical-rl"
+    private const val HORIZONTAL_TB = "horizontal-tb"
+    private val WRITING_MODE_NAMES = listOf(
+        "-epub-writing-mode", "-webkit-writing-mode", "-moz-writing-mode", "-ms-writing-mode",
+        WRITING_MODE,
+    )
+
+    fun sanitize(css: String): String? {
+        var changed = false
+        val output = StringBuilder(css.length)
+        var index = 0
+        while (index < css.length) {
+            val character = css[index]
+            if (character == '/' && css.getOrNull(index + 1) == '*') {
+                val close = css.indexOf("*/", index + 2)
+                val end = if (close < 0) css.length else close + 2
+                output.append(css, index, end)
+                index = end
+                continue
+            }
+            if (character == '"' || character == '\'') {
+                val end = stringEnd(css, index)
+                output.append(css, index, end)
+                index = end
+                continue
+            }
+            val propertyEnd = writingModePropertyEnd(css, index)
+            if (propertyEnd != null) {
+                val valueStart = writingModeValueStart(css, propertyEnd)
+                if (valueStart != null &&
+                    css.regionMatches(valueStart, VERTICAL_RL, 0, VERTICAL_RL.length, true)
+                ) {
+                    val valueEnd = valueStart + VERTICAL_RL.length
+                    if (valueEnd >= css.length || !isCssNameChar(css[valueEnd])) {
+                        output.append(css, index, valueStart)
+                        output.append(HORIZONTAL_TB)
+                        index = valueEnd
+                        changed = true
+                        continue
+                    }
+                }
+            }
+            if (character == '.' && (index == 0 ||
+                    (css[index - 1] != '.' && css[index - 1] != '\\'))
+            ) {
+                if (matchesClass(css, index, "vrtl")) {
+                    output.append(".__lnt_vertical_disabled")
+                    index += 5
+                    changed = true
+                    continue
+                }
+                if (matchesClass(css, index, "hrtl")) {
+                    output.append(".__lnt_horizontal_disabled")
+                    index += 5
+                    changed = true
+                    continue
+                }
+            }
+            output.append(character)
+            index += 1
+        }
+        return if (changed) output.toString() else null
+    }
+
+    private fun writingModePropertyEnd(css: String, index: Int): Int? {
+        if (index > 0 && isCssNameChar(css[index - 1])) return null
+        for (name in WRITING_MODE_NAMES) {
+            if (!css.regionMatches(index, name, 0, name.length, true)) continue
+            val after = index + name.length
+            if (after >= css.length || !isCssNameChar(css[after])) return after
+        }
+        return null
+    }
+
+    private fun writingModeValueStart(css: String, propertyEnd: Int): Int? {
+        var cursor = propertyEnd
+        while (cursor < css.length && css[cursor].isWhitespace()) cursor += 1
+        if (cursor >= css.length || css[cursor] != ':') return null
+        cursor += 1
+        while (cursor < css.length && css[cursor].isWhitespace()) cursor += 1
+        return cursor
+    }
+
+    private fun matchesClass(css: String, index: Int, name: String): Boolean {
+        val nameStart = index + 1
+        if (nameStart + name.length > css.length) return false
+        if (!css.regionMatches(nameStart, name, 0, name.length, false)) return false
+        val after = nameStart + name.length
+        return after >= css.length || !isCssNameChar(css[after])
+    }
+
+    private fun stringEnd(css: String, start: Int): Int {
+        val quote = css[start]
+        var index = start + 1
+        while (index < css.length) {
+            if (css[index] == '\\' && index + 1 < css.length) {
+                index += 2
+                continue
+            }
+            if (css[index] == quote) return index + 1
+            index += 1
+        }
+        return css.length
+    }
+
+    private fun isCssNameChar(character: Char): Boolean =
+        character.isLetterOrDigit() || character == '_' || character == '-'
 }
 
 /** Exact OPF metadata slot: offsets into the decoded OPF string, normalized source and raw digest. */
@@ -1089,12 +1701,19 @@ private object XhtmlTextScanner {
         "head", "script", "style", "code", "pre", "kbd", "samp", "var", "noscript",
         "rt", "rp", "rtc", "svg", "math",
     )
+    private val SKIP_SUBTREES_INCLUDING_NAVIGATION = SKIP_SUBTREES + "nav"
 
     fun scan(
         text: String,
         tolerantEntities: Boolean = false,
         onUnknownEntity: (() -> Unit)? = null,
+        skipNavigationSubtrees: Boolean = false,
     ): List<ScannedTextNode> {
+        val skipSubtrees = if (skipNavigationSubtrees) {
+            SKIP_SUBTREES_INCLUDING_NAVIGATION
+        } else {
+            SKIP_SUBTREES
+        }
         val result = ArrayList<ScannedTextNode>()
         val stack = ArrayList<String>()
         var skipDepth = -1
@@ -1168,12 +1787,12 @@ private object XhtmlTextScanner {
                     val inside = text.substring(index + 1, close)
                     val selfClosing = inside.trimEnd().endsWith('/')
                     val name = startTagName(inside)
-                    if (name.isNotEmpty() && skipDepth < 0 && name !in SKIP_SUBTREES) {
+                    if (name.isNotEmpty() && skipDepth < 0 && name !in skipSubtrees) {
                         scanAttributes(text, index, close, result, onUnknownEntity)
                     }
                     if (name.isNotEmpty() && !selfClosing) {
                         stack.add(name)
-                        if (skipDepth < 0 && name in SKIP_SUBTREES) skipDepth = stack.size
+                        if (skipDepth < 0 && name in skipSubtrees) skipDepth = stack.size
                         if (name == "script" || name == "style") rawSkip = name
                     }
                     index = close + 1

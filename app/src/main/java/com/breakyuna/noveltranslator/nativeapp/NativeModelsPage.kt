@@ -29,7 +29,9 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /**
  * U10 model directory. Configuration and credentials still go through the
- * profile port; this page never starts a probe or a paid request by itself.
+ * profile port; cached catalogs load on open, while metadata or generation
+ * probes run only from explicit buttons and the generation probe requires a
+ * confirmation dialog. This page never starts a paid request by itself.
  */
 @Composable
 internal fun NativeModelsPage(
@@ -54,6 +56,11 @@ internal fun NativeModelsPage(
             profile = editing,
             busy = state.busy,
             keys = state.modelProfileKeys,
+            catalog = state.modelCatalog,
+            catalogActions = state.modelCatalogActions,
+            oauth = state.oauth,
+            oauthActions = state.oauthActions,
+            runActive = state.foregroundExecutionActive,
             loadKeys = loadKeys,
             setKeyEnabled = setKeyEnabled,
             dismiss = { if (!state.busy) { creating = false; editing = null } },
@@ -267,6 +274,11 @@ private fun NativeModelProfileEditor(
     profile: NativeModelProfile?,
     busy: Boolean,
     keys: List<ModelProfileKeyState>,
+    catalog: NativeModelCatalogUiState,
+    catalogActions: NativeModelCatalogActions,
+    oauth: NativeOAuthUiState,
+    oauthActions: NativeOAuthActions,
+    runActive: Boolean,
     loadKeys: (String) -> Unit,
     setKeyEnabled: (String, String, Boolean) -> Unit,
     dismiss: () -> Unit,
@@ -305,10 +317,25 @@ private fun NativeModelProfileEditor(
     var invalid by remember { mutableStateOf(false) }
     var protocolMenu by remember { mutableStateOf(false) }
     var purposeMenu by remember { mutableStateOf(false) }
+    var descriptorPicker by remember { mutableStateOf(false) }
+    var authModeName by rememberSaveable(profile?.id) {
+        mutableStateOf(NativeOAuthMode.API_KEY.name)
+    }
+    val authMode = runCatching { NativeOAuthMode.valueOf(authModeName) }
+        .getOrDefault(NativeOAuthMode.API_KEY)
+    LaunchedEffect(profile?.id, oauth.profileId, oauth.fingerprint) {
+        if (profile != null && oauth.profileId == profile.id) {
+            authModeName = if (oauth.configured) NativeOAuthMode.OAUTH.name else NativeOAuthMode.API_KEY.name
+        }
+    }
     val purpose = runCatching { ModelProfilePurpose.valueOf(purposeName) }.getOrDefault(ModelProfilePurpose.BOTH)
     val protocol = runCatching { NativeModelProtocol.valueOf(protocolName) }
         .getOrDefault(NativeModelProtocol.OPENAI_CHAT_COMPLETIONS)
-    LaunchedEffect(profile?.id) { profile?.let { loadKeys(it.id) } }
+    val visibleCatalog = catalog.takeIf { it.profileId == profile?.id } ?: NativeModelCatalogUiState(
+        profileId = profile?.id)
+    LaunchedEffect(profile?.id) {
+        profile?.let { loadKeys(it.id) }
+    }
     fun submit() {
         try {
             val limits = ModelProfileLimits(concurrency.trim().toInt(), rpm.trim().toInt())
@@ -404,6 +431,14 @@ private fun NativeModelProfileEditor(
                                 }
                             }
                         }
+                        NativeOAuthSection(
+                            profile = profile,
+                            oauth = oauth,
+                            actions = oauthActions,
+                            enabled = !busy && !runActive,
+                            mode = authMode,
+                            onModeChange = { authModeName = it.name },
+                        )
                         OutlinedTextField(secret, { secret = it; invalid = false },
                             label = { Text(stringResource(if (profile == null) R.string.native_model_keys else R.string.native_model_keys_keep)) },
                             minLines = 2, maxLines = 4, visualTransformation = PasswordVisualTransformation(),
@@ -412,6 +447,14 @@ private fun NativeModelProfileEditor(
                         OutlinedTextField(model, { model = it.take(200); invalid = false },
                             label = { Text(stringResource(R.string.native_model_name)) }, singleLine = true,
                             modifier = Modifier.fillMaxWidth().testTag("native-model-profile-model"))
+                        ModelCatalogPanel(
+                            profile = profile,
+                            model = model,
+                            catalog = visibleCatalog,
+                            busy = busy,
+                            actions = catalogActions,
+                            choose = { descriptorPicker = true },
+                        )
                         Text(stringResource(R.string.native_model_profile_limits), style = MaterialTheme.typography.titleSmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(concurrency, { concurrency = it.take(2) },
@@ -484,6 +527,259 @@ private fun NativeModelProfileEditor(
                 }
             }
         }
+    }
+    if (descriptorPicker && profile != null) {
+        NativeCatalogPicker(
+            descriptors = visibleCatalog.descriptors,
+            current = model,
+            select = { model = it; invalid = false; descriptorPicker = false },
+            dismiss = { descriptorPicker = false },
+        )
+    }
+    if (profile != null && visibleCatalog.generationConfirmation) {
+        val hint = visibleCatalog.billing
+        AlertDialog(
+            onDismissRequest = { if (!busy) catalogActions.dismissConfirmation() },
+            title = { Text(stringResource(R.string.native_model_probe_confirm_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (hint?.priced == true) stringResource(
+                        R.string.native_model_probe_billing_known,
+                        hint?.currency.orEmpty(), hint?.outputPricePerMillion.orEmpty(),
+                        NATIVE_MODEL_PROBE_MAX_OUTPUT_TOKENS)
+                    else stringResource(R.string.native_model_probe_billing_unknown,
+                        NATIVE_MODEL_PROBE_MAX_OUTPUT_TOKENS))
+                    Text(stringResource(R.string.native_model_probe_no_write), style = MaterialTheme.typography.bodySmall)
+                    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = { catalogActions.confirmGeneration(profile.id) },
+                    modifier = Modifier.testTag("native-model-probe-confirm")) {
+                    Text(stringResource(R.string.native_model_probe_confirm_action))
+                }
+            },
+            dismissButton = {
+                TextButton(enabled = !busy, onClick = catalogActions.dismissConfirmation) {
+                    Text(stringResource(R.string.native_cancel))
+                }
+            },
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ModelCatalogPanel(
+    profile: NativeModelProfile?,
+    model: String,
+    catalog: NativeModelCatalogUiState,
+    busy: Boolean,
+    actions: NativeModelCatalogActions,
+    choose: () -> Unit,
+) {
+    Text(stringResource(R.string.native_model_catalog_title), style = MaterialTheme.typography.titleSmall)
+    if (profile == null) {
+        Text(stringResource(R.string.native_model_catalog_profile_save_first),
+            style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    Text(
+        text = stringResource(when (catalog.source) {
+            NativeModelCatalogViewSource.LIVE -> R.string.native_model_catalog_source_live
+            NativeModelCatalogViewSource.CACHED -> R.string.native_model_catalog_source_cached
+            NativeModelCatalogViewSource.EMPTY_OVERRIDE -> R.string.native_model_catalog_source_empty
+            null -> R.string.native_model_catalog_source_none
+        }),
+        style = MaterialTheme.typography.bodySmall,
+        modifier = Modifier.testTag("native-model-catalog-source"),
+    )
+    catalog.fetchedAtMillis?.let { fetchedAt ->
+        Text(stringResource(R.string.native_model_catalog_last_success, catalogTime(fetchedAt)),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    if (catalog.descriptors.isNotEmpty()) {
+        Text(stringResource(R.string.native_model_catalog_models, catalog.descriptors.size),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    if (catalog.source != null && !catalog.persisted) {
+        Text(stringResource(R.string.native_model_catalog_not_saved),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    if (catalog.descriptors.isEmpty() && catalog.source != null) {
+        Text(stringResource(R.string.native_model_catalog_empty_hint),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    val selected = catalog.descriptor(model)
+    selected?.contextTokens?.let { tokens ->
+        Text(stringResource(R.string.native_model_catalog_context, formattedTokens(tokens)),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    selected?.outputTokens?.let { tokens ->
+        Text(stringResource(R.string.native_model_catalog_output, formattedTokens(tokens)),
+            style = MaterialTheme.typography.bodySmall)
+    }
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            enabled = !busy && !catalog.loading && !catalog.generationConfirmation,
+            onClick = { actions.refresh(profile.id) },
+            modifier = Modifier.testTag("native-model-catalog-refresh"),
+        ) { Text(stringResource(R.string.native_model_catalog_refresh)) }
+        OutlinedButton(
+            enabled = !busy && !catalog.loading && !catalog.generationConfirmation,
+            onClick = { actions.probeMetadata(profile.id) },
+            modifier = Modifier.testTag("native-model-catalog-metadata"),
+        ) { Text(stringResource(R.string.native_model_catalog_probe_metadata)) }
+        OutlinedButton(
+            enabled = !busy && !catalog.loading && !catalog.generationRunning &&
+                !catalog.generationConfirmation,
+            onClick = { actions.requestGeneration(profile.id) },
+            modifier = Modifier.testTag("native-model-catalog-generation"),
+        ) { Text(stringResource(R.string.native_model_catalog_probe_generation)) }
+    }
+    if (catalog.descriptors.isNotEmpty()) {
+        TextButton(enabled = !busy, onClick = choose,
+            modifier = Modifier.testTag("native-model-catalog-choose")) {
+            Text(stringResource(R.string.native_model_catalog_choose, catalog.descriptors.size))
+        }
+    }
+    if (catalog.loading || catalog.generationRunning) {
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+        Text(stringResource(if (catalog.generationRunning) R.string.native_model_probe_generation_wait
+        else R.string.native_model_catalog_loading), style = MaterialTheme.typography.bodySmall)
+    }
+    if (catalog.loading || catalog.generationRunning) {
+        TextButton(enabled = true, onClick = actions.cancel,
+            modifier = Modifier.testTag("native-model-catalog-cancel")) {
+            Text(stringResource(R.string.native_cancel))
+        }
+    }
+    catalog.error?.let { error ->
+        Text(stringResource(error), color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall)
+    }
+    catalog.metadataProbe?.let { ProbeResultText(it) }
+    catalog.generationProbe?.let { ProbeResultText(it) }
+}
+
+@Composable
+private fun ProbeResultText(result: NativeModelProbeUi) {
+    when (result) {
+        is NativeModelProbeUi.Metadata -> Text(
+            stringResource(R.string.native_model_probe_metadata_success,
+                result.modelCount, result.elapsedMillis),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        is NativeModelProbeUi.Generation -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(R.string.native_model_probe_generation_success,
+                result.outputChars, result.elapsedMillis),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
+            result.usage?.let { ProbeUsageText(it) }
+        }
+        is NativeModelProbeUi.Failure -> Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(stringResource(nativeProbeFailureLabel(result.kind)),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error)
+            result.retryAfterMillis?.let { delay ->
+                Text(stringResource(R.string.native_model_probe_retry_after,
+                    ((delay + 999) / 1000).coerceAtLeast(1)),
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        NativeModelProbeUi.Cancelled -> Text(stringResource(R.string.native_model_probe_cancelled),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+private fun ProbeUsageText(usage: RequestUsage) {
+    Text(stringResource(R.string.native_model_probe_usage,
+        probeTokenLabel(usage.input.tokens, usage.input.source),
+        probeTokenLabel(usage.output.tokens, usage.output.source)),
+        style = MaterialTheme.typography.bodySmall)
+}
+
+@Composable
+private fun probeTokenLabel(tokens: Long?, source: UsageSource): String {
+    if (tokens == null) return stringResource(R.string.native_model_probe_usage_unknown)
+    val number = formattedNumber(tokens)
+    return when (source) {
+        UsageSource.ACTUAL -> stringResource(R.string.native_model_probe_usage_actual, number)
+        UsageSource.ESTIMATED -> stringResource(R.string.native_model_probe_usage_estimated, number)
+        UsageSource.UNKNOWN -> stringResource(R.string.native_model_probe_usage_unknown)
+    }
+}
+
+@Composable
+private fun NativeCatalogPicker(
+    descriptors: List<ModelDescriptor>,
+    current: String,
+    select: (String) -> Unit,
+    dismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = dismiss,
+        title = { Text(stringResource(R.string.native_model_catalog_picker_title)) },
+        text = {
+            if (descriptors.isEmpty()) {
+                Text(stringResource(R.string.native_model_catalog_picker_empty))
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp).testTag("native-model-catalog-list")) {
+                    items(descriptors, key = { it.id }) { descriptor ->
+                        TextButton(
+                            onClick = { select(descriptor.id) },
+                            modifier = Modifier.fillMaxWidth().testTag("native-model-catalog-item-${descriptor.id}"),
+                        ) {
+                            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                                Text(descriptor.displayName,
+                                    color = if (descriptor.id == current) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface)
+                                if (descriptor.displayName != descriptor.id) {
+                                    Text(descriptor.id, style = MaterialTheme.typography.bodySmall)
+                                }
+                                val limits = listOfNotNull(
+                                    descriptor.contextTokens?.let {
+                                        stringResource(R.string.native_model_catalog_context, formattedTokens(it))
+                                    },
+                                    descriptor.outputTokens?.let {
+                                        stringResource(R.string.native_model_catalog_output, formattedTokens(it))
+                                    },
+                                )
+                                if (limits.isNotEmpty()) {
+                                    Text(limits.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) }
+        },
+    )
+}
+
+@Composable
+private fun catalogTime(millis: Long): String {
+    val locale = java.util.Locale.getDefault()
+    return remember(millis, locale) {
+        java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM,
+            java.text.DateFormat.SHORT, locale).format(java.util.Date(millis))
+    }
+}
+
+@Composable
+private fun formattedTokens(tokens: Int): String = formattedNumber(tokens.toLong())
+
+@Composable
+private fun formattedNumber(value: Long): String {
+    val locale = java.util.Locale.getDefault()
+    return remember(value, locale) {
+        java.text.NumberFormat.getIntegerInstance(locale).format(value)
     }
 }
 

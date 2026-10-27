@@ -90,6 +90,46 @@ class WorkspaceBudgetTest {
     }
 
     @Test
+    fun memoryLimitsAreConservativeAndValidated() {
+        val defaults = WorkspaceBudget()
+        assertEquals(128L * 1024 * 1024, defaults.maxResidentBytes)
+        assertEquals(256L * 1024 * 1024, defaults.maxPeakHeapBytes)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkspaceBudget(maxResidentBytes = 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkspaceBudget(maxPeakHeapBytes = 0)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            WorkspaceBudget(maxResidentBytes = 100, maxPeakHeapBytes = WorkspaceHardLimits.MAX_PEAK_HEAP_BYTES + 1)
+        }
+    }
+
+    @Test
+    fun memoryMeterRejectsResidentAndObservedPeakSamples() {
+        var sample = 40L
+        val meter = WorkspaceMemoryMeter(
+            WorkspaceBudget(maxResidentBytes = 100, maxPeakHeapBytes = 60),
+            WorkspaceMemorySampler { sample },
+        )
+        assertEquals(40L, meter.check())
+        sample = 70L
+        val peak = assertThrows(WorkspaceBudgetExceeded::class.java) { meter.check() }
+        assertEquals(WorkspaceBudgetKind.PEAK_HEAP_BYTES, peak.kind)
+        assertEquals(60L, peak.limit)
+        assertEquals(70L, peak.actual)
+        assertEquals(70L, meter.observedPeakBytes)
+
+        val resident = WorkspaceMemoryMeter(
+            WorkspaceBudget(maxResidentBytes = 32, maxPeakHeapBytes = 64),
+            WorkspaceMemorySampler { 64L },
+        )
+        val exceeded = assertThrows(WorkspaceBudgetExceeded::class.java) { resident.check() }
+        assertEquals(WorkspaceBudgetKind.RESIDENT_BYTES, exceeded.kind)
+    }
+
+    @Test
     fun scriptLimitsAreDerivedFromTheRunBudget() {
         val budget = WorkspaceBudget(
             maxOutputBytes = 2_048,

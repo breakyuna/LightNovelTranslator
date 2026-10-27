@@ -75,6 +75,10 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     val workspaceUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { workspace?.uploadUri?.invoke(it) }
     }
+    val attachmentPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) state.agentAttachmentActions?.add(uris)
+    }
     if (showWorkspace && workspace != null) NativeWorkspaceDialog(
         ref = ref, revision = state.project!!.revision, chatId = state.agentChatId,
         runId = state.agentRunId, actions = workspace,
@@ -442,6 +446,12 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                 color = MaterialTheme.colorScheme.primary,
                             )
                         }
+                        NativeAgentAttachmentList(
+                            attachments = state.agentAttachments,
+                            failures = state.agentAttachmentFailures,
+                            enabled = ready && !state.hasAgentApproval && !state.agentAttachmentBusy,
+                            actions = state.agentAttachmentActions,
+                        )
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -465,7 +475,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             }
                             TextButton(
                                 onClick = queueInput,
-                                enabled = ready && !state.hasAgentApproval && state.agentInput.isNotBlank(),
+                                enabled = ready && !state.hasAgentApproval &&
+                                    state.agentAttachments.isEmpty() && state.agentInput.isNotBlank(),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                 modifier = Modifier.testTag("native-agent-queue-add"),
                             ) {
@@ -474,7 +485,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             if (state.foregroundAgentActive) {
                                 TextButton(
                                     onClick = steer,
-                                    enabled = state.agentInput.isNotBlank() && !state.hasAgentApproval,
+                                    enabled = state.agentAttachments.isEmpty() &&
+                                        state.agentInput.isNotBlank() && !state.hasAgentApproval,
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                 ) {
                                     Text(stringResource(R.string.native_agent_steer))
@@ -485,6 +497,13 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             verticalAlignment = Alignment.Bottom,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            if (state.agentAttachmentActions != null) {
+                                NativeAgentAttachmentButton(
+                                    enabled = ready && !state.hasAgentApproval && !state.agentAttachmentBusy &&
+                                        state.agentAttachments.size < AgentAttachmentLimits.MAX_PER_MESSAGE,
+                                    onClick = { attachmentPicker.launch(arrayOf("image/*")) },
+                                )
+                            }
                             OutlinedTextField(
                                 value = state.agentInput,
                                 onValueChange = input,
@@ -501,7 +520,9 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             } else {
                                 Button(
                                     onClick = send,
-                                    enabled = ready && !state.hasAgentApproval && state.modelSettings != null && state.agentInput.isNotBlank(),
+                                    enabled = state.modelSettings != null && !state.agentAttachmentBusy &&
+                                        canSendAgentMessage(ready, state.hasAgentApproval,
+                                            state.agentInput, state.agentAttachments.size),
                                 ) {
                                     Text(stringResource(R.string.native_agent_send))
                                 }

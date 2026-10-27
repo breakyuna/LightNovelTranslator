@@ -21,6 +21,9 @@ internal data class NativeUsageReceiptRow(
     val chatId: String?, val runId: String, val commandId: String,
     val configurationId: String, val configurationRevision: Long,
     val model: String?, val state: String, val usage: String?, val stop: String?, val failure: String?,
+    val priceVersion: Long? = null, val priceCurrency: String? = null,
+    val priceFingerprint: String? = null, val pricedModelKey: String? = null,
+    val costState: String? = null,
 ) {
     override fun toString() = "NativeUsageReceiptRow(metadata)"
 }
@@ -98,7 +101,24 @@ class NativeUsageLedgerStore(context: Context) : UsageLedgerReadPort {
             RequestAttemptId(row.attemptId), ref,
             RunIdentity(ProjectId(row.projectId), row.chatId?.let(::ChatId), RunId(row.runId), CommandId(row.commandId)),
             ModelConfigurationRef(row.configurationId, row.configurationRevision), row.model, UsageReceiptState.valueOf(row.state),
-            row.usage?.let(TranslationUsageCodec::decode), row.stop?.let(ModelStopReason::valueOf), row.failure?.let(ModelFailureKind::valueOf))
+            row.usage?.let(TranslationUsageCodec::decode), row.stop?.let(ModelStopReason::valueOf), row.failure?.let(ModelFailureKind::valueOf),
+            priceVersion = row.priceVersion,
+            priceCurrency = row.priceCurrency?.let(CurrencyCode::of),
+            priceFingerprint = row.priceFingerprint?.let(::ObjectFingerprint),
+            pricedModelKey = row.pricedModelKey,
+            costState = row.costState?.let(UsageCostState::valueOf) ?: UsageCostState.UNKNOWN)
+    }
+
+    /** Adds the optional price binding without changing the old request export allow-list. */
+    private fun exportEntry(entry: UsageLedgerEntry): JsonObject {
+        val price: Map<String, JsonElement> = mapOf(
+            "price_version" to (entry.priceVersion?.let(::JsonPrimitive) ?: JsonNull),
+            "price_currency" to (entry.priceCurrency?.code?.let(::JsonPrimitive) ?: JsonNull),
+            "price_fingerprint" to (entry.priceFingerprint?.sha256?.let(::JsonPrimitive) ?: JsonNull),
+            "priced_model_key" to (entry.pricedModelKey?.let(::JsonPrimitive) ?: JsonNull),
+            "cost_state" to JsonPrimitive((entry.costState ?: UsageCostState.UNKNOWN).name),
+        )
+        return JsonObject(usageLedgerEntryJson(entry) + price)
     }
     override suspend fun export(query: UsageLedgerQuery, destination: () -> java.io.OutputStream): Long = withContext(Dispatchers.IO) {
         val context = currentCoroutineContext()
@@ -128,7 +148,7 @@ class NativeUsageLedgerStore(context: Context) : UsageLedgerReadPort {
                         query.run?.chatId?.value, query.configuration?.id, query.configuration?.revision)
                     for (value in rows.take(50)) {
                         context.ensureActive()
-                        output.write(usageLedgerEntryJson(entry(value.receipt)).toString()); output.newLine()
+                        output.write(exportEntry(entry(value.receipt)).toString()); output.newLine()
                         count = Math.addExact(count, 1)
                     }
                     if (rows.size <= 50) break
@@ -149,17 +169,32 @@ class NativeUsageLedgerStore(context: Context) : UsageLedgerReadPort {
             val chat = request.run.chatId?.let { db.agent().chat(it.value) }
             val instance = chat?.let { db.instances().find(it.instanceId) }
             if (instance != null) require(instance.projectId == request.run.projectId.value && instance.generation == requireNotNull(chat).generation)
+            val model = model(db, request.configuration)
+            val price = priceSnapshot(db)
             db.usage().insert(NativeUsageReceiptRow(id("agent", request.attemptId.value), "agent", request.attemptId.value,
                 instance?.instanceId, instance?.generation, request.run.projectId.value, request.run.chatId?.value,
                 request.run.runId.value, request.run.commandId.value, request.configuration.id, request.configuration.revision,
-                model(db, request.configuration), "PREPARED", null, null, null))
+                model, "PREPARED", null, null, null,
+                price?.version, price?.currency, price?.fingerprint, model, priceState(price)))
         }
         fun reserveTranslation(db: NativeAppDatabase, request: TranslationModelRequest) {
+            val model = model(db, request.configuration)
+            val price = priceSnapshot(db)
             db.usage().insert(NativeUsageReceiptRow(id("translation", request.attempt.value), "translation", request.attempt.value,
                 request.ref.instanceId.value, request.ref.generation.value, request.ref.projectId.value, null,
                 request.run.runId.value, request.run.commandId.value, request.configuration.id, request.configuration.revision,
-                model(db, request.configuration), "DISPATCHED", null, null, null))
+                model, "DISPATCHED", null, null, null,
+                price?.version, price?.currency, price?.fingerprint, model, priceState(price)))
         }
+        private data class PriceSnapshot(val version: Long, val currency: String, val fingerprint: String)
+        /** A damaged or unreadable table must not block usage facts; it is recorded as UNKNOWN. */
+        private fun priceSnapshot(db: NativeAppDatabase): PriceSnapshot? = try {
+            val table = db.priceTableReader?.invoke()
+            if (table == null || table.version <= 0L) null
+            else PriceSnapshot(table.version, table.currency.code, table.fingerprint)
+        } catch (_: Exception) { null }
+        private fun priceState(price: PriceSnapshot?): String =
+            if (price == null) UsageCostState.UNKNOWN.name else UsageCostState.KNOWN.name
         private fun model(db: NativeAppDatabase, configuration: ModelConfigurationRef): String? =
             db.models().find(configuration.revision)?.takeIf { it.profileId == configuration.id }?.model
 

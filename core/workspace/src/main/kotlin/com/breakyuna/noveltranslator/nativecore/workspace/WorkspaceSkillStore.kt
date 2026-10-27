@@ -52,7 +52,7 @@ class WorkspaceSkillRecord(
         "WorkspaceSkillRecord(id=${summary.id.value}, source=${summary.source}, fingerprint=${fingerprint.sha256})"
 }
 
-/** Bounded input for create/update. Name, description, order and tags are validated by the store. */
+/** Bounded input for create/update. Name, description, order, tags and policy are validated by the store. */
 class WorkspaceSkillDraft(
     val id: WorkspaceSkillId,
     val name: String,
@@ -62,6 +62,7 @@ class WorkspaceSkillDraft(
     val order: Int = 0,
     languages: Set<String> = emptySet(),
     tags: Set<String> = emptySet(),
+    val policy: WorkspaceSkillPolicy = WorkspaceSkillPolicy.DEFAULT,
 ) {
     val languages: Set<String> = workspaceFrozenSet(normalize(languages))
     val tags: Set<String> = workspaceFrozenSet(normalize(tags))
@@ -489,6 +490,7 @@ class WorkspaceSkillStore(
                 tags = summary.tags,
                 contentPath = summary.contentPath,
                 contentSha256 = summary.contentSha256,
+                policy = summary.policy,
             )
         }
     }
@@ -682,6 +684,7 @@ class WorkspaceSkillStore(
             tags = draft.tags,
             contentPath = WorkspacePath(rawId + "/" + CONTENT_FILE),
             contentSha256 = contentSha256,
+            policy = draft.policy,
         )
     } catch (failure: IllegalArgumentException) {
         throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, draft.id)
@@ -805,7 +808,13 @@ typealias FileWorkspaceSkillStore = WorkspaceSkillStore
 /** Strict metadata codec for `skill.json`; unknown fields and fabricated digests are rejected. */
 internal object WorkspaceSkillMetadataCodec {
     private val FIELDS = setOf(
-        "name", "description", "enabled", "order", "languages", "tags", "contentSha256",
+        "name", "description", "enabled", "order", "languages", "tags", "contentSha256", "policy",
+    )
+
+    private val POLICY_FIELDS = setOf(
+        "allowMaterials", "allowArtifacts", "allowSearch", "allowFetch", "allowProposeChanges",
+        "allowPrint", "maxRunMillis", "maxOutputBytes", "maxArtifactBytes", "maxChangeBytes",
+        "allowAutoSelect",
     )
 
     fun decode(
@@ -867,6 +876,7 @@ internal object WorkspaceSkillMetadataCodec {
         if (languages.size > WorkspaceSkillLimits.MAX_LANGUAGES || tags.size > WorkspaceSkillLimits.MAX_TAGS) {
             throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.TOO_LARGE, id)
         }
+        val policy = parsePolicy(json["policy"], id)
         val contentSha = requireString(json, "contentSha256", id)
         try {
             requireSha256Hex(contentSha)
@@ -885,11 +895,56 @@ internal object WorkspaceSkillMetadataCodec {
                 tags = tags,
                 contentPath = WorkspacePath(id.value + "/" + CONTENT_FILE),
                 contentSha256 = contentSha,
+                policy = policy,
             )
         } catch (failure: IllegalArgumentException) {
             throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, id)
         }
     }
+
+    /**
+     * Legacy `skill.json` files have no `policy` object and resolve to [WorkspaceSkillPolicy.DEFAULT].
+     * A present policy is strict: every known field is required, unknown fields and wrong scalar
+     * types are rejected, and the policy constructor validates all ceilings.
+     */
+    private fun parsePolicy(element: JsonElement?, id: WorkspaceSkillId): WorkspaceSkillPolicy {
+        if (element == null || element is JsonNull) return WorkspaceSkillPolicy.DEFAULT
+        if (element !is JsonObject || element.keys != POLICY_FIELDS) {
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, id)
+        }
+        return try {
+            WorkspaceSkillPolicy(
+                allowMaterials = requirePolicyBoolean(element, "allowMaterials", id),
+                allowArtifacts = requirePolicyBoolean(element, "allowArtifacts", id),
+                allowSearch = requirePolicyBoolean(element, "allowSearch", id),
+                allowFetch = requirePolicyBoolean(element, "allowFetch", id),
+                allowProposeChanges = requirePolicyBoolean(element, "allowProposeChanges", id),
+                allowPrint = requirePolicyBoolean(element, "allowPrint", id),
+                maxRunMillis = requirePolicyInt(element, "maxRunMillis", id),
+                maxOutputBytes = requirePolicyInt(element, "maxOutputBytes", id),
+                maxArtifactBytes = requirePolicyInt(element, "maxArtifactBytes", id),
+                maxChangeBytes = requirePolicyInt(element, "maxChangeBytes", id),
+                allowAutoSelect = requirePolicyBoolean(element, "allowAutoSelect", id),
+            )
+        } catch (failure: IllegalArgumentException) {
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, id)
+        }
+    }
+
+    private fun requirePolicyBoolean(json: JsonObject, key: String, id: WorkspaceSkillId): Boolean {
+        val element = json[key] ?: throw invalidMetadata(id)
+        if (element !is JsonPrimitive || element.isString) throw invalidMetadata(id)
+        return element.booleanOrNull ?: throw invalidMetadata(id)
+    }
+
+    private fun requirePolicyInt(json: JsonObject, key: String, id: WorkspaceSkillId): Int {
+        val element = json[key] ?: throw invalidMetadata(id)
+        if (element !is JsonPrimitive || element.isString) throw invalidMetadata(id)
+        return element.intOrNull ?: throw invalidMetadata(id)
+    }
+
+    private fun invalidMetadata(id: WorkspaceSkillId): Nothing =
+        throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.INVALID_METADATA, id)
 
     fun encode(summary: WorkspaceSkillSummary): ByteArray {
         if (summary.languages.size > WorkspaceSkillLimits.MAX_LANGUAGES ||
@@ -908,6 +963,19 @@ internal object WorkspaceSkillMetadataCodec {
             put("languages", JsonArray(summary.languages.sorted().map { JsonPrimitive(it) }))
             put("tags", JsonArray(summary.tags.sorted().map { JsonPrimitive(it) }))
             put("contentSha256", summary.contentSha256 ?: "")
+            put("policy", buildJsonObject {
+                put("allowMaterials", summary.policy.allowMaterials)
+                put("allowArtifacts", summary.policy.allowArtifacts)
+                put("allowSearch", summary.policy.allowSearch)
+                put("allowFetch", summary.policy.allowFetch)
+                put("allowProposeChanges", summary.policy.allowProposeChanges)
+                put("allowPrint", summary.policy.allowPrint)
+                put("maxRunMillis", summary.policy.maxRunMillis)
+                put("maxOutputBytes", summary.policy.maxOutputBytes)
+                put("maxArtifactBytes", summary.policy.maxArtifactBytes)
+                put("maxChangeBytes", summary.policy.maxChangeBytes)
+                put("allowAutoSelect", summary.policy.allowAutoSelect)
+            })
         }.toString().toByteArray(Charsets.UTF_8)
         if (bytes.size > WorkspaceSkillLimits.MAX_METADATA_BYTES) {
             throw WorkspaceSkillStoreException(
@@ -919,8 +987,8 @@ internal object WorkspaceSkillMetadataCodec {
     }
 
     fun fingerprint(summary: WorkspaceSkillSummary): WorkspaceDigest {
-        val builder = StringBuilder(256)
-        builder.append("lnt-workspace-skill-v1\n")
+        val builder = StringBuilder(384)
+        builder.append("lnt-workspace-skill-v2\n")
         appendField(builder, summary.id.value)
         appendField(builder, summary.name)
         appendField(builder, summary.description)
@@ -931,6 +999,19 @@ internal object WorkspaceSkillMetadataCodec {
         summary.tags.sorted().forEach { appendField(builder, it) }
         builder.append("--\n")
         appendField(builder, summary.contentSha256 ?: "")
+        val policy = summary.policy
+        builder.append("--\n")
+        builder.append(if (policy.allowMaterials) "1" else "0").append('\n')
+        builder.append(if (policy.allowArtifacts) "1" else "0").append('\n')
+        builder.append(if (policy.allowSearch) "1" else "0").append('\n')
+        builder.append(if (policy.allowFetch) "1" else "0").append('\n')
+        builder.append(if (policy.allowProposeChanges) "1" else "0").append('\n')
+        builder.append(if (policy.allowPrint) "1" else "0").append('\n')
+        builder.append(if (policy.allowAutoSelect) "1" else "0").append('\n')
+        builder.append(policy.maxRunMillis).append('\n')
+        builder.append(policy.maxOutputBytes).append('\n')
+        builder.append(policy.maxArtifactBytes).append('\n')
+        builder.append(policy.maxChangeBytes).append('\n')
         return WorkspaceDigest(sha256Hex(builder.toString().toByteArray(Charsets.UTF_8)))
     }
 

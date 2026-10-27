@@ -268,6 +268,22 @@ class RuntimeCoordinatorTest {
         assertNotNull(after.activeRun)
     }
 
+    @Test
+    fun archiveReservationBlocksRunsAndWritesUntilFrozenSnapshotsAreComplete() {
+        val runtime = runtime()
+        val archive = runtime.beginArchiveRead()
+        assertReason(RuntimeUnavailable.Reason.BUSY) { runtime.beginRun(identity("queued"), RuntimeOwner.TRANSLATION) }
+        assertReason(RuntimeUnavailable.Reason.BUSY) { runtime.beginProjectWrite() }
+        assertReason(RuntimeUnavailable.Reason.BUSY) { runtime.beginAuthenticationWrite() }
+        assertReason(RuntimeUnavailable.Reason.BUSY) { runtime.beginSkillWrite() }
+        val snapshot = runtime.beginArchiveProjectWrite(archive)
+        runtime.endProjectWrite(snapshot)
+        runtime.endArchiveRead(archive)
+        assertReason(RuntimeUnavailable.Reason.BUSY) { runtime.beginArchiveProjectWrite(archive) }
+        val run = runtime.beginRun(identity("queued"), RuntimeOwner.TRANSLATION)
+        runtime.finishRun(run)
+    }
+
     private fun runtime() = RuntimeCoordinator().also { it.selectChat(firstChat) }
 
     @Test fun finishingRunClearsOnlyItsSelectionWhenLastResourceClosesAndNeverANewerSelection() {

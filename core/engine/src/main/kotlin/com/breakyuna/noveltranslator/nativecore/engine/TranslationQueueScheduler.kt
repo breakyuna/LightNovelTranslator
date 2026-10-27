@@ -92,6 +92,41 @@ class TranslationQueueRecoveryResult(
         "TranslationQueueRecoveryResult(verdict=$verdict, run=${task?.identity?.run?.runId?.value})"
 }
 
+/**
+ * Sanitized counters for the recovery/reconciliation path. They never contain task text or
+ * credential material; a failure is retained as a count instead of being swallowed silently.
+ */
+data class TranslationQueueReconciliationDiagnostics(
+    val recoveryPasses: Int = 0,
+    val controlIntentsReplayed: Int = 0,
+    val controlIntentFailures: Int = 0,
+    val settledReconciled: Int = 0,
+    val settledFailures: Int = 0,
+    val failureBatchesRebuilt: Int = 0,
+    val failureBatchConflicts: Int = 0,
+    val failureBatchReadFailures: Int = 0,
+    val decisionsReplayed: Int = 0,
+    val decisionFailures: Int = 0,
+) {
+    init {
+        require(recoveryPasses >= 0 && controlIntentsReplayed >= 0 && controlIntentFailures >= 0 &&
+            settledReconciled >= 0 && settledFailures >= 0 && failureBatchesRebuilt >= 0 &&
+            failureBatchConflicts >= 0 && failureBatchReadFailures >= 0 &&
+            decisionsReplayed >= 0 && decisionFailures >= 0)
+    }
+
+    val degraded: Boolean
+        get() = controlIntentFailures > 0 || settledFailures > 0 || failureBatchConflicts > 0 ||
+            failureBatchReadFailures > 0 || decisionFailures > 0
+
+    override fun toString(): String {
+        val failed = settledFailures + decisionFailures + failureBatchConflicts + failureBatchReadFailures
+        return "TranslationQueueReconciliationDiagnostics(passes=$recoveryPasses, " +
+            "intents=$controlIntentsReplayed, rebuilt=$failureBatchesRebuilt, failed=$failed, " +
+            "degraded=$degraded)"
+    }
+}
+
 /** Result of the narrow revision check performed immediately before a queue dispatch. */
 sealed interface TranslationQueueRevisionDecision {
     /** The admitted revision is still current. */
@@ -143,8 +178,9 @@ interface TranslationQueueControlPort {
  * while any runtime/foreground reservation is active.
  *
  * Safety invariants:
- * - restart reconciliation runs before dispatch and may only move RUNNING to PAUSED/NEEDS_REVIEW/
- *   FAILED from durable evidence; it never auto-resumes or re-sends an uncertain request;
+ * - restart reconciliation runs before dispatch, may only settle RUNNING from durable evidence and
+ *   may replay a persisted pause/cancel intent or rebuild a missing failure batch; it never
+ *   auto-resumes, requeues a review/paused task or re-sends an uncertain request;
  * - a RUNNING task whose fixed-task store and exact Run journal prove completion is finalized as
  *   COMPLETED/COMPLETED_WITH_ERRORS before generic recovery could freeze it at NEEDS_REVIEW;
  *   missing usage, receipts or journal evidence stays in review;
@@ -152,8 +188,8 @@ interface TranslationQueueControlPort {
  *   command, action, batch and member fingerprints exactly match the durable queue task;
  * - a stale revision is refreshed only with an audited REVALIDATE_REVISION command; otherwise the
  *   task stops at NEEDS_REVIEW without any paid dispatch;
- * - pause/cancel first reach the live runner, then persist the matching queue command, so the
- *   notification path works without an Activity or ViewModel;
+ * - pause/cancel persist a durable intent first, then reach the live runner and record the
+ *   matching queue command; recovery replays only that intent and never starts new work;
  * - completion requires committed + explicitly skipped targets, proven receipts, no unresolved
  *   dispatch and known usage. Unknown usage always becomes NEEDS_REVIEW, never a synthetic ACTUAL.
  */
@@ -180,29 +216,32 @@ class TranslationQueueScheduler(
      * optional for the same compatibility reason and never manufactures usage or completion.
      */
     private val decisions: TranslationTaskFailureAdjudicationPort? = null,
+    /**
+     * Durable pause/cancel intent written before any live runner control. The no-op default keeps
+     * older callers source-compatible; a real application must pass atomic storage.
+     */
+    private val controlIntents: TranslationQueueControlIntentPort = NoTranslationQueueControlIntents,
 ) {
     private val drainLock = Mutex()
+    private val reconciler = TranslationQueueReconciler(coordinator, recovery, failures)
+    private val diagnosticsLock = Any()
+    private var diagnosticsState = TranslationQueueReconciliationDiagnostics()
 
     /** Reconciles abandoned RUNNING facts before any new dispatch. Does not start work. */
     suspend fun recover(): List<TranslationQueueRecoveryResult> {
         recoverJournal()
+        note { it.copy(recoveryPasses = it.recoveryPasses + 1) }
+        // A persisted pause/cancel intent outranks task settlement: the user already asked the
+        // live runner to stop, and replaying it must never be replaced by a late success.
+        replayControlIntents()
         // Rebuild a durably proven completion while the queue task is still RUNNING. This must run
         // before recoverRunning; otherwise a crash between task completion and queue outcome would
         // be frozen as NEEDS_REVIEW forever. Reconciliation failures must not skip recovery.
-        try {
-            reconcileSettled()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            // A conflict/corrupt fact is retried by the next kick; recovery still gets its chance.
-        }
-        try {
-            reconcileDecisions()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            // A failed replay leaves the task for explicit review.
-        }
+        reconcileSettled()
+        // Reconstruct the missing member batch before generic recovery freezes the task without
+        // adjudicable evidence. Rebuilding only reads fixed-task facts and never dispatches.
+        reconcileFailureBatches()
+        reconcileDecisions()
         return coordinator.recoverRunning(recovery)
     }
 
@@ -216,20 +255,10 @@ class TranslationQueueScheduler(
         try {
             // A previous pass may have died after a durable task/run settlement but before the
             // queue outcome. Rebuild only from persisted evidence; never launch a request here.
-            try {
-                reconcileSettled()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // Continue to normal claiming; a task that is still RUNNING blocks a new claim.
-            }
-            try {
-                reconcileDecisions()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                // Replay is best-effort and never widens evidence.
-            }
+            replayControlIntents()
+            reconcileSettled()
+            reconcileFailureBatches()
+            reconcileDecisions()
             var claimed = 0
             while (true) {
                 val dispatch = claimNext() ?: break
@@ -267,9 +296,18 @@ class TranslationQueueScheduler(
         identity: TranslationTaskQueueIdentity,
         command: CommandId,
     ): TranslationQueueResult {
+        val intent = TranslationQueueControlIntent(
+            identity,
+            command,
+            TranslationQueueControlIntentKind.PENDING_PAUSE,
+        )
+        // Persist before touching the live runner. If the process dies after this write but before
+        // markPaused, recovery replays exactly this command and never starts a new request.
+        controlIntents.save(intent)
         val livePaused = control.pause(identity)
         if (!livePaused) control.stop(identity)
         val result = coordinator.markPaused(identity, command)
+        clearControlIntent(intent)
         if (result is TranslationQueueResult.Rejected) {
             val snapshot = coordinator.snapshot(identity.ref)
             if (snapshot.task(identity)?.state == TranslationTaskQueueState.PAUSED) {
@@ -284,8 +322,16 @@ class TranslationQueueScheduler(
         identity: TranslationTaskQueueIdentity,
         command: CommandId,
     ): TranslationQueueResult {
+        val intent = TranslationQueueControlIntent(
+            identity,
+            command,
+            TranslationQueueControlIntentKind.PENDING_CANCEL,
+        )
+        // See pause(): the durable intent closes the crash window between runner stop and queue.
+        controlIntents.save(intent)
         control.stop(identity)
         val result = coordinator.markCancelled(identity, command)
+        clearControlIntent(intent)
         if (result is TranslationQueueResult.Rejected) {
             val snapshot = coordinator.snapshot(identity.ref)
             if (snapshot.task(identity)?.state == TranslationTaskQueueState.CANCELLED) {
@@ -293,6 +339,119 @@ class TranslationQueueScheduler(
             }
         }
         return result
+    }
+
+    /**
+     * Replays only persisted PAUSE/CANCEL intents. It never calls the live control port, never
+     * launches, and never requeues: PAUSE applies only to RUNNING, CANCEL only to non-terminal.
+     * A task already PAUSED, FAILED, NEEDS_REVIEW or terminal is left in its user-visible state
+     * and the obsolete intent is cleared.
+     */
+    suspend fun replayControlIntents(): Int {
+        val pending = try {
+            controlIntents.pending()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            note { it.copy(controlIntentFailures = it.controlIntentFailures + 1) }
+            return 0
+        }
+        var replayed = 0
+        for (intent in pending) {
+            val snapshot = try {
+                coordinator.snapshot(intent.identity.ref)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep the intent: a corrupt/unreadable queue must not erase a user stop request.
+                note { it.copy(controlIntentFailures = it.controlIntentFailures + 1) }
+                continue
+            }
+            val task = snapshot.task(intent.identity)
+            if (task == null) {
+                clearControlIntent(intent)
+                continue
+            }
+            val result = try {
+                when (intent.kind) {
+                    TranslationQueueControlIntentKind.PENDING_CANCEL -> when {
+                        task.state == TranslationTaskQueueState.CANCELLED ->
+                            TranslationQueueResult.Unchanged(snapshot.queue, task)
+                        task.state.terminal -> null
+                        else -> coordinator.markCancelled(intent.identity, intent.command)
+                    }
+                    TranslationQueueControlIntentKind.PENDING_PAUSE -> when (task.state) {
+                        TranslationTaskQueueState.RUNNING ->
+                            coordinator.markPaused(intent.identity, intent.command)
+                        TranslationTaskQueueState.PAUSED ->
+                            TranslationQueueResult.Unchanged(snapshot.queue, task)
+                        // QUEUED/REVIEW/FAILED/terminal is already not executing. Pause must not
+                        // turn any of these into QUEUED or overwrite a terminal outcome.
+                        else -> null
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Keep the intent for the next recovery; a concurrent queue writer did not prove
+                // that the user's stop request was applied.
+                note { it.copy(controlIntentFailures = it.controlIntentFailures + 1) }
+                continue
+            }
+            if (result == null) {
+                clearControlIntent(intent)
+                continue
+            }
+            when (result) {
+                is TranslationQueueResult.Applied -> {
+                    replayed++
+                    clearControlIntent(intent)
+                }
+                is TranslationQueueResult.Duplicate,
+                is TranslationQueueResult.Unchanged,
+                -> clearControlIntent(intent)
+                is TranslationQueueResult.Rejected -> {
+                    // A rejection normally means the task already reached a different state. Do
+                    // not overwrite it; retain the diagnostic and clear the obsolete intent.
+                    note { it.copy(controlIntentFailures = it.controlIntentFailures + 1) }
+                    clearControlIntent(intent)
+                }
+            }
+        }
+        if (replayed > 0) {
+            note { it.copy(controlIntentsReplayed = it.controlIntentsReplayed + replayed) }
+        }
+        return replayed
+    }
+
+    /**
+     * Read-only reconciliation report for the queue/task store and run journal. It never mutates
+     * queue, task, Run or project facts, and never launches a request.
+     */
+    suspend fun reconciliationReport(): TranslationQueueReconciliationReport = reconciler.report()
+
+    /** Current sanitized recovery counters; a non-zero failure count means a retry is due. */
+    fun reconciliationDiagnostics(): TranslationQueueReconciliationDiagnostics =
+        synchronized(diagnosticsLock) { diagnosticsState }
+
+    /** Rebuilds crash-window failure batches from exact fixed-task target facts only. */
+    suspend fun reconcileFailureBatches(): Int {
+        val result = try {
+            reconciler.rebuildFailureBatches()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            note { it.copy(failureBatchReadFailures = it.failureBatchReadFailures + 1) }
+            return 0
+        }
+        note {
+            it.copy(
+                failureBatchesRebuilt = it.failureBatchesRebuilt + result.rebuilt,
+                failureBatchConflicts = it.failureBatchConflicts + result.conflicts,
+                failureBatchReadFailures = it.failureBatchReadFailures + result.readFailures,
+            )
+        }
+        return result.rebuilt
     }
 
     /**
@@ -330,6 +489,7 @@ class TranslationQueueScheduler(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
+            note { it.copy(settledFailures = it.settledFailures + 1) }
             return 0
         }
         var completed = 0
@@ -347,6 +507,7 @@ class TranslationQueueScheduler(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
+                    note { it.copy(settledFailures = it.settledFailures + 1) }
                     null
                 } ?: continue
                 val taskEvidence = recoveryEvidence.task ?: continue
@@ -362,6 +523,7 @@ class TranslationQueueScheduler(
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
+                    note { it.copy(settledFailures = it.settledFailures + 1) }
                     false
                 }
                 if (rebuilt) {
@@ -369,6 +531,9 @@ class TranslationQueueScheduler(
                     notifySettled(dispatch)
                 }
             }
+        }
+        if (completed > 0) {
+            note { it.copy(settledReconciled = it.settledReconciled + completed) }
         }
         return completed
     }
@@ -390,6 +555,7 @@ class TranslationQueueScheduler(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
+            note { it.copy(decisionFailures = it.decisionFailures + 1) }
             return 0
         }
         var applied = 0
@@ -409,15 +575,20 @@ class TranslationQueueScheduler(
                     throw cancelled
                 } catch (_: Exception) {
                     // An unreadable journal is no replay authority.
+                    note { it.copy(decisionFailures = it.decisionFailures + 1) }
                     emptyList()
                 }
                 for (decision in decisions.sortedBy { it.sequence }) {
-                    if (applied >= MAX_DECISION_REPLAYS) return applied
+                    if (applied >= MAX_DECISION_REPLAYS) {
+                        note { it.copy(decisionsReplayed = it.decisionsReplayed + applied) }
+                        return applied
+                    }
                     val latest = try {
                         coordinator.snapshot(dispatch.identity.ref).task(dispatch.identity)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
+                        note { it.copy(decisionFailures = it.decisionFailures + 1) }
                         null
                     }
                     if (latest == null) break
@@ -459,6 +630,7 @@ class TranslationQueueScheduler(
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Exception) {
+                        note { it.copy(decisionFailures = it.decisionFailures + 1) }
                         break
                     }
                     when (result) {
@@ -472,6 +644,9 @@ class TranslationQueueScheduler(
                 }
             }
         }
+        if (applied > 0) {
+            note { it.copy(decisionsReplayed = it.decisionsReplayed + applied) }
+        }
         return applied
     }
 
@@ -482,6 +657,29 @@ class TranslationQueueScheduler(
             throw cancelled
         } catch (_: Exception) {
             // Observer failures cannot change the replayed durable fact.
+        }
+    }
+
+    /**
+     * Clearing is compare-and-clear in the storage port: a newer cancel intent for the same task
+     * survives a pause that finishes later. A failed clear only means the next recovery replays an
+     * idempotent intent, so it never fails the already durable queue outcome.
+     */
+    private suspend fun clearControlIntent(intent: TranslationQueueControlIntent) {
+        try {
+            controlIntents.clear(intent)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            note { it.copy(controlIntentFailures = it.controlIntentFailures + 1) }
+        }
+    }
+
+    private fun note(
+        transform: (TranslationQueueReconciliationDiagnostics) -> TranslationQueueReconciliationDiagnostics,
+    ) {
+        synchronized(diagnosticsLock) {
+            diagnosticsState = transform(diagnosticsState)
         }
     }
 
@@ -783,25 +981,7 @@ class TranslationQueueScheduler(
     private fun failureBatchId(
         task: TranslationQueuedTask,
         members: List<TranslationFailureMember>,
-    ): TranslationTaskFailureBatchId {
-        val round = task.batches.size + 1
-        val material = buildString {
-            append(task.identity.run.commandId.value); append('\u0000')
-            append(task.identity.revision); append('\u0000')
-            append(round)
-            for (member in members) {
-                append('\u0000'); append(member.itemId.value)
-                append('\u0000'); append(member.fingerprint.sha256)
-                append('\u0000'); append(member.failure.name)
-                append('\u0000'); append(member.receipt.name)
-                append('\u0000'); append(member.usage.name)
-                append('\u0000'); append(member.committed)
-                append('\u0000'); append(member.terminal)
-            }
-        }
-        val digest = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(material))
-        return TranslationTaskFailureBatchId("queue-failure-$round-$digest")
-    }
+    ): TranslationTaskFailureBatchId = translationFailureBatchId(task, members)
 
     private fun completionCommand(task: TranslationQueuedTask): CommandId {
         val material = buildString {

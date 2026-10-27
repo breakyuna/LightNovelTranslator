@@ -9,6 +9,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextProjectLimits
 import com.breakyuna.noveltranslator.nativecore.domain.TextProjectPort
 import com.breakyuna.noveltranslator.nativecore.domain.TextProjectSummary
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -319,9 +320,11 @@ internal object WorkspaceMaterialManifestCodec {
  *
  * The adapter materializes enabled textual project assets byte-for-byte under `sources/` and a
  * deterministic asset metadata table under `datasets/`, writes the manifest last and never
- * rewrites unsupported/binary assets. `reference/`, `uploads/` and `work/` are created but left
- * untouched so user and script material survives snapshots. The returned read port is bounded
- * and rejects any revision that no longer matches the fixed snapshot.
+ * rewrites unsupported/binary assets. Each asset body is read and verified through its own
+ * temporary file, so all project bytes are not retained in memory at once. `reference/`,
+ * `uploads/` and `work/` are created but left untouched so user and script material survives
+ * snapshots. The returned read port is bounded and rejects any revision that no longer matches
+ * the fixed snapshot.
  *
  * Callers should invoke these suspend methods from an IO context; the class performs no
  * dispatcher switch so it can also be used by the synchronous interpreter bridge through
@@ -368,21 +371,31 @@ class WorkspaceMaterialSource(
     }
 
     /** Materializes or revalidates the fixed snapshot and returns its manifest. */
-    suspend fun snapshot(): WorkspaceMaterialManifest = lock.withLock {
+    suspend fun snapshot(): WorkspaceMaterialManifest = snapshot(WorkspaceCancellation())
+
+    /** Materializes or revalidates the fixed snapshot, checking [cancellation] between assets. */
+    suspend fun snapshot(cancellation: WorkspaceCancellation): WorkspaceMaterialManifest = lock.withLock {
+        cancellation.throwIfCancelled()
         val summary = currentSummary()
         val assets = currentAssets()
+        cancellation.throwIfCancelled()
         val existing = cached ?: readManifest()
         if (existing != null && matches(existing, summary, assets) && filesPresent(existing)) {
             cached = existing
             return@withLock existing
         }
-        materialize(summary, assets)
+        materialize(summary, assets, cancellation)
     }
 
     /** Re-hashes every generated material and rechecks the project revision/assets. */
-    suspend fun verify(): WorkspaceMaterialManifest = lock.withLock {
-        val manifest = cached ?: readManifest() ?: materialize(currentSummary(), currentAssets())
+    suspend fun verify(): WorkspaceMaterialManifest = verify(WorkspaceCancellation())
+
+    /** Re-hashes every material, checking [cancellation] between files. */
+    suspend fun verify(cancellation: WorkspaceCancellation): WorkspaceMaterialManifest = lock.withLock {
+        cancellation.throwIfCancelled()
+        val manifest = cached ?: readManifest() ?: materialize(currentSummary(), currentAssets(), cancellation)
         manifest.materials.forEach { material ->
+            cancellation.throwIfCancelled()
             val file = resolve(material.path)
             if (!file.isFile || file.length() != material.sizeBytes ||
                 WorkspaceStorageSupport.sha256(file) != material.sha256
@@ -395,6 +408,7 @@ class WorkspaceMaterialSource(
         }
         val summary = currentSummary()
         val assets = currentAssets()
+        cancellation.throwIfCancelled()
         if (!matches(manifest, summary, assets)) {
             throw WorkspaceMaterialSnapshotException(
                 WorkspaceMaterialSnapshotException.Reason.CHANGED_DURING_SNAPSHOT,
@@ -408,11 +422,16 @@ class WorkspaceMaterialSource(
     suspend fun materialForAsset(assetId: Long): WorkspaceMaterialSummary? =
         snapshot().materialForAsset(assetId)
 
+    suspend fun materialForAsset(
+        assetId: Long,
+        cancellation: WorkspaceCancellation,
+    ): WorkspaceMaterialSummary? = snapshot(cancellation).materialForAsset(assetId)
+
     override suspend fun list(kind: WorkspaceMaterialKind?): List<WorkspaceMaterialSummary> =
         lock.withLock { listLocked(kind) }
 
     private suspend fun listLocked(kind: WorkspaceMaterialKind?): List<WorkspaceMaterialSummary> {
-        ensureSnapshotLocked()
+        ensureSnapshotLocked(WorkspaceCancellation())
         val result = ArrayList<WorkspaceMaterialSummary>()
         val kinds = if (kind == null) {
             listOf(
@@ -504,15 +523,17 @@ class WorkspaceMaterialSource(
             WorkspaceMaterialContent(summary.id, summary.sha256, bytes)
         }
 
-    private suspend fun ensureSnapshotLocked(): WorkspaceMaterialManifest {
+    private suspend fun ensureSnapshotLocked(cancellation: WorkspaceCancellation): WorkspaceMaterialManifest {
+        cancellation.throwIfCancelled()
         val summary = currentSummary()
         val assets = currentAssets()
+        cancellation.throwIfCancelled()
         val existing = cached ?: readManifest()
         if (existing != null && matches(existing, summary, assets) && filesPresent(existing)) {
             cached = existing
             return existing
         }
-        return materialize(summary, assets)
+        return materialize(summary, assets, cancellation)
     }
 
     private suspend fun currentSummary(): TextProjectSummary {
@@ -593,7 +614,9 @@ class WorkspaceMaterialSource(
     private suspend fun materialize(
         summary: TextProjectSummary,
         assets: List<ProjectAssetSummary>,
+        cancellation: WorkspaceCancellation,
     ): WorkspaceMaterialManifest {
+        cancellation.throwIfCancelled()
         // A manifest is the completion marker. Read the previous metadata before removing it,
         // then delete it before touching generated files so a crash cannot leave an older
         // manifest pointing at a half-written snapshot.
@@ -608,10 +631,13 @@ class WorkspaceMaterialSource(
         cached = null
 
         ensureAreas()
-        val desired = ArrayList<DesiredMaterial>()
-        val manifestAssets = ArrayList<WorkspaceManifestAsset>()
+        val manifestAssets = ArrayList<WorkspaceManifestAsset>(assets.size)
+        val sourcePlans = ArrayList<SourcePlan>(assets.size)
         val sorted = assets.sortedWith(compareBy<ProjectAssetSummary> { it.ordinal }.thenBy { it.id })
         val seenPaths = HashSet<String>(sorted.size * 2)
+        val temporaryFiles = ArrayList<File>(sorted.size + 1)
+        val pending = ArrayList<PreparedMaterial>(sorted.size + 1)
+        var manifestPublished = false
         var ordinal = 0
         try {
             if (sorted.isNotEmpty() && sorted.sumOf { it.itemCount.toLong() } != summary.itemCount.toLong()) {
@@ -620,6 +646,7 @@ class WorkspaceMaterialSource(
                 )
             }
             sorted.forEach { asset ->
+                cancellation.throwIfCancelled()
                 val assetPath = asset.path.value
                 validateAssetPath(assetPath)
                 val targetPath = expectedMaterialPath(asset)?.let { policy.parse(it) }
@@ -630,25 +657,11 @@ class WorkspaceMaterialSource(
                             targetPath.value,
                         )
                     }
-                    if (asset.originalSize > textLimits.maxSourceBytes.toLong()) {
+                    if (asset.originalSize > textLimits.maxSourceBytes.toLong() ||
+                        asset.originalSize > WorkspaceHardLimits.MAX_SINGLE_BYTES
+                    ) {
                         throw WorkspaceMaterialSnapshotException(
                             WorkspaceMaterialSnapshotException.Reason.PROJECT_LIMIT,
-                            asset.id.toString(),
-                        )
-                    }
-                    val bytes = try {
-                        project.readAsset(ref, asset.id)
-                    } catch (failure: java.util.concurrent.CancellationException) {
-                        throw failure
-                    } catch (failure: Exception) {
-                        throw WorkspaceMaterialSnapshotException(
-                            WorkspaceMaterialSnapshotException.Reason.READ_FAILED,
-                            asset.id.toString(),
-                        )
-                    }
-                    if (bytes.size.toLong() != asset.originalSize || sha256Hex(bytes) != asset.sha256) {
-                        throw WorkspaceMaterialSnapshotException(
-                            WorkspaceMaterialSnapshotException.Reason.ASSET_MISMATCH,
                             asset.id.toString(),
                         )
                     }
@@ -659,13 +672,13 @@ class WorkspaceMaterialSource(
                         kind = WorkspaceMaterialKind.SOURCE,
                         path = targetPath,
                         sha256 = asset.sha256,
-                        sizeBytes = bytes.size.toLong(),
+                        sizeBytes = asset.originalSize,
                         mediaType = WorkspaceStorageSupport.mediaType(targetPath.value),
                         ordinal = ordinal++,
                         origin = WorkspaceMaterialOrigin.PROJECT_ASSET,
                         sourceRef = WorkspaceMaterialManifest.assetSource(asset.id),
                     )
-                    desired += DesiredMaterial(material, bytes)
+                    sourcePlans += SourcePlan(asset, material)
                     manifestAssets += WorkspaceManifestAsset(
                         asset.id, assetPath, asset.format, asset.enabled, asset.sha256,
                         asset.originalSize, asset.itemCount, targetPath.value,
@@ -686,42 +699,94 @@ class WorkspaceMaterialSource(
                     datasetPath.value,
                 )
             }
+            val datasetSha = sha256Hex(dataset)
             val datasetSummary = WorkspaceMaterialSummary(
                 id = WorkspaceStorageSupport.materialId(
-                    WorkspaceMaterialKind.DATASET, datasetPath, sha256Hex(dataset),
+                    WorkspaceMaterialKind.DATASET, datasetPath, datasetSha,
                 ),
                 kind = WorkspaceMaterialKind.DATASET,
                 path = datasetPath,
-                sha256 = sha256Hex(dataset),
+                sha256 = datasetSha,
                 sizeBytes = dataset.size.toLong(),
                 mediaType = "application/x-ndjson",
                 ordinal = ordinal,
                 origin = WorkspaceMaterialOrigin.HOST_REQUEST,
                 sourceRef = "project-assets",
             )
-            desired += DesiredMaterial(datasetSummary, dataset)
-            requireNoPathHierarchy(desired)
+            val materials = sourcePlans.map { it.summary } + datasetSummary
+            requireNoPathHierarchy(materials)
 
+            // Check the material budget before loading any body. Bodies are then staged one
+            // asset at a time, so the complete project does not have to stay in memory twice.
             val meter = WorkspaceBudgetMeter(budget)
-            desired.forEach { entry -> meter.recordMaterial(entry.summary.sizeBytes) }
+            materials.forEach { material ->
+                cancellation.throwIfCancelled()
+                meter.recordMaterial(material.sizeBytes)
+            }
 
             val manifest = WorkspaceMaterialManifest(
                 ref = ref,
                 revision = revision,
                 itemCount = summary.itemCount,
-                totalBytes = desired.sumOf { it.summary.sizeBytes },
+                totalBytes = materials.sumOf { it.sizeBytes },
                 assets = manifestAssets,
-                materials = desired.map { it.summary },
+                materials = materials,
             )
 
-            // Remove stale generated source/dataset files before writing the new snapshot. The
-            // manifest is already gone, so readers cannot observe this intermediate state.
+            sourcePlans.forEach { plan ->
+                cancellation.throwIfCancelled()
+                val bytes = try {
+                    project.readAsset(ref, plan.asset.id)
+                } catch (failure: java.util.concurrent.CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    throw WorkspaceMaterialSnapshotException(
+                        WorkspaceMaterialSnapshotException.Reason.READ_FAILED,
+                        plan.asset.id.toString(),
+                    )
+                }
+                cancellation.throwIfCancelled()
+                if (bytes.size.toLong() != plan.summary.sizeBytes) {
+                    throw WorkspaceMaterialSnapshotException(
+                        WorkspaceMaterialSnapshotException.Reason.ASSET_MISMATCH,
+                        plan.asset.id.toString(),
+                    )
+                }
+                val target = resolve(plan.summary.path, createParents = true)
+                val temporary = writeTemporary(target, bytes, cancellation, temporaryFiles)
+                if (temporary.length() != plan.summary.sizeBytes ||
+                    WorkspaceStorageSupport.sha256(temporary) != plan.summary.sha256
+                ) {
+                    throw WorkspaceMaterialSnapshotException(
+                        WorkspaceMaterialSnapshotException.Reason.ASSET_MISMATCH,
+                        plan.asset.id.toString(),
+                    )
+                }
+                pending += PreparedMaterial(plan.summary, temporary)
+            }
+
+            cancellation.throwIfCancelled()
+            val datasetTarget = resolve(datasetPath, createParents = true)
+            val datasetTemporary = writeTemporary(datasetTarget, dataset, cancellation, temporaryFiles)
+            if (datasetTemporary.length() != datasetSummary.sizeBytes ||
+                WorkspaceStorageSupport.sha256(datasetTemporary) != datasetSummary.sha256
+            ) {
+                throw WorkspaceMaterialSnapshotException(
+                    WorkspaceMaterialSnapshotException.Reason.READ_FAILED,
+                    datasetPath.value,
+                )
+            }
+            pending += PreparedMaterial(datasetSummary, datasetTemporary)
+
+            cancellation.throwIfCancelled()
+            // Remove stale generated source/dataset files before publishing the new snapshot.
+            // The manifest is already gone, so readers cannot observe this intermediate state.
             previous?.materials?.forEach { material ->
                 if (material.kind != WorkspaceMaterialKind.SOURCE &&
                     !(material.kind == WorkspaceMaterialKind.DATASET &&
                         material.path.value == "datasets/assets.jsonl")
                 ) return@forEach
-                if (desired.none { it.summary.path.value == material.path.value }) {
+                if (materials.none { it.path.value == material.path.value }) {
                     try {
                         WorkspaceStorageSupport.deleteRegularFile(base, resolve(material.path))
                     } catch (failure: Exception) {
@@ -732,15 +797,21 @@ class WorkspaceMaterialSource(
                     }
                 }
             }
-            sweepSources(desired.map { it.summary.path.value }.toSet())
-
-            desired.forEach { entry ->
-                val file = resolve(entry.summary.path, createParents = true)
-                WorkspaceStorageSupport.writeAtomically(file, entry.bytes, readOnly = true)
+            val keepSourcePaths = materials.mapTo(HashSet(materials.size * 2)) { it.path.value }
+            temporaryFiles.forEach { temporary ->
+                keepSourcePaths += temporary.relativeTo(base).path.replace(File.separatorChar, '/')
             }
+            sweepSources(keepSourcePaths)
+
+            pending.forEach { entry ->
+                cancellation.throwIfCancelled()
+                publishTemporary(entry.temporary, resolve(entry.summary.path))
+            }
+            cancellation.throwIfCancelled()
 
             val bytes = WorkspaceMaterialManifestCodec.encode(manifest).toByteArray(Charsets.UTF_8)
             WorkspaceStorageSupport.writeAtomically(manifestFile, bytes, readOnly = true)
+            manifestPublished = true
             cached = manifest
 
             val afterSummary = currentSummary()
@@ -748,30 +819,95 @@ class WorkspaceMaterialSource(
             if (!matches(manifest, afterSummary, afterAssets)) {
                 WorkspaceStorageSupport.deleteRegularFile(base, manifestFile)
                 cached = null
+                manifestPublished = false
                 throw WorkspaceMaterialSnapshotException(
                     WorkspaceMaterialSnapshotException.Reason.CHANGED_DURING_SNAPSHOT,
                 )
             }
             return manifest
-        } catch (failure: WorkspaceBudgetExceeded) {
-            throw failure
-        } catch (failure: WorkspaceMaterialSnapshotException) {
-            throw failure
-        } catch (failure: InvalidWorkspacePath) {
-            throw WorkspaceMaterialSnapshotException(
-                WorkspaceMaterialSnapshotException.Reason.PATH_POLICY,
-                failure.toString(),
-            )
+        } catch (failure: Exception) {
+            if (!manifestPublished) cleanupPublished(pending)
+            when (failure) {
+                is WorkspaceBudgetExceeded -> throw failure
+                is WorkspaceMaterialSnapshotException -> throw failure
+                is WorkspaceMaterialStaleRevision -> throw failure
+                is java.util.concurrent.CancellationException -> throw failure
+                is InvalidWorkspacePath -> throw WorkspaceMaterialSnapshotException(
+                    WorkspaceMaterialSnapshotException.Reason.PATH_POLICY,
+                    failure.toString(),
+                )
+                else -> throw failure
+            }
+        } finally {
+            temporaryFiles.forEach { temporary ->
+                if (temporary.exists()) temporary.delete()
+            }
+        }
+    }
+
+    private suspend fun writeTemporary(
+        target: File,
+        bytes: ByteArray,
+        cancellation: WorkspaceCancellation,
+        temporaryFiles: MutableList<File>,
+    ): File {
+        val parent = target.parentFile ?: throw IOException("Workspace material has no parent")
+        require(parent.isDirectory) { "Workspace material parent is unavailable" }
+        val temporary = File.createTempFile(".lnt-material-", ".tmp", parent)
+        temporaryFiles += temporary
+        FileOutputStream(temporary).use { output ->
+            var offset = 0
+            while (offset < bytes.size) {
+                cancellation.throwIfCancelled()
+                val count = minOf(64 * 1024, bytes.size - offset)
+                output.write(bytes, offset, count)
+                offset += count
+            }
+            cancellation.throwIfCancelled()
+            output.flush()
+            output.fd.sync()
+        }
+        return temporary
+    }
+
+    private fun publishTemporary(temporary: File, target: File) {
+        val parent = target.parentFile ?: throw IOException("Workspace material has no parent")
+        require(parent.isDirectory) { "Workspace material parent is unavailable" }
+        require(WorkspaceStorageSupport.isSafeRegularTarget(target)) {
+            "Workspace material target is not a regular file"
+        }
+        temporary.setReadOnly()
+        if (target.exists()) {
+            require(WorkspaceStorageSupport.isSafeRegularTarget(target)) {
+                "Workspace material target changed during publication"
+            }
+            require(target.delete()) { "Workspace material target could not be replaced" }
+        }
+        if (!temporary.renameTo(target)) throw IOException("Workspace material publication failed")
+    }
+
+    private fun cleanupPublished(pending: List<PreparedMaterial>) {
+        pending.forEach { entry ->
+            val target = try {
+                resolve(entry.summary.path)
+            } catch (_: Exception) {
+                null
+            } ?: return@forEach
+            try {
+                WorkspaceStorageSupport.deleteRegularFile(base, target)
+            } catch (_: Exception) {
+                // The manifest is already absent; a leftover generated file is swept next time.
+            }
         }
     }
 
     private fun expectedMaterialPath(asset: ProjectAssetSummary): String? =
         if (asset.enabled && asset.format.textual) "sources/" + asset.path.value else null
 
-    private fun requireNoPathHierarchy(desired: List<DesiredMaterial>) {
-        val paths = desired.mapTo(HashSet(desired.size * 2)) { it.summary.path.value }
-        desired.forEach { entry ->
-            val path = entry.summary.path.value
+    private fun requireNoPathHierarchy(materials: List<WorkspaceMaterialSummary>) {
+        val paths = materials.mapTo(HashSet(materials.size * 2)) { it.path.value }
+        materials.forEach { material ->
+            val path = material.path.value
             var index = path.indexOf('/')
             while (index > 0) {
                 if (path.substring(0, index) in paths) {
@@ -910,7 +1046,15 @@ class WorkspaceMaterialSource(
             WorkspaceMaterialOrigin.HOST_REQUEST
     }
 
-    private class DesiredMaterial(val summary: WorkspaceMaterialSummary, val bytes: ByteArray)
+    private class SourcePlan(
+        val asset: ProjectAssetSummary,
+        val summary: WorkspaceMaterialSummary,
+    )
+
+    private class PreparedMaterial(
+        val summary: WorkspaceMaterialSummary,
+        val temporary: File,
+    )
 
     companion object {
         const val MANIFEST_NAME = "material-manifest.json"

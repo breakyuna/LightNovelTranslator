@@ -91,11 +91,13 @@ internal class FakeScriptEngine(
     var lastRequest: WorkspaceScriptRequest? = null
     var failure: Exception? = null
     var onExecute: (WorkspaceScriptRequest) -> Unit = {}
+    var onExecuteSuspend: suspend (WorkspaceScriptRequest) -> Unit = {}
 
     override suspend fun execute(request: WorkspaceScriptRequest): WorkspaceScriptResult {
         calls += 1
         lastRequest = request
         onExecute(request)
+        onExecuteSuspend(request)
         failure?.let { throw it }
         return resultFactory()
     }
@@ -125,11 +127,15 @@ internal class FakeApprovalPort : WorkspaceApprovalPort {
     }
 }
 
-internal class FakeApplyPort : WorkspaceApplyPort {
+internal class FakeApplyPort : WorkspaceApplyCancellationPort {
     var calls: Int = 0
         private set
     var lastApproved: ApprovedWorkspaceChangeSet? = null
+    var lastCancellation: WorkspaceCancellation? = null
+    var lastDeadlineAtMillis: Long? = null
+    var retainedIntent: ApprovedWorkspaceChangeSet? = null
     var failure: Exception? = null
+    var onApply: (ApprovedWorkspaceChangeSet) -> Unit = {}
     var receiptFactory: (ApprovedWorkspaceChangeSet) -> WorkspaceApplyReceipt = { approved ->
         WorkspaceApplyReceipt(
             commandId = approved.commandId,
@@ -152,9 +158,24 @@ internal class FakeApplyPort : WorkspaceApplyPort {
     override suspend fun apply(
         approved: ApprovedWorkspaceChangeSet,
         conflictPolicy: WorkspaceConflictPolicy,
+    ): WorkspaceApplyReceipt = apply(
+        approved,
+        conflictPolicy,
+        WorkspaceCancellation(),
+        Long.MAX_VALUE,
+    )
+
+    override suspend fun apply(
+        approved: ApprovedWorkspaceChangeSet,
+        conflictPolicy: WorkspaceConflictPolicy,
+        cancellation: WorkspaceCancellation,
+        deadlineAtMillis: Long,
     ): WorkspaceApplyReceipt {
         calls += 1
         lastApproved = approved
+        lastCancellation = cancellation
+        lastDeadlineAtMillis = deadlineAtMillis
+        onApply(approved)
         failure?.let { throw it }
         return receiptFactory(approved)
     }
@@ -244,6 +265,7 @@ internal fun runRequest(
 internal class RuntimeFixture(
     materialSummaries: List<WorkspaceMaterialSummary> = emptyList(),
     materialBodies: Map<WorkspaceMaterialId, ByteArray> = emptyMap(),
+    memorySampler: WorkspaceMemorySampler = WorkspaceMemorySampler { 0L },
 ) {
     val materials = FakeMaterialPort(materialSummaries, materialBodies)
     val engine = FakeScriptEngine()
@@ -270,6 +292,7 @@ internal class RuntimeFixture(
             }
         },
         clock = clock,
+        memorySampler = memorySampler,
     )
 
     init {

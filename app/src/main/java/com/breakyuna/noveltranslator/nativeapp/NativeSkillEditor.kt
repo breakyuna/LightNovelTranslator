@@ -4,12 +4,15 @@ import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillDraft
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillLimits
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillPolicy
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreException
 import java.util.Locale
 
 /**
  * UI values for the existing skill draft/update path. The store remains the only skill
  * implementation; this object only parses bounded editor text into [WorkspaceSkillDraft].
+ * [policy] is carried unchanged from the selected record so editing the name, body or order
+ * never resets grants or budgets to a broader default.
  */
 internal data class NativeSkillEditorInput(
     val name: String,
@@ -19,6 +22,7 @@ internal data class NativeSkillEditorInput(
     val order: String,
     val languages: String,
     val tags: String,
+    val policy: WorkspaceSkillPolicy = WorkspaceSkillPolicy.DEFAULT,
 ) {
     fun toDraft(id: WorkspaceSkillId): WorkspaceSkillDraft = WorkspaceSkillDraft(
         id = id,
@@ -33,6 +37,7 @@ internal data class NativeSkillEditorInput(
             MAX_LANGUAGE_CHARS,
         ),
         tags = NativeSkillMetadata.parseLabels(tags, WorkspaceSkillLimits.MAX_TAGS, MAX_TAG_CHARS),
+        policy = policy,
     )
 
     private companion object {
@@ -70,6 +75,15 @@ internal object NativeSkillMetadata {
 
     fun formatLabels(values: Set<String>): String = values.sorted().joinToString(", ")
 }
+
+/** Direct-run network can only narrow the skill policy; it never grants network by itself. */
+internal fun nativeDirectExecutionFetchAllowed(
+    policy: WorkspaceSkillPolicy,
+    requested: Boolean,
+): Boolean = requested && policy.allowFetch
+
+/** The direct-run network checkbox is editable only when the stored policy already grants it. */
+internal fun nativeSkillNetworkCheckboxEnabled(policy: WorkspaceSkillPolicy): Boolean = policy.allowFetch
 
 internal fun nativeSkillEditorError(failure: Throwable): Int = when {
     failure is WorkspaceSkillStoreException &&

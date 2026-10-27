@@ -18,8 +18,19 @@ internal class NativeBatchActions(
     val prepare: (TextBatchChange) -> Unit, val confirm: (ManualTextBatch) -> Unit, val dismiss: (ManualTextBatch) -> Unit,
     val prepareQuery: ((TextBatchChange) -> Unit)? = null,
     val prepareReplacement: ((TextReplacementOptions, NativeQueryReplacementScope) -> Unit)? = null,
-    val prepareNames: ((List<String>, NativeQueryReplacementScope) -> Unit)? = null,
+    val prepareNames: ((List<String>, NativeQueryReplacementScope, TextBatchChange) -> Unit)? = null,
 )
+
+/** The name dialog defaults to translated names so the previous behaviour is unchanged. */
+internal enum class NativeNameAssignmentScope(val change: TextBatchChange) {
+    TRANSLATION(TextBatchChange.ASSIGN_NAMES),
+    SOURCE(TextBatchChange.ASSIGN_SOURCE_NAMES),
+    ;
+    fun label(): Int = when (this) {
+        TRANSLATION -> R.string.native_batch_assign_names_scope_translation
+        SOURCE -> R.string.native_batch_assign_names_scope_source
+    }
+}
 
 internal data class NativeQueryReplacementScope(val ref: LocalProjectRef, val revision: Long,
     val query: TextItemQuery, val quality: TextQualitySelection?)
@@ -34,7 +45,7 @@ internal fun NativeBatchToolbar(state: NativeProjectUiState, actions: NativeBatc
             TextButton(onClick = { menu = true }, enabled = !state.busy && state.selectedItems.isNotEmpty(),
                 modifier = Modifier.testTag("native-batch-actions")) { Text(stringResource(R.string.native_batch_actions)) }
             DropdownMenu(menu, onDismissRequest = { menu = false }) {
-                TextBatchChange.entries.filter { it !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES) }.forEach { change ->
+                TextBatchChange.entries.filter { it != TextBatchChange.REPLACE_TRANSLATION && !it.assignsNames }.forEach { change ->
                     DropdownMenuItem(text = { Text(stringResource(change.label())) }, onClick = { menu = false; actions.prepare(change) })
                 }
             }
@@ -48,8 +59,8 @@ internal fun NativeQueryBatchButton(state: NativeProjectUiState, actions: Native
     var menu by remember(state.project?.ref, state.proofreadingQuery) { mutableStateOf(false) }
     var replacing by remember(state.project?.ref) { mutableStateOf<NativeQueryReplacementScope?>(null) }
     var assigning by remember(state.project?.ref) { mutableStateOf<NativeQueryReplacementScope?>(null) }
-    assigning?.let { scope -> NativeNameAssignmentDialog(scope, !state.busy, { assigning = null }) { names ->
-        assigning = null; actions.prepareNames?.invoke(names, scope)
+    assigning?.let { scope -> NativeNameAssignmentDialog(scope, !state.busy, { assigning = null }) { names, change ->
+        assigning = null; actions.prepareNames?.invoke(names, scope, change)
     } }
     replacing?.let { scope ->
         NativeQueryReplacementDialog(scope, !state.busy, { replacing = null }) { options ->
@@ -62,7 +73,7 @@ internal fun NativeQueryBatchButton(state: NativeProjectUiState, actions: Native
             !state.policyLoadIncomplete && !state.runLoadIncomplete && (state.matchingItems ?: 0) > 0,
             modifier = Modifier.testTag("native-query-batch-actions")) { Text(stringResource(if (state.qualityView == null) R.string.native_batch_all_query else R.string.native_batch_quality_selection)) }
         DropdownMenu(menu, onDismissRequest = { menu = false }) {
-            TextBatchChange.entries.filter { it !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES) }.forEach { change ->
+            TextBatchChange.entries.filter { it != TextBatchChange.REPLACE_TRANSLATION && !it.assignsNames }.forEach { change ->
                 DropdownMenuItem(text = { Text(stringResource(change.label())) }, onClick = { menu = false; prepare(change) })
             }
             if (actions.prepareNames != null) DropdownMenuItem(text = { Text(stringResource(R.string.native_batch_assign_names)) },
@@ -92,8 +103,11 @@ internal fun NativeManualBatchDialog(state: NativeProjectUiState, actions: Nativ
                 Text(stringResource(R.string.native_batch_rows, batch.targets.take(10).joinToString(", ") { (it.row.toLong() + 1).toString() }))
                 if (batch.change.clearsTranslation) Text(stringResource(R.string.native_batch_clear_warning), color = MaterialTheme.colorScheme.error)
                 batch.nameAssignment?.let { names ->
-                    Text(stringResource(R.string.native_batch_assign_names_notice))
-                    if (names.isEmpty()) Text(stringResource(R.string.native_batch_assign_names_clear), color = MaterialTheme.colorScheme.error)
+                    Text(stringResource(if (batch.assignsSourceNames) R.string.native_batch_assign_names_source_notice
+                        else R.string.native_batch_assign_names_notice))
+                    if (names.isEmpty()) Text(stringResource(if (batch.assignsSourceNames)
+                        R.string.native_batch_assign_names_source_clear else R.string.native_batch_assign_names_clear),
+                        color = MaterialTheme.colorScheme.error)
                     else names.forEachIndexed { index, name -> Text("${index + 1}: $name") }
                 }
                 batch.replacement?.let {
@@ -126,6 +140,7 @@ internal fun TextBatchChange.label(): Int = when (this) {
     TextBatchChange.EXCLUDE -> R.string.native_batch_exclude
     TextBatchChange.CLEAR_AND_RESET -> R.string.native_batch_clear
     TextBatchChange.ASSIGN_NAMES -> R.string.native_batch_assign_names
+    TextBatchChange.ASSIGN_SOURCE_NAMES -> R.string.native_batch_assign_source_names
     TextBatchChange.REPLACE_TRANSLATION -> R.string.native_batch_replace
 }
 
@@ -171,22 +186,40 @@ internal fun TextReplacementTarget.label(): Int = when (this) {
 
 @Composable
 private fun NativeNameAssignmentDialog(scope: NativeQueryReplacementScope, enabled: Boolean,
-    close: () -> Unit, prepare: (List<String>) -> Unit) {
+    close: () -> Unit, prepare: (List<String>, TextBatchChange) -> Unit) {
     var text by rememberSaveable(scope.ref, scope.revision, scope.query) { mutableStateOf("") }
-    val names = remember(text) {
+    var scopeName by rememberSaveable(scope.ref, scope.revision, scope.query) {
+        mutableStateOf(NativeNameAssignmentScope.TRANSLATION.name)
+    }
+    val nameScope = NativeNameAssignmentScope.valueOf(scopeName)
+    val names = remember(text, nameScope) {
         runCatching {
             val values = if (text.isEmpty()) emptyList() else text.split('\n')
-            ManualNameEdit(CommandId("name-preview"), scope.ref, ItemId(1), scope.revision,
+            if (nameScope == NativeNameAssignmentScope.SOURCE)
+                ManualNameEdit(CommandId("name-preview"), scope.ref, ItemId(1), scope.revision,
+                    ObjectFingerprint("0".repeat(64)), emptyList(), values)
+            else ManualNameEdit(CommandId("name-preview"), scope.ref, ItemId(1), scope.revision,
                 ObjectFingerprint("0".repeat(64)), values)
             values
         }.getOrNull()
     }
-    NativePolicyForm(close, stringResource(R.string.native_batch_assign_names), "native-name-assignment-dialog",
-        enabled && names != null, { names?.let(prepare) }, applyLabel = stringResource(R.string.native_policy_preview)) {
-        Text(stringResource(R.string.native_batch_assign_names_notice))
+    NativePolicyForm(close, stringResource(R.string.native_batch_assign_names_title), "native-name-assignment-dialog",
+        enabled && names != null, { names?.let { prepare(it, nameScope.change) } },
+        applyLabel = stringResource(R.string.native_policy_preview)) {
+        Text(stringResource(R.string.native_batch_assign_names_scope))
+        NativeNameAssignmentScope.entries.forEach { choice -> Row {
+            RadioButton(selected = nameScope == choice, onClick = { scopeName = choice.name }, enabled = enabled,
+                modifier = Modifier.testTag("native-name-assignment-scope-${choice.name.lowercase()}"))
+            Text(stringResource(choice.label()))
+        } }
+        Text(stringResource(if (nameScope == NativeNameAssignmentScope.SOURCE)
+            R.string.native_batch_assign_names_source_notice else R.string.native_batch_assign_names_notice))
         OutlinedTextField(text, { if (it.length <= 16_384) text = it }, enabled = enabled,
-            label = { Text(stringResource(R.string.native_batch_assign_names_input)) }, modifier = Modifier.fillMaxWidth())
-        if (text.isEmpty()) Text(stringResource(R.string.native_batch_assign_names_clear), color = MaterialTheme.colorScheme.error)
+            label = { Text(stringResource(R.string.native_batch_assign_names_input)) },
+            modifier = Modifier.fillMaxWidth().testTag("native-name-assignment-input"))
+        if (text.isEmpty()) Text(stringResource(if (nameScope == NativeNameAssignmentScope.SOURCE)
+            R.string.native_batch_assign_names_source_clear else R.string.native_batch_assign_names_clear),
+            color = MaterialTheme.colorScheme.error)
         if (names == null) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
     }
 }

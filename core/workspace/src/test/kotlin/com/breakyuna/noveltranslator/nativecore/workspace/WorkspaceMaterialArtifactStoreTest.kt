@@ -91,6 +91,7 @@ class WorkspaceMaterialSourceTest {
             )
         }
         source.verify()
+        assertTrue(root.walkTopDown().none { it.isFile && it.name.startsWith(".lnt-material-") })
         val second = WorkspaceMaterialSource(root, ref, 7, project).snapshot()
         assertEquals(manifest.digest, second.digest)
     }
@@ -227,6 +228,29 @@ class WorkspaceMaterialSourceTest {
         assertEquals(WorkspaceMaterialSnapshotException.Reason.PROJECT_LIMIT, items.reason)
     }
 
+    @Test fun cancellationBetweenAssetsLeavesNoManifestOrTemporaryFiles() {
+        val token = WorkspaceCancellation()
+        val project = FakeMaterialProject(
+            rev = 7,
+            assets = listOf(
+                asset(1, "novel/ch1.txt", ProjectAssetFormat.TXT, "hello", 2, ordinal = 0),
+                asset(2, "notes.md", ProjectAssetFormat.MD_V2, "# Notes\n", 1, ordinal = 1),
+            ),
+        )
+        project.onReadAsset = { assetId ->
+            if (assetId == 2L) token.cancel()
+        }
+        val source = WorkspaceMaterialSource(root, ref, 7, project)
+
+        assertThrows(java.util.concurrent.CancellationException::class.java) {
+            runBlocking { source.snapshot(token) }
+        }
+        assertFalse(File(root, WorkspaceMaterialSource.MANIFEST_NAME).exists())
+        assertFalse(File(root, "sources/novel/ch1.txt").exists())
+        assertFalse(File(root, "sources/notes.md").exists())
+        assertTrue(root.walkTopDown().none { it.isFile && it.name.startsWith(".lnt-material-") })
+    }
+
     @Test fun readIsBoundedAndDetectsTampering() = runBlocking {
         val project = FakeMaterialProject(
             rev = 2,
@@ -281,6 +305,7 @@ class WorkspaceMaterialSourceTest {
         ),
         var assets: List<ProjectAssetSummary> = emptyList(),
         val bodies: MutableMap<Long, ByteArray> = mutableMapOf(),
+        var onReadAsset: (Long) -> Unit = {},
     ) : WorkspaceMaterialProjectPort {
         init {
             assets.forEach { asset ->
@@ -306,8 +331,7 @@ class WorkspaceMaterialSourceTest {
         override suspend fun readAsset(ref: LocalProjectRef, assetId: Long): ByteArray {
             val asset = assets.first { it.id == assetId }
             val supplied = bodies[assetId]
-            if (supplied != null && supplied.isNotEmpty()) return supplied.copyOf()
-            return when (asset.path.value) {
+            val bytes = if (supplied != null && supplied.isNotEmpty()) supplied.copyOf() else when (asset.path.value) {
                 "novel/ch1.txt" -> "hello".toByteArray(Charsets.UTF_8)
                 "notes.md" -> "# Notes\n".toByteArray(Charsets.UTF_8)
                 "book.pdf" -> "%PDF".toByteArray(Charsets.UTF_8)
@@ -317,6 +341,8 @@ class WorkspaceMaterialSourceTest {
                 "same.txt" -> "one".toByteArray(Charsets.UTF_8)
                 else -> error("No fixture body")
             }
+            onReadAsset(assetId)
+            return bytes
         }
     }
 }

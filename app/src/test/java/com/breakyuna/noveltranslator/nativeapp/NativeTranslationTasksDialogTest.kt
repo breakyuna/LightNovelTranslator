@@ -64,6 +64,41 @@ class NativeTranslationTasksDialogTest {
         compose.runOnIdle { assertEquals(2, olderAttempts) }
     }
 
+    @Test fun queueManagedTaskHasNoLegacyDecisionAndRoutesToTheQueueReview() {
+        var reviewed: RunIdentity? = null
+        compose.setContent { NativeTheme {
+            NativeTranslationTasksDialog(ref, { listOf(summary) }, { _, _ -> error("Legacy inspection") },
+                {}, { error("Legacy resume") }, inspectReview = { _, _ -> error("Legacy review") },
+                terminate = { _, _ -> error("Legacy terminate") },
+                queueManagedRuns = setOf("run"), queueReviewableRuns = setOf("run"),
+                reviewQueueTask = { reviewed = it })
+        } }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("native-task-queue-review-command").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("native-task-legacy-review-command").assertDoesNotExist()
+        compose.onNodeWithTag("native-task-command").assertDoesNotExist()
+        compose.onNodeWithTag("native-task-queue-review-command").performClick()
+        compose.runOnIdle { assertEquals(spec.run, reviewed) }
+    }
+
+    @Test fun historicalNonQueueTaskStillShowsItsReadOnlyLegacyReview() {
+        var reviewed = 0
+        compose.setContent { NativeTheme {
+            NativeTranslationTasksDialog(ref, { listOf(summary) }, { _, _ -> NativeTranslationResumePreview(spec, "fixture") },
+                {}, {}, inspectReview = { _, run ->
+                    reviewed++; TranslationTaskReview(ref, run, "READY", 1, 1, 2, 1, 0,
+                        ObjectFingerprint("a".repeat(64)))
+                }, terminate = { _, _ -> })
+        } }
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag("native-task-legacy-review-command").fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("native-task-queue-review-command").assertDoesNotExist()
+        compose.onNodeWithTag("native-task-legacy-review-command").performClick()
+        compose.waitUntil(5_000) { reviewed == 1 }
+    }
+
     @Test fun inspectionNeverStartsWorkBeforeExplicitPaidConfirmation() {
         var resumed: TranslationTaskSpec? = null
         compose.setContent { NativeTheme {

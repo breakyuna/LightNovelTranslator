@@ -87,6 +87,28 @@ class NativeItemProposalStore(context: Context, private val projects: NativeText
         projects.approvedItemsReceipt(proposal, selected)
     }
 
+    /** Read-only mixed-approval loader; it never consumes, settles or writes the proposal. */
+    internal suspend fun loadMixedProposal(ref: LocalProjectRef, chat: ChatId,
+                                           id: ApprovalRequestId): ItemChangeProposal = io {
+        projects.open(ref)
+        val row = requireNotNull(db.itemProposals().find(id.value))
+        require(row.chatId == chat.value)
+        payload(row, ref)
+    }
+
+    /** Frozen selection of a claimed proposal, checked against the exact stored binding. */
+    internal suspend fun loadMixedSelection(ref: LocalProjectRef, chat: ChatId,
+                                            id: ApprovalRequestId): Set<ItemId> = io {
+        projects.open(ref)
+        val row = requireNotNull(db.itemProposals().find(id.value))
+        require(row.chatId == chat.value)
+        val proposal = payload(row, ref)
+        val encoded = requireNotNull(row.selected) { "Proposal selection is not frozen" }
+        selection(encoded).also { selected ->
+            require(row.binding == proposal.binding(selected).sha256) { "Approval selection mismatch" }
+        }
+    }
+
     suspend fun members(view: ItemProposalSummary): List<ItemProposalMemberSummary> = io {
         verifyView(view)
         db.itemProposals().memberList(view.id.value).also { require(it.size == view.count) }.map {

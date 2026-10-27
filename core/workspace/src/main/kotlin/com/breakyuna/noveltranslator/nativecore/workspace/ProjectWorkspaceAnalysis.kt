@@ -6,6 +6,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -51,7 +52,8 @@ class ProjectWorkspaceAnalysisRun(
  * and an injected policy-enforcing Fetch port. Proposal mode accepts one typed item
  * patch file only; the application still persists and approves it through the project writer.
  * Artifacts emitted by a successful script are published through [artifactPublisher] and never
- * become project data.
+ * become project data. An optional [WorkspaceSkillPolicy] narrows capabilities and budgets; it
+ * never enables network by itself and never substitutes for approval or a project write grant.
  */
 class ProjectWorkspaceAnalysis(
     context: Context,
@@ -66,16 +68,29 @@ class ProjectWorkspaceAnalysis(
 
     suspend fun analyze(ref: LocalProjectRef, lease: RunLease, script: String,
                         expectedRevision: Long? = null, allowFetch: Boolean = false,
-                        inputJson: String = "{}"): ProjectWorkspaceAnalysisRun {
-        require(!allowFetch || fetch != null) { "Fetch unavailable" }
+                        inputJson: String = "{}",
+                        cancellation: WorkspaceCancellation? = null,
+                        policy: WorkspaceSkillPolicy? = null): ProjectWorkspaceAnalysisRun {
+        // A policy that denies fetch wins over the caller flag; a grant never enables network by
+        // itself. Without a policy the legacy caller rule stays unchanged.
+        val fetchRequired = allowFetch && (policy == null || policy.allowFetch)
+        require(!fetchRequired || fetch != null) { "Fetch unavailable" }
         val input = JsonObjectValue.parse(inputJson, JsonInputLimits(16_384, 16)).json.toString()
-        val run = execute(ref, lease, script, ProposalMode.NONE, expectedRevision, allowFetch, input)
-        return ProjectWorkspaceAnalysisRun(run.revision, run.result, publishResult(ref, lease, run.result))
+        val run = execute(ref, lease, script, ProjectWorkspaceAnalysisProposalMode.NONE, expectedRevision,
+            allowFetch, input, cancellation, policy)
+        return ProjectWorkspaceAnalysisRun(
+            run.revision,
+            run.result,
+            publishResult(ref, lease, run.result, cancellation, policy),
+        )
     }
 
     suspend fun proposedChanges(ref: LocalProjectRef, lease: RunLease, script: String,
-                                expectedRevision: Long? = null): ProjectScriptItemChanges {
-        val run = execute(ref, lease, script, ProposalMode.ITEM, expectedRevision)
+                                expectedRevision: Long? = null,
+                                cancellation: WorkspaceCancellation? = null,
+                                policy: WorkspaceSkillPolicy? = null): ProjectScriptItemChanges {
+        val run = execute(ref, lease, script, ProjectWorkspaceAnalysisProposalMode.ITEM, expectedRevision,
+            cancellation = cancellation, policy = policy)
         val result = run.result
         require(result.exitCode == 0 && !result.outputTruncated) { "Script did not complete" }
         val change = result.changes.single()
@@ -85,7 +100,7 @@ class ProjectWorkspaceAnalysis(
         val json = bytes.toString(Charsets.UTF_8)
         require(json.toByteArray(Charsets.UTF_8).contentEquals(bytes)) { "Invalid proposal encoding" }
         ItemProposalCodec.patches(json)
-        return ProjectScriptItemChanges(run.revision, json, publishResult(ref, lease, result))
+        return ProjectScriptItemChanges(run.revision, json, publishResult(ref, lease, result, cancellation, policy))
     }
 
     /**
@@ -96,8 +111,11 @@ class ProjectWorkspaceAnalysis(
      * applies it only after a user decision.
      */
     suspend fun proposedWorkspaceChanges(ref: LocalProjectRef, lease: RunLease, script: String,
-                                         expectedRevision: Long? = null): ProjectScriptWorkspaceChanges {
-        val run = execute(ref, lease, script, ProposalMode.WORKSPACE, expectedRevision)
+                                         expectedRevision: Long? = null,
+                                         cancellation: WorkspaceCancellation? = null,
+                                         policy: WorkspaceSkillPolicy? = null): ProjectScriptWorkspaceChanges {
+        val run = execute(ref, lease, script, ProjectWorkspaceAnalysisProposalMode.WORKSPACE, expectedRevision,
+            cancellation = cancellation, policy = policy)
         val result = run.result
         require(result.exitCode == 0 && !result.outputTruncated) { "Script did not complete" }
         require(result.changes.isNotEmpty()) { "Workspace change proposal required" }
@@ -114,25 +132,48 @@ class ProjectWorkspaceAnalysis(
             lease.identity.runId,
             result.changes,
         )
-        return ProjectScriptWorkspaceChanges(run.revision, changeSet, publishResult(ref, lease, result))
+        return ProjectScriptWorkspaceChanges(
+            run.revision,
+            changeSet,
+            publishResult(ref, lease, result, cancellation, policy),
+        )
     }
 
-    private enum class ProposalMode { NONE, ITEM, WORKSPACE }
-
     private suspend fun execute(ref: LocalProjectRef, lease: RunLease, script: String,
-                                proposalMode: ProposalMode,
-                                expectedRevision: Long?, allowFetch: Boolean = false, inputJson: String = "{}"): ProjectWorkspaceAnalysisRun =
+                                proposalMode: ProjectWorkspaceAnalysisProposalMode,
+                                expectedRevision: Long?, allowFetch: Boolean = false,
+                                inputJson: String = "{}",
+                                cancellation: WorkspaceCancellation? = null,
+                                policy: WorkspaceSkillPolicy? = null): ProjectWorkspaceAnalysisRun =
         withContext(Dispatchers.IO) {
             require(lease.identity.projectId == ref.projectId)
             require(expectedRevision == null || expectedRevision >= 0) { "Invalid fixed revision" }
             val chat = requireNotNull(lease.identity.chatId)
+            val token = cancellation ?: WorkspaceCancellation()
+            token.throwIfCancelled()
             val source = WorkspaceScriptSource("project-analysis", "main.js", script)
+            val plan = planProjectWorkspaceAnalysis(
+                proposalMode = proposalMode,
+                allowFetch = allowFetch,
+                searchAvailable = search != null,
+                fetchAvailable = fetch != null,
+                publisherAvailable = artifactPublisher != null,
+                policy = policy,
+            )
+            if (proposalMode != ProjectWorkspaceAnalysisProposalMode.NONE && !plan.proposalEnabled) {
+                throw WorkspaceSkillScriptPolicyDenied(
+                    reason = WorkspaceSkillScriptPolicyDenied.Reason.CAPABILITY_DENIED,
+                    capabilities = setOf(WorkspaceCapability.PROPOSE_CHANGES),
+                )
+            }
             val started = System.currentTimeMillis()
-            val deadline = started + 120_000
+            val deadline = started + plan.timeoutMillis
             val root = File(context.cacheDir, "workspace-analysis")
             check(root.isDirectory || root.mkdirs())
             val directory = File(root, UUID.randomUUID().toString())
             check(directory.mkdir())
+            val job = currentCoroutineContext()[Job]
+            val bridge = linkWorkspaceCancellation(token, job)
             try {
                 val summary = projects.open(ref)
                 if (expectedRevision != null && summary.revision != expectedRevision) {
@@ -150,12 +191,14 @@ class ProjectWorkspaceAnalysis(
                 try {
                     while (true) {
                         currentCoroutineContext().ensureActive()
+                        token.throwIfCancelled()
                         if (System.currentTimeMillis() > deadline) throw WorkspaceScriptTimeoutException()
                         val page = projects.items(ref, summary.revision, after, 100)
                         require(page.revision == summary.revision)
                         if (page.items.isEmpty()) break
                         for (item in page.items) {
                             currentCoroutineContext().ensureActive()
+                            token.throwIfCancelled()
                             check(item.id.value > after) { "Project cursor did not advance" }
                             val bytes = (buildJsonObject {
                                 put("item_id", item.id.value)
@@ -189,10 +232,11 @@ class ProjectWorkspaceAnalysis(
                         }
                     }
                 } finally { output?.close() }
+                token.throwIfCancelled()
                 require(count == summary.itemCount) { "Incomplete project analysis snapshot" }
                 require(projects.open(ref).revision == summary.revision) { "Project changed during analysis" }
                 val files = WorkspaceFileStore(directory)
-                if (proposalMode == ProposalMode.WORKSPACE) {
+                if (proposalMode == ProjectWorkspaceAnalysisProposalMode.WORKSPACE) {
                     val inventory = workspaceInventory?.invoke(ref).orEmpty()
                         .filter { it.kind in setOf(WorkspaceMaterialKind.WORK, WorkspaceMaterialKind.UPLOAD,
                             WorkspaceMaterialKind.REFERENCE) }
@@ -200,6 +244,7 @@ class ProjectWorkspaceAnalysis(
                     if (inventory.isNotEmpty()) {
                         FileOutputStream(File(dataset, "workspace-files.jsonl")).bufferedWriter(Charsets.UTF_8).use { writer ->
                             inventory.forEach { summary ->
+                                token.throwIfCancelled()
                                 writer.write(buildJsonObject {
                                     put("path", summary.path.value)
                                     put("sha256", summary.sha256)
@@ -211,47 +256,50 @@ class ProjectWorkspaceAnalysis(
                         }
                     }
                 }
-                val materials = files.list(WorkspaceMaterialKind.DATASET).map { it.descriptor() }
+                token.throwIfCancelled()
+                if (System.currentTimeMillis() > deadline) throw WorkspaceScriptTimeoutException()
+                val materials = if (plan.materialsEnabled) {
+                    files.list(WorkspaceMaterialKind.DATASET).map { it.descriptor() }
+                } else {
+                    emptyList<WorkspaceMaterialDescriptor>()
+                }
                 val engine = IsolatedWorkspaceScriptEngine(context, object : WorkspaceScriptSourcePort {
                     override suspend fun resolve(scriptId: String, entryPoint: String): WorkspaceScriptSource {
                         require(scriptId == source.scriptId && entryPoint == source.entryPoint)
                         return source
                     }
                 }, SynchronousWorkspaceMaterialReadPort(files),
-                    search = if (allowFetch) search else null,
-                    fetch = if (allowFetch) fetch else null)
-                val capabilities = buildSet {
-                    add(WorkspaceCapability.READ_MATERIALS)
-                    if (allowFetch && search != null) add(WorkspaceCapability.SEARCH)
-                    if (allowFetch) add(WorkspaceCapability.FETCH)
-                    if (proposalMode != ProposalMode.NONE) add(WorkspaceCapability.PROPOSE_CHANGES)
-                    if (artifactPublisher != null) add(WorkspaceCapability.EMIT_ARTIFACTS)
-                }
+                    search = if (plan.searchEnabled) search else null,
+                    fetch = if (plan.fetchEnabled) fetch else null)
                 val result = engine.execute(WorkspaceScriptRequest(
                     CommandId(UUID.randomUUID().toString()), ref.projectId, chat, lease.identity.runId,
                     source.scriptId, source.entryPoint,
                     mapOf("revision" to summary.revision.toString(), "item_count" to count.toString(),
                         "format" to "project-items-jsonl-v1", "input_json" to inputJson), materials,
-                    capabilities,
-                    WorkspaceScriptLimits.of(WorkspaceBudget(
-                        maxOutputBytes = if (proposalMode != ProposalMode.NONE) 4L * 1024 * 1024 else 64L * 1024,
-                        maxLogLines = 64,
-                        maxChanges = if (proposalMode == ProposalMode.WORKSPACE) MAX_WORKSPACE_CHANGES else 1,
-                        maxChangeBytes = 4L * 1024 * 1024,
-                        maxTotalChangeBytes = if (proposalMode == ProposalMode.WORKSPACE) 32L * 1024 * 1024
-                            else 4L * 1024 * 1024,
-                        maxArtifacts = if (artifactPublisher != null) MAX_RUN_ARTIFACTS else 1,
-                        // The isolated bridge derives its artifact request bound from maxOutputBytes;
-                        // analysis keeps a small log budget, so its artifacts are intentionally 64 KiB.
-                        maxArtifactBytes = if (proposalMode != ProposalMode.NONE) MAX_RUN_ARTIFACT_BYTES
-                            else MAX_ANALYZE_ARTIFACT_BYTES,
-                        maxTotalArtifactBytes = if (proposalMode != ProposalMode.NONE) MAX_RUN_TOTAL_ARTIFACT_BYTES
-                            else MAX_ANALYZE_TOTAL_ARTIFACT_BYTES)),
-                    deadline, WorkspaceCancellation()))
-                val completed = if (proposalMode == ProposalMode.NONE) result
-                    else materializeChanges(result, files)
+                    plan.capabilities,
+                    WorkspaceScriptLimits.of(plan.budget),
+                    deadline, token))
+                token.throwIfCancelled()
+                currentCoroutineContext().ensureActive()
+                if (policy != null) {
+                    if (result.changes.isNotEmpty() && !plan.proposalEnabled) {
+                        throw WorkspaceSkillScriptPolicyDenied(
+                            reason = WorkspaceSkillScriptPolicyDenied.Reason.CAPABILITY_DENIED,
+                            capabilities = setOf(WorkspaceCapability.PROPOSE_CHANGES),
+                        )
+                    }
+                    if (result.artifacts.isNotEmpty() && !plan.artifactsEnabled) {
+                        throw WorkspaceSkillScriptPolicyDenied(
+                            reason = WorkspaceSkillScriptPolicyDenied.Reason.CAPABILITY_DENIED,
+                            capabilities = setOf(WorkspaceCapability.EMIT_ARTIFACTS),
+                        )
+                    }
+                }
+                val completed = if (proposalMode == ProjectWorkspaceAnalysisProposalMode.NONE) result
+                    else materializeChanges(result, files, token)
                 ProjectWorkspaceAnalysisRun(summary.revision, completed, emptyList())
             } finally {
+                releaseWorkspaceCancellation(bridge, job)
                 // Only this invocation's generated cache is owned here, never user materials.
                 directory.deleteRecursively()
             }
@@ -292,8 +340,11 @@ class ProjectWorkspaceAnalysis(
     private suspend fun materializeChanges(
         result: WorkspaceScriptResult,
         files: WorkspaceFileStore,
+        cancellation: WorkspaceCancellation,
     ): WorkspaceScriptResult {
         val changes = result.changes.map { change ->
+            cancellation.throwIfCancelled()
+            currentCoroutineContext().ensureActive()
             when (val content = change.content) {
                 is WorkspaceChangeContent.FromMaterial -> {
                     val material = files.read(content.materialId, content.sizeBytes)
@@ -314,11 +365,22 @@ class ProjectWorkspaceAnalysis(
         ref: LocalProjectRef,
         lease: RunLease,
         result: WorkspaceScriptResult,
+        cancellation: WorkspaceCancellation?,
+        policy: WorkspaceSkillPolicy?,
     ): List<WorkspaceArtifactRecord> {
         currentCoroutineContext().ensureActive()
+        cancellation?.throwIfCancelled()
+        if (result.artifacts.isNotEmpty() && policy != null &&
+            !policy.grants(WorkspaceCapability.EMIT_ARTIFACTS)
+        ) {
+            throw WorkspaceSkillScriptPolicyDenied(
+                reason = WorkspaceSkillScriptPolicyDenied.Reason.CAPABILITY_DENIED,
+                capabilities = setOf(WorkspaceCapability.EMIT_ARTIFACTS),
+            )
+        }
         return if (artifactPublisher != null && result.exitCode == 0 && !result.outputTruncated &&
             result.artifacts.isNotEmpty()) {
-            publishArtifacts(ref, lease, result.artifacts)
+            publishArtifacts(ref, lease, result.artifacts, cancellation)
         } else {
             emptyList()
         }
@@ -328,13 +390,20 @@ class ProjectWorkspaceAnalysis(
         ref: LocalProjectRef,
         lease: RunLease,
         drafts: List<WorkspaceArtifactDraft>,
+        cancellation: WorkspaceCancellation?,
     ): List<WorkspaceArtifactRecord> {
         val publisher = requireNotNull(artifactPublisher)
+        drafts.forEach { _ ->
+            cancellation?.throwIfCancelled()
+            currentCoroutineContext().ensureActive()
+        }
         val records = publisher.publish(ref, lease, drafts)
+        cancellation?.throwIfCancelled()
         require(records.size == drafts.size) { "Artifact publisher returned an incomplete batch" }
         val byPath = records.associateBy { it.path.value }
         require(byPath.size == records.size) { "Artifact publisher returned duplicate paths" }
         drafts.forEach { draft ->
+            cancellation?.throwIfCancelled()
             val record = byPath[draft.path.value]
                 ?: throw IllegalStateException("Artifact publisher omitted a draft")
             require(record.runId == lease.identity.runId &&
@@ -348,15 +417,134 @@ class ProjectWorkspaceAnalysis(
     companion object {
         private const val CHUNK_BYTES = 4 * 1024 * 1024
         private const val TOTAL_BYTES = 64L * 1024 * 1024
-        private const val MAX_RUN_ARTIFACTS = 16
-        private const val MAX_WORKSPACE_CHANGES = 64
         private const val MAX_WORKSPACE_INVENTORY = 1_024
-        private const val MAX_RUN_ARTIFACT_BYTES = 4L * 1024 * 1024
-        private const val MAX_ANALYZE_ARTIFACT_BYTES = 64L * 1024
-        private const val MAX_RUN_TOTAL_ARTIFACT_BYTES = 64L * 1024 * 1024
-        private const val MAX_ANALYZE_TOTAL_ARTIFACT_BYTES = 1024L * 1024
     }
 }
+
+/**
+ * Analysis entry mode. It is separate from [ProjectWorkspaceAnalysis] so the policy-only plan
+ * can be tested without an Android [Context].
+ */
+internal enum class ProjectWorkspaceAnalysisProposalMode { NONE, ITEM, WORKSPACE }
+
+/**
+ * Capabilities and budget after the optional skill policy was applied. [capabilities] is the
+ * intersection of what the caller requested and what the policy grants; [budget] and
+ * [timeoutMillis] are the smaller of the analysis defaults and the policy ceilings.
+ */
+internal class ProjectWorkspaceAnalysisPlan(
+    val capabilities: Set<WorkspaceCapability>,
+    val budget: WorkspaceBudget,
+    val timeoutMillis: Long,
+    val searchEnabled: Boolean,
+    val fetchEnabled: Boolean,
+) {
+    val materialsEnabled: Boolean get() = WorkspaceCapability.READ_MATERIALS in capabilities
+    val proposalEnabled: Boolean get() = WorkspaceCapability.PROPOSE_CHANGES in capabilities
+    val artifactsEnabled: Boolean get() = WorkspaceCapability.EMIT_ARTIFACTS in capabilities
+}
+
+internal fun projectWorkspaceAnalysisBaseBudget(
+    proposalMode: ProjectWorkspaceAnalysisProposalMode,
+    publisherAvailable: Boolean,
+): WorkspaceBudget = WorkspaceBudget(
+    maxOutputBytes = if (proposalMode != ProjectWorkspaceAnalysisProposalMode.NONE) {
+        ANALYSIS_MAX_OUTPUT_BYTES
+    } else {
+        ANALYSIS_LOG_OUTPUT_BYTES
+    },
+    maxLogLines = ANALYSIS_MAX_LOG_LINES,
+    maxChanges = if (proposalMode == ProjectWorkspaceAnalysisProposalMode.WORKSPACE) {
+        MAX_WORKSPACE_CHANGES
+    } else {
+        1
+    },
+    maxChangeBytes = ANALYSIS_MAX_CHANGE_BYTES,
+    maxTotalChangeBytes = if (proposalMode == ProjectWorkspaceAnalysisProposalMode.WORKSPACE) {
+        ANALYSIS_MAX_TOTAL_CHANGE_BYTES
+    } else {
+        ANALYSIS_MAX_CHANGE_BYTES
+    },
+    maxArtifacts = if (publisherAvailable) MAX_RUN_ARTIFACTS else 1,
+    // The isolated bridge derives its artifact request bound from maxOutputBytes; analysis
+    // keeps a small log budget, so its artifacts are intentionally 64 KiB.
+    maxArtifactBytes = if (proposalMode != ProjectWorkspaceAnalysisProposalMode.NONE) {
+        ANALYSIS_MAX_ARTIFACT_BYTES
+    } else {
+        ANALYSIS_LOG_ARTIFACT_BYTES
+    },
+    maxTotalArtifactBytes = if (proposalMode != ProjectWorkspaceAnalysisProposalMode.NONE) {
+        ANALYSIS_MAX_TOTAL_ARTIFACT_BYTES
+    } else {
+        ANALYSIS_LOG_TOTAL_ARTIFACT_BYTES
+    },
+    timeoutMillis = ANALYSIS_TIMEOUT_MILLIS,
+)
+
+/**
+ * Builds the effective analysis request. A null [policy] reproduces the legacy request exactly;
+ * a supplied policy can only remove capabilities and lower ceilings. It never grants network,
+ * print or proposal capability that the caller did not already request.
+ */
+internal fun planProjectWorkspaceAnalysis(
+    proposalMode: ProjectWorkspaceAnalysisProposalMode,
+    allowFetch: Boolean,
+    searchAvailable: Boolean,
+    fetchAvailable: Boolean,
+    publisherAvailable: Boolean,
+    policy: WorkspaceSkillPolicy?,
+): ProjectWorkspaceAnalysisPlan {
+    val baseBudget = projectWorkspaceAnalysisBaseBudget(proposalMode, publisherAvailable)
+    // The caller's allowFetch is the network master switch. SEARCH is additionally gated by
+    // policy.allowSearch and FETCH by policy.allowFetch, so neither policy grant can turn
+    // network on by itself.
+    val requested = buildSet {
+        add(WorkspaceCapability.READ_MATERIALS)
+        if (allowFetch && searchAvailable) add(WorkspaceCapability.SEARCH)
+        if (allowFetch && fetchAvailable) add(WorkspaceCapability.FETCH)
+        if (proposalMode != ProjectWorkspaceAnalysisProposalMode.NONE) {
+            add(WorkspaceCapability.PROPOSE_CHANGES)
+        }
+        if (publisherAvailable) add(WorkspaceCapability.EMIT_ARTIFACTS)
+    }
+    val capabilities = if (policy == null) {
+        workspaceFrozenSet(requested)
+    } else {
+        WorkspaceSkillPolicyEnforcement.capabilities(requested, policy)
+    }
+    val budget = if (policy == null) {
+        baseBudget
+    } else {
+        WorkspaceSkillPolicyEnforcement.budget(baseBudget, policy)
+    }
+    val timeoutMillis = if (policy == null) {
+        baseBudget.timeoutMillis
+    } else {
+        WorkspaceSkillPolicyEnforcement.timeoutMillis(baseBudget.timeoutMillis, policy)
+    }
+    return ProjectWorkspaceAnalysisPlan(
+        capabilities = capabilities,
+        budget = budget,
+        timeoutMillis = timeoutMillis,
+        searchEnabled = allowFetch && searchAvailable &&
+            WorkspaceCapability.SEARCH in capabilities,
+        fetchEnabled = allowFetch && fetchAvailable &&
+            WorkspaceCapability.FETCH in capabilities,
+    )
+}
+
+private const val ANALYSIS_TIMEOUT_MILLIS = 120_000L
+private const val ANALYSIS_LOG_OUTPUT_BYTES = 64L * 1024
+private const val ANALYSIS_MAX_OUTPUT_BYTES = 4L * 1024 * 1024
+private const val ANALYSIS_MAX_LOG_LINES = 64
+private const val ANALYSIS_MAX_CHANGE_BYTES = 4L * 1024 * 1024
+private const val ANALYSIS_MAX_TOTAL_CHANGE_BYTES = 32L * 1024 * 1024
+private const val MAX_RUN_ARTIFACTS = 16
+private const val MAX_WORKSPACE_CHANGES = 64
+private const val ANALYSIS_MAX_ARTIFACT_BYTES = 4L * 1024 * 1024
+private const val ANALYSIS_LOG_ARTIFACT_BYTES = 64L * 1024
+private const val ANALYSIS_MAX_TOTAL_ARTIFACT_BYTES = 64L * 1024 * 1024
+private const val ANALYSIS_LOG_TOTAL_ARTIFACT_BYTES = 1024L * 1024
 
 class ProjectScriptItemChanges(
     val revision: Long,

@@ -69,6 +69,17 @@ class NativeModelNetworkSettingsStoreTest {
         assertTrue(text.contains("\"source\":\"SAVED\""))
     }
 
+    @Test fun proxyCredentialReferencePersistsWithoutAnyPasswordField() = runBlocking {
+        val store = NativeModelNetworkSettingsStore(context)
+        val saved = store.save(configured().copy(proxyCredentialRef = "proxy-ref"))
+        assertEquals(saved, store.load())
+        val text = File(context.filesDir, "native_model_network_settings.json").readText()
+        assertTrue(text.contains("\"proxyCredentialRef\":\"proxy-ref\""))
+        assertFalse(text.contains("password"))
+        assertFalse(text.contains("proxy-password"))
+        assertFalse(saved.toString().contains("proxy-ref"))
+    }
+
     @Test fun staleFingerprintCannotOverwriteANewerPolicy() = runBlocking {
         val store = NativeModelNetworkSettingsStore(context)
         val first = store.save(configured())

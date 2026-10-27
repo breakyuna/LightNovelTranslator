@@ -94,6 +94,15 @@ class NativePolicyProposalStore(context: Context, private val projects: NativeTe
         val row = requireNotNull(db.policyProposals().find(id.value))
         payload(row, ref).also { require(it.chat == chat) }.summary(TextApprovalState.valueOf(row.state))
     }
+    /** Read-only mixed-approval loader; the whole policy is the single selected object. */
+    internal suspend fun loadMixedProposal(ref: LocalProjectRef, chat: ChatId,
+                                           id: ApprovalRequestId): PolicyChangeProposal = io {
+        projects.open(ref)
+        val row = requireNotNull(db.policyProposals().find(id.value))
+        require(row.chatId == chat.value)
+        payload(row, ref)
+    }
+
     suspend fun detail(view: PolicyApprovalSummary): PolicyChangeProposal = io { verified(view).second }
     suspend fun receipt(view: PolicyApprovalSummary): PolicyEditReceipt? = io {
         val (row, proposal) = verified(view)

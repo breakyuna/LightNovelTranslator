@@ -37,6 +37,31 @@ class ManualTextBatchTest {
         assertThrows(IllegalArgumentException::class.java) { batch(revision = -1) }
     }
 
+    @Test fun sourceNameAssignmentsUseTheirOwnChangeAndKeepTheSharedNameLimits() {
+        val names = listOf("", "源", "source")
+        val translated = ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.ASSIGN_NAMES,
+            listOf(target), nameAssignment = names)
+        val source = ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.ASSIGN_SOURCE_NAMES,
+            listOf(target), nameAssignment = names)
+        assertEquals(names, source.nameAssignment)
+        assertTrue(source.assignsSourceNames); assertFalse(translated.assignsSourceNames)
+        assertNotEquals(translated.digest(), source.digest())
+        assertNotEquals(translated.itemCommand(0), source.itemCommand(0))
+        assertEquals(emptyList<String>(), ManualTextBatch(CommandId("clear"), ref, 0,
+            TextBatchChange.ASSIGN_SOURCE_NAMES, listOf(target), nameAssignment = emptyList()).nameAssignment)
+        assertThrows(IllegalArgumentException::class.java) {
+            ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.ASSIGN_SOURCE_NAMES, listOf(target))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.ASSIGN_SOURCE_NAMES, listOf(target),
+                nameAssignment = List(ManualNameEdit.MAX_NAMES + 1) { "name" })
+        }
+        assertThrows(TextProjectException::class.java) {
+            ManualTextBatch(CommandId("command"), ref, 0, TextBatchChange.ASSIGN_SOURCE_NAMES, listOf(target),
+                nameAssignment = listOf("bad\uD800"))
+        }
+    }
+
     @Test fun replacementRequiresExplicitParametersAndBindsEachParameterToTheCommand() {
         fun replacement(options: TextReplacementOptions) = ManualTextBatch(CommandId("command"), ref, 0,
             TextBatchChange.REPLACE_TRANSLATION, listOf(target), options)

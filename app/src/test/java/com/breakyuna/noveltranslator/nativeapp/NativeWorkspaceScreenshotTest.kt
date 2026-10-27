@@ -54,7 +54,7 @@ class NativeWorkspaceScreenshotTest {
     @Test fun projectHome() {
         val state = NativeProjectUiState(projects = listOf(RegisteredProject(ref, summary, null)))
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
-            ProjectsHome(state, {}, {}, {}, {}, {})
+            ProjectsHome(state, {}, {}, {}, {}, {}, {})
         } } }
         compose.onNodeWithText(context.getString(R.string.native_create_txt)).assertExists()
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-projects.png")

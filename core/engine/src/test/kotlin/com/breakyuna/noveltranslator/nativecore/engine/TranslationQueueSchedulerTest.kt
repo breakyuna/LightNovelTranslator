@@ -49,6 +49,9 @@ class TranslationQueueSchedulerTest {
         val paused = fixture.scheduler.pause(task.queueIdentity(), CommandId("pause-user"))
         assertTrue(paused is TranslationQueueResult.Applied)
         assertEquals(listOf(task.queueIdentity()), fixture.controls.paused)
+        assertEquals(listOf(TranslationQueueControlIntentKind.PENDING_PAUSE),
+            fixture.controlIntents.saved.map { it.kind })
+        assertTrue("A completed pause must clear its durable intent", fixture.controlIntents.pendingIntents.isEmpty())
         assertEquals(TranslationTaskQueueState.PAUSED,
             fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!.state)
 
@@ -109,6 +112,9 @@ class TranslationQueueSchedulerTest {
         val cancelled = fixture.scheduler.cancel(task.queueIdentity(), CommandId("cancel-user"))
         assertTrue(cancelled is TranslationQueueResult.Applied)
         assertEquals(listOf(task.queueIdentity()), fixture.controls.stopped)
+        assertEquals(listOf(TranslationQueueControlIntentKind.PENDING_CANCEL),
+            fixture.controlIntents.saved.map { it.kind })
+        assertTrue(fixture.controlIntents.pendingIntents.isEmpty())
         assertEquals(TranslationTaskQueueState.CANCELLED,
             fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!.state)
 
@@ -466,6 +472,214 @@ class TranslationQueueSchedulerTest {
         assertTrue(fixture.launcher.calls.isEmpty())
     }
 
+    @Test
+    fun crashBetweenTaskFailureAndQueueBatchRebuildsExactMembersBeforeRecovery() = runBlocking {
+        val fixture = runningFixture("run-rebuild-failure-batch")
+        fixture.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("FAILED", 2, 0, 2, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.INTERRUPTED, StoredRunStage.COMMITTED, false),
+            )
+        }
+        fixture.failures.members.add(member(1))
+        fixture.failures.members.add(member(2, fingerprint = "b".repeat(64)))
+        val identity = fixture.task.queueIdentity()
+        val runningTask = fixture.store.queues.getValue(projectA).snapshot.task(identity)!!
+
+        assertTrue(fixture.scheduler.recover().isEmpty())
+        val saved = fixture.store.queues.getValue(projectA).snapshot.task(identity)!!
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, saved.state)
+        assertEquals(1, saved.batches.size)
+        assertEquals(listOf(ItemId(1), ItemId(2)), saved.batches.single().members.map { it.itemId })
+        assertEquals(fixture.failures.members, saved.batches.single().members)
+        assertEquals(translationFailureBatchId(runningTask, fixture.failures.members), saved.batches.single().id)
+        assertTrue(fixture.launcher.calls.isEmpty())
+        assertEquals(1, fixture.scheduler.reconciliationDiagnostics().failureBatchesRebuilt)
+        assertEquals("An existing batch must not be rebuilt twice", 0, fixture.scheduler.reconcileFailureBatches())
+        assertEquals(1, fixture.store.queues.getValue(projectA).snapshot.task(identity)!!.batches.size)
+
+        val batch = saved.batches.single()
+        val skipped = adjudicator(fixture).skip(identity, batch.id, listOf(ItemId(1)), CommandId("skip-rebuilt"))
+        assertEquals(TranslationTaskQueueState.NEEDS_REVIEW,
+            (skipped.queue as TranslationQueueResult.Applied).task.state)
+        val retried = adjudicator(fixture).retry(identity, batch.id, listOf(ItemId(2)), CommandId("retry-rebuilt"))
+        assertEquals(TranslationTaskQueueState.QUEUED,
+            (retried.queue as TranslationQueueResult.Applied).task.state)
+        assertTrue("Reconciliation must never launch paid work", fixture.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun liveExecutionIsNeverReconciledAsACrashWindow() = runBlocking {
+        val fixture = runningFixture("run-live-reconciliation")
+        fixture.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("FAILED", 1, 0, 1, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.RUNNING, StoredRunStage.REQUESTING, false),
+                live = true,
+            )
+        }
+        fixture.failures.members.add(member(1))
+        assertEquals(0, fixture.scheduler.reconcileFailureBatches())
+        val saved = fixture.store.queues.getValue(projectA).snapshot.task(fixture.task.queueIdentity())!!
+        assertEquals(TranslationTaskQueueState.RUNNING, saved.state)
+        assertTrue(saved.batches.isEmpty())
+        assertTrue(fixture.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun missingOrChangedFailureMembersStopAtReviewWithoutGuessingABatch() = runBlocking {
+        for (exact in listOf(emptyList<TranslationFailureMember>(), listOf(member(1, fingerprint = "b".repeat(64))))) {
+            val fixture = runningFixture("run-missing-member-${exact.hashCode()}")
+            fixture.recovery.provider = {
+                TranslationQueueRecoveryEvidence(
+                    task = TranslationQueueTaskEvidence("FAILED", 1, 0, 1, 0, UsageSource.ACTUAL),
+                    run = TranslationQueueRunEvidence(StoredRunState.INTERRUPTED, StoredRunStage.COMMITTED, false),
+                )
+            }
+            fixture.failures.members.add(member(1))
+            fixture.failures.exactOverride = exact
+
+            assertTrue(fixture.scheduler.recover().isEmpty())
+            val saved = fixture.store.queues.getValue(projectA).snapshot.task(fixture.task.queueIdentity())!!
+            assertEquals(TranslationTaskQueueState.NEEDS_REVIEW, saved.state)
+            assertTrue("A mismatch must not invent a failure batch", saved.batches.isEmpty())
+            assertTrue(fixture.scheduler.reconciliationDiagnostics().failureBatchConflicts > 0)
+            assertTrue(fixture.launcher.calls.isEmpty())
+        }
+    }
+
+    @Test
+    fun rejectedPauseClearsItsIntentAndDoesNotDispatchQueuedWork() = runBlocking {
+        val fixture = Fixture()
+        val task = spec(projectA, "run-rejected-pause")
+        fixture.coordinator.enqueue(task, task.run.commandId)
+        val result = fixture.scheduler.pause(task.queueIdentity(), CommandId("pause-queued"))
+        assertTrue(result is TranslationQueueResult.Rejected)
+        assertEquals(TranslationTaskQueueState.QUEUED,
+            fixture.store.queues.getValue(projectA).snapshot.task(task.queueIdentity())!!.state)
+        assertEquals(listOf(TranslationQueueControlIntentKind.PENDING_PAUSE),
+            fixture.controlIntents.saved.map { it.kind })
+        assertTrue(fixture.controlIntents.pendingIntents.isEmpty())
+        assertTrue(fixture.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun persistedPauseIntentIsReplayedAfterCrashWithoutLaunchOrRequeue() = runBlocking {
+        val fixture = runningFixture("run-pause-intent-crash")
+        val identity = fixture.task.queueIdentity()
+        val intent = TranslationQueueControlIntent(
+            identity, CommandId("pause-before-crash"), TranslationQueueControlIntentKind.PENDING_PAUSE)
+        fixture.controlIntents.pendingIntents.add(intent)
+
+        assertTrue(fixture.scheduler.recover().isEmpty())
+        val saved = fixture.store.queues.getValue(projectA).snapshot.task(identity)!!
+        assertEquals(TranslationTaskQueueState.PAUSED, saved.state)
+        assertEquals(listOf(TranslationTaskCommandAction.PAUSE), saved.commands.map { it.action })
+        assertTrue(fixture.controlIntents.pendingIntents.isEmpty())
+        assertTrue(fixture.launcher.calls.isEmpty())
+        assertEquals(0, fixture.scheduler.drain())
+        assertEquals(TranslationTaskQueueState.PAUSED,
+            fixture.store.queues.getValue(projectA).snapshot.task(identity)!!.state)
+    }
+
+    @Test
+    fun persistedCancelIntentIsReplayedAfterCrashAndNeverRequeues() = runBlocking {
+        val fixture = runningFixture("run-cancel-intent-crash")
+        val identity = fixture.task.queueIdentity()
+        fixture.controlIntents.pendingIntents.add(TranslationQueueControlIntent(
+            identity, CommandId("cancel-before-crash"), TranslationQueueControlIntentKind.PENDING_CANCEL))
+
+        assertTrue(fixture.scheduler.recover().isEmpty())
+        val saved = fixture.store.queues.getValue(projectA).snapshot.task(identity)!!
+        assertEquals(TranslationTaskQueueState.CANCELLED, saved.state)
+        assertEquals(listOf(TranslationTaskCommandAction.CANCEL), saved.commands.map { it.action })
+        assertTrue(fixture.controlIntents.pendingIntents.isEmpty())
+        assertTrue(fixture.launcher.calls.isEmpty())
+        assertEquals(0, fixture.scheduler.drain())
+        assertNull(fixture.coordinator.nextRunnable())
+        assertEquals(TranslationTaskQueueState.CANCELLED,
+            fixture.store.queues.getValue(projectA).snapshot.task(identity)!!.state)
+    }
+
+    @Test
+    fun pauseIntentIsWrittenBeforeLiveControlAndNeverTouchesTheRunnerWhenStorageFails() = runBlocking {
+        val fixture = runningFixture("run-pause-intent-order")
+        fixture.controlIntents.onSave = { throw IllegalStateException("intent disk unavailable") }
+        try {
+            fixture.scheduler.pause(fixture.task.queueIdentity(), CommandId("pause-no-storage"))
+            throw AssertionError("Pause proceeded without a durable intent")
+        } catch (_: IllegalStateException) {
+        }
+        assertTrue("Live control must not run before the intent is durable", fixture.controls.paused.isEmpty())
+        assertEquals(TranslationTaskQueueState.RUNNING,
+            fixture.store.queues.getValue(projectA).snapshot.task(fixture.task.queueIdentity())!!.state)
+    }
+
+    @Test
+    fun reconciliationReportIsReadOnlyAndNamesEachCrashWindow() = runBlocking {
+        val error = runningFixture("run-report-error-target")
+        error.failures.members.add(member(1))
+        val before = error.store.queues.getValue(projectA).snapshot
+        val errorReport = error.scheduler.reconciliationReport()
+        assertTrue(errorReport.issueCount(
+            TranslationQueueReconciliationIssue.ERROR_TARGETS_WITHOUT_FAILURE_BATCH) > 0)
+        assertTrue(errorReport.issueCount(
+            TranslationQueueReconciliationIssue.RUNNING_WITHOUT_EXECUTION) > 0)
+        assertEquals(before.revision, error.store.queues.getValue(projectA).snapshot.revision)
+        assertTrue(error.store.queues.getValue(projectA).snapshot
+            .task(error.task.queueIdentity())!!.batches.isEmpty())
+        assertTrue(error.launcher.calls.isEmpty())
+
+        val mismatch = runningFixture("run-report-stage-mismatch")
+        mismatch.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("COMPLETE", 1, 1, 0, 0, UsageSource.ACTUAL),
+                run = TranslationQueueRunEvidence(StoredRunState.SUCCEEDED, StoredRunStage.COMMITTED, false),
+            )
+        }
+        assertTrue(mismatch.scheduler.reconciliationReport().issueCount(
+            TranslationQueueReconciliationIssue.TASK_STAGE_QUEUE_STATE_MISMATCH) > 0)
+
+        val batch = runningFixture("run-report-batch-member")
+        batch.coordinator.recordFailureBatch(batch.task.queueIdentity(),
+            TranslationTaskFailureBatch(TranslationTaskFailureBatchId("report-batch"), listOf(member(1))))
+        batch.failures.exactOverride = emptyList()
+        assertTrue(batch.scheduler.reconciliationReport().issueCount(
+            TranslationQueueReconciliationIssue.BATCH_MEMBER_NOT_IN_TARGET) > 0)
+        assertTrue(batch.launcher.calls.isEmpty())
+    }
+
+    @Test
+    fun reconciliationReportKeepsRequestingWithoutReceiptInReviewAndHealthyQueueClean() = runBlocking {
+        val uncertain = runningFixture("run-report-requesting")
+        uncertain.recovery.provider = {
+            TranslationQueueRecoveryEvidence(
+                task = TranslationQueueTaskEvidence("REQUESTING", 1, 0, 1, 1, UsageSource.UNKNOWN),
+                run = TranslationQueueRunEvidence(StoredRunState.INTERRUPTED, StoredRunStage.REQUESTING, true),
+            )
+        }
+        assertTrue(uncertain.scheduler.reconciliationReport().issueCount(
+            TranslationQueueReconciliationIssue.RUNNING_WITHOUT_RECEIPT) > 0)
+        assertEquals(TranslationTaskQueueState.RUNNING,
+            uncertain.store.queues.getValue(projectA).snapshot.task(uncertain.task.queueIdentity())!!.state)
+
+        val healthy = Fixture()
+        val task = spec(projectA, "run-report-clean")
+        healthy.coordinator.enqueue(task, task.run.commandId)
+        healthy.outcomes.evidence = complete(committed = 1, target = 1)
+        assertEquals(1, healthy.scheduler.drain())
+        val report = healthy.scheduler.reconciliationReport()
+        assertEquals(TranslationQueueReconciliationStatus.CLEAN, report.status)
+        assertTrue(report.findings.isEmpty())
+
+        val unreadable = runningFixture("run-report-unreadable")
+        unreadable.failures.failuresError = IllegalStateException("unreadable")
+        val degraded = unreadable.scheduler.reconciliationReport()
+        assertEquals(TranslationQueueReconciliationStatus.DEGRADED, degraded.status)
+        assertTrue(degraded.issueCount(TranslationQueueReconciliationIssue.EVIDENCE_UNREADABLE) > 0)
+        assertTrue(degraded.readFailures > 0)
+    }
+
     private fun completionCommandForTest(task: TranslationTaskSpec): CommandId {
         val material = buildString {
             append(task.run.commandId.value); append('\u0000')
@@ -702,6 +916,10 @@ class TranslationQueueSchedulerTest {
         val recovery get() = fixture.recovery
         val outcomes get() = fixture.outcomes
         val decisions get() = fixture.decisions
+        val failures get() = fixture.failures
+        val controlIntents get() = fixture.controlIntents
+        val controls get() = fixture.controls
+        val coordinator get() = fixture.coordinator
         val recoveredJournals get() = fixture.recoveredJournals
     }
 
@@ -717,6 +935,7 @@ class TranslationQueueSchedulerTest {
         val failures = FakeFailures()
         val decisions = FakeDecisions()
         val decisionJournal = FakeDecisionJournal()
+        val controlIntents = FakeControlIntents()
         var recoveredJournals = 0
         val scheduler = TranslationQueueScheduler(
             coordinator = coordinator,
@@ -730,6 +949,7 @@ class TranslationQueueSchedulerTest {
             recoverJournal = { recoveredJournals++ },
             failures = failures,
             decisions = decisions,
+            controlIntents = controlIntents,
         )
     }
 
@@ -769,11 +989,15 @@ class TranslationQueueSchedulerTest {
 
     private class FakeFailures : TranslationTaskFailureEvidencePort {
         val members = mutableListOf<TranslationFailureMember>()
+        var failuresError: Throwable? = null
+        var exactError: Throwable? = null
+        var exactOverride: List<TranslationFailureMember>? = null
         override suspend fun failures(
             ref: LocalProjectRef,
             run: RunIdentity,
             after: Long,
         ): TranslationTaskFailureEvidence {
+            failuresError?.let { throw it }
             val remaining = members.filter { it.itemId.value > after }.sortedBy { it.itemId.value }
             val page = remaining.take(TranslationTaskFailureBatch.MAX_MEMBERS)
             val next = if (remaining.size > TranslationTaskFailureBatch.MAX_MEMBERS) {
@@ -801,8 +1025,29 @@ class TranslationQueueSchedulerTest {
             ref: LocalProjectRef,
             run: RunIdentity,
             itemIds: List<ItemId>,
-        ): List<TranslationFailureMember> =
-            members.filter { it.itemId in itemIds }.sortedBy { it.itemId.value }
+        ): List<TranslationFailureMember> {
+            exactError?.let { throw it }
+            return exactOverride ?: members.filter { it.itemId in itemIds }.sortedBy { it.itemId.value }
+        }
+    }
+
+    private class FakeControlIntents : TranslationQueueControlIntentPort {
+        val saved = mutableListOf<TranslationQueueControlIntent>()
+        val pendingIntents = mutableListOf<TranslationQueueControlIntent>()
+        var onSave: (() -> Unit)? = null
+
+        override suspend fun pending(): List<TranslationQueueControlIntent> = pendingIntents.toList()
+
+        override suspend fun save(intent: TranslationQueueControlIntent) {
+            onSave?.invoke()
+            pendingIntents.removeAll { it.identity == intent.identity }
+            pendingIntents.add(intent)
+            saved.add(intent)
+        }
+
+        override suspend fun clear(intent: TranslationQueueControlIntent) {
+            pendingIntents.remove(intent)
+        }
     }
 
     private class FakeDecisions : TranslationTaskFailureAdjudicationPort {

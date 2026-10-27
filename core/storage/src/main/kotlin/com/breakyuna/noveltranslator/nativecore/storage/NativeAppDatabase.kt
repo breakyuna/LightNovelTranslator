@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.nativecore.storage
 
 import android.content.Context
+import com.breakyuna.noveltranslator.nativecore.domain.PriceTable
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
@@ -34,14 +35,18 @@ internal interface ProjectInstanceDao {
     fun list(limit: Int): List<ProjectInstanceRecord>
 }
 
-/** Independent app store v17. No fallbackToDestructiveMigration and no legacy DB access. */
-@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeModelProfileRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class, NativeAgentInputQueueRow::class, NativeAgentInputDraftRow::class, NativeAgentSteerRunRow::class, NativeAgentSteerAttemptRow::class, NativeTranslationTaskDecisionRow::class, NativeTranslationMemberDecisionRow::class, NativeAgentContextRow::class, NativeAgentBranchRow::class, NativeItemProposalRow::class, NativeItemProposalMemberRow::class, NativePolicyProposalRow::class, NativePdfPageProposalRow::class, NativePdfPageProposalPageRow::class, NativeAssetImportProposalRow::class], version = 18, exportSchema = true)
+/** Independent app store v20. No fallbackToDestructiveMigration and no legacy DB access. */
+@Database(entities = [ProjectInstanceRecord::class, NativeAgentMessageRow::class, NativeAgentApprovalRow::class, NativeAgentRequestRow::class, NativeModelSettingsRow::class, NativeAgentChatRow::class, NativeModelProfileRow::class, NativeRunRow::class, NativeTranslationRequestRow::class, NativeUsageReceiptRow::class, NativeTranslationTaskRow::class, NativeTranslationTargetRow::class, NativeTranslationRequestInputRow::class, NativeTranslationResponseRow::class, NativeTranslationStagedRow::class, NativeAgentInputQueueRow::class, NativeAgentInputDraftRow::class, NativeAgentSteerRunRow::class, NativeAgentSteerAttemptRow::class, NativeTranslationTaskDecisionRow::class, NativeTranslationMemberDecisionRow::class, NativeAgentContextRow::class, NativeAgentBranchRow::class, NativeItemProposalRow::class, NativeItemProposalMemberRow::class, NativePolicyProposalRow::class, NativePdfPageProposalRow::class, NativePdfPageProposalPageRow::class, NativeAssetImportProposalRow::class, NativeMixedApprovalRow::class, NativeMixedMemberRow::class], version = 20, exportSchema = true)
 internal abstract class NativeAppDatabase : RoomDatabase() {
+    /** Supplied by [open]; receipts capture the price identity at reservation time. */
+    internal var priceTableReader: (() -> PriceTable?)? = null
+
     abstract fun instances(): ProjectInstanceDao
     abstract fun policyProposals(): NativePolicyProposalDao
     abstract fun itemProposals(): NativeItemProposalDao
     abstract fun pdfPageProposals(): NativePdfPageProposalDao
     abstract fun assetImportProposals(): NativeAssetImportProposalDao
+    abstract fun mixedApprovals(): NativeMixedApprovalDao
     abstract fun agent(): NativeAgentDao
     abstract fun agentInput(): NativeAgentInputDao
     abstract fun models(): NativeModelSettingsDao
@@ -54,6 +59,53 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
     abstract fun translationResponses(): NativeTranslationResponseDao
 
     companion object {
+        /**
+         * Captures the price table binding on every usage receipt. Legacy receipts keep a null
+         * priceVersion and become UNKNOWN; no historical cost is invented from today's table.
+         * Each column is added only when absent so rerunning the migration is safe.
+         */
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                fun column(name: String, type: String) {
+                    val present = db.query("PRAGMA table_info(native_usage_receipts)").use { table ->
+                        val columnName = table.getColumnIndexOrThrow("name")
+                        var found = false
+                        while (table.moveToNext()) {
+                            if (table.getString(columnName) == name) found = true
+                        }
+                        found
+                    }
+                    if (!present) {
+                        db.execSQL("ALTER TABLE native_usage_receipts ADD COLUMN $name $type")
+                    }
+                }
+                column("priceVersion", "INTEGER")
+                column("priceCurrency", "TEXT")
+                column("priceFingerprint", "TEXT")
+                column("pricedModelKey", "TEXT")
+                column("costState", "TEXT")
+                db.execSQL("UPDATE native_usage_receipts SET costState='UNKNOWN' WHERE costState IS NULL")
+            }
+        }
+
+        /**
+         * Adds the mixed parent/member approval ledger. Both tables and all indices are additive
+         * and use IF NOT EXISTS, so rerunning the migration is safe and never rebuilds or deletes
+         * any v18 fact.
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_mixed_approvals (id TEXT NOT NULL PRIMARY KEY, commandId TEXT NOT NULL, instanceId TEXT NOT NULL, generation INTEGER NOT NULL, projectId TEXT NOT NULL, chatId TEXT NOT NULL, runId TEXT NOT NULL, baseRevision INTEGER NOT NULL, policy TEXT NOT NULL, digest TEXT NOT NULL, count INTEGER NOT NULL, state TEXT NOT NULL, binding TEXT, claimedAt INTEGER, settledAt INTEGER, createdAt INTEGER NOT NULL)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_mixed_approvals_commandId ON native_mixed_approvals(commandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_mixed_approvals_instanceId_generation_chatId_state ON native_mixed_approvals(instanceId,generation,chatId,state)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_mixed_approvals_instanceId_generation_chatId_createdAt ON native_mixed_approvals(instanceId,generation,chatId,createdAt)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS native_mixed_members (approvalId TEXT NOT NULL, position INTEGER NOT NULL, kind TEXT NOT NULL, childId TEXT NOT NULL, childDigest TEXT NOT NULL, childCommandId TEXT NOT NULL, selection TEXT NOT NULL, selectionDigest TEXT NOT NULL, expectedFingerprints TEXT NOT NULL, workspaceRootIdentity TEXT, state TEXT NOT NULL, receiptDigest TEXT, rejection TEXT, PRIMARY KEY(approvalId,position))")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_mixed_members_approvalId_kind_childId ON native_mixed_members(approvalId,kind,childId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_native_mixed_members_childCommandId ON native_mixed_members(childCommandId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_native_mixed_members_kind_childId ON native_mixed_members(kind,childId)")
+            }
+        }
+
         // Early development v17 databases may predate either of these additive tables.
         // A new version is essential: changing 16->17 alone never repairs an existing v17.
         // Reuse idempotent DDL so current profiles/proposals and all older facts survive.
@@ -244,10 +296,16 @@ internal abstract class NativeAppDatabase : RoomDatabase() {
                 db.execSQL("CREATE TABLE IF NOT EXISTS native_agent_requests (attemptId TEXT NOT NULL PRIMARY KEY, requestKey TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, responseText TEXT, responseId TEXT, usage TEXT)")
             }
         }
-        fun open(context: Context): NativeAppDatabase = Room.databaseBuilder(
-            context.applicationContext,
-            NativeAppDatabase::class.java,
-            "lnt_native_app.db",
-        ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18).build()
+        fun open(context: Context): NativeAppDatabase {
+            val application = context.applicationContext
+            val filesDir = application.filesDir
+            return Room.databaseBuilder(
+                application,
+                NativeAppDatabase::class.java,
+                "lnt_native_app.db",
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20).build().also { database ->
+                database.priceTableReader = { NativePriceTableStore.currentTable(filesDir) }
+            }
+        }
     }
 }

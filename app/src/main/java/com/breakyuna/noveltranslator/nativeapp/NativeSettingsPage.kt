@@ -36,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -48,9 +49,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.LaboratorySettings
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsSource
+import com.breakyuna.noveltranslator.nativecore.domain.ModelProxyCredential
 
 /**
  * Routed application settings. BASIC and EXPERT share one page so the four bottom tabs stay
@@ -83,6 +86,7 @@ internal fun NativeSettingsPage(
     saveLimits: (NativeRequestLimitsInput) -> Unit,
     reloadLaboratory: () -> Unit = {},
     saveLaboratory: (LaboratorySettings) -> Unit = {},
+    proxyCredentialActions: NativeProxyCredentialActions? = null,
 ) {
     Column(Modifier.fillMaxSize().testTag("native-settings-page")) {
         Surface(
@@ -144,7 +148,7 @@ internal fun NativeSettingsPage(
                     appPersona, personaSaveFailed, selectLanguage, selectTheme,
                     setAutomaticContextSummary, saveAppPersona)
                 NativeSettingsSection.EXPERT -> ExpertSettings(network, limits, reloadNetwork, saveNetwork,
-                    reloadLimits, saveLimits)
+                    reloadLimits, saveLimits, proxyCredentialActions = proxyCredentialActions)
                 NativeSettingsSection.LABORATORY -> LaboratorySettingsSection(laboratory, laboratoryLoaded,
                     laboratorySaving, laboratoryError, reloadLaboratory, saveLaboratory)
             }
@@ -256,6 +260,7 @@ private fun ExpertSettings(
     saveLimits: (NativeRequestLimitsInput) -> Unit,
     reloadLaboratory: () -> Unit = {},
     saveLaboratory: (LaboratorySettings) -> Unit = {},
+    proxyCredentialActions: NativeProxyCredentialActions? = null,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().testTag("native-settings-fail-closed"),
@@ -270,7 +275,7 @@ private fun ExpertSettings(
                 color = MaterialTheme.colorScheme.onSecondaryContainer)
         }
     }
-    NetworkCard(network, reloadNetwork, saveNetwork)
+    NetworkCard(network, reloadNetwork, saveNetwork, proxyCredentialActions)
     RequestLimitsCard(limits, reloadLimits, saveLimits)
 }
 
@@ -279,6 +284,7 @@ private fun NetworkCard(
     state: NativeNetworkSettingsState,
     reload: () -> Unit,
     save: (NativeNetworkSettingsInput) -> Unit,
+    proxyCredentialActions: NativeProxyCredentialActions? = null,
 ) {
     SettingsCard(R.string.native_settings_network_title, R.string.native_settings_network_description) {
         when {
@@ -309,7 +315,7 @@ private fun NetworkCard(
                         style = MaterialTheme.typography.bodySmall)
                 }
                 key(state.revision) {
-                    NetworkForm(state, reload, save)
+                    NetworkForm(state, reload, save, proxyCredentialActions)
                 }
             }
         }
@@ -321,8 +327,11 @@ private fun NetworkForm(
     state: NativeNetworkSettingsState,
     reload: () -> Unit,
     save: (NativeNetworkSettingsInput) -> Unit,
+    externalProxyCredentialActions: NativeProxyCredentialActions? = null,
 ) {
     val initial = state.settings
+    val hasStoredCredential = initial.proxyCredentialRef != null
+    val initialProxyConfigured = initial.proxy != null
     var connect by rememberSaveable { mutableStateOf(initial.connectTimeoutSeconds.toString()) }
     var read by rememberSaveable { mutableStateOf(initial.readTimeoutSeconds.toString()) }
     var write by rememberSaveable { mutableStateOf(initial.writeTimeoutSeconds.toString()) }
@@ -330,8 +339,29 @@ private fun NetworkForm(
     var proxyHost by rememberSaveable { mutableStateOf(initial.proxy?.host.orEmpty()) }
     var proxyPort by rememberSaveable { mutableStateOf(initial.proxy?.port?.toString().orEmpty()) }
     var redirects by rememberSaveable { mutableStateOf(initial.followRedirects) }
+    var authEnabled by rememberSaveable { mutableStateOf(hasStoredCredential) }
+    // Never rememberSaveable: the password must not enter the saved instance state bundle.
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var disposition by remember { mutableStateOf<NativeProxyCredentialChange?>(null) }
+    var showDisposition by remember { mutableStateOf(false) }
+    var pendingSave by remember { mutableStateOf(false) }
+    val actions = externalProxyCredentialActions ?: if (authEnabled || hasStoredCredential) {
+        rememberProxyCredentialActions()
+    } else null
+    val credentialState = if (actions != null) actions.state.collectAsState().value
+        else NativeProxyCredentialUiState()
     val input = NativeNetworkSettingsInput(connect, read, write, call, proxyHost, proxyPort, redirects)
-    val valid = remember(input) { runCatching { input.toSettings() }.isSuccess }
+    val baseValid = remember(input) { runCatching { input.toSettings() }.isSuccess }
+    val credentialValid = when {
+        actions == null || !authEnabled -> true
+        username.isEmpty() && password.isEmpty() -> hasStoredCredential
+        username.isNotEmpty() && password.isNotEmpty() ->
+            proxyHost.isNotBlank() && proxyPort.isNotBlank() &&
+                runCatching { ModelProxyCredential.of(username, password) }.isSuccess
+        else -> false
+    }
+    val valid = baseValid && credentialValid
     Text(stringResource(R.string.native_settings_timeout_hint), style = MaterialTheme.typography.bodySmall)
     TimeoutField(R.string.native_settings_connect_timeout, connect, { connect = it }, "native-settings-connect-timeout")
     TimeoutField(R.string.native_settings_read_timeout, read, { read = it }, "native-settings-read-timeout")
@@ -357,8 +387,87 @@ private fun NetworkForm(
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth().testTag("native-settings-proxy-port"),
     )
-    Text(stringResource(R.string.native_settings_no_credentials), style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.error)
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.native_settings_proxy_auth),
+                style = MaterialTheme.typography.titleSmall)
+            Text(stringResource(R.string.native_settings_proxy_auth_short),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Switch(authEnabled, { checked ->
+            if (checked) {
+                authEnabled = true
+                disposition = null
+            } else if (hasStoredCredential) {
+                username = ""
+                password = ""
+                showDisposition = true
+            } else {
+                authEnabled = false
+                disposition = NativeProxyCredentialChange.Keep
+                username = ""
+                password = ""
+            }
+        }, enabled = !state.saving && !credentialState.busy,
+            modifier = Modifier.testTag("native-settings-proxy-auth"))
+    }
+    if (authEnabled) {
+        NativeProxyCredentialFields(
+            hasStoredCredential = hasStoredCredential,
+            busy = credentialState.busy || state.saving,
+            username = username,
+            password = password,
+            onUsernameChange = { username = it },
+            onPasswordChange = { password = it },
+            onClear = { actions?.clear() },
+        )
+    }
+    credentialState.error?.let {
+        Text(stringResource(it), color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("native-settings-proxy-error"))
+    }
+    credentialState.notice?.let {
+        Text(stringResource(it), style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.testTag("native-settings-proxy-notice"))
+    }
+    fun changeForSave(): NativeProxyCredentialChange = when {
+        !authEnabled -> disposition ?: if (hasStoredCredential)
+            NativeProxyCredentialChange.DetachKeepFile else NativeProxyCredentialChange.Keep
+        username.isNotEmpty() || password.isNotEmpty() ->
+            NativeProxyCredentialChange.Replace(username, password)
+        else -> NativeProxyCredentialChange.Keep
+    }
+    fun commit(change: NativeProxyCredentialChange) {
+        if (actions == null) save(input) else actions.saveNetwork(input, change)
+        password = ""
+    }
+    if (showDisposition) NativeProxyCredentialDispositionDialog(
+        onKeep = {
+            // Keeping retains the encrypted file but detaches its reference, so the old
+            // secret is never sent to the current or a replacement proxy.
+            authEnabled = false
+            disposition = NativeProxyCredentialChange.DetachKeepFile
+            showDisposition = false
+            if (pendingSave) {
+                pendingSave = false
+                commit(NativeProxyCredentialChange.DetachKeepFile)
+            }
+        },
+        onDelete = {
+            authEnabled = false
+            disposition = NativeProxyCredentialChange.Delete
+            showDisposition = false
+            if (pendingSave) {
+                pendingSave = false
+                commit(NativeProxyCredentialChange.Delete)
+            }
+        },
+        onDismiss = {
+            showDisposition = false
+            pendingSave = false
+        },
+    )
     Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(enabled = !state.saving) { redirects = !redirects },
         verticalAlignment = Alignment.CenterVertically) {
         Checkbox(redirects, { redirects = it }, enabled = !state.saving,
@@ -368,16 +477,45 @@ private fun NetworkForm(
     Text(stringResource(R.string.native_settings_redirects_description), style = MaterialTheme.typography.bodySmall)
     if (!valid) Text(stringResource(R.string.native_settings_network_invalid),
         color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    if (authEnabled && !credentialValid && actions != null) Text(
+        stringResource(R.string.native_settings_proxy_invalid),
+        color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { save(input) }, enabled = valid && !state.saving,
+        Button(onClick = {
+            if (actions == null) {
+                save(input)
+                return@Button
+            }
+            // Clearing the whole proxy is also an off switch: ask before either keeping or
+            // deleting the encrypted file instead of silently orphaning it.
+            if (authEnabled && hasStoredCredential && initialProxyConfigured &&
+                proxyHost.isBlank() && proxyPort.isBlank()) {
+                pendingSave = true
+                showDisposition = true
+            } else {
+                commit(changeForSave())
+            }
+        }, enabled = valid && !state.saving && !credentialState.busy,
             modifier = Modifier.weight(1f).testTag("native-settings-network-save")) {
-            Text(stringResource(if (state.saving) R.string.native_settings_saving else R.string.native_save))
+            Text(stringResource(if (state.saving || credentialState.busy)
+                R.string.native_settings_saving else R.string.native_save))
         }
-        OutlinedButton(onClick = reload, enabled = !state.saving,
+        OutlinedButton(onClick = reload, enabled = !state.saving && !credentialState.busy,
             modifier = Modifier.weight(1f).testTag("native-settings-network-reload")) {
             Text(stringResource(R.string.native_settings_reload))
         }
     }
+}
+
+/**
+ * Production has no callback parameter at the app call site, so the routed settings page
+ * resolves the Activity-scoped ViewModel only when proxy credentials are actually editable.
+ * Tests pass [NativeProxyCredentialActions] explicitly and never construct the real graph.
+ */
+@Composable
+private fun rememberProxyCredentialActions(): NativeProxyCredentialActions {
+    val model: NativeProjectViewModel = viewModel()
+    return model.proxyCredentialActions
 }
 
 @Composable

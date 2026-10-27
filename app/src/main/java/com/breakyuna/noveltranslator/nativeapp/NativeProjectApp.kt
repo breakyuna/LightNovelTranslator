@@ -43,6 +43,11 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 @Composable
 fun NativeProjectApp(model: NativeProjectViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
+    val workspaceExecution by model.skillExecutionActions.state.collectAsStateWithLifecycle()
+    val importState by model.projectImportState.collectAsStateWithLifecycle()
+    val importVisible by model.projectImportVisibleState.collectAsStateWithLifecycle()
+    val legacyExportState by model.legacyExportState.collectAsStateWithLifecycle()
+    var legacyExportVisible by remember { mutableStateOf(false) }
     var tasksVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
     var queueVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
     var queueRefresh by rememberSaveable(state.project?.ref) { mutableStateOf(0) }
@@ -77,7 +82,17 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         loadPage = model::translationTaskPage,
         inspectReview = model::reviewTranslationTask, terminate = model::terminateTranslationTask,
         loadMembers = model::translationTaskMembers, prepareRetry = model::prepareTaskRetry,
-        keepErrors = model::keepTaskErrors, queueManagedRuns = state.queueManagedRuns)
+        keepErrors = model::keepTaskErrors, queueManagedRuns = state.queueManagedRuns,
+        queueReviewableRuns = state.queueManagedTasks.values.filter {
+            it.state.awaitingDecision && it.batches.isNotEmpty()
+        }.mapTo(HashSet()) { it.identity.run.runId.value },
+        reviewQueueTask = { run ->
+            tasksVisible = false
+            val task = state.queueManagedTasks[run.runId.value]
+            if (task != null && task.state.awaitingDecision && task.batches.isNotEmpty())
+                failureReview = task.identity
+            else queueVisible = true
+        })
     var usageVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
     var settingsVisible by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
     var appearanceVisible by rememberSaveable { mutableStateOf(false) }
@@ -87,6 +102,20 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     var reviewedPdfPageProposal by remember(state.project?.ref, state.agentChatId) { mutableStateOf<PdfPageProposalSummary?>(null) }
     var reviewedAssetImportProposal by remember(state.project?.ref, state.agentChatId) { mutableStateOf<AssetImportProposalSummary?>(null) }
     var reviewedWorkspaceChange by remember(state.project?.ref, state.agentChatId) { mutableStateOf<WorkspaceChangeProposalSummary?>(null) }
+    var mixedReviewVisible by remember(state.project?.ref, state.agentChatId) { mutableStateOf(false) }
+    LaunchedEffect(state.mixedApproval?.id) {
+        if (state.mixedApproval != null) mixedReviewVisible = true
+    }
+    if (mixedReviewVisible) state.mixedApproval?.let { approval ->
+        NativeMixedApprovalDialog(
+            snapshot = NativeMixedApprovalSnapshot(approval, state.mixedApprovalMembers),
+            busy = state.busy,
+            error = state.mixedApprovalError,
+            allow = model::acceptMixedApproval,
+            reject = model::rejectMixedApproval,
+            dismiss = { mixedReviewVisible = false },
+        )
+    }
     // The wide rules page keeps unapplied fields in local state; block navigation until it closes.
     var ruleEditorOpen by remember(state.project?.ref) { mutableStateOf(false) }
     reviewedWorkspaceChange?.let { proposal -> NativeWorkspaceChangeDialog(proposal,
@@ -109,6 +138,72 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     var skillsVisible by rememberSaveable { mutableStateOf(false) }
     val saveLogs = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson"), model::completeDiagnosticsExport)
     val saveAppBackup = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeApplicationBackupExport)
+    val saveFullArchive = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeFullArchiveExport)
+    var fullArchiveExportVisible by remember { mutableStateOf(false) }
+    var includeFullArchiveDiagnostics by remember { mutableStateOf(false) }
+    var pendingFullArchive by remember { mutableStateOf<android.net.Uri?>(null) }
+    val openFullArchive = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
+        if (it != null) pendingFullArchive = it else model.cancelFullArchiveImport()
+    }
+    if (fullArchiveExportVisible) {
+        AlertDialog(
+            onDismissRequest = { fullArchiveExportVisible = false },
+            title = { Text(stringResource(R.string.native_full_archive_export_title)) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(stringResource(R.string.native_full_archive_export_confirm))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Checkbox(
+                            checked = includeFullArchiveDiagnostics,
+                            onCheckedChange = { includeFullArchiveDiagnostics = it },
+                            modifier = Modifier.testTag("native-full-archive-diagnostics"),
+                        )
+                        Text(stringResource(R.string.native_full_archive_include_diagnostics))
+                    }
+                    Text(
+                        text = stringResource(R.string.native_full_archive_include_diagnostics_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    fullArchiveExportVisible = false
+                    model.prepareFullArchiveExport(includeFullArchiveDiagnostics)?.let(saveFullArchive::launch)
+                }) { Text(stringResource(R.string.native_full_archive_export)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { fullArchiveExportVisible = false }) {
+                    Text(stringResource(R.string.native_cancel))
+                }
+            },
+        )
+    }
+    pendingFullArchive?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingFullArchive = null; model.cancelFullArchiveImport() },
+            title = { Text(stringResource(R.string.native_full_archive_import_title)) },
+            text = { Text(stringResource(R.string.native_full_archive_import_confirm)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingFullArchive = null
+                    model.importFullArchive(uri)
+                }) { Text(stringResource(R.string.native_full_archive_import)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingFullArchive = null
+                    model.cancelFullArchiveImport()
+                }) {
+                    Text(stringResource(R.string.native_cancel))
+                }
+            },
+        )
+    }
     var pendingAppBackup by remember { mutableStateOf<android.net.Uri?>(null) }
     val openAppBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
         if (it != null) pendingAppBackup = it
@@ -127,9 +222,11 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     if (appearanceVisible) NativeThemeDialog(state.themeMode, { appearanceVisible = false }, model::setThemeMode)
     if (agentSettingsVisible) NativeAgentSettingsDialog(state.automaticContextSummary,
         { agentSettingsVisible = false }, model::setAutomaticContextSummary)
-    if (skillsVisible) NativeSkillsDialog(model.skillActions,
-        dismiss = { skillsVisible = false },
-        openPersona = { skillsVisible = false; model.openSettings(NativeSettingsSection.BASIC) })
+    if (skillsVisible) CompositionLocalProvider(LocalNativeSkillExecution provides model.skillExecutionActions) {
+        NativeSkillsDialog(model.skillActions,
+            dismiss = { skillsVisible = false },
+            openPersona = { skillsVisible = false; model.openSettings(NativeSettingsSection.BASIC) })
+    }
     if (settingsVisible && state.project != null) NativeProjectSettingsDialog(state, { settingsVisible = false }, model::saveProjectSettings)
     val saveUsage = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson"), model::completeUsageExport)
     val saveWorkspaceArtifact = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*"), model::completeWorkspaceArtifactExport)
@@ -156,6 +253,15 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val inputTxt = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importFile(it, false) }
     val inputProject = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importFile(it, true) }
     val inputAsset = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.addAssetFile(it) }
+    val importFiles = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        model.addProjectImportFiles(uris)
+    }
+    val importDirectory = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) model.addProjectImportDirectory(uri)
+    }
+    val legacyExportDirectory = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        model.setLegacyExportDirectory(uri)
+    }
     val saveAsset = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { model.completeAssetExport(it) }
     val saveProject = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream"), model::completeExport)
     val saveText = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain"), model::completeExport)
@@ -163,6 +269,30 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val openBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importBackup(it) }
     val saveProjectSet = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip"), model::completeProjectSetExport)
     val openProjectSet = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { model.importProjectSet(it) }
+    if (importVisible) {
+        NativeProjectImportDialog(
+            state = importState,
+            actions = NativeProjectImportActions(
+                chooseFiles = {
+                    importFiles.launch(arrayOf("text/plain", "application/epub+zip", "*/*"))
+                },
+                chooseDirectory = { importDirectory.launch(null) },
+                remove = model::removeProjectImportCandidate,
+                create = model::createProjectFromImport,
+                cancel = model::cancelProjectImport,
+            ),
+            labels = projectImportLabels(),
+        )
+    }
+    if (legacyExportVisible) {
+        NativeLegacyExportPanel(
+            state = legacyExportState,
+            actions = model.legacyExportActions,
+            labels = legacyExportLabels(),
+            chooseOutputDirectory = { legacyExportDirectory.launch(null) },
+            dismiss = { legacyExportVisible = false },
+        )
+    }
     val message = state.error ?: state.notice
     val text = message?.let { stringResource(it) }
     LaunchedEffect(text) { if (text != null) { snackbar.showSnackbar(text); model.dismissMessage() } }
@@ -245,6 +375,28 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         }
                                     }
                                     if (state.project != null) {
+                                        if (state.page == NativePage.AGENT && state.mixedApprovalReviewAvailable) {
+                                            TextButton(
+                                                onClick = {
+                                                    if (state.mixedApproval != null) {
+                                                        mixedReviewVisible = true
+                                                    } else {
+                                                        model.prepareMixedApproval()
+                                                    }
+                                                },
+                                                enabled = !state.busy,
+                                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                                modifier = Modifier.testTag("native-mixed-approval-review"),
+                                            ) {
+                                                Text(
+                                                    stringResource(
+                                                        R.string.native_mixed_approval_review_all,
+                                                        state.mixedApprovalMemberCount,
+                                                    ),
+                                                    maxLines = 1,
+                                                )
+                                            }
+                                        }
                                         TextButton(
                                             onClick = { tasksVisible = true },
                                             enabled = !state.busy,
@@ -329,7 +481,14 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         verticalAlignment = Alignment.CenterVertically,
                                     ) {
                                         Text(
-                                            text = stringResource(if (state.foregroundTranslationPausing) R.string.native_background_pausing else R.string.native_working),
+                                            text = stringResource(
+                                                when {
+                                                    state.foregroundTranslationPausing -> R.string.native_background_pausing
+                                                    state.foregroundWorkspaceActive ->
+                                                        skillExecutionPhaseLabel(workspaceExecution) ?: R.string.native_working
+                                                    else -> R.string.native_working
+                                                },
+                                            ),
                                             style = MaterialTheme.typography.bodySmall,
                                             modifier = Modifier.weight(1f),
                                         )
@@ -384,7 +543,9 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                 setKeyEnabled = model::setModelKeyEnabled,
                             ) else if (state.project == null) {
                                 ProjectsHome(state, onCreate = { if (model.prepareImport(false)) inputTxt.launch(arrayOf("text/*", "application/octet-stream")) },
-                                    onImport = { if (model.prepareImport(true)) inputProject.launch(arrayOf("*/*")) }, onOpen = model::open,
+                                    onImport = { if (model.prepareImport(true)) inputProject.launch(arrayOf("*/*")) },
+                                    onImportFiles = { model.beginProjectImport() },
+                                    onOpen = model::open,
                                     onCopy = model::copy, onEncoding = model::changeEncoding)
                             } else when (state.page) {
                                 NativePage.AGENT -> NativeAgentPage(state, model::queryAgentProject, model::prepareAgentEdit,
@@ -446,6 +607,16 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     onSkills = { skillsVisible = true },
                                     onBackupExport = { saveAppBackup.launch("lnt-app-backup.zip") },
                                     onBackupImport = { openAppBackup.launch(arrayOf("application/zip", "application/octet-stream")) },
+                                    onFullArchiveExport = { fullArchiveExportVisible = true },
+                                    onFullArchiveImport = {
+                                        model.requestFullArchiveImport {
+                                            openFullArchive.launch(arrayOf("application/zip", "application/octet-stream"))
+                                        }
+                                    },
+                                    onLegacyExport = {
+                                        model.beginLegacyExport()
+                                        legacyExportVisible = true
+                                    },
                                     notificationsGranted = notificationsGranted,
                                     requestNotifications = {
                                         if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -505,7 +676,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model::simulatePage, notificationsGranted, model::queryProofreading,
                                     NativeBatchActions(model::selectItems, model::toggleItem, model::selectPageItems,
                                         model::prepareManualBatch, model::confirmManualBatch, model::dismissManualBatch, model::prepareQueryBatch,
-                                        model::prepareQueryReplacement, model::prepareQueryNameAssignment),
+                                        model::prepareQueryReplacement,
+                                        { names, scope, change -> model.prepareQueryNameAssignment(names, scope, change) }),
                                     model::simulateProject, model::translateRemote,
                                     model::enqueueRemoteTranslation,
                                     qualityActions = NativeQualityActions(model::scanQuality, model::filterQuality, model::clearQuality),
@@ -532,7 +704,9 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                 onPrepareReplacement = model::prepareEditorReplacement, onApplyReplacement = model::applyEditorReplacement,
                 onEditNames = if (model.nameEditingAvailable) model::beginNameEdit else null,
                 canUndo = state.editorCanUndo, canRedo = state.editorCanRedo,
-                onUndo = model::undoEditor, onRedo = model::redoEditor)
+                restoredHistory = state.editorHistoryRestored,
+                onUndo = model::undoEditor, onRedo = model::redoEditor,
+                onClearHistory = model::clearEditorHistory)
         }
         state.nameEdit?.let { names ->
             NativeNameEditDialog(names, state.busy, model::dismissNameEdit, model::saveNameEdit)
@@ -551,6 +725,7 @@ internal fun ProjectsHome(
     state: NativeProjectUiState,
     onCreate: () -> Unit,
     onImport: () -> Unit,
+    onImportFiles: () -> Unit,
     onOpen: (LocalProjectRef) -> Unit,
     onCopy: (LocalProjectRef) -> Unit,
     onEncoding: (TxtEncoding) -> Unit,
@@ -586,6 +761,13 @@ internal fun ProjectsHome(
                     ) {
                         Text(stringResource(R.string.native_import_project), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
+                }
+                OutlinedButton(
+                    onClick = onImportFiles,
+                    enabled = !state.busy,
+                    modifier = Modifier.fillMaxWidth().testTag("native-home-import-files"),
+                ) {
+                    Text(stringResource(R.string.native_import_from_files))
                 }
                 Box {
                     OutlinedButton(
@@ -1584,8 +1766,10 @@ internal fun Editor(
     onEditNames: (() -> Unit)? = null,
     canUndo: Boolean = false,
     canRedo: Boolean = false,
+    restoredHistory: Int = 0,
     onUndo: () -> Unit = {},
     onRedo: () -> Unit = {},
+    onClearHistory: (() -> Unit)? = null,
 ) {
     var replacing by rememberSaveable(
         draft.ref.projectId.value,
@@ -1720,6 +1904,19 @@ internal fun Editor(
                     }
                     editorNotice?.let {
                         NativeBanner(text = stringResource(it), tone = NativeTone.NEUTRAL)
+                    }
+                    if (restoredHistory > 0) {
+                        NativeBanner(
+                            text = stringResource(R.string.native_editor_history_restored, restoredHistory),
+                            tone = NativeTone.NEUTRAL,
+                            action = {
+                                if (onClearHistory != null) {
+                                    TextButton(onClick = onClearHistory, enabled = !busy) {
+                                        Text(stringResource(R.string.native_editor_history_clear))
+                                    }
+                                }
+                            },
+                        )
                     }
                     if (draft.conflict) {
                         NativeBanner(
@@ -1883,4 +2080,112 @@ internal fun TextItemStatus.tone(): NativeTone = when (this) {
     TextItemStatus.RULE_SKIPPED,
     TextItemStatus.LANGUAGE_SKIPPED,
     TextItemStatus.DUPLICATED -> NativeTone.NEUTRAL
+}
+
+/** Five-language labels for reviewed TXT/EPUB creation; no label is assembled from raw keys. */
+@Composable
+private fun projectImportLabels(): NativeProjectImportLabels {
+    val context = LocalContext.current
+    val issues = mapOf(
+        NativeImportIssueCode.UNSUPPORTED_EXTENSION to stringResource(R.string.native_import_issue_unsupported),
+        NativeImportIssueCode.EMPTY_FILE to stringResource(R.string.native_import_issue_empty),
+        NativeImportIssueCode.FILE_TOO_LARGE to stringResource(R.string.native_import_issue_too_large),
+        NativeImportIssueCode.DUPLICATE_SOURCE to stringResource(R.string.native_import_issue_duplicate_source),
+        NativeImportIssueCode.DUPLICATE_NAME to stringResource(R.string.native_import_issue_duplicate_name),
+        NativeImportIssueCode.PROJECT_NAME_CONFLICT to stringResource(R.string.native_import_issue_project_conflict),
+    )
+    val txtSeed = stringResource(R.string.native_import_seed_txt)
+    val epubSeed = stringResource(R.string.native_import_seed_epub)
+    val txtFormat = stringResource(R.string.native_format_txt)
+    val epubFormat = stringResource(R.string.native_format_epub)
+    return NativeProjectImportLabels(
+        title = stringResource(R.string.native_import_title),
+        description = stringResource(R.string.native_import_description),
+        note = stringResource(R.string.native_import_note),
+        chooseFiles = stringResource(R.string.native_import_choose_files),
+        chooseDirectory = stringResource(R.string.native_import_choose_directory),
+        noFiles = stringResource(R.string.native_import_no_files),
+        projectName = stringResource(R.string.native_import_project_name),
+        seed = stringResource(R.string.native_import_seed),
+        format = stringResource(R.string.native_import_format),
+        size = stringResource(R.string.native_import_size),
+        encoding = stringResource(R.string.native_import_encoding),
+        unknownEncoding = stringResource(R.string.native_import_unknown_encoding),
+        remove = stringResource(R.string.native_import_remove),
+        issues = stringResource(R.string.native_import_issues),
+        create = stringResource(R.string.native_import_create),
+        cancel = stringResource(R.string.native_cancel),
+        formatText = { format ->
+            when (format) {
+                NativeImportFormat.TXT -> txtFormat
+                NativeImportFormat.EPUB -> epubFormat
+            }
+        },
+        seedText = { seed ->
+            when (seed) {
+                NativeProjectSeed.TXT_TEXT -> txtSeed
+                NativeProjectSeed.EPUB_FIRST_ASSET -> epubSeed
+            }
+        },
+        issueText = { code -> issues.getValue(code) },
+        bytesText = { bytes -> android.text.format.Formatter.formatFileSize(context, bytes) },
+    )
+}
+
+/** Five-language labels for the read-only legacy panel. */
+@Composable
+private fun legacyExportLabels(): NativeLegacyExportLabels {
+    val context = LocalContext.current
+    val phases = mapOf(
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.PREPARING to
+            stringResource(R.string.native_legacy_export_phase_preparing),
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.BOOK to
+            stringResource(R.string.native_legacy_export_phase_book),
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.EDITION to
+            stringResource(R.string.native_legacy_export_phase_edition),
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.CHAT to
+            stringResource(R.string.native_legacy_export_phase_chat),
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.FINALIZING to
+            stringResource(R.string.native_legacy_export_phase_finalizing),
+        com.breakyuna.noveltranslator.legacy.LegacyExportPhase.COMPLETED to
+            stringResource(R.string.native_legacy_export_phase_completed),
+    )
+    return NativeLegacyExportLabels(
+        title = stringResource(R.string.native_legacy_export_title),
+        description = stringResource(R.string.native_legacy_export_description),
+        privacyNote = stringResource(R.string.native_legacy_export_privacy),
+        outputDirectory = stringResource(R.string.native_legacy_export_output_directory),
+        chooseDirectory = stringResource(R.string.native_legacy_export_choose_directory),
+        noDirectory = stringResource(R.string.native_legacy_export_no_directory),
+        start = stringResource(R.string.native_legacy_export_start),
+        cancel = stringResource(R.string.native_cancel),
+        close = stringResource(R.string.native_legacy_export_close),
+        idle = stringResource(R.string.native_legacy_export_idle),
+        running = stringResource(R.string.native_legacy_export_running),
+        completed = stringResource(R.string.native_legacy_export_completed),
+        failed = stringResource(R.string.native_legacy_export_failed),
+        cancelled = stringResource(R.string.native_legacy_export_cancelled_state),
+        failures = stringResource(R.string.native_legacy_export_failures),
+        noFailures = stringResource(R.string.native_legacy_export_no_failures),
+        progressText = { completed, total ->
+            context.getString(R.string.native_legacy_export_progress, completed, total)
+        },
+        phaseText = { phase -> phases.getValue(phase) },
+        resultText = { files, bytes, failures ->
+            context.getString(
+                R.string.native_legacy_export_result,
+                files,
+                android.text.format.Formatter.formatFileSize(context, bytes),
+                failures,
+            )
+        },
+        failureText = { failure ->
+            context.getString(
+                R.string.native_legacy_export_failure,
+                failure.scope,
+                failure.message,
+                failure.path ?: "",
+            )
+        },
+    )
 }

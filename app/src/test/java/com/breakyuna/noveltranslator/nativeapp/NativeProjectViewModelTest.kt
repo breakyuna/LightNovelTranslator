@@ -44,6 +44,7 @@ class NativeProjectViewModelTest {
         app = ApplicationProvider.getApplicationContext()
         app.deleteDatabase("lnt_native_app.db")
         File(app.filesDir, "native_projects").deleteRecursively()
+        File(app.filesDir, "native-draft-undo").deleteRecursively()
         graph = app.nativeGraph
     }
 
@@ -409,6 +410,168 @@ class NativeProjectViewModelTest {
             assertEquals(ItemId(3), moved.editor!!.item.id)
             model.navigateEditor(TextItemDirection.NEXT); val boundary = model.state.first { !it.busy }
             assertEquals(ItemId(3), boundary.editor!!.item.id); assertEquals(R.string.native_editor_boundary, boundary.notice)
+        }
+    }
+
+    @Test fun editorUndoHistoryIsRestoredForTheSameRevisionWithoutSubmitting() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("persistent-undo"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy }
+            first.edit(ItemId(1)); first.state.first { !it.busy }
+            first.editText("one"); first.editText("two")
+            first.awaitDraftUndoWrites()
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            val recovered = restored.state.first { !it.busy && it.editor != null }
+            assertEquals("two", recovered.editor!!.text)
+            assertEquals(2, recovered.editorHistoryRestored)
+            assertTrue(recovered.editorCanUndo)
+            assertFalse(recovered.editorCanRedo)
+
+            restored.undoEditor()
+            assertEquals("one", restored.state.value.editor!!.text)
+            restored.redoEditor()
+            assertEquals("two", restored.state.value.editor!!.text)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            restored.awaitDraftUndoWrites()
+        }
+    }
+
+    @Test fun failedSaveAndExternalRevisionNeverRestoreTheOldStack() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("stale-undo"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy }
+            first.edit(ItemId(1)); first.state.first { !it.busy }
+            first.editText("draft")
+            first.awaitDraftUndoWrites()
+            val details = graph.projects.item(project.ref, ItemId(1))!!
+            graph.projects.edit(ManualTextEdit(CommandId("outside-save"), project.ref, ItemId(1),
+                details.revision, details.item.fingerprint, "outside"))
+            first.saveEditor()
+            val failed = first.state.first { !it.busy }
+            assertTrue(failed.editor!!.conflict)
+            assertEquals(R.string.native_conflict, failed.error)
+
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            val recovered = restored.state.first { !it.busy && it.editor != null }
+            assertTrue(recovered.editor!!.conflict)
+            assertFalse(recovered.editorCanUndo)
+            assertFalse(recovered.editorCanRedo)
+            assertEquals(0, recovered.editorHistoryRestored)
+            restored.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().isNullOrEmpty())
+        }
+    }
+
+    @Test fun successfulSaveClearsTheJournalAndNeverReopensTheDraft() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("saved-undo"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy }
+            first.edit(ItemId(1)); first.state.first { !it.busy }
+            first.editText("saved"); first.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().orEmpty().isNotEmpty())
+
+            first.saveEditor()
+            first.state.first { !it.busy && it.editor == null }
+            first.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().isNullOrEmpty())
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+
+            val (_, reopened) = model(saved, graph.projects, graph.backgroundTranslations)
+            val state = reopened.state.first { !it.busy }
+            assertNull(state.editor)
+            assertEquals(1L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun clearingHistoryKeepsTheDraftAndRemovesTheJournal() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("clear-undo"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.edit(ItemId(1)); model.state.first { !it.busy }
+            model.editText("one"); model.editText("two")
+            model.awaitDraftUndoWrites()
+            assertTrue(model.state.value.editorCanUndo)
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().orEmpty().isNotEmpty())
+
+            model.clearEditorHistory()
+            assertEquals("two", model.state.value.editor!!.text)
+            assertFalse(model.state.value.editorCanUndo)
+            assertFalse(model.state.value.editorCanRedo)
+            assertEquals(0, model.state.value.editorHistoryRestored)
+            model.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().isNullOrEmpty())
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun corruptJournalFailsClosedWithANoticeAndNoUndo() = runBlocking {
+        withTimeout(20_000) {
+            val project = graph.projects.createTxt(CommandId("corrupt-undo"), "fixture",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (_, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            first.state.first { !it.busy }
+            first.edit(ItemId(1)); first.state.first { !it.busy }
+            first.editText("draft"); first.awaitDraftUndoWrites()
+            val journal = File(app.filesDir, "native-draft-undo").listFiles()!!.single()
+            journal.writeText("{damaged", Charsets.UTF_8)
+
+            val (_, restored) = model(saved, graph.projects, graph.backgroundTranslations)
+            val recovered = restored.state.first { !it.busy && it.editor != null }
+            assertEquals(R.string.native_editor_history_corrupt, recovered.notice)
+            assertEquals("draft", recovered.editor!!.text)
+            assertFalse(recovered.editorCanUndo)
+            assertFalse(recovered.editorCanRedo)
+            restored.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().isNullOrEmpty())
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+        }
+    }
+
+    @Test fun switchingProjectClearsTheOldJournalAndCannotCrossRestore() = runBlocking {
+        withTimeout(20_000) {
+            val first = graph.projects.createTxt(CommandId("switch-undo-first"), "first",
+                RelativePath("first.txt"), "first".toByteArray())
+            val second = graph.projects.createTxt(CommandId("switch-undo-second"), "second",
+                RelativePath("second.txt"), "second".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(first.ref.projectId.value,
+                first.ref.instanceId.value, first.ref.generation.value.toString())))
+            val (_, model) = model(saved, graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.edit(ItemId(1)); model.state.first { !it.busy }
+            model.editText("draft"); model.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().orEmpty().isNotEmpty())
+
+            model.open(second.ref)
+            model.state.first { !it.busy && it.project?.ref == second.ref }
+            model.awaitDraftUndoWrites()
+            assertTrue(File(app.filesDir, "native-draft-undo").listFiles().isNullOrEmpty())
+
+            model.open(first.ref)
+            model.state.first { !it.busy && it.project?.ref == first.ref }
+            model.edit(ItemId(1)); model.state.first { !it.busy }
+            assertFalse(model.state.value.editorCanUndo)
+            assertFalse(model.state.value.editorCanRedo)
+            assertEquals(0, model.state.value.editorHistoryRestored)
         }
     }
 
@@ -982,6 +1145,36 @@ class NativeProjectViewModelTest {
             assertEquals(R.string.native_io_error, done.error)
             assertEquals(StoredRunState.CANCELLED, graph.runStore.recent(project.ref).single().state)
             assertNull(graph.runtime.snapshot().activeRun)
+        }
+    }
+
+    @Test fun modelCatalogReloadsCachedSnapshotAndTreatsEmptyResultAsOverride() = runBlocking {
+        withTimeout(20_000) {
+            graph.modelCatalogSnapshots.clear()
+            val endpoint = "https://example.test/v1"
+            val protocol = NativeModelProtocol.OPENAI_CHAT_COMPLETIONS
+            val profile = graph.modelProfiles.create(NewModelProfile(
+                name = "catalog", purpose = ModelProfilePurpose.AGENT, endpoint = endpoint,
+                model = "model-a", protocol = protocol, keys = emptyList()))
+            graph.modelCatalogSnapshots.save(ModelCatalogSnapshot(endpoint, protocol, 1_000L,
+                listOf(ModelDescriptor("model-a", contextTokens = 128_000, outputTokens = 8_192))))
+            val (_, model) = model(SavedStateHandle(), graph.projects, graph.backgroundTranslations)
+            model.state.first { !it.busy }
+            model.loadModelCatalog(profile.id)
+            val cached = model.state.first { !it.busy && it.modelCatalog.profileId == profile.id }
+            assertEquals(NativeModelCatalogViewSource.CACHED, cached.modelCatalog.source)
+            assertTrue(cached.modelCatalog.persisted)
+            assertEquals(1_000L, cached.modelCatalog.fetchedAtMillis)
+            assertEquals(128_000, cached.modelCatalog.descriptors.single().contextTokens)
+            assertEquals(8_192, cached.modelCatalog.descriptors.single().outputTokens)
+
+            // A successful empty response is an explicit override, not "no cache".
+            graph.modelCatalogSnapshots.save(ModelCatalogSnapshot(endpoint, protocol, 2_000L))
+            model.loadModelCatalog(profile.id)
+            val empty = model.state.first { !it.busy && it.modelCatalog.fetchedAtMillis == 2_000L }
+            assertEquals(NativeModelCatalogViewSource.EMPTY_OVERRIDE, empty.modelCatalog.source)
+            assertTrue(empty.modelCatalog.descriptors.isEmpty())
+            assertEquals(2_000L, empty.modelCatalog.fetchedAtMillis)
         }
     }
 }

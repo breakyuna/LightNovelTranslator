@@ -1,6 +1,8 @@
 package com.breakyuna.noveltranslator.nativecore.domain
 
 /** Opaque process-local ownership. Implementations must reject forged/stale handles. */
+interface ArchiveReadLease
+
 interface RunLease { val identity: RunIdentity }
 interface OperationLease
 interface ProjectWriteLease
@@ -16,6 +18,10 @@ enum class OperationKind { MODEL_REQUEST, TOOL, SCRIPT, HOST_REQUEST }
  * release their operation/write handles. finishRun is not a cancellation API.
  */
 interface RuntimePort {
+    fun beginArchiveRead(): ArchiveReadLease = throw UnsupportedOperationException("Archive reservation unavailable")
+    fun endArchiveRead(lease: ArchiveReadLease) {}
+    fun beginArchiveProjectWrite(lease: ArchiveReadLease): ProjectWriteLease =
+        throw UnsupportedOperationException("Archive reservation unavailable")
     fun snapshot(): RuntimeSnapshot
     fun selectChat(chat: ChatIdentity?)
     fun beginRun(identity: RunIdentity, owner: RuntimeOwner): RunLease

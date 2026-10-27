@@ -2,6 +2,8 @@ package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelFailure
 import com.breakyuna.noveltranslator.nativecore.domain.InvalidModelNetworkSettings
+import com.breakyuna.noveltranslator.nativecore.domain.InvalidModelProxyCredential
+import com.breakyuna.noveltranslator.nativecore.domain.ModelAuthMode
 import com.breakyuna.noveltranslator.nativecore.domain.ModelFailureKind
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsUnavailable
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelEndpoint
@@ -21,18 +23,23 @@ import okhttp3.RequestBody.Companion.toRequestBody
  *
  * Streaming is intentionally not implemented in this slice. Every codec sends
  * `stream = false`; a future streaming adapter must keep the same capability
- * validation and secret-redaction rules. Vision requirements are rejected here
- * because these codecs have no image part; catalog metadata alone cannot authorize
- * a lossy dispatch.
+ * validation and secret-redaction rules. Vision is required only when the request
+ * actually carries an image part: catalog metadata alone never authorizes dropping
+ * an image, and a text-only request is not rejected merely because a profile also
+ * claims vision support.
  *
- * Authentication is header-only and protocol-specific:
- * - OpenAI Chat/Responses and SakuraLLM: `Authorization: Bearer ...`
- * - Anthropic Messages: `x-api-key` plus `anthropic-version`
- * - Google Gemini: `x-goog-api-key`
+ * Authentication is header-only. [ModelAuthMode.API_KEY] keeps the historical
+ * protocol-specific headers:
+ * - OpenAI Chat/Responses, SakuraLLM and OAuth: `Authorization: Bearer ...`
+ * - Anthropic Messages API key: `x-api-key` plus `anthropic-version`
+ * - Google Gemini API key: `x-goog-api-key`
  *
- * An empty credential means explicit no-auth mode; no empty header is sent.
- * The default [CapabilityCatalog.EMPTY] intentionally rejects tool-bearing
- * requests as UNKNOWN; callers must provide exact model facts before enabling tools.
+ * [ModelAuthMode.OAUTH] always uses `Authorization: Bearer` and never adds
+ * `x-api-key`/`x-goog-api-key`. [ModelAuthMode.NONE] sends no authentication
+ * header. An empty API-key credential keeps explicit no-auth mode; no empty header
+ * is sent.
+ * The default [CapabilityCatalog.EMPTY] intentionally rejects unproven tool- or
+ * image-bearing requests; callers must provide exact model facts before enabling them.
  * This class has no logger, and [ModelHttpPlan.toString] never prints headers or
  * request bodies.
  */
@@ -51,17 +58,18 @@ class ModelProtocolTransport(
         request: ModelProtocolRequest,
         requirements: CapabilityRequirement = CapabilityRequirement.NONE,
         profile: NativeModelProfile? = null,
+        authMode: ModelAuthMode = ModelAuthMode.API_KEY,
     ): ModelProtocolResponse {
         NativeModelSettingsValidation.validateKey(credential)
-        val effective = if (request.tools.isEmpty()) requirements else requirements.copy(tools = true)
-        // This slice carries text/tool JSON only. A vision requirement cannot be
-        // satisfied by silently dropping images, even if a catalog says SUPPORTED.
-        if (effective.vision) {
-            throw UnsupportedModelCapability(CapabilityFeature.VISION, CapabilityRejectionReason.UNSUPPORTED)
-        }
+        val effective = requirements.copy(
+            tools = requirements.tools || request.tools.isNotEmpty(),
+            // Vision is a fact about this request, not a blanket profile flag.
+            // Plain text remains dispatchable even when the catalog claims vision.
+            vision = request.hasImages,
+        )
         (profile?.capabilityCatalog(protocol) ?: capabilities)
             .requireSupported(protocol, settings.model, effective)
-        val plan = plan(protocol, settings.endpoint, settings.model, credential, request, profile)
+        val plan = plan(protocol, settings.endpoint, settings.model, credential, request, profile, authMode)
         val http = try {
             Request.Builder().url(plan.url).apply {
                 plan.headers.forEach { (name, value) -> header(name, value) }
@@ -77,6 +85,8 @@ class ModelProtocolTransport(
         } catch (local: InvalidModelNetworkSettings) {
             throw local
         } catch (local: ModelNetworkSettingsUnavailable) {
+            throw local
+        } catch (local: InvalidModelProxyCredential) {
             throw local
         } catch (classified: AgentModelFailure) {
             throw classified
@@ -108,25 +118,37 @@ class ModelProtocolTransport(
         credential: String,
         request: ModelProtocolRequest,
         profile: NativeModelProfile? = null,
+        authMode: ModelAuthMode = ModelAuthMode.API_KEY,
     ): ModelHttpPlan {
         if (request.model != model) throw AgentModelFailure(ModelFailureKind.CONTENT)
         NativeModelSettingsValidation.validateKey(credential)
         val body = applyProfileRequestOverrides(ModelProtocols.request(protocol, request), profile, protocol)
-        return ModelHttpPlan(endpointFor(protocol, endpoint, model), headers(protocol, credential), body)
+        return ModelHttpPlan(endpointFor(protocol, endpoint, model),
+            headers(protocol, credential, authMode), body)
     }
 
-    private fun headers(protocol: ModelProtocol, credential: String): Map<String, String> {
+    private fun headers(protocol: ModelProtocol, credential: String,
+        authMode: ModelAuthMode): Map<String, String> {
         val headers = linkedMapOf(
             "Accept" to "application/json",
             "Content-Type" to "application/json; charset=utf-8",
         )
         if (protocol == ModelProtocol.ANTHROPIC_MESSAGES) headers["anthropic-version"] = ANTHROPIC_VERSION
-        if (credential.isEmpty()) return Collections.unmodifiableMap(headers)
-        when (protocol) {
-            ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES, ModelProtocol.SAKURA_LLM ->
+        when (authMode) {
+            ModelAuthMode.NONE -> Unit
+            ModelAuthMode.OAUTH -> {
+                if (credential.isEmpty()) throw AgentModelFailure(ModelFailureKind.AUTHENTICATION)
                 headers["Authorization"] = "Bearer $credential"
-            ModelProtocol.ANTHROPIC_MESSAGES -> headers["x-api-key"] = credential
-            ModelProtocol.GOOGLE_GEMINI -> headers["x-goog-api-key"] = credential
+            }
+            ModelAuthMode.API_KEY -> {
+                if (credential.isEmpty()) return Collections.unmodifiableMap(headers)
+                when (protocol) {
+                    ModelProtocol.OPENAI_CHAT_COMPLETIONS, ModelProtocol.OPENAI_RESPONSES,
+                    ModelProtocol.SAKURA_LLM -> headers["Authorization"] = "Bearer $credential"
+                    ModelProtocol.ANTHROPIC_MESSAGES -> headers["x-api-key"] = credential
+                    ModelProtocol.GOOGLE_GEMINI -> headers["x-goog-api-key"] = credential
+                }
+            }
         }
         return Collections.unmodifiableMap(headers)
     }

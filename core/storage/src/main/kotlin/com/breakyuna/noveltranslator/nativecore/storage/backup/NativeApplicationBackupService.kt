@@ -150,18 +150,32 @@ class ApplicationBackupSummary(
     val totalBytes: Long,
     val createdAtMillis: Long,
     val schemaVersion: Int,
+    val backupScope: AppBackupScope = AppBackupScope.SETTINGS,
+    val snapshotId: String? = null,
 ) {
     init {
         require(entryCount >= 0 && totalBytes >= 0 && createdAtMillis >= 0 && schemaVersion >= 1)
+        require(snapshotId == null ||
+            (snapshotId.length in 1..128 && snapshotId.none(Char::isISOControl))) {
+            "Invalid backup snapshot id"
+        }
     }
 
     override fun toString() =
-        "ApplicationBackupSummary(entries=$entryCount, bytes=$totalBytes, schema=$schemaVersion)"
+        "ApplicationBackupSummary(entries=$entryCount, bytes=$totalBytes, schema=$schemaVersion, " +
+            "scope=$backupScope)"
 }
 
-class ApplicationBackupRestoreSummary(val entryCount: Int, val totalBytes: Long) {
-    init { require(entryCount >= 0 && totalBytes >= 0) }
-    override fun toString() = "ApplicationBackupRestoreSummary(entries=$entryCount, bytes=$totalBytes)"
+class ApplicationBackupRestoreSummary(
+    val entryCount: Int,
+    val totalBytes: Long,
+    val schemaVersion: Int = 1,
+    val backupScope: AppBackupScope = AppBackupScope.SETTINGS,
+) {
+    init { require(entryCount >= 0 && totalBytes >= 0 && schemaVersion >= 1) }
+    override fun toString() =
+        "ApplicationBackupRestoreSummary(entries=$entryCount, bytes=$totalBytes, schema=$schemaVersion, " +
+            "scope=$backupScope)"
 }
 
 /**
@@ -170,14 +184,17 @@ class ApplicationBackupRestoreSummary(val entryCount: Int, val totalBytes: Long)
  * `manifest.json` plus `data/<entry path>`. Restore extracts to a private staging directory,
  * verifies schema/paths/sizes/SHA-256/budgets, then asks the port to stage and publish.
  *
- * The service never reads application databases, never writes a live file itself and never
- * exports or restores credentials, project instances or execution approvals.
+ * Schema 1 remains the settings-only format produced by [export]. Schema 2 can describe either
+ * a settings scope or a full archive supplied by [FullArchiveDataPort]. A full archive includes
+ * project snapshots, Agent history, audit-only approvals, queue history and optional diagnostics,
+ * but never credentials or executable authorization.
  */
 class NativeApplicationBackupService(
     private val port: AppBackupDataPort,
     private val temporaryDirectory: File,
     private val limits: AppBackupLimits = AppBackupLimits(),
     private val clock: () -> Long = { System.currentTimeMillis() },
+    private val fullArchivePort: FullArchiveDataPort? = null,
 ) {
     suspend fun export(destination: () -> OutputStream): ApplicationBackupSummary = withContext(Dispatchers.IO) {
         val supplied = port.exportEntries()
@@ -239,6 +256,136 @@ class NativeApplicationBackupService(
         }
     }
 
+    suspend fun exportFullArchive(
+        options: FullArchiveExportOptions = FullArchiveExportOptions(),
+        destination: () -> OutputStream,
+    ): ApplicationBackupSummary = withContext(Dispatchers.IO) {
+        val archivePort = requireNotNull(fullArchivePort) {
+            "Full archive data port is not configured"
+        }
+        val exported = archivePort.exportArchive(options)
+        val cut = exported.cut
+        require(cut.quiesced) { "Full archive cut is not quiesced" }
+        require(cut.activeRun == null) { "Full archive cut has an active run" }
+        require(!cut.queueRunning) { "Full archive cut has a running queue" }
+        require(cut.diagnosticsIncluded == options.includeDiagnostics) {
+            "Diagnostics inclusion does not match the requested cut"
+        }
+        val supplied = ArrayList<FullArchiveEntry>(exported.entries.size + 2)
+        supplied.addAll(exported.entries)
+        supplied.addAll(exported.usageHistory.entries())
+        require(supplied.size <= limits.maxEntries) { "Too many backup entries" }
+        val paths = HashSet<String>()
+        supplied.forEach { entry ->
+            validatePath(entry.path, entry.kind)
+            require(paths.add(entry.path)) { "Duplicate backup entry" }
+            require(entry.consistentCut) { "Backup entry is not from the consistent cut" }
+            if (!options.includeDiagnostics) {
+                require(entry.kind != FullArchiveEntryKind.DIAGNOSTICS) {
+                    "Diagnostics require an explicit opt-in"
+                }
+            }
+        }
+        require(cut.projectInstances.size <= limits.maxEntries) { "Too many project instances" }
+        val directory = directory()
+        val temporary = ArrayList<File>()
+        val staged = ArrayList<StagedFullArchiveEntry>()
+        try {
+            var total = 0L
+            supplied.sortedBy { it.path }.forEach { entry ->
+                currentCoroutineContext().ensureActive()
+                val remaining = limits.maxTotalBytes - total
+                require(remaining > 0) { "Backup exceeds size budget" }
+                val limit = minOf(limits.maxEntryBytes, remaining)
+                val file = File.createTempFile("lnt-full-backup-", ".bin", directory)
+                temporary.add(file)
+                val bounded = LimitedOutputStream(FileOutputStream(file), limit)
+                try {
+                    entry.writeTo(bounded)
+                } finally {
+                    runCatching { bounded.close() }
+                }
+                require(bounded.written <= limit && file.length() == bounded.written) {
+                    "Backup entry exceeds size budget"
+                }
+                if (entry.kind.isModelSettings) validateModelSettings(file)
+                total = Math.addExact(total, file.length())
+                require(total <= limits.maxTotalBytes)
+                staged.add(StagedFullArchiveEntry(entry, file, file.length(), sha256(file)))
+            }
+            val snapshotDigests = staged
+                .filter { it.entry.kind == FullArchiveEntryKind.PROJECT_SNAPSHOT }
+                .map { it.sha256 }
+            require(snapshotDigests.size == cut.projectInstances.size) {
+                "Project instance list does not match project snapshots"
+            }
+            require(cut.projectInstances.all { it.sha256 in snapshotDigests }) {
+                "Project snapshot digest is missing from the archive"
+            }
+            val manifestEntries = staged.map { value ->
+                AppBackupManifestV2Entry(
+                    path = value.entry.path,
+                    kind = value.entry.kind,
+                    bytes = value.bytes,
+                    sha256 = value.sha256,
+                )
+            }
+            val manifest = AppBackupManifestV2(
+                scope = AppBackupScope.FULL_ARCHIVE,
+                appVersion = cut.appVersion,
+                appSchemaVersion = cut.appSchemaVersion,
+                queueSchemaVersion = cut.queueSchemaVersion,
+                snapshotId = cut.snapshotId,
+                cutAtMillis = cut.cutAtMillis,
+                createdAtMillis = clock().coerceAtLeast(0),
+                quiesced = true,
+                activeRun = null,
+                queueRunning = false,
+                totalBytes = total,
+                projectInstances = cut.projectInstances,
+                entries = manifestEntries,
+            )
+            val target = destination()
+            try {
+                ZipOutputStream(target.buffered()).use { zip ->
+                    zip.setLevel(6)
+                    zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
+                    zip.write(AppBackupManifestV2Codec.encode(manifest).toByteArray(Charsets.UTF_8))
+                    zip.closeEntry()
+                    staged.forEach { value ->
+                        currentCoroutineContext().ensureActive()
+                        zip.putNextEntry(ZipEntry(DATA_PREFIX + value.entry.path))
+                        FileInputStream(value.file).use { input ->
+                            input.copyTo(zip, 64 * 1024)
+                        }
+                        zip.closeEntry()
+                    }
+                }
+            } finally {
+                runCatching { target.close() }
+            }
+            ApplicationBackupSummary(
+                entryCount = manifest.entries.size,
+                totalBytes = manifest.totalBytes,
+                createdAtMillis = manifest.createdAtMillis,
+                schemaVersion = AppBackupManifestV2Codec.SCHEMA_VERSION.toInt(),
+                backupScope = AppBackupScope.FULL_ARCHIVE,
+                snapshotId = manifest.snapshotId,
+            )
+        } finally {
+            temporary.forEach { file -> file.delete() }
+        }
+    }
+
+    /**
+     * Rolls back additions from a restore whose process died after writing PREPARED. Callers may
+     * also invoke this at application startup before offering a new restore.
+     */
+    suspend fun recoverPendingRestore(): Boolean = withContext(Dispatchers.IO) {
+        val archivePort = fullArchivePort ?: return@withContext false
+        recoverPendingRestore(archivePort)
+    }
+
     suspend fun restore(source: () -> InputStream): ApplicationBackupRestoreSummary =
         withContext(Dispatchers.IO) {
             val directory = directory()
@@ -263,7 +410,7 @@ class NativeApplicationBackupService(
                             }
                             zipEntry.name.startsWith(DATA_PREFIX) -> {
                                 val path = zipEntry.name.removePrefix(DATA_PREFIX)
-                                validatePath(path, null)
+                                validatePath(path, null as AppBackupEntryKind?)
                                 require(path !in dataFiles) { "Duplicate backup entry" }
                                 require(dataFiles.size < limits.maxEntries) { "Too many backup entries" }
                                 val remaining = limits.maxTotalBytes - total
@@ -281,44 +428,217 @@ class NativeApplicationBackupService(
                     }
                 }
                 require(manifestSeen) { "Missing backup manifest" }
-                val manifest = BackupManifestCodec.decode(
-                    manifestFile.readTextBounded(limits.maxManifestBytes), limits,
-                )
-                require(manifest.entries.size == dataFiles.size) { "Manifest does not match archive" }
-                require(manifest.totalBytes == total) { "Manifest total does not match archive" }
-                val staged = manifest.entries.map { entry ->
-                    val file = dataFiles[entry.path] ?: throw IllegalArgumentException("Missing backup entry")
-                    require(file.length() == entry.bytes) { "Backup entry size mismatch" }
-                    require(sha256(file) == entry.sha256) { "Backup entry digest mismatch" }
-                    if (entry.kind == AppBackupEntryKind.MODEL_SETTINGS) validateModelSettings(file)
-                    AppBackupStagedEntry(entry.path, entry.kind, file, entry.bytes, entry.sha256)
-                }
-                currentCoroutineContext().ensureActive()
-                var published = false
-                var session: AppBackupRestoreSession? = null
-                try {
-                    val started = port.beginRestore(java.util.Collections.unmodifiableList(ArrayList(staged)))
-                    session = started
-                    started.publish()
-                    published = true
-                    ApplicationBackupRestoreSummary(staged.size, manifest.totalBytes)
-                } finally {
-                    if (!published) {
-                        val pending = session
-                        if (pending != null) {
-                            withContext(NonCancellable) {
-                                try {
-                                    pending.discard()
-                                } catch (_: Exception) {
-                                }
-                            }
-                        }
-                    }
+                val manifestText = manifestFile.readTextBounded(limits.maxManifestBytes)
+                when (readManifestSchemaVersion(manifestText)) {
+                    1L -> restoreSettingsV1(manifestText, dataFiles, total)
+                    2L -> restoreVersion2(manifestText, dataFiles, total)
+                    else -> throw IllegalArgumentException("Unsupported application backup version")
                 }
             } finally {
                 staging.deleteRecursively()
             }
         }
+
+    private suspend fun restoreSettingsV1(
+        manifestText: String,
+        dataFiles: Map<String, File>,
+        archiveBytes: Long,
+    ): ApplicationBackupRestoreSummary {
+        val manifest = BackupManifestCodec.decode(manifestText, limits)
+        require(manifest.entries.size == dataFiles.size) { "Manifest does not match archive" }
+        require(manifest.totalBytes == archiveBytes) { "Manifest total does not match archive" }
+        val staged = manifest.entries.map { entry ->
+            val file = dataFiles[entry.path] ?: throw IllegalArgumentException("Missing backup entry")
+            require(file.length() == entry.bytes) { "Backup entry size mismatch" }
+            require(sha256(file) == entry.sha256) { "Backup entry digest mismatch" }
+            if (entry.kind == AppBackupEntryKind.MODEL_SETTINGS) validateModelSettings(file)
+            AppBackupStagedEntry(entry.path, entry.kind, file, entry.bytes, entry.sha256)
+        }
+        currentCoroutineContext().ensureActive()
+        publishAppRestore(staged)
+        return ApplicationBackupRestoreSummary(staged.size, manifest.totalBytes)
+    }
+
+    private suspend fun restoreVersion2(
+        manifestText: String,
+        dataFiles: Map<String, File>,
+        archiveBytes: Long,
+    ): ApplicationBackupRestoreSummary {
+        val manifest = AppBackupManifestV2Codec.decode(manifestText, limits)
+        require(manifest.entries.size == dataFiles.size) { "Manifest does not match archive" }
+        require(manifest.totalBytes == archiveBytes) { "Manifest total does not match archive" }
+        require(manifest.quiesced) { "Backup was not taken at a quiesced cut" }
+        require(manifest.activeRun == null) { "Backup was taken during an active run" }
+        require(!manifest.queueRunning) { "Backup was taken while the queue was running" }
+        require(manifest.entries.all { it.consistentCut }) {
+            "Backup contains an entry outside its consistent cut"
+        }
+        val staged = manifest.entries.map { entry ->
+            val file = dataFiles[entry.path] ?: throw IllegalArgumentException("Missing backup entry")
+            require(file.length() == entry.bytes) { "Backup entry size mismatch" }
+            require(sha256(file) == entry.sha256) { "Backup entry digest mismatch" }
+            if (entry.kind.isModelSettings) validateModelSettings(file)
+            FullArchiveStagedEntry(
+                path = entry.path,
+                kind = entry.kind,
+                file = file,
+                bytes = entry.bytes,
+                sha256 = entry.sha256,
+                consistentCut = entry.consistentCut,
+            )
+        }
+        if (manifest.scope == AppBackupScope.SETTINGS) {
+            require(manifest.projectInstances.isEmpty()) { "Settings backup contains project instances" }
+            val legacy = staged.map { entry ->
+                val kind = entry.kind.settingsKind
+                    ?: throw IllegalArgumentException("Unsupported settings backup entry")
+                AppBackupStagedEntry(entry.path, kind, dataFile(dataFiles, entry.path),
+                    entry.bytes, entry.sha256)
+            }
+            currentCoroutineContext().ensureActive()
+            publishAppRestore(legacy)
+            return ApplicationBackupRestoreSummary(
+                entryCount = staged.size,
+                totalBytes = manifest.totalBytes,
+                schemaVersion = AppBackupManifestV2Codec.SCHEMA_VERSION.toInt(),
+                backupScope = AppBackupScope.SETTINGS,
+            )
+        }
+        val archivePort = requireNotNull(fullArchivePort) {
+            "Full archive data port is not configured"
+        }
+        val snapshotDigests = staged
+            .filter { it.kind == FullArchiveEntryKind.PROJECT_SNAPSHOT }
+            .map { it.sha256 }
+        require(snapshotDigests.size == manifest.projectInstances.size) {
+            "Project instance list does not match project snapshots"
+        }
+        require(snapshotDigests.distinct().size == snapshotDigests.size) {
+            "Duplicate project snapshot entry"
+        }
+        require(manifest.projectInstances.all { it.sha256 in snapshotDigests }) {
+            "Project snapshot digest is missing from the archive"
+        }
+        currentCoroutineContext().ensureActive()
+        recoverPendingRestore(archivePort)
+        val state = archivePort.restoreState()
+        require(state.idle) { "Application data is not idle; restore was not started" }
+        val plan = FullArchiveRestorePlan(
+            snapshotId = manifest.snapshotId,
+            cutAtMillis = manifest.cutAtMillis,
+            projectInstances = manifest.projectInstances,
+        )
+        val journal = archivePort.restoreJournal
+        val preparedAt = clock().coerceAtLeast(0)
+        val session = archivePort.beginRestore(
+            plan,
+            java.util.Collections.unmodifiableList(ArrayList(staged)),
+        )
+        val prepared = AppBackupRestoreReceipt(
+            snapshotId = manifest.snapshotId,
+            state = AppBackupRestoreReceiptState.PREPARED,
+            preparedAtMillis = preparedAt,
+            updatedAtMillis = preparedAt,
+            cutAtMillis = manifest.cutAtMillis,
+            paths = staged.map { it.path },
+            projectInstances = manifest.projectInstances,
+        )
+        try {
+            journal.write(prepared)
+        } catch (failure: Throwable) {
+            withContext(NonCancellable) {
+                try {
+                    session.discard()
+                } catch (_: Exception) {
+                }
+            }
+            throw failure
+        }
+        try {
+            session.publish()
+        } catch (failure: Throwable) {
+            withContext(NonCancellable) {
+                try {
+                    session.discard()
+                } catch (_: Exception) {
+                }
+                try {
+                    journal.write(prepared.transition(
+                        AppBackupRestoreReceiptState.FAILED,
+                        clock().coerceAtLeast(0),
+                        failure.javaClass.simpleName.take(200).ifBlank { "RESTORE_FAILED" },
+                    ))
+                } catch (journalFailure: Throwable) {
+                    failure.addSuppressed(journalFailure)
+                }
+            }
+            throw failure
+        }
+        withContext(NonCancellable) {
+            journal.write(prepared.transition(
+                AppBackupRestoreReceiptState.COMMITTED,
+                clock().coerceAtLeast(0),
+            ))
+        }
+        return ApplicationBackupRestoreSummary(
+            entryCount = staged.size,
+            totalBytes = manifest.totalBytes,
+            schemaVersion = AppBackupManifestV2Codec.SCHEMA_VERSION.toInt(),
+            backupScope = AppBackupScope.FULL_ARCHIVE,
+        )
+    }
+
+    private suspend fun publishAppRestore(staged: List<AppBackupStagedEntry>) {
+        var published = false
+        var session: AppBackupRestoreSession? = null
+        try {
+            val started = port.beginRestore(java.util.Collections.unmodifiableList(ArrayList(staged)))
+            session = started
+            started.publish()
+            published = true
+        } finally {
+            if (!published) {
+                val pending = session
+                if (pending != null) {
+                    withContext(NonCancellable) {
+                        try {
+                            pending.discard()
+                        } catch (_: Exception) {
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun recoverPendingRestore(archivePort: FullArchiveDataPort): Boolean {
+        val journal = archivePort.restoreJournal
+        val receipt = journal.read() ?: return false
+        if (receipt.state != AppBackupRestoreReceiptState.PREPARED) return false
+        archivePort.recoverPendingRestore(receipt)
+        journal.write(receipt.transition(
+            AppBackupRestoreReceiptState.FAILED,
+            clock().coerceAtLeast(0),
+            "INTERRUPTED",
+        ))
+        return true
+    }
+
+    private fun dataFile(dataFiles: Map<String, File>, path: String): File =
+        dataFiles[path] ?: throw IllegalArgumentException("Missing backup entry")
+
+    private fun readManifestSchemaVersion(text: String): Long {
+        val root = try {
+            JsonObjectValue.parse(text, JsonInputLimits(limits.maxManifestBytes, 8)).json
+        } catch (_: Exception) {
+            throw IllegalArgumentException("Invalid application backup manifest")
+        }
+        val value = root["schema_version"] as? JsonPrimitive
+            ?: throw IllegalArgumentException("Invalid application backup manifest")
+        require(!value.isString) { "Invalid application backup manifest" }
+        return value.content.toLongOrNull()
+            ?: throw IllegalArgumentException("Invalid application backup manifest")
+    }
 
     private fun validateModelSettings(file: File) {
         require(file.length() <= MAX_MODEL_SETTINGS_BYTES) { "Model settings backup entry is too large" }
@@ -329,6 +649,9 @@ class NativeApplicationBackupService(
     }
 
     private fun validatePath(path: String, expected: AppBackupEntryKind?) =
+        BackupManifestValidator.validatePath(path, expected)
+
+    private fun validatePath(path: String, expected: FullArchiveEntryKind) =
         BackupManifestValidator.validatePath(path, expected)
 
     private suspend fun copyBounded(input: InputStream, target: File, limit: Long): Long {
@@ -423,6 +746,7 @@ class NativeApplicationBackupService(
             "refresh_token", "refresh-token", "refreshtoken", "client_secret", "client-secret",
             "clientsecret", "oauth_token", "oauth-token", "oauthtoken", "private_key",
             "private-key", "privatekey", "password", "authorization", "bearer ", "sk-", "aiza",
+            "keystore", "key_state", "key-state", "keychain", "model_key", "model-key",
         )
     }
 }
@@ -430,6 +754,13 @@ class NativeApplicationBackupService(
 private class ManifestEntry(
     val path: String,
     val kind: AppBackupEntryKind,
+    val bytes: Long,
+    val sha256: String,
+)
+
+private class StagedFullArchiveEntry(
+    val entry: FullArchiveEntry,
+    val file: File,
     val bytes: Long,
     val sha256: String,
 )
@@ -533,14 +864,21 @@ private object BackupManifestCodec {
  * one object prevents the manifest validator from accepting a path the extractor would later
  * write outside staging.
  */
-private object BackupManifestValidator {
+internal object BackupManifestValidator {
     private const val MAX_PATH_CHARS = 240
     private val FORBIDDEN_MARKERS = listOf(
         "credential", "secret", "token", "oauth", "apikey", "api-key", "api_key",
         "password", "authorization", "private-key", "private_key",
+        "keystore", "key-state", "key_state", "keychain",
     )
 
-    fun validatePath(path: String, kind: AppBackupEntryKind?) {
+    fun validatePath(path: String, kind: AppBackupEntryKind?) =
+        validatePath(path, kind?.exactPath, kind?.pathPrefix)
+
+    fun validatePath(path: String, kind: FullArchiveEntryKind) =
+        validatePath(path, kind.exactPath, kind.pathPrefix)
+
+    private fun validatePath(path: String, exact: String?, prefix: String?) {
         require(path.length in 1..MAX_PATH_CHARS) { "Invalid backup entry path" }
         require(path.none(Char::isISOControl) && '\\' !in path && !path.startsWith("/")) {
             "Invalid backup entry path"
@@ -555,12 +893,10 @@ private object BackupManifestValidator {
             val lower = segment.lowercase(Locale.ROOT)
             FORBIDDEN_MARKERS.any { marker -> marker in lower }
         }) { "Credentials and execution authorization are not backup entries" }
-        if (kind == null) return
-        val exact = kind.exactPath
         if (exact != null) {
             require(path == exact) { "Backup entry path does not match its kind" }
-        } else {
-            require(path.startsWith(kind.pathPrefix) && path.length > kind.pathPrefix.length) {
+        } else if (prefix != null) {
+            require(path.startsWith(prefix) && path.length > prefix.length) {
                 "Backup entry path does not match its kind"
             }
         }

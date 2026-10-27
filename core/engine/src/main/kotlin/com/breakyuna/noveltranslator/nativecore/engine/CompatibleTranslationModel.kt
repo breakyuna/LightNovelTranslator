@@ -24,10 +24,12 @@ class CompatibleTranslationModel(
     private val keys: ModelKeyPool = ModelKeyPool(settings),
     private val usage: UsageLedgerRecorder? = null,
     private val profiles: suspend (ModelConfigurationRef) -> NativeModelProfile? = { null },
+    /** Optional auth boundary; the default keeps the historical API-key pool path. */
+    private val credentials: ModelCredentialResolver = ApiKeyModelCredentialResolver(keys),
 ) : ConfiguredTranslationBackend {
     override suspend fun complete(lease: RunLease, request: TranslationModelRequest): TranslationModelResponse {
         var reference: ModelConfigurationRef? = null
-        var selection: KeySelection? = null
+        var credential: ModelCredential? = null
         try {
             val options = requireNotNull(request.options)
             currentCoroutineContext().ensureActive()
@@ -35,22 +37,22 @@ class CompatibleTranslationModel(
             reference = config.reference
             require(config.reference == request.configuration)
             val profile = profiles(request.configuration)
-            selection = keys.select(request.configuration)
+            credential = credentials.resolve(request.configuration)
             val protocol = config.protocol.toModelProtocol()
             if (protocol != ModelProtocol.OPENAI_CHAT_COMPLETIONS) {
                 val result = completeProtocol(lease, request, config, profile, options, protocol,
-                    selection?.credential.orEmpty())
+                    credential)
                 withContext(NonCancellable) {
-                    keys.success(config.reference, selection)
+                    credentials.success(config.reference, credential)
                     runCatching { usage?.record(UsageRequestRecord(request.run, request.attempt,
                         UsageModelRef(config.reference, config.model), result.usage, ModelStopReason.COMPLETE)) }
                 }
                 return result
             }
-            val secret = selection?.credential.orEmpty()
+            val secret = credential.token
             val body = applyProfileRequestOverrides(
                 CompatibleTranslationProtocol.request(request, config.model, options), profile, protocol)
-            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret).apply {
+            val http = transport.request(NativeModelEndpoint.chat(config.endpoint), secret, credential.mode).apply {
                 header("Accept", "application/json")
                 profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
             }.post(body.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
@@ -83,7 +85,7 @@ class CompatibleTranslationModel(
             currentCoroutineContext().ensureActive()
             val value = result.getOrThrow()
             withContext(NonCancellable) {
-                keys.success(config.reference, selection)
+                credentials.success(config.reference, credential)
                 runCatching { usage?.record(UsageRequestRecord(request.run, request.attempt,
                     UsageModelRef(config.reference, config.model), value.usage, ModelStopReason.COMPLETE)) }
             }
@@ -92,12 +94,13 @@ class CompatibleTranslationModel(
         catch (notStored: TranslationResponseNotStored) { throw notStored }
         catch (local: InvalidModelNetworkSettings) { throw local }
         catch (local: ModelNetworkSettingsUnavailable) { throw local }
+        catch (local: InvalidModelProxyCredential) { throw local }
         catch (classified: AgentModelFailure) {
-            reference?.let { keys.failure(it, selection, classified.kind, classified.retryAfterMillis) }
+            reference?.let { credentials.failure(it, credential, classified.kind, classified.retryAfterMillis) }
             throw classified
         }
         catch (_: Exception) {
-            reference?.let { keys.failure(it, selection, ModelFailureKind.UNKNOWN) }
+            reference?.let { credentials.failure(it, credential, ModelFailureKind.UNKNOWN) }
             throw AgentModelFailure(ModelFailureKind.PARSING)
         }
     }
@@ -110,7 +113,7 @@ class CompatibleTranslationModel(
 
     private suspend fun completeProtocol(lease: RunLease, request: TranslationModelRequest,
         config: NativeModelSettings, profile: NativeModelProfile?, options: RemoteTranslationOptions,
-        protocol: ModelProtocol, secret: String): TranslationModelResponse {
+        protocol: ModelProtocol, credential: ModelCredential): TranslationModelResponse {
         val protocolRequest = CompatibleTranslationProtocol.protocolRequest(request, config.model, options)
         val body = ModelProtocols.request(protocol, protocolRequest)
         if (TextProjectFingerprint.utf8(body).size > 2 * 1024 * 1024)
@@ -126,10 +129,12 @@ class CompatibleTranslationModel(
             throw CancellationException("Translation stopped")
         val response = try {
             ModelProtocolTransport(transport, CapabilityCatalog.EMPTY)
-                .complete(protocol, config, secret, protocolRequest, CapabilityRequirement.NONE, profile)
+                .complete(protocol, config, credential.token, protocolRequest,
+                    CapabilityRequirement.NONE, profile, credential.mode)
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (local: InvalidModelNetworkSettings) { throw local }
         catch (local: ModelNetworkSettingsUnavailable) { throw local }
+        catch (local: InvalidModelProxyCredential) { throw local }
         catch (classified: AgentModelFailure) {
             withContext(NonCancellable) { audit.received(handle, unknownRequestUsage(), classified.kind) }
             throw classified

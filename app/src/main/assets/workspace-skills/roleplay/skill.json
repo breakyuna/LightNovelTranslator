@@ -1,0 +1,15 @@
+{
+  "name": "roleplay",
+  "description": "扮演故事中的指定角色，深入探索虚拟世界。",
+  "enabled": true,
+  "order": 100,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "roleplay",
+    "writing",
+    "story"
+  ],
+  "contentSha256": "398a32f4dc2a7990108b97d0272ef14259a849a3e1c19f4a0961d522471328f5"
+}

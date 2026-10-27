@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator
 
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +29,19 @@ class MainActivity : ComponentActivity() {
         setContent {
             NativeProjectApp(viewModel)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        viewModel.consumeOAuthCallback()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // The callback Activity stores a one-time result and brings this task forward.
+        // resume also covers a process that was recreated while the browser was open.
+        viewModel.consumeOAuthCallback()
     }
 }
 

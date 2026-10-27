@@ -1,0 +1,14 @@
+{
+  "name": "agent-charter",
+  "description": "开始新任务或新对话前必须加载的任务宪章。",
+  "enabled": true,
+  "order": 0,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "writing",
+    "translation"
+  ],
+  "contentSha256": "307be42f3b2487aeb47c044ebba990f1e70e3252a5561a2f31932978bef82699"
+}

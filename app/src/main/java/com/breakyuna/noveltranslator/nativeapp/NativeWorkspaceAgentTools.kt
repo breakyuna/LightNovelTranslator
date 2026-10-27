@@ -7,6 +7,8 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.workspace.ProjectWorkspaceAnalysis
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactRecord
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillCatalog
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillPolicy
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillPolicyScriptSource
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillRecord
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.storage.NativeItemProposalStore
@@ -35,7 +37,8 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
                                          skillFiles: com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillFilePort? = null,
                                          assetImportProposals: NativeAssetImportProposalStore? = null,
                                          workspaceChanges: NativeWorkspaceChangeProposalStore? = null,
-                                         extraTools: List<RegisteredAgentTool> = emptyList()): AgentToolPort =
+                                         extraTools: List<RegisteredAgentTool> = emptyList(),
+                                         skillPolicyCeiling: WorkspaceSkillPolicy = WorkspaceSkillPolicy.DEFAULT): AgentToolPort =
     AgentToolRegistry(runtime, listOf(RegisteredAgentTool(
         "analyze_project_script",
         "Analyze the complete bound project revision with isolated synchronous JavaScript. " +
@@ -78,25 +81,34 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
             throw IllegalArgumentException("Skill execution unavailable")
         }) else RegisteredAgentTool(
         "run_project_skill",
+        // The registry still classifies this as READ_ONLY because adding a workspace-execution
+        // effect would touch the shared agent contract. Capability enforcement is the policy
+        // intersection below; the description is never the security boundary.
         "Execute one enabled skill's scripts/** entry point with the same isolated workspace as " +
             "analyze_project_script. The skill must be enabled; the path is resolved inside its " +
             "private package. Returns logs and artifacts only; it never writes project items. " +
             "Pass input_json as a JSON object string; the script reads JSON.parse(lg.arguments.input_json). " +
-            "Default entry point is scripts/main.js. Network is disabled unless allow_fetch=true; " +
-            "then lg.fetch uses the same public HTTP policy and cumulative 64 KiB budget.",
+            "Default entry point is scripts/main.js. Network, search and artifact capabilities are " +
+            "fixed by the skill's stored policy and the app runtime ceiling; the model cannot enable " +
+            "network or proposals with a tool argument. This analysis bridge does not expose project " +
+            "change proposals or printing. A denied capability fails instead of being granted.",
         ToolParameterSchema(mapOf("skill_id" to ToolParameter.Text(1, 128),
             "entry_point" to ToolParameter.Text(1, 256, required = false),
-            "allow_fetch" to ToolParameter.BooleanValue(required = false),
             "input_json" to ToolParameter.Text(2, 16_384, required = false))), ToolEffect.READ_ONLY,
         AgentToolHandler { run, arguments ->
             require(run == lease.identity && run.projectId == ref.projectId)
             val id = WorkspaceSkillId(requireNotNull(arguments.text("skill_id")))
             val entry = arguments.text("entry_point") ?: "scripts/main.js"
-            val source = com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillScriptSource(
-                skills, skillFiles).resolve(id.value, entry)
+            val execution = withContext(Dispatchers.IO) {
+                WorkspaceSkillPolicyScriptSource(skills, skillFiles, skillPolicyCeiling)
+                    .resolveForExecution(id.value, entry)
+            }
+            val policy = execution.policy
+            val source = execution.source
             val result = analysis.analyze(ref, lease, source.text, workspaceRun.revision(),
-                allowFetch = arguments.boolean("allow_fetch") ?: false,
-                inputJson = arguments.text("input_json") ?: "{}")
+                allowFetch = policy.allowFetch,
+                inputJson = arguments.text("input_json") ?: "{}",
+                policy = policy)
             JsonObjectValue.parse(buildJsonObject {
                 put("skill", id.value)
                 put("entry_point", entry)
@@ -104,6 +116,9 @@ internal fun nativeWorkspaceAnalysisTools(runtime: RuntimePort, analysis: Projec
                 put("revision", result.revision)
                 put("exit_code", result.result.exitCode)
                 put("truncated", result.result.outputTruncated)
+                put("network", policy.allowFetch)
+                put("proposals", policy.allowProposeChanges)
+                put("allow_artifacts", policy.allowArtifacts)
                 put("logs", buildJsonArray { result.result.logs.forEach { line -> add(buildJsonObject {
                     put("stream", line.stream.name); put("text", line.text)
                 }) } })
@@ -608,4 +623,17 @@ private fun skillSummary(record: WorkspaceSkillRecord) = buildJsonObject {
     put("languages", buildJsonArray { record.summary.languages.sorted().forEach { add(JsonPrimitive(it)) } })
     put("tags", buildJsonArray { record.summary.tags.sorted().forEach { add(JsonPrimitive(it)) } })
     put("content_sha256", record.summary.contentSha256 ?: "")
+    put("policy", buildJsonObject {
+        put("allow_materials", record.summary.policy.allowMaterials)
+        put("allow_artifacts", record.summary.policy.allowArtifacts)
+        put("allow_search", record.summary.policy.allowSearch)
+        put("allow_fetch", record.summary.policy.allowFetch)
+        put("allow_propose_changes", record.summary.policy.allowProposeChanges)
+        put("allow_print", record.summary.policy.allowPrint)
+        put("allow_auto_select", record.summary.policy.allowAutoSelect)
+        put("max_run_millis", record.summary.policy.maxRunMillis)
+        put("max_output_bytes", record.summary.policy.maxOutputBytes)
+        put("max_artifact_bytes", record.summary.policy.maxArtifactBytes)
+        put("max_change_bytes", record.summary.policy.maxChangeBytes)
+    })
 }

@@ -482,12 +482,16 @@ class ModelProtocolsTest {
             dispatched = true
             throw AssertionError("Capability rejection must happen before HTTP")
         }.build()
-        val transport = ModelProtocolTransport(CompatibleHttpTransport(client))
+        val transport = ModelProtocolTransport(CompatibleHttpTransport(client), CapabilityCatalog.of(
+            CapabilityModelRef(ModelProtocol.OPENAI_CHAT_COMPLETIONS, "fixture") to
+                ModelCapabilities(vision = CapabilitySupport.UNSUPPORTED),
+        ))
         val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "http://127.0.0.1:1/v1", "fixture")
+        val imageRequest = ModelProtocolRequest("fixture", null, listOf(ModelProtocolMessage(
+            ModelMessageRole.USER, "hello", images = listOf(ModelProtocolImage("image/png", byteArrayOf(1, 2, 3))))))
         try {
             kotlinx.coroutines.runBlocking {
-                transport.complete(ModelProtocol.OPENAI_CHAT_COMPLETIONS, settings, "", textRequest(),
-                    CapabilityRequirement(vision = true))
+                transport.complete(ModelProtocol.OPENAI_CHAT_COMPLETIONS, settings, "", imageRequest)
             }
             throw AssertionError("Accepted vision")
         } catch (failure: UnsupportedModelCapability) {

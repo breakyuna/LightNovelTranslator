@@ -134,6 +134,46 @@ class ModelNetworkSettingsTest {
         }
     }
 
+    @Test fun proxyCredentialReferenceRoundTripsAndLegacyPayloadStillDecodes() {
+        val referenced = configured().copy(proxyCredentialRef = "proxy-ref-1")
+        val encoded = ModelNetworkSettingsCodec.encode(referenced)
+        assertTrue(encoded.contains("\"proxyCredentialRef\""))
+        assertEquals(referenced, ModelNetworkSettingsCodec.decode(encoded))
+        assertTrue(referenced.toString().contains("proxyCredential=set"))
+        assertFalse(referenced.toString().contains("proxy-ref-1"))
+
+        val root = Json.parseToJsonElement(encoded).jsonObject
+        val legacy = buildJsonObject {
+            root.forEach { (key, value) -> if (key != "proxyCredentialRef") put(key, value) }
+        }.toString()
+        val decodedLegacy = ModelNetworkSettingsCodec.decode(legacy)
+        assertNull(decodedLegacy.proxyCredentialRef)
+        assertEquals(referenced.copy(proxyCredentialRef = null), decodedLegacy)
+
+        assertFalse(ModelNetworkSettingsCodec.encode(configured()).contains("proxyCredentialRef"))
+        for (reference in listOf("", "has space", "user:pass@proxy", "a".repeat(129))) {
+            assertThrows(InvalidModelNetworkSettings::class.java) {
+                ModelNetworkSettings(proxyCredentialRef = reference)
+            }
+        }
+    }
+
+    @Test fun proxyCredentialNeverExposesItsParts() {
+        val credential = ModelProxyCredential.of("proxy-user", "proxy-password")
+        assertFalse(credential.toString().contains("proxy-user"))
+        assertFalse(credential.toString().contains("proxy-password"))
+        for (value in listOf("", " leading", "trailing ", "line\nbreak", "non-ascii-é")) {
+            assertThrows(IllegalArgumentException::class.java) { ModelProxyCredential.of(value, "password") }
+            assertThrows(IllegalArgumentException::class.java) { ModelProxyCredential.of("user", value) }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ModelProxyCredential.of("user:name", "password")
+        }
+        assertTrue(ModelProxyCredentialReference.isValid("proxy-ref_1"))
+        assertTrue(ModelProxyCredentialReference.isValid("-proxy"))
+        assertFalse(ModelProxyCredentialReference.isValid("has space"))
+    }
+
     @Test fun codecRoundTripsDefaultAndSavedProvenance() {
         val encodedDefault = ModelNetworkSettingsCodec.encode(ModelNetworkSettings.DEFAULT)
         assertEquals(ModelNetworkSettings.DEFAULT, ModelNetworkSettingsCodec.decode(encodedDefault))

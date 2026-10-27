@@ -92,6 +92,15 @@ class NativeAssetImportProposalStore(
         summary(requireNotNull(db.assetImportProposals().find(id.value)), ref).also { require(it.chat == chat) }
     }
 
+    /** Read-only mixed-approval loader; the artifact is always the single selected object. */
+    internal suspend fun loadMixedProposal(ref: LocalProjectRef, chat: ChatId,
+                                           id: ApprovalRequestId): AssetImportProposal = io {
+        projects.open(ref)
+        val row = requireNotNull(db.assetImportProposals().find(id.value))
+        require(row.chatId == chat.value)
+        payload(row, ref)
+    }
+
     suspend fun receipt(view: AssetImportProposalSummary): AssetImportReceipt? = io {
         val row = verifyView(view)
         val status = row.receiptStatus?.let { AssetMutationStatus.valueOf(it) } ?: return@io null

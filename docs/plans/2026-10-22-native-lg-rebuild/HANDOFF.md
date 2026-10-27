@@ -14,7 +14,7 @@
 
 ### 当前源码与 CI
 
-- 2026-10-27：[Actions #203 / 40358823290](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40358823290) 对应 `25217b2`，Release、Lint、app/workspace API 35 设备作业通过；test 在模块边界静态检查失败，单元测试未执行，原因是上轮警告配色引入旧 `ui.theme.LocalAppColors`。本轮移除该依赖，在 `NativeTheme` 内定义并按实际主题模式提供原生警告配色，徽标/横幅共用。用户授权修复并提交推送当前分支；本轮 CI 待核对，不沿用 #203 的绿色作业结果。静态审查，未实际构建；未运行测试或 Lint。
+- 2026-10-27：[Actions #204 / 40361934256](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40361934256) 对应 `4dd4b21`，`test`、`lint`、`release`、两组 API 35 设备作业全部通过；该提交移除 warning 配色对旧 `ui.theme.LocalAppColors` 的依赖，在 `NativeTheme` 内按主题模式提供原生警告色。此前 [Actions #203 / 40358823290](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40358823290) 对应 `25217b2`，test 在模块边界静态检查失败、单元测试未执行，由 `4dd4b21` 修复。#204 结论只覆盖 `4dd4b21`，不覆盖其后的工作区增量。
 
 - 2026-10-27：本轮修复前 HEAD 为 `a4c86b5`，[Actions #202 / 40357740599](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40357740599) 总体为 cancelled，但 lint 作业实际在 `:app:compileDebugKotlin` 报错：`NativeLogsPage` / `NativeRunHistory` 引用未定义的 `NativeTone.WARNING`，`NativeModelsPage` 缺少 `FontWeight` 导入；Unit tests 和 Release 构建步骤失败，设备测试取消，签名 APK 未上传。本轮修复补齐 WARNING 枚举及两个共享组件的主题警告色映射，补上 FontWeight 导入。静态审查，未实际构建；未运行测试或 Lint；用户已授权再次提交，随本轮提交推送当前分支并触发 CI，结果待核对。下述 `1d3dd1c` / #201 仅为上一绿色基线，不覆盖 `a4c86b5` 或本轮修复。
 
@@ -30,6 +30,28 @@
 - 合并 PDF 加载中→图片显示与固定页号/正文预览用例，使用 `CompletableDeferred` 控制返回，保留真实 PNG 解码、失败检查及单窗口断言；合并技能取消重开与元数据保存流程，保留重新读取、取消不保存及实际 draft 字段断言。两项合并减少重复启动，不用增大超时/忽略失败。`NativeSkillMetadataTest` 两项改用普通 JUnit + `TemporaryFolder`，继续真实文件 CAS/元数据验证，无需 Android Context 或 Robolectric。
 - 当前源码静态盘点早于本轮新增测试；CI 在 `1d3dd1c` 实际报告 **2268 项单元测试 0 失败**，设备测试 app 2/2、workspace 13/13。`@Test` 数量只说明覆盖规模，不能折算功能完成度，也不替代设备与供应商验收。
 - 本机仍只做静态检查，未构建、未运行测试/Lint、未查看原生截图；`1d3dd1c` 的绿色来自 CI，结构/差异/冲突标记检查不证明设备视觉、供应商或完整升级行为。
+
+### 2026-10-27 本轮增量（已提交推送，CI 待核对）
+
+- 审查修复增量：预算兼容构造显式指定内存参数、混合审批 UI 投影可见性、MCP 搜索后备鲜读目录并验证只读、生成探测传 OAuth 模式、同响应最多 8 次工具调用收集同 Run 提案后等待审批（新发送仍阻断）、工作区执行重附着所有权。完整备份冻结真实用量 JSONL 与历史定价绑定；持有队列跨进程文件锁和运行时归档保留，工程快照使用专用保留句柄，诊断在释放前冻结。完整恢复在发布设置前保存私有回滚快照（加密模型行保持密文、价格及历史/模板/预设/网络/限额/实验室/偏好），失败及中断恢复回滚，提交后清理；两种备份均清除代理凭据引用。新增保留边界和中断回滚回归测试源码，未执行。静态审查，未实际构建；未运行测试或 Lint；本轮已随提交推送并手动 dispatch CI，结果待核对。
+
+- 本轮在 `4dd4b21` 之上新增源码增量（约 205 个文件），随本轮提交推送当前分支；本分支 push 不自动触发 Actions，已手动 dispatch。只做静态检查，未运行 Gradle/构建/单测/Lint。下表及本节旧描述保留 10-26 基线；本轮增量以本节为准，**不等于功能完成**。
+- vision：`core/engine` 已支持 USER 图片 part、OpenAI Chat/Responses、Anthropic、Gemini 编码、纯 Kotlin Base64、`AgentImageResolver` 与能力门禁；app 已接文件型附件存储、SAF 选择、缩略图/删除、纯图片发送、五语。真实供应商图片兼容、设备 SAF/内存未验收。
+- MCP：core 客户端/JSON-RPC/HTTP/SSE/搜索 + app 配置存储、独立 Keystore 凭据、DuckDuckGo 后备、`mcp_list_tools`/`mcp_call` 只读工具、More 页配置 UI。只暴露 `readOnlyHint=true` 工具，有副作用工具不暴露；未连接真实 MCP server。
+- OAuth：通用 OAuth2 + PKCE、回调 Activity、token 交换/刷新/退出、配置 CAS、模型 resolver 注入、模型页认证区；OAuth 传输改为 Bearer，API key 旧头不变。真实 provider、浏览器回调、Keystore 设备行为未验收。
+- 代理/费用：代理凭据独立 Keystore + Basic proxyAuthenticator + 设置 UI；价格表版本化、回执记录价格版本、`UsageCostAggregator` 按历史版本/币种报价，旧回执缺失版本显示 UNKNOWN，不报 0。Room v20 已加回执价格列。
+- 模型目录：目录快照存储、Gemini 元数据、响应头白名单、U10 显式元数据/生成探测、缓存/空覆盖/计费确认 UI。生成探测需确认，不自动触发/重试。
+- 工作区：resident/peak 预算、逐资产 materialize、apply 取消、技能 `WorkspaceSkillPolicy`/选择器/执行门禁、编辑保留 policy、Agent 无 `allow_fetch` 提升、直接执行网络只能收窄；app 已接自动选择与 U09 资源入口。
+- 队列/恢复：失败批次重建、暂停/取消持久意图、对账报告、app 控制存储适配、JobScheduler 唤醒、receiver 改为入队即返回；跨进程/进程死亡仍只能设备验收。
+- U09：`ForegroundWorkspaceRunner` + app 执行 Adapter/Service/Host/通知停止/token 重附着；窗口关闭只 detach，进程死亡不自动重放。
+- 备份：manifest v2、FULL_ARCHIVE 数据端口/恢复 receipt、app 完整备份入口；工程/会话/审批/队列/诊断按只读历史或 PAUSED/NEEDS_REVIEW 恢复，不继承执行授权、不自动 kick。
+- 混合审批：领域模型 + Room v19 两张表 + `MixedProjectWriter` 单 `.lnt` 事务 + workspace 先行 saga + 子提案单消费拒绝 + 聚合审批 UI；workspace 成员标记 `WORKSPACE_DEFERRED`，由协调器 receipt 负责。
+- 旧数据/退役：新增只读 `LegacyExportService`（TXT/EPUB/术语/规则/提示词/聊天/进度、manifest/SHA、凭据排除、不删除旧库）、More 页导出入口；新增架构测试禁止 `nativeapp` 重新导入旧 `ui/data/core` 主链路。旧代码与旧数据保留用于导出，物理删除未做。
+- EPUB/TXT：head title 同步、竖排/RTL 清理、nav+spine、TXT 预算统一/UTF-8 回退/额外分隔符；新增 TXT/EPUB 多文件/目录新建工程导入，EPUB 首资产、TXT 正文、逐项失败。真实样本/阅读器未验收。
+- 规则/校对：新增源姓名批量修改（`ASSIGN_SOURCE_NAMES`，保留译文姓名/正文/状态与一次修订）；旧任务弹窗收敛，队列任务只走新审阅/失败成员路径，历史非队列任务仍可查看。
+- 编辑器：新增草稿撤销历史持久化（工程/资产/修订/指纹绑定、有界、AtomicFile、进程死亡恢复、修订变化拒绝、损坏 fail closed）；Ctrl+Z/Ctrl+Shift+Z/Ctrl+Y 不变。
+- 内置技能：补齐 agent-charter/epub/roleplay/translation，补 writing-guide/text-preserve/glossary 参考文档；pdf/xlsx/rpgmaker/skill-creator 按决定不迁或冻结。
+- 数据版本：`.lnt` v8、Room v20、队列 v2；权威 Room `2.json`—`20.json` 仍未导出。QuickJS 模块/异步/硬堆限制仍受引擎能力约束，内存预算只是采样上限，不宣称硬限制；完整代码编辑器未实现，旧代码物理删除待只读导出验收后进行。
 
 ### 已取得的具体证据及边界
 
@@ -81,15 +103,18 @@
 
 以下为待办，不自动授权实施、提交、推送、CI 或付费调用；按用户当前要求执行。
 
-1. **构建与设备验收**：`1d3dd1c` 已完成编译、2268 项单元测试、Lint、Release 与两组 API 35 设备测试；PDF 返回列表问题已关闭。下一步实际查看原生截图并做手机/平板/IME/TalkBack/SAF/通知/锁屏/进程死亡、宽屏校对与 U09 执行窗口的设备交互验收（本机未看截图）。
-2. **Agent 工作区继续闭环**：文件变更审批/apply、DuckDuckGo 搜索、`web_search`、工作区 `uploads/` 上传、材料列表/读取与检查点恢复已由 `1d3dd1c` 构建验证；`core/workspace` 设备测试 13/13（含新增 apply writer 4 项）。仍缺 MCP 外部配置、模型图片 vision、多对象混合审批、模块/异步/内存预算与取消，以及 ARM/多 Android 版本证据。
-3. **任务与恢复**：跨进程调度/进程被杀后的续排设备验收（receiver 已等待首轮 drain）、任务存储与队列成员行对账、暂停/崩溃窗口、Agent 检查点与完整工具恢复；旧任务弹窗与队列裁决路径继续收敛。
-4. **EPUB/TXT 与系统**：EPUB 更多属性/阅读器兼容、TXT/EPUB 真实样本往返与视觉验收；产物清单的设备/并发对账验收、U09 执行窗口/取消的设备验证、其余实际内置包迁移、宽屏校对。PDF OCR/原版式、RGSS/WOLF、Markdown/字幕/表格/游戏格式已冷冻，不再作为待实施或验收项；保留既有代码与旧数据。
-5. **验证与退役**：PC/授权 CI 生成并审阅 Room 2—18 schema；实际查看原生截图；补 SAF、后台/锁屏/进程死亡、升级、真机正则、性能及明确授权的供应商验证；完成 EPUB/TXT 闭环、旧代码退役与功能证据。非 EPUB/TXT 格式不纳入本轮产品验收。
+当前源码增量已覆盖 HANDOFF 记录的可实现缺口；以下只剩外部构建与验收。任何“未构建/未看截图”的结论不能由静态检查替代。
+
+1. **构建与 schema 导出**：由 PC/授权 CI 对当前工作区执行编译、单元测试、Lint、Release，并由 KSP 导出/审阅 Room `2.json`—`20.json`；确认 v18→v19、v19→v20 迁移和新增测试真实通过。当前本机未构建，不得把静态审查当绿测。
+2. **设备/视觉验收**：手机/平板、窄屏/宽屏、IME、TalkBack、SAF、通知、锁屏、进程死亡、开机/覆盖安装、JobScheduler/前台服务、U09 执行窗口与混合审批聚合对话框；实际查看截图与语义树。
+3. **供应商/网络验收**：真实 OpenAI/Anthropic/Gemini/Sakura、OAuth 浏览器回调与 refresh、MCP server/SSE/私网策略、DuckDuckGo/实网 Fetch、代理远端 DNS/407、vision 图片兼容；需要明确授权与测试账号。
+4. **真实格式/数据验收**：EPUB2/EPUB3 真实样本往返与阅读器兼容、TXT 多编码/大文件、旧 LNT 数据库只读导出与 SHA/回滚、完整备份恢复/失败回滚；不迁移旧数据、不删除旧数据。
+5. **性能/预算/退役收尾**：ARM/多 Android 版本、QuickJS 模块/异步/内存真实边界、大工程预算与取消；旧代码物理删除只能在只读导出验收通过后进行，当前只做生产入口隔离与架构测试。
+6. 非 EPUB/TXT 格式（PDF OCR/版式、RGSS/WOLF、Markdown/字幕/表格/游戏格式）继续冷冻，不纳入本轮实施或验收；保留既有代码与旧数据。
 
 ## 5. 高风险与技术决策
 
-[Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 对应 `1d3dd1c`：2268 项单元测试 0 失败、app 设备 2/2、workspace 设备 13/13、Lint 与 Release 全部通过；该结论只覆盖 `1d3dd1c`，不覆盖后续文档提交与设备视觉/供应商验收。当前 `.lnt` v8、Room v18、队列 v2、模型 profile、资产导入、工作区材料/产物、网络限流及 U05—U15 页面已有广泛源码/测试，工作区 apply、搜索、上传、检查点和恢复已进入该提交。`MIGRATION_17_18` 四组合自动化已通过，权威 schema 与历史版本真实升级仍缺。隔离服务、死循环超时及主动取消已有 API 35 x86_64 模拟器证据；仍需 ARM 真机、多版本与资源预算验证，QuickJS 0.9.2 API 未提供堆限额/中断处理器。草稿撤销历史仍只在活动 ViewModel 内，不设条数硬截断；进程死亡不恢复撤销栈。重点仍是 Koog 检查点/恢复、工作区权限/取消/回收、一致备份、大工程预算及 EPUB/TXT 真实样本。PDF OCR/版式、RGSS/WOLF 及非 EPUB/TXT 格式已按用户决定冷冻，不纳入本轮完成条件；保留代码和旧数据。Fetch/搜索真实公网行为未验收；代理远端 DNS、取消、重定向、非 UTF-8 站点、HTML 提取及恶意页面仍需独立验证。保持 API 24 支持边界，以真实设备测量冻结预算；未测量不宣称性能提升。
+[Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 对应 `1d3dd1c`：2268 项单元测试 0 失败、app 设备 2/2、workspace 设备 13/13、Lint 与 Release 全部通过；该结论只覆盖 `1d3dd1c`，不覆盖后续文档提交与设备视觉/供应商验收。当前 `.lnt` v8、Room v20、队列 v2、模型 profile、资产导入、工作区材料/产物、网络限流及 U05—U15 页面已有广泛源码/测试，工作区 apply、搜索、上传、检查点和恢复已进入该提交。`MIGRATION_17_18` 四组合自动化已通过，权威 schema 与历史版本真实升级仍缺。隔离服务、死循环超时及主动取消已有 API 35 x86_64 模拟器证据；仍需 ARM 真机、多版本与资源预算验证，QuickJS 0.9.2 API 未提供堆限额/中断处理器。草稿撤销历史仍只在活动 ViewModel 内，不设条数硬截断；进程死亡不恢复撤销栈。重点仍是 Koog 检查点/恢复、工作区权限/取消/回收、一致备份、大工程预算及 EPUB/TXT 真实样本。PDF OCR/版式、RGSS/WOLF 及非 EPUB/TXT 格式已按用户决定冷冻，不纳入本轮完成条件；保留代码和旧数据。Fetch/搜索真实公网行为未验收；代理远端 DNS、取消、重定向、非 UTF-8 站点、HTML 提取及恶意页面仍需独立验证。保持 API 24 支持边界，以真实设备测量冻结预算；未测量不宣称性能提升。
 
 ## 6. 历史追溯与维护
 

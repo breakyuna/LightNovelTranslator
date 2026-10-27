@@ -33,7 +33,8 @@ internal object ProjectWriteStore {
     }
 
     private fun editBound(db: SQLiteDatabase, command: ManualTextEdit, beforeCommit: () -> Unit,
-                          translatedNames: List<String>? = null, receiptDigest: String? = null): ManualEditReceipt =
+                          translatedNames: List<String>? = null, sourceNames: List<String>? = null,
+                          receiptDigest: String? = null): ManualEditReceipt =
         NativeProjectDatabase.transaction(db) {
             rejectPolicyCommand(db, command.ref, command.commandId)
             val digest = receiptDigest ?: TextProjectFingerprint.command(command)
@@ -59,10 +60,15 @@ internal object ProjectWriteStore {
             val nextRevision = if (status == ManualEditStatus.COMMITTED) Math.addExact(revision, 1) else revision
             if (status == ManualEditStatus.COMMITTED) {
                 checkNotNull(item)
-                val metadata = if (translatedNames == null) item.metadata else {
-                    ManualNameEdit(command.commandId, command.ref, item.id, revision, item.fingerprint,
-                        translatedNames, item.metadata.nameSource)
-                    TextItemMetadata(item.metadata.tag, item.metadata.nameSource, translatedNames,
+                val metadata = if (translatedNames == null && sourceNames == null) item.metadata else {
+                    if (sourceNames != null)
+                        ManualNameEdit(command.commandId, command.ref, item.id, revision, item.fingerprint,
+                            emptyList(), sourceNames)
+                    else ManualNameEdit(command.commandId, command.ref, item.id, revision, item.fingerprint,
+                        requireNotNull(translatedNames), item.metadata.nameSource)
+                    TextItemMetadata(item.metadata.tag,
+                        sourceNames ?: item.metadata.nameSource,
+                        translatedNames ?: item.metadata.nameTranslation,
                         item.metadata.extraField, item.metadata.skipInternalFilter)
                 }
                 val fingerprint = if (db.version >= 3) TextProjectFingerprint.item(item.id, item.row,
@@ -71,6 +77,7 @@ internal object ProjectWriteStore {
                 check(db.update("items", ContentValues().apply {
                     put("translation", command.translation); put("status", command.status.name)
                     if (translatedNames != null) put("name_translation", NativeProjectDatabase.encodeNames(translatedNames))
+                    if (sourceNames != null) put("name_source", NativeProjectDatabase.encodeNames(sourceNames))
                     put("fingerprint", fingerprint.sha256)
                 }, "id = ?", arrayOf(item.id.value.toString())) == 1)
                 db.execSQL("UPDATE project SET revision = ? WHERE singleton = 1", arrayOf(nextRevision))
@@ -166,6 +173,12 @@ internal object ProjectWriteStore {
         }
     }
 
+    private class BatchOriginals(
+        val translation: String,
+        val status: TextItemStatus,
+        val translatedNames: List<String>?,
+    )
+
     fun editBatch(db: SQLiteDatabase, command: ManualTextBatch, maxItemChars: Int = 65_536, beforeCommit: () -> Unit): ManualBatchReceipt =
         NativeProjectDatabase.transaction(db) {
             rejectPolicyCommand(db, command.ref, command.commandId)
@@ -222,23 +235,32 @@ internal object ProjectWriteStore {
             command.targets.forEachIndexed { index, target ->
                 beforeCommit()
                 val original = db.rawQuery("SELECT translation,status,${if (db.version >= 3) "name_translation" else "NULL"} FROM items WHERE id=?", arrayOf(target.id.value.toString())).use {
-                    check(it.moveToFirst()); Triple(it.getString(0), TextItemStatus.valueOf(it.getString(1)),
+                    check(it.moveToFirst())
+                    BatchOriginals(it.getString(0), TextItemStatus.valueOf(it.getString(1)),
                         NativeProjectDatabase.decodeNames(if (it.isNull(2)) null else it.getString(2)))
                 }
-                val replaced = if (command.nameAssignment != null) ItemReplacementPreview(original.first, command.nameAssignment, original.third != command.nameAssignment)
-                    else command.replacement?.let { ItemTextReplacement.preview(original.first, original.third, it, beforeCommit).also {
-                    require(it.changed) { "Replacement target has no changes" }
-                } }
-                if (replaced != null && replaced.translation.length > maxItemChars)
+                val sourceAssignment = command.change == TextBatchChange.ASSIGN_SOURCE_NAMES
+                val preview = command.replacement?.let {
+                    ItemTextReplacement.preview(original.translation, original.translatedNames, it, beforeCommit).also {
+                        require(it.changed) { "Replacement target has no changes" }
+                    }
+                }
+                val translation = preview?.translation
+                    ?: if (command.change.clearsTranslation) "" else original.translation
+                if (command.nameAssignment == null && translation.length > maxItemChars)
                     throw TextProjectException(TextProjectException.Reason.LIMIT_EXCEEDED)
+                val translatedNames = when {
+                    command.nameAssignment != null && !sourceAssignment -> command.nameAssignment
+                    preview != null && command.replacement?.target != TextReplacementTarget.TRANSLATION -> preview.names
+                    else -> null
+                }
+                val sourceNames = if (sourceAssignment) command.nameAssignment else null
                 val edit = ManualTextEdit(command.itemCommand(index), command.ref, target.id,
                     Math.addExact(revision, index.toLong()), target.fingerprint,
-                    replaced?.translation ?: if (command.change.clearsTranslation) "" else original.first,
-                    if (command.replacement != null || command.nameAssignment != null) original.second else command.change.status)
-                check(editBound(db, edit, beforeCommit,
-                    translatedNames = replaced?.names?.takeIf { command.replacement?.target != TextReplacementTarget.TRANSLATION },
-                    receiptDigest = replaced?.names?.takeIf { command.replacement?.target != TextReplacementTarget.TRANSLATION }
-                        ?.let { ItemTextReplacement.commandDigest(edit, it) }).status == ManualEditStatus.COMMITTED)
+                    translation,
+                    if (command.replacement != null || command.nameAssignment != null) original.status else command.change.status)
+                check(editBound(db, edit, beforeCommit, translatedNames, sourceNames,
+                    receiptDigest = translatedNames?.let { ItemTextReplacement.commandDigest(edit, it) }).status == ManualEditStatus.COMMITTED)
             }
             beforeCommit()
             ManualBatchReceipt(command.commandId, command.ref, ManualEditStatus.COMMITTED,
@@ -307,46 +329,57 @@ internal object ProjectWriteStore {
 
     fun editPolicy(db: SQLiteDatabase, command: ProjectPolicyEdit, beforeCommit: () -> Unit): PolicyEditReceipt =
         NativeProjectDatabase.transaction(db) {
-            NativeProjectDatabase.summary(db, command.ref)
-            rejectApprovedItemCommand(db, command.ref, command.commandId)
-            rejectApprovedPdfPageCommand(db, command.ref, command.commandId)
-            if (find(db, command.ref, command.commandId) != null || batchReceiptCount(db, command.ref, command.commandId) != 0)
-                throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-            val prior = policyReceipt(db, command.ref, command.commandId)
-            if (prior != null) {
-                if (prior.first != command.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
-                return@transaction prior.second
-            }
-            val current = policy(db, command.ref)
-            val status = when {
-                command.expectedRevision != current.revision -> PolicyEditStatus.STALE_REVISION
-                command.base != current.fingerprint -> PolicyEditStatus.STALE_FINGERPRINT
-                else -> PolicyEditStatus.COMMITTED
-            }
-            // Migration, the policy, its global revision and the terminal receipt share one transaction.
-            NativeProjectDatabase.migratePolicy(db)
-            val next = if (status == PolicyEditStatus.COMMITTED) Math.addExact(current.revision, 1) else current.revision
-            val fingerprint = if (status == PolicyEditStatus.COMMITTED) command.policy.fingerprint() else current.fingerprint
-            val now = System.currentTimeMillis().coerceAtLeast(0)
-            if (status == PolicyEditStatus.COMMITTED) {
-                val payload = ProjectTextPolicyCodec.encode(command.policy)
-                db.execSQL("UPDATE text_policy SET payload=?,fingerprint=? WHERE singleton=1", arrayOf(payload, fingerprint.sha256))
-                db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(next))
-                db.insertOrThrow("policy_revisions", null, ContentValues().apply {
-                    put("revision", next); put("previous_fingerprint", current.fingerprint.sha256)
-                    put("fingerprint", fingerprint.sha256); put("payload", payload)
-                    put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
-                    put("command_id", command.commandId.value); put("committed_at", now)
-                })
-            }
-            db.insertOrThrow("policy_receipts", null, ContentValues().apply {
-                put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
-                put("command_id", command.commandId.value); put("digest", command.digest()); put("outcome", status.name)
-                put("revision", next); put("fingerprint", fingerprint.sha256); put("committed_at", now)
-            })
-            beforeCommit()
-            PolicyEditReceipt(command.commandId, command.ref, status, next, fingerprint, now)
+            editPolicyInTransaction(db, command, beforeCommit)
         }
+
+    /**
+     * Transaction-internal policy edit. [transactionStartRevision] may differ from the current
+     * revision when earlier mixed members already advanced the global timeline; stale detection
+     * remains anchored to the approved baseline.
+     */
+    fun editPolicyInTransaction(db: SQLiteDatabase, command: ProjectPolicyEdit, beforeCommit: () -> Unit,
+                                transactionStartRevision: Long? = null): PolicyEditReceipt {
+        NativeProjectDatabase.summary(db, command.ref)
+        rejectApprovedItemCommand(db, command.ref, command.commandId)
+        rejectApprovedPdfPageCommand(db, command.ref, command.commandId)
+        if (find(db, command.ref, command.commandId) != null || batchReceiptCount(db, command.ref, command.commandId) != 0)
+            throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+        val prior = policyReceipt(db, command.ref, command.commandId)
+        if (prior != null) {
+            if (prior.first != command.digest()) throw TextProjectException(TextProjectException.Reason.COMMAND_CONFLICT)
+            return prior.second
+        }
+        val current = policy(db, command.ref)
+        val batchRevision = transactionStartRevision ?: current.revision
+        val status = when {
+            command.expectedRevision != batchRevision -> PolicyEditStatus.STALE_REVISION
+            command.base != current.fingerprint -> PolicyEditStatus.STALE_FINGERPRINT
+            else -> PolicyEditStatus.COMMITTED
+        }
+        // Migration, the policy, its global revision and the terminal receipt share one transaction.
+        NativeProjectDatabase.migratePolicy(db)
+        val next = if (status == PolicyEditStatus.COMMITTED) Math.addExact(current.revision, 1) else current.revision
+        val fingerprint = if (status == PolicyEditStatus.COMMITTED) command.policy.fingerprint() else current.fingerprint
+        val now = System.currentTimeMillis().coerceAtLeast(0)
+        if (status == PolicyEditStatus.COMMITTED) {
+            val payload = ProjectTextPolicyCodec.encode(command.policy)
+            db.execSQL("UPDATE text_policy SET payload=?,fingerprint=? WHERE singleton=1", arrayOf(payload, fingerprint.sha256))
+            db.execSQL("UPDATE project SET revision=? WHERE singleton=1", arrayOf(next))
+            db.insertOrThrow("policy_revisions", null, ContentValues().apply {
+                put("revision", next); put("previous_fingerprint", current.fingerprint.sha256)
+                put("fingerprint", fingerprint.sha256); put("payload", payload)
+                put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+                put("command_id", command.commandId.value); put("committed_at", now)
+            })
+        }
+        db.insertOrThrow("policy_receipts", null, ContentValues().apply {
+            put("instance_id", command.ref.instanceId.value); put("generation", command.ref.generation.value)
+            put("command_id", command.commandId.value); put("digest", command.digest()); put("outcome", status.name)
+            put("revision", next); put("fingerprint", fingerprint.sha256); put("committed_at", now)
+        })
+        beforeCommit()
+        return PolicyEditReceipt(command.commandId, command.ref, status, next, fingerprint, now)
+    }
 
     fun checkedPolicyReceipt(db: SQLiteDatabase, command: ProjectPolicyEdit): PolicyEditReceipt? {
         rejectApprovedItemCommand(db, command.ref, command.commandId)

@@ -17,10 +17,13 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
+import com.breakyuna.noveltranslator.nativecore.domain.ModelHttpProxy
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettings
 import com.breakyuna.noveltranslator.nativecore.domain.ModelNetworkSettingsSource
 import com.breakyuna.noveltranslator.nativecore.domain.ModelRequestLimits
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -156,6 +159,68 @@ class NativeSettingsPageTest {
         compose.onNodeWithTag("native-settings-limits-save").performScrollTo().performClick()
         assertEquals("16", saved?.concurrency)
         assertEquals("60000", saved?.requestsPerMinute)
+    }
+
+    @Test fun proxyCredentialFieldsSendAReplaceCommandWithoutExposingThePasswordInState() {
+        var change: NativeProxyCredentialChange? = null
+        val credentialState = MutableStateFlow(NativeProxyCredentialUiState())
+        val actions = NativeProxyCredentialActions(credentialState, { _, command -> change = command }, {})
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeSettingsPage(
+                        NativeSettingsSection.EXPERT, NativeAppLanguage.ENGLISH, NativeThemeMode.SYSTEM, false,
+                        "", false, networkState(ModelNetworkSettings(
+                            proxy = ModelHttpProxy.of("proxy.example", 8080),
+                            source = ModelNetworkSettingsSource.SAVED)),
+                        limitsState(), back = {},
+                        selectSection = {}, selectLanguage = {}, selectTheme = {}, setAutomaticContextSummary = {},
+                        saveAppPersona = {}, reloadNetwork = {}, saveNetwork = {},
+                        reloadLimits = {}, saveLimits = {},
+                        proxyCredentialActions = actions,
+                    )
+                }
+            }
+        }
+        compose.onNodeWithTag("native-settings-proxy-auth").performScrollTo().performClick()
+        compose.onNodeWithTag("native-settings-proxy-username").performScrollTo()
+            .performTextReplacement("proxy-user")
+        compose.onNodeWithTag("native-settings-proxy-password").performScrollTo()
+            .performTextReplacement("proxy-secret")
+        assertFalse(credentialState.value.toString().contains("proxy-secret"))
+        compose.onNodeWithTag("native-settings-network-save").performScrollTo().performClick()
+        compose.runOnIdle {
+            assertEquals(NativeProxyCredentialChange.Replace("proxy-user", "proxy-secret"), change)
+        }
+        assertFalse(credentialState.value.toString().contains("proxy-secret"))
+    }
+
+    @Test fun turningProxyAuthenticationOffAsksWhetherToKeepOrDeleteTheStoredCredential() {
+        var change: NativeProxyCredentialChange? = null
+        val actions = NativeProxyCredentialActions(MutableStateFlow(NativeProxyCredentialUiState()),
+            { _, command -> change = command }, {})
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeSettingsPage(
+                        NativeSettingsSection.EXPERT, NativeAppLanguage.ENGLISH, NativeThemeMode.SYSTEM, false,
+                        "", false, networkState(ModelNetworkSettings(
+                            proxy = ModelHttpProxy.of("proxy.example", 8080),
+                            source = ModelNetworkSettingsSource.SAVED,
+                            proxyCredentialRef = "proxy-ref")),
+                        limitsState(), back = {},
+                        selectSection = {}, selectLanguage = {}, selectTheme = {}, setAutomaticContextSummary = {},
+                        saveAppPersona = {}, reloadNetwork = {}, saveNetwork = {},
+                        reloadLimits = {}, saveLimits = {},
+                        proxyCredentialActions = actions,
+                    )
+                }
+            }
+        }
+        compose.onNodeWithTag("native-settings-proxy-auth").performScrollTo().performClick()
+        compose.onNodeWithTag("native-settings-proxy-delete").performClick()
+        compose.onNodeWithTag("native-settings-network-save").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(NativeProxyCredentialChange.Delete, change) }
     }
 
     @Test fun corruptStoredSettingsFailClosedInsteadOfShowingAnEditableDefault() {

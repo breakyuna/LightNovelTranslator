@@ -39,6 +39,25 @@
             </intent-filter>
         </activity>
 
+        <!-- OAuth redirect only: exported for an external browser, custom scheme, no UI. -->
+        <activity
+            android:name=".nativeapp.NativeOAuthCallbackActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@style/Theme.MyApplication">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="callback"
+                    android:scheme="lnt-oauth" />
+            </intent-filter>
+        </activity>
+
         <receiver
             android:name=".nativeapp.NativeRecoveryReceiver"
             android:enabled="true"
@@ -60,6 +79,17 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
+
+        <service
+            android:name=".nativeapp.NativeWorkspaceExecutionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
+
+        <service
+            android:name=".nativeapp.NativeTranslationQueueWake"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

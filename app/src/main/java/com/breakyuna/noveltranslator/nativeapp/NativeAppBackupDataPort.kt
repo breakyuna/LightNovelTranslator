@@ -88,7 +88,7 @@ internal class NativeAppBackupDataPort(
         }
         network?.let { store ->
             result += AppBackupEntry.bytes(AppBackupPaths.NETWORK_SETTINGS, AppBackupEntryKind.NETWORK_SETTINGS,
-                TextProjectFingerprint.utf8(ModelNetworkSettingsCodec.encode(store.load())))
+                TextProjectFingerprint.utf8(ModelNetworkSettingsCodec.encode(store.load().copy(proxyCredentialRef = null))))
         }
         limits?.let { store ->
             result += AppBackupEntry.bytes(AppBackupPaths.REQUEST_LIMITS, AppBackupEntryKind.REQUEST_LIMITS,
@@ -175,7 +175,7 @@ internal class NativeAppBackupDataPort(
                 AppBackupEntryKind.NETWORK_SETTINGS -> {
                     require(restoredNetwork == null) { "Duplicate network settings" }
                     require(network != null) { "Network settings are not available in this build" }
-                    restoredNetwork = ModelNetworkSettingsCodec.decode(text)
+                    restoredNetwork = ModelNetworkSettingsCodec.decode(text).copy(proxyCredentialRef = null)
                 }
                 AppBackupEntryKind.REQUEST_LIMITS -> {
                     require(restoredLimits == null) { "Duplicate request limits" }

@@ -517,7 +517,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         window: TextItemWindow, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
+        require(change != TextBatchChange.REPLACE_TRANSLATION && !change.assignsNames)
         require(revision >= 0 && window.ids.size <= limits.maxPageSize)
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             val summary = NativeProjectDatabase.summary(db, ref)
@@ -531,7 +531,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareQualityBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         selection: TextQualitySelection, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
+        require(change != TextBatchChange.REPLACE_TRANSLATION && !change.assignsNames)
         if (selection.index.ref != ref || selection.index.revision != revision)
             fail(TextProjectException.Reason.STALE_PAGE)
         require(selection.ids.size <= limits.maxItems)
@@ -559,7 +559,7 @@ class NativeTextProjectStore(
 
     override suspend fun prepareQueryBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, change: TextBatchChange): ManualTextBatch? = operation {
-        require(change !in setOf(TextBatchChange.REPLACE_TRANSLATION, TextBatchChange.ASSIGN_NAMES))
+        require(change != TextBatchChange.REPLACE_TRANSLATION && !change.assignsNames)
         require(revision >= 0)
         val coroutine = currentCoroutineContext()
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
@@ -583,15 +583,19 @@ class NativeTextProjectStore(
 
     override suspend fun prepareNameAssignmentBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, names: List<String>, quality: TextQualitySelection?): ManualTextBatch? =
-        prepareTextChanges(commandId, ref, revision, query, null, names.toList(), quality)
+        prepareTextChanges(commandId, ref, revision, query, null, names.toList(), quality, sourceNames = false)
+
+    override suspend fun prepareSourceNameAssignmentBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
+        query: TextItemQuery, names: List<String>, quality: TextQualitySelection?): ManualTextBatch? =
+        prepareTextChanges(commandId, ref, revision, query, null, names.toList(), quality, sourceNames = true)
 
     override suspend fun prepareReplacementBatch(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, options: TextReplacementOptions, quality: TextQualitySelection?): ManualTextBatch? =
-        prepareTextChanges(commandId, ref, revision, query, options, null, quality)
+        prepareTextChanges(commandId, ref, revision, query, options, null, quality, sourceNames = false)
 
     private suspend fun prepareTextChanges(commandId: CommandId, ref: LocalProjectRef, revision: Long,
         query: TextItemQuery, options: TextReplacementOptions?, assignment: List<String>?,
-        quality: TextQualitySelection?): ManualTextBatch? = operation {
+        quality: TextQualitySelection?, sourceNames: Boolean): ManualTextBatch? = operation {
         require(revision >= 0)
         if (quality != null && (quality.index.ref != ref || quality.index.revision != revision || quality.index.query != query))
             fail(TextProjectException.Reason.STALE_PAGE)
@@ -599,12 +603,24 @@ class NativeTextProjectStore(
         project(ref) { db -> NativeProjectDatabase.transaction(db) {
             if (NativeProjectDatabase.summary(db, ref).revision != revision) fail(TextProjectException.Reason.STALE_PAGE)
             val (where, arguments) = queryPredicate(query)
+            val namesColumn = when {
+                sourceNames -> if (db.version >= 3) "name_source" else "NULL"
+                db.version >= 3 -> "name_translation"
+                else -> "NULL"
+            }
             val targets = ArrayList<TextBatchTarget>()
             fun consider(id: ItemId, row: Int, fingerprint: ObjectFingerprint, translation: String, names: String?) {
                 coroutine.ensureActive()
                 val oldNames = NativeProjectDatabase.decodeNames(names)
-                val replaced = if (assignment != null) ItemReplacementPreview(translation, assignment, oldNames.orEmpty() != assignment)
-                    else ItemTextReplacement.preview(translation, oldNames, requireNotNull(options)) { coroutine.ensureActive() }
+                if (assignment != null) {
+                    // A name batch never changes the body, status or the other name column.
+                    if (oldNames.orEmpty() != assignment) {
+                        if (targets.size >= limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
+                        targets.add(TextBatchTarget(id, row, fingerprint))
+                    }
+                    return
+                }
+                val replaced = ItemTextReplacement.preview(translation, oldNames, requireNotNull(options)) { coroutine.ensureActive() }
                 if (replaced.translation.length > limits.maxItemChars) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
                 if (replaced.changed) {
                     if (targets.size >= limits.maxItems) fail(TextProjectException.Reason.LIMIT_EXCEEDED)
@@ -612,7 +628,7 @@ class NativeTextProjectStore(
                 }
             }
             if (quality == null) {
-                db.rawQuery("SELECT id,row_index,fingerprint,translation,${if (db.version >= 3) "name_translation" else "NULL"} FROM items WHERE $where ORDER BY id",
+                db.rawQuery("SELECT id,row_index,fingerprint,translation,$namesColumn FROM items WHERE $where ORDER BY id",
                     arguments.toTypedArray()).use { cursor ->
                     while (cursor.moveToNext()) consider(ItemId(cursor.getLong(0)), cursor.getInt(1),
                         ObjectFingerprint(cursor.getString(2)), cursor.getString(3), if (cursor.isNull(4)) null else cursor.getString(4))
@@ -623,7 +639,7 @@ class NativeTextProjectStore(
                     coroutine.ensureActive()
                     val fact = quality.index.fact(id) ?: fail(TextProjectException.Reason.STALE_PAGE)
                     if (!quality.filter.matches(fact)) fail(TextProjectException.Reason.STALE_PAGE)
-                    db.rawQuery("SELECT row_index,fingerprint,translation,${if (db.version >= 3) "name_translation" else "NULL"} FROM items WHERE id=? AND $where",
+                    db.rawQuery("SELECT row_index,fingerprint,translation,$namesColumn FROM items WHERE id=? AND $where",
                         (listOf(id.value.toString()) + arguments).toTypedArray()).use { cursor ->
                         if (!cursor.moveToFirst() || cursor.getString(1) != fact.fingerprint.sha256)
                             fail(TextProjectException.Reason.STALE_PAGE)
@@ -632,7 +648,8 @@ class NativeTextProjectStore(
                 }
             }
             if (targets.isEmpty()) null else ManualTextBatch(commandId, ref, revision,
-                if (assignment == null) TextBatchChange.REPLACE_TRANSLATION else TextBatchChange.ASSIGN_NAMES,
+                if (assignment == null) TextBatchChange.REPLACE_TRANSLATION
+                else if (sourceNames) TextBatchChange.ASSIGN_SOURCE_NAMES else TextBatchChange.ASSIGN_NAMES,
                 targets.sortedBy { it.id.value }, options, assignment)
         } }
     }
@@ -649,6 +666,43 @@ class NativeTextProjectStore(
                 ProjectWriteStore.editBatch(db, command, limits.maxItemChars) { coroutine.ensureActive() }
             }
         }
+    }
+
+    /**
+     * Transaction-internal mixed project entry. The parent must already be CONSUMED; the writer
+     * checks its binding and every child reference, and commits all engineering members in one
+     * .lnt transaction. Workspace file members remain with the later workspace coordinator.
+     */
+    internal suspend fun applyMixedProject(
+        lease: RunLease,
+        approval: MixedApproval,
+        binding: MixedApprovalBinding,
+        members: List<MixedProjectMemberInput>,
+    ): MixedProjectWriteResult = operation {
+        require(lease.identity.projectId == approval.ref.projectId && lease.identity.chatId == approval.chat &&
+            lease.identity.runId == approval.run && lease.identity.commandId == approval.commandId &&
+            runtime.snapshot().activeRun?.owner == RuntimeOwner.AGENT)
+        // The supplied parent must be the durable consumed row, not a reconstructed authorization.
+        val stored = requireNotNull(app.mixedApprovals().find(approval.id.value)) {
+            "Unknown mixed approval"
+        }
+        require(stored.state == "CONSUMED" && stored.commandId == approval.commandId.value &&
+            stored.digest == approval.digest.sha256 && stored.binding == binding.fingerprint.sha256 &&
+            stored.instanceId == approval.ref.instanceId.value &&
+            stored.generation == approval.ref.generation.value &&
+            stored.projectId == approval.ref.projectId.value && stored.chatId == approval.chat.value &&
+            stored.runId == approval.run.value && stored.baseRevision == approval.baseRevision) {
+            "Mixed approval binding changed"
+        }
+        val coroutine = currentCoroutineContext()
+        val write = runtime.beginProjectWrite(lease)
+        try {
+            project(approval.ref) { db ->
+                NativeProjectDatabase.ensureV8(db)
+                MixedProjectWriter.apply(db, approval.ref, approval, binding, members,
+                    beforeCommit = { coroutine.ensureActive() }, maximumItems = limits.maxItems)
+            }
+        } finally { runtime.endProjectWrite(write) }
     }
 
     internal suspend fun approvedPolicy(lease: RunLease, proposal: PolicyChangeProposal): PolicyEditReceipt = operation {
@@ -815,16 +869,25 @@ class NativeTextProjectStore(
         }
     }
 
-    override suspend fun saveProject(ref: LocalProjectRef, destination: () -> OutputStream): Unit = operation {
+    override suspend fun saveProject(ref: LocalProjectRef, destination: () -> OutputStream): Unit =
+        saveProjectSnapshot(ref, destination, null)
+
+    suspend fun saveProjectForArchive(ref: LocalProjectRef, destination: () -> OutputStream,
+                                      archive: ArchiveReadLease): Unit = saveProjectSnapshot(ref, destination, archive)
+
+    private suspend fun saveProjectSnapshot(ref: LocalProjectRef, destination: () -> OutputStream,
+                                            archive: ArchiveReadLease?): Unit = operation {
         val snapshot = temporary("lnt")
         val coroutine = currentCoroutineContext()
-        withWriteLease {
+        val write = if (archive == null) runtime.beginProjectWrite() else runtime.beginArchiveProjectWrite(archive)
+        try {
             val source = file(ref) // Resolve Room identity before entering the project transaction.
             NativeProjectDatabase.open(source, writable = true).use { db ->
                 NativeProjectDatabase.summary(db, ref)
                 NativeProjectDatabase.snapshot(db, snapshot) { coroutine.ensureActive() }
             }
         }
+        finally { runtime.endProjectWrite(write) }
         NativeProjectDatabase.open(snapshot).use { db ->
             NativeProjectDatabase.summary(db, ref)
             db.rawQuery("PRAGMA quick_check", null).use {
