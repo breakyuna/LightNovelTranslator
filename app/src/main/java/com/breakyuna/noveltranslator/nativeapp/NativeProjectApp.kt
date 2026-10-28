@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +45,64 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 @Composable
 fun NativeProjectApp(model: NativeProjectViewModel) {
     val state by model.state.collectAsStateWithLifecycle()
+    val businessProposal by model.agentBusinessProposal.collectAsStateWithLifecycle()
+    val currentBusinessProposal = state.project?.ref?.let { ref -> state.agentChatId?.let { chat ->
+        businessProposal?.takeIf { it.boundTo(ref, chat) }
+    } }
+    var businessReviewVisible by remember(currentBusinessProposal?.id) { mutableStateOf(currentBusinessProposal != null) }
+    if (businessReviewVisible) currentBusinessProposal?.let { proposal ->
+        val reviewChunks by produceState<List<String>>(emptyList(), proposal.digest) {
+            value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                kotlinx.serialization.json.Json { prettyPrint = true }.encodeToString(
+                    kotlinx.serialization.json.JsonObject.serializer(), proposal.payload).chunked(4096)
+            }
+        }
+        val businessTitle = when (proposal.kind) {
+            "install_skill" -> R.string.native_agent_business_kind_install_skill
+            "skill_maintenance" -> R.string.native_agent_business_kind_skill_maintenance
+            "application_settings" -> R.string.native_agent_business_kind_application_settings
+            "project_settings" -> R.string.native_agent_business_kind_project_settings
+            "asset_operation" -> R.string.native_agent_business_kind_asset_operation
+            "copy_project" -> R.string.native_agent_business_kind_copy_project
+            "model_management" -> R.string.native_agent_business_kind_model_management
+            "application_export" -> R.string.native_agent_business_kind_application_export
+            "application_import" -> R.string.native_agent_business_kind_application_import
+            "enqueue_translation" -> R.string.native_agent_business_kind_enqueue_translation
+            "control_translation" -> R.string.native_agent_business_kind_control_translation
+            "translation_failure_decision" -> R.string.native_agent_business_kind_translation_failure
+            "model_profile_save" -> R.string.native_agent_business_kind_model_profile_save
+            "rule_preset_save" -> R.string.native_agent_business_kind_rule_preset_save
+            "rule_preset_delete" -> R.string.native_agent_business_kind_rule_preset_delete
+            "mcp_server_save" -> R.string.native_agent_business_kind_mcp_save
+            "mcp_server_delete" -> R.string.native_agent_business_kind_mcp_delete
+            "oauth_management" -> R.string.native_agent_business_kind_oauth
+            "chat_management" -> R.string.native_agent_business_kind_chat
+            else -> R.string.native_agent_business_review
+        }
+        NativeContentDialog(onDismissRequest = { businessReviewVisible = false },
+            title = { Text(stringResource(businessTitle)) },
+            text = {
+                androidx.compose.foundation.text.selection.SelectionContainer {
+                    androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 480.dp)) {
+                        item(key = "scope") { Text(stringResource(R.string.native_agent_business_scope,
+                            state.project!!.name)) }
+                        item(key = "description") { Text(stringResource(R.string.native_agent_business_review_description)) }
+                        item(key = "status") { Text(stringResource(if (proposal.status == "PENDING")
+                            R.string.native_agent_business_pending else R.string.native_agent_business_interrupted)) }
+                        items(count = reviewChunks.size, key = { "review-$it" }) { index -> Text(reviewChunks[index]) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(enabled = !state.busy && reviewChunks.isNotEmpty() && proposal.status == "PENDING", onClick = {
+                model.decideAgentBusinessProposal(proposal, true)
+            }) { Text(stringResource(R.string.native_agent_allow_once)) } },
+            dismissButton = { TextButton(enabled = !state.busy, onClick = {
+                model.decideAgentBusinessProposal(proposal, false)
+            }) { Text(stringResource(if (proposal.status == "PENDING") R.string.native_agent_reject else R.string.native_close)) } })
+    }
+
+    val pageStates = rememberSaveableStateHolder()
+    var manageActions by remember { mutableStateOf(false) }
     val workspaceExecution by model.skillExecutionActions.state.collectAsStateWithLifecycle()
     val importState by model.projectImportState.collectAsStateWithLifecycle()
     val importVisible by model.projectImportVisibleState.collectAsStateWithLifecycle()
@@ -147,7 +206,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         if (it != null) pendingFullArchive = it else model.cancelFullArchiveImport()
     }
     if (fullArchiveExportVisible) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { fullArchiveExportVisible = false },
             title = { Text(stringResource(R.string.native_full_archive_export_title)) },
             text = {
@@ -185,7 +244,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         )
     }
     pendingFullArchive?.let { uri ->
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { pendingFullArchive = null; model.cancelFullArchiveImport() },
             title = { Text(stringResource(R.string.native_full_archive_import_title)) },
             text = { Text(stringResource(R.string.native_full_archive_import_confirm)) },
@@ -209,7 +268,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val openAppBackup = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
         if (it != null) pendingAppBackup = it
     }
-    pendingAppBackup?.let { uri -> AlertDialog(onDismissRequest = { pendingAppBackup = null },
+    pendingAppBackup?.let { uri -> NativeContentDialog(onDismissRequest = { pendingAppBackup = null },
         title = { Text(stringResource(R.string.native_app_backup_restore_title)) },
         text = { Text(stringResource(R.string.native_app_backup_restore_confirm)) },
         confirmButton = { TextButton(onClick = {
@@ -247,6 +306,35 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         model::rgssInventory, { rgssAssetId = null })
     val context = LocalContext.current
     val activity = context.findActivity()
+    val managementRequest by model.agentManagementRequests.collectAsStateWithLifecycle()
+    var requestedModelProfile by remember(state.project?.ref) { mutableStateOf<String?>(null) }
+    var requestedMcpCredentials by remember { mutableStateOf(false) }
+    if (requestedMcpCredentials) NativeMcpSettingsDialog(model.mcpActions, dismiss = { requestedMcpCredentials = false })
+    LaunchedEffect(managementRequest, state.busy, state.project?.ref, state.agentChatId) {
+        val request = managementRequest ?: return@LaunchedEffect
+        if (request.ref != state.project?.ref || request.chat != state.agentChatId) {
+            model.consumeAgentManagementRequest(request)
+            return@LaunchedEffect
+        }
+        if (state.busy || !model.consumeAgentManagementRequest(request)) return@LaunchedEffect
+        when (request.area) {
+            "model_profiles", "model_credentials", "oauth", "model_catalog" -> {
+                requestedModelProfile = request.profileId
+                model.openModels()
+            }
+            "mcp_credentials" -> requestedMcpCredentials = true
+            "proxy_credentials" -> model.openSettings(NativeSettingsSection.EXPERT)
+            "legacy_export" -> { model.beginLegacyExport(); legacyExportVisible = true }
+            "project_import" -> model.beginProjectImport()
+            "files" -> model.openFiles()
+            "diagnostics" -> model.openLogs()
+            "usage" -> usageVisible = true
+        }
+    }
+    val agentRecreate by model.agentPreferencesRecreate.collectAsStateWithLifecycle()
+    LaunchedEffect(agentRecreate) {
+        if (agentRecreate && activity != null && model.consumeAgentPreferencesRecreate()) activity.recreate()
+    }
     var notificationsGranted by remember { mutableStateOf(Build.VERSION.SDK_INT < 33 ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) }
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { notificationsGranted = it }
@@ -311,7 +399,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             state.page == NativePage.FILES -> model.closeFiles()
             state.page == NativePage.LOGS -> model.closeLogs()
             state.page == NativePage.MODELS -> model.closeModels()
-            state.project != null && state.page == NativePage.RULES -> model.selectPage(NativePage.MORE)
+            state.project != null && (state.page == NativePage.RULES || state.page == NativePage.PROMPTS) -> model.selectPage(NativePage.AGENT)
             state.project != null && state.page != NativePage.AGENT -> model.selectPage(NativePage.AGENT)
             state.project != null && !state.busy -> home()
         }
@@ -322,7 +410,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             val rail = maxWidth >= NativeRailBreakpoint && state.project != null
             val wide = maxWidth >= NativeTwoPaneBreakpoint && state.project != null
             val subpage = state.page == NativePage.SETTINGS || state.page == NativePage.MODELS ||
-                state.page == NativePage.FILES || state.page == NativePage.LOGS || state.page == NativePage.RULES
+                state.page == NativePage.FILES || state.page == NativePage.LOGS
             Scaffold(
                 snackbarHost = { SnackbarHost(snackbar) },
                 containerColor = MaterialTheme.colorScheme.background,
@@ -398,32 +486,27 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                                 )
                                             }
                                         }
-                                        TextButton(
-                                            onClick = { tasksVisible = true },
-                                            enabled = !state.busy,
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                        ) {
-                                            Text(stringResource(R.string.native_tasks_title), maxLines = 1)
-                                        }
-                                        TextButton(
-                                            onClick = { queueVisible = true },
-                                            enabled = !state.busy,
-                                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                        ) {
-                                            Text(stringResource(R.string.native_queue_title), maxLines = 1)
-                                        }
                                     }
-                                    TextButton(
-                                        onClick = { usageVisible = true },
-                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                    ) {
-                                        Text(stringResource(R.string.native_ledger_title), maxLines = 1)
-                                    }
-                                    IconButton(
-                                        onClick = model::refresh,
-                                        enabled = !state.busy && state.editor == null && !ruleEditorOpen,
-                                    ) {
-                                        Icon(Icons.Default.Refresh, stringResource(R.string.native_refresh))
+                                    Box {
+                                        IconButton(onClick = { manageActions = true }) {
+                                            Icon(Icons.Default.MoreVert, stringResource(R.string.native_more))
+                                        }
+                                        DropdownMenu(manageActions, { manageActions = false }) {
+                                            if (state.project != null) {
+                                                DropdownMenuItem(text = { Text(stringResource(R.string.native_more)) },
+                                                    enabled = !ruleEditorOpen,
+                                                    onClick = { manageActions = false; model.selectPage(NativePage.MORE) })
+                                                DropdownMenuItem(text = { Text(stringResource(R.string.native_tasks_title)) },
+                                                    onClick = { manageActions = false; tasksVisible = true })
+                                                DropdownMenuItem(text = { Text(stringResource(R.string.native_queue_title)) },
+                                                    onClick = { manageActions = false; queueVisible = true })
+                                            }
+                                            DropdownMenuItem(text = { Text(stringResource(R.string.native_ledger_title)) },
+                                                onClick = { manageActions = false; usageVisible = true })
+                                            DropdownMenuItem(text = { Text(stringResource(R.string.native_refresh)) },
+                                                enabled = !state.busy && !ruleEditorOpen,
+                                                onClick = { manageActions = false; model.refresh() })
+                                        }
                                     }
                                 },
                             )
@@ -469,13 +552,12 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                         VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
-                        if (state.busy && (state.foregroundExecutionActive || state.project == null || state.page != NativePage.AGENT || state.editor != null)) {
+                        if (state.busy && state.page != NativePage.AGENT) {
                             Surface(
                                 color = MaterialTheme.colorScheme.surfaceContainer,
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
                                 Column {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
                                     Row(
                                         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -506,7 +588,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                 }
                             }
                         }
-                        key(state.project?.ref?.instanceId?.value, state.project?.ref?.generation?.value, state.page) {
+                        pageStates.SaveableStateProvider("${state.project?.ref?.instanceId?.value}:${state.project?.ref?.generation?.value}:${state.page.name}") {
                             if (state.page == NativePage.SETTINGS) NativeSettingsPage(
                                 state.settingsSection, state.appLanguage, state.themeMode,
                                 state.automaticContextSummary, state.appPersona, state.appPersonaSaveFailed,
@@ -542,6 +624,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                 select = model::selectModelProfile,
                                 loadKeys = model::loadModelProfileKeys,
                                 setKeyEnabled = model::setModelKeyEnabled,
+                                requestedProfileId = requestedModelProfile,
+                                requestedProfileOpened = { requestedModelProfile = null },
                             ) else if (state.project == null) {
                                 ProjectsHome(state, onCreate = { if (model.prepareImport(false)) inputTxt.launch(arrayOf("text/*", "application/octet-stream")) },
                                     onImport = { if (model.prepareImport(true)) inputProject.launch(arrayOf("*/*")) },
@@ -569,7 +653,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     saveWorkspaceArtifact = { artifact ->
                                         model.prepareWorkspaceArtifactExport(artifact)?.let(saveWorkspaceArtifact::launch)
                                     },
-                                    wideLayout = wide)
+                                    wideLayout = wide,
+                                    reviewApplicationProposal = if (currentBusinessProposal == null) null else ({ businessReviewVisible = true }))
                                 NativePage.WORKBENCH -> Workbench(
                                     state = state,
                                     cleanup = model::cleanupOutputs,
@@ -664,11 +749,11 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     export = { saveLogs.launch("lnt-diagnostics.jsonl") },
                                     clear = model::clearDiagnostics,
                                 )
-                                NativePage.RULES -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy,
+                                NativePage.RULES, NativePage.PROMPTS -> NativeTextRulesPage(state, model::changeTextPolicy, model::saveTextPolicy, model::reloadTextPolicy,
                                     model.rulePresetActions, model.promptTemplateActions,
                                     section = state.rulesSection,
                                     selectSection = model::selectRulesSection,
-                                    back = { model.selectPage(NativePage.MORE) },
+                                    back = { model.selectPage(NativePage.AGENT) },
                                     wideLayout = wide,
                                     onEditingChange = { ruleEditorOpen = it })
                                 NativePage.SETTINGS -> Unit
@@ -691,7 +776,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                 }
             }
         }
-        if (discardPolicyHome) AlertDialog(onDismissRequest = { discardPolicyHome = false },
+        if (discardPolicyHome) NativeContentDialog(onDismissRequest = { discardPolicyHome = false },
             title = { Text(stringResource(R.string.native_policy_title)) }, text = { Text(stringResource(R.string.native_policy_discard_body)) },
             confirmButton = { TextButton(onClick = { discardPolicyHome = false; model.discardPolicyAndHome() }) { Text(stringResource(R.string.native_discard)) } },
             dismissButton = { TextButton(onClick = { discardPolicyHome = false }) { Text(stringResource(R.string.native_keep_editing)) } })
@@ -712,7 +797,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         state.nameEdit?.let { names ->
             NativeNameEditDialog(names, state.busy, model::dismissNameEdit, model::saveNameEdit)
         }
-        if (discard) AlertDialog(onDismissRequest = { discard = false },
+        if (discard) NativeContentDialog(onDismissRequest = { discard = false },
             title = { Text(stringResource(R.string.native_discard_title)) },
             text = { Text(stringResource(R.string.native_discard_body)) },
             confirmButton = { TextButton(onClick = { discard = false; model.closeEditor() }) { Text(stringResource(R.string.native_discard)) } },
@@ -740,7 +825,7 @@ internal fun ProjectsHome(
         item(key = "hero") {
             NativeSectionCard(
                 title = stringResource(R.string.native_home_title),
-                subtitle = stringResource(R.string.native_home_description),
+                subtitle = null,
                 badge = state.encoding.charsetName,
                 badgeTone = NativeTone.PRIMARY,
             ) {
@@ -915,7 +1000,7 @@ internal fun Workbench(
     val project = requireNotNull(state.project)
     var backupExpanded by rememberSaveable(project.ref) { mutableStateOf(false) }
     var runsOpen by remember(project.ref) { mutableStateOf(false) }
-    if (runsOpen) AlertDialog(
+    if (runsOpen) NativeContentDialog(
         onDismissRequest = { runsOpen = false },
         title = { Text(stringResource(R.string.native_runs_title)) },
         text = {
@@ -946,7 +1031,7 @@ internal fun Workbench(
     confirmation?.let { fixed ->
         val asset = project.assets.firstOrNull { it.id == fixed.assetId }
         if (asset != null) {
-            AlertDialog(
+            NativeContentDialog(
                 onDismissRequest = { if (!state.busy) confirmation = null },
                 title = { Text(stringResource(if (fixed.change == NativeAssetChange.REMOVE) R.string.native_asset_remove else R.string.native_asset_reset)) },
                 text = {
@@ -1119,7 +1204,7 @@ internal fun Workbench(
         item(key = "assets-header") {
             NativeSectionCard(
                 title = stringResource(R.string.native_assets),
-                subtitle = stringResource(R.string.native_assets_description),
+                subtitle = null,
                 headerAction = {
                     OutlinedButton(onClick = addAsset, enabled = !state.busy) {
                         Text(stringResource(R.string.native_add_asset))
@@ -1215,30 +1300,20 @@ internal fun Workbench(
                             )
                         }
                         val index = assets.indexOfFirst { it.id == asset.id }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(
-                                onClick = { mutateAsset(intent(asset.id, NativeAssetChange.MOVE_UP)) },
-                                enabled = canManage && index > 0,
-                            ) {
-                                Text(stringResource(R.string.native_asset_move_up))
-                            }
-                            TextButton(
-                                onClick = { mutateAsset(intent(asset.id, NativeAssetChange.MOVE_DOWN)) },
-                                enabled = canManage && index < assets.lastIndex,
-                            ) {
-                                Text(stringResource(R.string.native_asset_move_down))
-                            }
-                            TextButton(
-                                onClick = { confirmation = intent(asset.id, NativeAssetChange.RESET) },
-                                enabled = canManage,
-                            ) {
-                                Text(stringResource(R.string.native_asset_reset))
-                            }
-                            TextButton(
-                                onClick = { confirmation = intent(asset.id, NativeAssetChange.REMOVE) },
-                                enabled = canManage && assets.size > 1,
-                            ) {
-                                Text(stringResource(R.string.native_asset_remove))
+                        var assetMenu by remember(asset.id) { mutableStateOf(false) }
+                        Box {
+                            TextButton(onClick = { assetMenu = true }) { Text(stringResource(R.string.native_more)) }
+                            DropdownMenu(assetMenu, { assetMenu = false }) {
+                                DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_move_up)) },
+                                    enabled = canManage && index > 0,
+                                    onClick = { assetMenu = false; mutateAsset(intent(asset.id, NativeAssetChange.MOVE_UP)) })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_move_down)) },
+                                    enabled = canManage && index < assets.lastIndex,
+                                    onClick = { assetMenu = false; mutateAsset(intent(asset.id, NativeAssetChange.MOVE_DOWN)) })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_reset)) }, enabled = canManage,
+                                    onClick = { assetMenu = false; confirmation = intent(asset.id, NativeAssetChange.RESET) })
+                                DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_remove)) }, enabled = canManage && assets.size > 1,
+                                    onClick = { assetMenu = false; confirmation = intent(asset.id, NativeAssetChange.REMOVE) })
                             }
                         }
                     }
@@ -1293,11 +1368,6 @@ internal fun Workbench(
                         Text(stringResource(R.string.native_cleanup), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                Text(
-                    text = stringResource(R.string.native_export_description),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -1354,7 +1424,7 @@ internal fun Proofreading(
         NativeRemoteTranslationDialog(state, onDismiss = { remote = false }, start = remoteTranslation, queue = queueTranslation)
     }
     if (confirm) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { confirm = false },
             title = { Text(stringResource(R.string.native_simulation)) },
             text = {
@@ -1401,7 +1471,7 @@ internal fun Proofreading(
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout || maxWidth >= NativeTwoPaneBreakpoint
-        val headerHeight = maxHeight * if (wide) 0.42f else 0.55f
+        val headerHeight = maxHeight * if (wide) 0.30f else 0.36f
         var selectedItemId by rememberSaveable(
             state.project?.ref?.projectId?.value,
             state.project?.ref?.instanceId?.value,
@@ -1422,7 +1492,7 @@ internal fun Proofreading(
                             .padding(vertical = 4.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        if (qualityActions != null) NativeQualityPanel(state, qualityActions)
+                        if (qualityActions != null) NativeAgentFoldout(stringResource(R.string.native_quality_title)) { NativeQualityPanel(state, qualityActions) }
                         if (state.policyDraft?.dirty == true) {
                             Text(
                                 text = stringResource(R.string.native_policy_unsaved),
@@ -1462,15 +1532,20 @@ internal fun Proofreading(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
-                            OutlinedButton(
-                                onClick = { wholeProject = !pendingPage && pendingProject; confirm = true },
-                                modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp),
-                                enabled = !state.busy && state.policyDraft?.dirty != true && !state.policyLoadIncomplete &&
-                                    !state.selectingItems && !state.runLoadIncomplete && !state.proofreadingQuery.active &&
-                                    state.qualityView == null && (pendingPage || pendingProject),
-                            ) {
-                                Text(stringResource(R.string.native_simulation), maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            var toolsMenu by rememberSaveable(state.project?.ref) { mutableStateOf(false) }
+                            Box {
+                                IconButton(onClick = { toolsMenu = true }, modifier = Modifier.testTag("native-proof-actions")) {
+                                    Icon(Icons.Default.MoreVert, stringResource(R.string.native_more))
+                                }
+                                DropdownMenu(toolsMenu, { toolsMenu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.native_simulation)) },
+                                        onClick = { toolsMenu = false; wholeProject = !pendingPage && pendingProject; confirm = true },
+                                        enabled = !state.busy && state.policyDraft?.dirty != true && !state.policyLoadIncomplete &&
+                                            !state.selectingItems && !state.runLoadIncomplete && !state.proofreadingQuery.active &&
+                                            state.qualityView == null && (pendingPage || pendingProject),
+                                    )
+                                }
                             }
                             OutlinedButton(
                                 onClick = { filtering = true },
@@ -1885,7 +1960,7 @@ internal fun Editor(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (busy) {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        NativeBusyIndicator()
                         TextButton(onClick = onCancel) { Text(stringResource(R.string.native_cancel)) }
                     }
                     Surface(
@@ -1984,7 +2059,7 @@ internal fun Editor(
                             },
                         )
                     }
-                    NativeSectionCard(title = stringResource(R.string.native_source)) {
+                    NativeAgentFoldout(stringResource(R.string.native_source), stateKey = listOf(draft.ref, draft.item.id)) {
                         Text(
                             text = draft.item.source.ifEmpty { stringResource(R.string.native_blank_line) },
                             style = MaterialTheme.typography.bodyMedium,
@@ -1995,10 +2070,11 @@ internal fun Editor(
                         onValueChange = onText,
                         enabled = !busy,
                         label = { Text(stringResource(R.string.native_translation)) },
-                        minLines = 5,
+                        minLines = 8,
+                        maxLines = 18,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    NativeEditorQuality(draft, busy, qualityEnabled, quality, onInspect)
+                    NativeAgentFoldout(stringResource(R.string.native_quality_title), stateKey = listOf(draft.ref, draft.item.id), forceExpanded = editorError != null) { NativeEditorQuality(draft, busy, qualityEnabled, quality, onInspect) }
                     NativeSectionCard(title = stringResource(R.string.native_status)) {
                         val manualStatuses = TextItemStatus.entries.filter { it.manual }
                         manualStatuses.chunked(2).forEach { pair ->
@@ -2064,7 +2140,7 @@ internal fun Editor(
         )
     }
     if (pendingMove != null && onNavigate != null) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { pendingMove = null },
             title = { Text(stringResource(R.string.native_discard_title)) },
             text = { Text(stringResource(R.string.native_editor_move_confirm)) },
@@ -2090,7 +2166,7 @@ internal fun Editor(
 }
 
 private fun NativePage.belongsToMore(): Boolean =
-    this == NativePage.MORE || this == NativePage.RULES || this == NativePage.SETTINGS ||
+    this == NativePage.MORE || this == NativePage.SETTINGS ||
         this == NativePage.FILES || this == NativePage.LOGS || this == NativePage.MODELS
 
 private fun NativePage.label(): Int = when (this) {
@@ -2098,7 +2174,8 @@ private fun NativePage.label(): Int = when (this) {
     NativePage.WORKBENCH -> R.string.native_workbench
     NativePage.PROOFREADING -> R.string.native_proofreading
     NativePage.MORE -> R.string.native_more
-    NativePage.RULES -> R.string.native_policy_title
+    NativePage.RULES -> R.string.native_nav_rules
+    NativePage.PROMPTS -> R.string.native_rules_prompts
     NativePage.SETTINGS -> R.string.native_settings_title
     NativePage.FILES -> R.string.native_files_title
     NativePage.LOGS -> R.string.native_logs_title
@@ -2110,7 +2187,8 @@ private fun NativePage.icon(): ImageVector = when (this) {
     NativePage.WORKBENCH -> Icons.Default.TableRows
     NativePage.PROOFREADING -> Icons.Default.Edit
     NativePage.MORE -> Icons.Default.MoreVert
-    NativePage.RULES -> Icons.Default.Settings
+    NativePage.RULES -> Icons.Default.Rule
+    NativePage.PROMPTS -> Icons.Default.EditNote
     NativePage.SETTINGS -> Icons.Default.Settings
     NativePage.FILES -> Icons.Default.Folder
     NativePage.LOGS -> Icons.Default.BugReport

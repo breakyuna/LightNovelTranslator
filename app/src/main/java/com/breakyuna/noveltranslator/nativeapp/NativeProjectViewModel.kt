@@ -1,5 +1,7 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import kotlinx.serialization.json.long
+
 import android.app.Application
 import android.content.Intent
 import android.net.Uri
@@ -67,7 +69,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class NativePage { AGENT, WORKBENCH, PROOFREADING, MORE, RULES, SETTINGS, FILES, LOGS, MODELS }
+enum class NativePage { AGENT, WORKBENCH, PROOFREADING, MORE, RULES, PROMPTS, SETTINGS, FILES, LOGS, MODELS }
 
 /** Leading-dot TXT seed used only to create an EPUB-first project; user file names cannot collide. */
 private const val NATIVE_IMPORT_SEED_PATH = ".lnt-import-seed.txt"
@@ -77,8 +79,8 @@ private val PROJECT_IMPORT_BINDING_KEYS = listOf(
     "native_import_ref",
 )
 
-/** RULES, SETTINGS, FILES and LOGS remain routed pages; the bottom bar stays at four items. */
-internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.MORE)
+/** Frequent editing destinations stay one tap away; management lives in the top menu. */
+internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.RULES, NativePage.PROMPTS)
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 /** Precise, path-free PDF failure text for imports, exports and page previews. */
@@ -512,6 +514,37 @@ class NativeProjectViewModel internal constructor(
     private val draftUndoHistory = NativeDraftUndoHistory()
     private val draftUndoStore = NativeDraftUndoStore(application)
     private val graph = (application as TranslatorApplication).nativeGraph
+    private val businessProposalState = MutableStateFlow<NativeAgentBusinessProposal?>(null)
+    internal val agentBusinessProposal = businessProposalState.asStateFlow()
+    internal val agentManagementRequests get() = graph.agentManagementRequests.pending
+    internal fun consumeAgentManagementRequest(request: NativeAgentManagementRequest): Boolean =
+        graph.agentManagementRequests.consume(request)
+    private val agentRecreateState = MutableStateFlow(false)
+    internal val agentPreferencesRecreate = agentRecreateState.asStateFlow()
+    internal fun consumeAgentPreferencesRecreate(): Boolean {
+        val pending = agentRecreateState.value
+        agentRecreateState.value = false
+        return pending
+    }
+
+
+    private val composerDraftMemory = mutableMapOf<Pair<LocalProjectRef, ChatId>, String>()
+    private val composerRevisions = mutableMapOf<Pair<LocalProjectRef, ChatId>, Long>()
+    private var agentInspectionVersion = 0L
+    private val composerDrafts by lazy {
+        NativeAgentComposerDrafts(File(application.filesDir, "native-agent-composer"), viewModelScope) { ref, chat ->
+            if (mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+                mutable.value = mutable.value.copy(notice = R.string.native_agent_draft_save_failed)
+        }
+    }
+    private fun saveComposer(ref: LocalProjectRef, chat: ChatId, text: String) {
+        composerDraftMemory[ref to chat] = text
+        composerRevisions[ref to chat] = (composerRevisions[ref to chat] ?: 0L) + 1
+        saved["agent_input_ref"] = encodeRef(ref); saved["agent_input_chat"] = chat.value
+        saved["agent_input_text"] = text
+        composerDrafts.save(ref, chat, text)
+    }
+
     private val pdfPageThumbnails = NativePdfPageThumbnailLoader(
         pdfPageThumbnailSource ?: PdfPageThumbnailSource { ref, revision, asset, page ->
             graph.formatProjects.renderPdfPage(ref, revision, asset, page)
@@ -2029,12 +2062,23 @@ class NativeProjectViewModel internal constructor(
                 else R.string.native_models_fetch_error)
         } finally { mutable.value = mutable.value.copy(modelCatalogLoading = false) }
     }
-    fun inspectAgentMessage(id: String) = action {
-        val ref = mutable.value.project?.ref ?: return@action
-        val detail = graph.agentStore.messageDetail(ref, agentChat, id)
-        mutable.value = mutable.value.copy(agentMessageDetail = detail)
+    fun inspectAgentMessage(id: String) {
+        val ref = mutable.value.project?.ref ?: return
+        val chat = agentChat
+        val inspection = ++agentInspectionVersion
+        viewModelScope.launch {
+            try {
+                val detail = graph.agentStore.messageDetail(ref, chat, id)
+                if (agentInspectionVersion == inspection && mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+                    mutable.value = mutable.value.copy(agentMessageDetail = detail)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (agentInspectionVersion == inspection && mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
+                    mutable.value = mutable.value.copy(notice = R.string.native_agent_load_error)
+            }
+        }
     }
-    fun closeAgentMessage() { mutable.value = mutable.value.copy(agentMessageDetail = null) }
+    fun closeAgentMessage() { agentInspectionVersion++; mutable.value = mutable.value.copy(agentMessageDetail = null) }
     private suspend fun refreshAgentTimeline(ref: LocalProjectRef, chat: ChatId) {
         val messages = graph.agentStore.messages(ref, chat)
         withContext(Dispatchers.Main.immediate) {
@@ -2045,8 +2089,7 @@ class NativeProjectViewModel internal constructor(
     fun agentInput(text: String) {
         if ((mutable.value.busy && !mutable.value.foregroundAgentActive) || text.length > 8000) return
         mutable.value.project?.let {
-            saved["agent_input_ref"] = encodeRef(it.ref); saved["agent_input_chat"] = agentChat.value
-            saved["agent_input_text"] = text
+            saveComposer(it.ref, agentChat, text)
             mutable.value = mutable.value.copy(agentInput = text)
         }
     }
@@ -2194,8 +2237,7 @@ class NativeProjectViewModel internal constructor(
         require(attempt.status == AgentSteerStatus.ACCEPTED || attempt.status == AgentSteerStatus.CANCELLED)
         // Recheck after IO so a late response cannot overwrite a newly edited draft or another Chat.
         require(mutable.value.project?.ref == ref && mutable.value.agentChatId == run.chatId && mutable.value.agentInput.isBlank())
-        saved["agent_input_ref"] = encodeRef(ref); saved["agent_input_chat"] = requireNotNull(run.chatId).value
-        saved["agent_input_text"] = attempt.text
+        saveComposer(ref, requireNotNull(run.chatId), attempt.text)
         mutable.value = mutable.value.copy(agentInput = attempt.text)
     }
 
@@ -2218,7 +2260,7 @@ class NativeProjectViewModel internal constructor(
                     is AgentSteerSubmitResult.Accepted, is AgentSteerSubmitResult.Duplicate -> {
                         if (mutable.value.project?.ref == ref && mutable.value.agentChatId == command.chat.chatId &&
                             mutable.value.agentInput == text) {
-                            saved["agent_input_text"] = ""
+                            saveComposer(ref, agentChat, "")
                             mutable.value = mutable.value.copy(agentInput = "", notice = R.string.native_agent_steer_accepted)
                         }
                     }
@@ -2242,7 +2284,7 @@ class NativeProjectViewModel internal constructor(
             is AgentInputQueueUpdate.Rejected -> throw TextProjectException(TextProjectException.Reason.INVALID_TEXT)
         }
         persistAgentQueue(updated)
-        saved.remove<String>("agent_input_text")
+        saveComposer(ref, agentChat, "")
         mutable.value = mutable.value.copy(agentInput = "")
     }
 
@@ -2254,11 +2296,16 @@ class NativeProjectViewModel internal constructor(
             is AgentInputQueueUpdate.Applied -> result.queue
             is AgentInputQueueUpdate.Rejected -> return@action
         }
-        persistAgentQueue(updated)
-        mutable.value.project?.let { ref ->
-            saved["agent_input_ref"] = encodeRef(ref.ref); saved["agent_input_chat"] = agentChat.value
-            saved["agent_input_text"] = draft.text
-        }
+        val existing = mutable.value.agentInput
+        val replacement = if (existing.isNotEmpty()) {
+            require(mutable.value.agentAttachments.isEmpty())
+            when (val swapped = updated.enqueue(AgentInputDraft.create(commandId(), queue.chat, existing))) {
+                is AgentInputQueueUpdate.Applied -> swapped.queue
+                is AgentInputQueueUpdate.Rejected -> return@action
+            }
+        } else updated
+        persistAgentQueue(replacement)
+        mutable.value.project?.let { saveComposer(it.ref, agentChat, draft.text) }
         mutable.value = mutable.value.copy(agentInput = draft.text)
     }
 
@@ -2458,12 +2505,14 @@ class NativeProjectViewModel internal constructor(
     }
     fun selectAgentChat(chat: ChatId) = action {
         val ref = mutable.value.project?.ref ?: return@action
+        saveComposer(ref, agentChat, mutable.value.agentInput)
         graph.agentStore.selectChat(ref, chat)
         agentPreviews.clear()
         loadAgent(ref)
     }
     fun newAgentChat() = action {
         val ref = mutable.value.project?.ref ?: return@action
+        saveComposer(ref, agentChat, mutable.value.agentInput)
         graph.agentStore.newChat(ref)
         agentPreviews.clear()
         loadAgent(ref)
@@ -2474,6 +2523,7 @@ class NativeProjectViewModel internal constructor(
         val configuration = mutable.value.modelSettings?.reference ?: return@action
         val state = mutable.value
         val text = state.agentInput
+        val composerRevision = composerRevisions[ref to agentChat] ?: 0L
         val attachments = state.agentAttachments
         if (state.agentAttachmentBusy ||
             !canSendAgentMessage(ready = true, hasApproval = state.hasAgentApproval, text = text,
@@ -2494,7 +2544,7 @@ class NativeProjectViewModel internal constructor(
         try { NativeAgentService.start(getApplication<Application>(), handle.token) }
         catch (_: Exception) { graph.backgroundAgents.startFailed(handle.token) }
         try {
-            awaitAgent(handle)
+            awaitAgent(handle, composerRevision)
         } finally {
             graph.updateSkillContextHints(NativeSkillContextHints())
         }
@@ -2511,10 +2561,11 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
-    private suspend fun awaitAgent(handle: ForegroundAgentHandle) = coroutineScope {
+    private suspend fun awaitAgent(handle: ForegroundAgentHandle, submittedRevision: Long? = null) = coroutineScope {
         val ref = handle.request.ref
         val chat = requireNotNull(handle.request.identity.chatId)
         val attachmentIds = handle.request.attachmentIds
+        var acceptedInputCleared = false
         val observer = launch {
             var timelineRevision = -1L
             graph.backgroundAgents.state.collect { snapshot ->
@@ -2523,10 +2574,14 @@ class NativeProjectViewModel internal constructor(
                     agentContextStatus = snapshot.progress?.contextStatus.takeIf {
                         mutable.value.project?.ref == ref && mutable.value.agentChatId == chat
                     })
-                if (snapshot.progress?.accepted == true && mutable.value.project?.ref == ref &&
-                    mutable.value.agentChatId == chat && mutable.value.agentInput == handle.request.input) {
-                    saved.remove<String>("agent_input_text")
-                    mutable.value = mutable.value.copy(agentInput = "")
+                if (snapshot.progress?.accepted == true && !acceptedInputCleared) {
+                    acceptedInputCleared = true
+                    if (mutable.value.project?.ref == ref && mutable.value.agentChatId == chat &&
+                        mutable.value.agentInput == handle.request.input &&
+                        (submittedRevision == null || (composerRevisions[ref to chat] ?: 0L) == submittedRevision)) {
+                        saveComposer(ref, chat, "")
+                        mutable.value = mutable.value.copy(agentInput = "")
+                    }
                 }
                 if (snapshot.progress?.accepted == true && mutable.value.project?.ref == ref) {
                     clearAcceptedAttachments(ref, attachmentIds)
@@ -2546,11 +2601,12 @@ class NativeProjectViewModel internal constructor(
             if (settled) withContext(NonCancellable) {
                 mutable.value = mutable.value.copy(foregroundAgentActive = false)
                 // A fast completion may be conflated before the UI observer sees acceptance.
-                if (graph.backgroundAgents.state.value?.progress?.accepted == true &&
+                if (!acceptedInputCleared && graph.backgroundAgents.state.value?.progress?.accepted == true &&
                     saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
                     saved.get<String>("agent_input_chat") == chat.value &&
-                    saved.get<String>("agent_input_text") == handle.request.input) {
-                    saved.remove<String>("agent_input_text")
+                    saved.get<String>("agent_input_text") == handle.request.input &&
+                    (submittedRevision == null || (composerRevisions[ref to chat] ?: 0L) == submittedRevision)) {
+                    saveComposer(ref, chat, "")
                     if (mutable.value.project?.ref == ref && mutable.value.agentChatId == chat)
                         mutable.value = mutable.value.copy(agentInput = "")
                 }
@@ -3088,6 +3144,159 @@ class NativeProjectViewModel internal constructor(
         }
     }
 
+    internal fun decideAgentBusinessProposal(expected: NativeAgentBusinessProposal, approve: Boolean) = action {
+        val ref = mutable.value.project?.ref ?: return@action
+        val chat = mutable.value.agentChatId ?: return@action
+        require(graph.runtime.snapshot().activeRun == null)
+        require(graph.agentBusinessProposals.pending(ref, chat)?.digest == expected.digest)
+        try {
+            if (!approve) {
+                graph.agentBusinessProposals.transition(ref, chat, expected,
+                    if (expected.status == "APPLYING") "NEEDS_REVIEW" else "REJECTED")
+            } else {
+                require(expected.status == "PENDING")
+                if (expected.kind in setOf("project_settings", "asset_operation", "application_import", "enqueue_translation")) {
+                    val current = mutable.value
+                    require(current.editor == null && current.manualBatch == null && !current.selectingItems && current.policyDraft?.dirty != true)
+                }
+                require(projects.open(ref).revision == expected.document.getValue("revision").jsonPrimitive.long)
+                when (expected.kind) {
+                    "install_skill" -> {
+                        writeSkill {
+                            val pkg = NativeAgentSkillPackage.decode(expected.payload)
+                            require(graph.workspaceSkills.list().none { it.summary.id == pkg.draft.id ||
+                                it.summary.conflictNameKey == pkg.draft.name.lowercase(java.util.Locale.ROOT) })
+                            val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                            // Mark APPLYING before publication. An interrupted install requires inspection,
+                            // never automatic replay of the old authorization.
+                            graph.workspaceSkills.install(pkg.draft, pkg.resources)
+                            graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                        }
+                    }
+                    "skill_maintenance" -> {
+                        writeSkill {
+                            val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                            graph.agentSkillMaintenance.apply(expected.payload)
+                            graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                        }
+                    }
+                    "application_settings" -> {
+                        val lock = graph.runtime.beginProjectWrite()
+                        try {
+                            val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                            graph.agentApplicationService.apply(expected.payload)
+                            graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                            if (expected.payload.getValue("kind").jsonPrimitive.content == "preferences") {
+                                val updated = appSettings.snapshot()
+                                graph.diagnostics.setIncludeDetails(updated.diagnosticsIncludeDetails)
+                                val languageChanged = updated.language != mutable.value.appLanguage
+                                mutable.value = mutable.value.copy(themeMode = updated.themeMode, appLanguage = updated.language,
+                                    automaticContextSummary = updated.automaticContextSummary,
+                                    diagnosticsIncludeDetails = updated.diagnosticsIncludeDetails, appPersona = updated.appPersona)
+                                if (languageChanged) agentRecreateState.value = true
+                            }
+                        } finally { graph.runtime.endProjectWrite(lock) }
+                    }
+                    "chat_management" -> {
+                        saveComposer(ref, agentChat, mutable.value.agentInput)
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        val result = graph.agentChatService.apply(ref, chat, expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED", result)
+                        agentPreviews.clear()
+                    }
+                    "oauth_management" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        graph.agentAuthService.apply(expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                    }
+                    "rule_preset_save", "rule_preset_delete", "mcp_server_save", "mcp_server_delete" -> {
+                        val lock = graph.runtime.beginProjectWrite()
+                        try {
+                            val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                            graph.agentLibraryService.apply(expected)
+                            graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                        } finally { graph.runtime.endProjectWrite(lock) }
+                    }
+                    "application_import" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        graph.agentImportService.apply(ref, expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                        reloadModelProfiles()
+                    }
+                    "model_management", "model_profile_save" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        val result = graph.agentModelManagement.apply(expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED", result)
+                        reloadModelProfiles()
+                    }
+                    "application_export" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        val result = graph.agentExportService.apply(ref, expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED", result)
+                    }
+                    "project_settings", "asset_operation", "copy_project" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        graph.agentProjectManagement.apply(ref, expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                    }
+                    "enqueue_translation", "control_translation", "translation_failure_decision" -> {
+                        // Keep drain from reserving a paid run before the approval receipt is durable.
+                        val guard = graph.runtime.beginProjectWrite()
+                        var committed = false
+                        try {
+                            val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                            graph.agentTranslationService.apply(ref, expected)
+                            graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
+                            committed = true
+                        } finally {
+                            try {
+                                if (!committed) withContext(NonCancellable) {
+                                    graph.agentTranslationService.cancelUncommittedEnqueue(ref, expected)
+                                }
+                            } finally { graph.runtime.endProjectWrite(guard) }
+                        }
+                        graph.agentTranslationService.dispatch(ref, expected)
+                    }
+                    else -> error("Unsupported business proposal")
+                }
+            }
+            if (approve && mutable.value.project?.ref == ref) {
+                val summary = projects.open(ref)
+                if (summary.revision != mutable.value.project?.revision) {
+                    mutable.value = mutable.value.copy(project = summary, qualityView = null, qualityInvalidated = false,
+                        qualityProgress = null, selectingItems = false, selectedItems = emptySet())
+                    cursors.clear(); cursors.add(0L)
+                    loadPage(ref, 0L)
+                    refreshCleanTextPolicy(ref)
+                }
+                mutable.value = mutable.value.copy(projects = graph.projects.registeredProjects(100), notice = R.string.native_saved)
+            }
+            businessProposalState.value = graph.agentBusinessProposals.pending(ref, chat)
+            if (!graph.agentWorkspace.hasPending(ref, chat)) {
+                graph.runStore.settleWaitingApproval(ref,
+                    RunIdentity(ref.projectId, chat, RunId(expected.document.getValue("run").jsonPrimitive.content),
+                        CommandId(expected.document.getValue("command").jsonPrimitive.content)),
+                    if (approve) StoredRunState.SUCCEEDED else if (expected.status == "APPLYING") StoredRunState.FAILED else StoredRunState.CANCELLED)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            val committed = graph.agentBusinessProposals.status(ref, chat, expected.id)?.status == "COMMITTED"
+            if (!committed) throw failure
+            mutable.value = mutable.value.copy(notice = R.string.native_saved, error = R.string.native_agent_business_refresh_failed)
+        } finally {
+            withContext(NonCancellable) {
+                try {
+                    businessProposalState.value = graph.agentBusinessProposals.pending(ref, chat)
+                    loadAgent(ref)
+                } catch (failure: Exception) {
+                    if (graph.agentBusinessProposals.status(ref, chat, expected.id)?.status != "COMMITTED") throw failure
+                    mutable.value = mutable.value.copy(notice = R.string.native_saved, error = R.string.native_agent_business_refresh_failed)
+                }
+            }
+        }
+    }
+
     private suspend fun loadAgent(ref: LocalProjectRef) {
         // Fail closed until every proposal/history read below succeeds. A cancelled load must not
         // leave the previous project's approvals looking actionable.
@@ -3098,6 +3307,7 @@ class NativeProjectViewModel internal constructor(
             catch (_: Exception) { incomplete = true; fallback }
         val selectedChat = loadOr<ChatId?>(null) { graph.agentStore.currentChat(ref) }
         if (selectedChat != null) agentChat = selectedChat
+        businessProposalState.value = selectedChat?.let { graph.agentBusinessProposals.pending(ref, it) }
         val mixedChildSettlementAllowed = graph.runtime.snapshot().activeRun == null
         var recoveredInterruptedTool = false
         if (selectedChat != null) {
@@ -3174,8 +3384,11 @@ class NativeProjectViewModel internal constructor(
         val queue = storedQueue?.queue ?: selectedChat?.let {
             AgentInputQueue.empty(ChatIdentity(ref.projectId, it))
         }
-        val draft = if (saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
-            saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") ?: "" else ""
+        val legacyDraft = if (saved.get<ArrayList<String>>("agent_input_ref")?.toList() == encodeRef(ref).toList() &&
+            saved.get<String>("agent_input_chat") == selectedChat?.value) saved.get<String>("agent_input_text") else null
+        val draft = selectedChat?.let { chat ->
+            composerDraftMemory[ref to chat] ?: legacyDraft ?: composerDrafts.load(ref, chat)
+        }.orEmpty()
         mutable.value = mutable.value.copy(agentMessages = messages, approval = approval, agentResults = results, itemProposals = proposals, policyProposals = policyProposals,
             pdfPageProposals = pdfPageProposals, assetImportProposals = assetImportProposals,
             workspaceChangeProposals = workspaceChangeProposals,
@@ -4614,7 +4827,16 @@ class NativeProjectViewModel internal constructor(
 
     fun selectPage(page: NativePage) {
         if ((mutable.value.busy && !mutable.value.foregroundExecutionActive) || mutable.value.editor != null || mutable.value.manualBatch != null) return
-        mutable.value = mutable.value.copy(page = page)
+        val section = when (page) {
+            NativePage.PROMPTS -> NativeRuleSection.PROMPTS
+            NativePage.RULES -> runCatching {
+                NativeRuleSection.valueOf(saved["native_rules_last_section"] ?: mutable.value.rulesSection.name)
+            }.getOrDefault(NativeRuleSection.GLOSSARY).takeUnless { it == NativeRuleSection.PROMPTS } ?: NativeRuleSection.GLOSSARY
+            else -> mutable.value.rulesSection
+        }
+        mutable.value = mutable.value.copy(page = page, rulesSection = section)
+        saved["native_rules_section"] = section.name
+        if (section != NativeRuleSection.PROMPTS) saved["native_rules_last_section"] = section.name
         saved["native_page"] = page.name
     }
 
@@ -4658,20 +4880,23 @@ class NativeProjectViewModel internal constructor(
             reloadLaboratorySettings()
     }
 
-    /** More opens a concrete U05—U08 destination without changing the four main tabs. */
+    /** Open a rules or prompt destination while preserving the shared unsaved policy. */
     fun openRules(section: NativeRuleSection) {
         if ((mutable.value.busy && !mutable.value.foregroundExecutionActive) ||
             mutable.value.editor != null || mutable.value.manualBatch != null) return
-        mutable.value = mutable.value.copy(page = NativePage.RULES, rulesSection = section)
-        saved["native_page"] = NativePage.RULES.name
+        mutable.value = mutable.value.copy(page = if (section == NativeRuleSection.PROMPTS) NativePage.PROMPTS else NativePage.RULES, rulesSection = section)
+        saved["native_page"] = mutable.value.page.name
         saved["native_rules_section"] = section.name
+        if (section != NativeRuleSection.PROMPTS) saved["native_rules_last_section"] = section.name
     }
 
     /** Section navigation only changes the visible section; the policy draft and page stay put. */
     fun selectRulesSection(section: NativeRuleSection) {
-        if (mutable.value.page != NativePage.RULES) return
-        mutable.value = mutable.value.copy(rulesSection = section)
+        if (mutable.value.page != NativePage.RULES && mutable.value.page != NativePage.PROMPTS) return
+        mutable.value = mutable.value.copy(rulesSection = section, page = if (section == NativeRuleSection.PROMPTS) NativePage.PROMPTS else NativePage.RULES)
+        saved["native_page"] = mutable.value.page.name
         saved["native_rules_section"] = section.name
+        if (section != NativeRuleSection.PROMPTS) saved["native_rules_last_section"] = section.name
     }
 
     fun setThemeMode(mode: NativeThemeMode) {
@@ -5067,6 +5292,7 @@ class NativeProjectViewModel internal constructor(
         clearAgentAttachments()
         saved.remove<ArrayList<String>>("native_policy_draft")
         saved.remove<String>("native_rules_section")
+        saved.remove<String>("native_rules_last_section")
         saved.remove<String>("native_settings_section")
         saved.remove<String>("native_logs_origin")
         saved.remove<String>("native_files_origin")
@@ -5672,10 +5898,11 @@ class NativeProjectViewModel internal constructor(
             throw RuntimeUnavailable(RuntimeUnavailable.Reason.BUSY)
         cursors.clear(); cursors.add(0)
         val same = restoreRef() == ref
-        val selectedPage = if (same) runCatching { NativePage.valueOf(saved["native_page"] ?: "AGENT") }.getOrDefault(NativePage.AGENT) else NativePage.AGENT
-        val selectedSection = if (same) runCatching {
+        var selectedPage = if (same) runCatching { NativePage.valueOf(saved["native_page"] ?: "AGENT") }.getOrDefault(NativePage.AGENT) else NativePage.AGENT
+        val selectedSection = if (selectedPage == NativePage.PROMPTS) NativeRuleSection.PROMPTS else if (same) runCatching {
             NativeRuleSection.valueOf(saved["native_rules_section"] ?: NativeRuleSection.GLOSSARY.name)
         }.getOrDefault(NativeRuleSection.GLOSSARY) else NativeRuleSection.GLOSSARY
+        if (selectedPage == NativePage.RULES && selectedSection == NativeRuleSection.PROMPTS) selectedPage = NativePage.PROMPTS
         val selectedSettingsSection = if (same) runCatching {
             NativeSettingsSection.valueOf(saved["native_settings_section"] ?: NativeSettingsSection.BASIC.name)
         }.getOrDefault(NativeSettingsSection.BASIC) else NativeSettingsSection.BASIC
@@ -5687,6 +5914,7 @@ class NativeProjectViewModel internal constructor(
         if (!same) {
             clearAgentAttachments()
             saved.remove<String>("native_rules_section")
+            saved.remove<String>("native_rules_last_section")
             saved.remove<String>("native_settings_section")
             saved.remove<String>("native_logs_origin")
             saved.remove<String>("native_files_origin")

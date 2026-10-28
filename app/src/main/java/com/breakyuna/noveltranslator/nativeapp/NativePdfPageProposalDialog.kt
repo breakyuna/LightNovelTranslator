@@ -33,7 +33,7 @@ internal fun NativePdfPageProposalDialog(view: PdfPageProposalSummary,
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { error = true }
     }
-    AlertDialog(onDismissRequest = dismiss,
+    NativeContentDialog(onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_pdf_proposal_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -61,7 +61,7 @@ internal fun NativePdfPageProposalDialog(view: PdfPageProposalSummary,
                     }
                 }
                 if (error) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
-                else if (members == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+                else if (members == null) NativeBusyIndicator()
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
                     items(members.orEmpty(), key = { it.page }) { member ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("native-pdf-proposal-page-${member.page}"),

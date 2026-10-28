@@ -36,7 +36,7 @@ internal fun NativeAssetImportProposalDialog(
         catch (_: Exception) { failed = true }
     }
     val pending = view.state == AssetImportProposalState.PENDING
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_asset_import_title)) },
         text = {

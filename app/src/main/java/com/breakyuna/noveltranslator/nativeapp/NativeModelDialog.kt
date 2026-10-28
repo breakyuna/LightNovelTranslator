@@ -104,7 +104,6 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     Column(Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 420.dp).verticalScroll(formScroll),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(stringResource(R.string.native_model_config_notice))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(onClick = { endpoint = "http://127.0.0.1:11434/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("Ollama") }
                             OutlinedButton(onClick = { endpoint = "http://127.0.0.1:1234/v1"; invalid = false }, enabled = !busy, modifier = Modifier.weight(1f)) { Text("LM Studio") }
@@ -112,7 +111,6 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
                         OutlinedTextField(value = endpoint, onValueChange = { invalid = false; if (it.length <= 2048) endpoint = it },
                             label = { Text(stringResource(R.string.native_model_endpoint)) }, enabled = !busy, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri), modifier = Modifier.fillMaxWidth())
-                        Text(stringResource(R.string.native_model_endpoint_hint), style = MaterialTheme.typography.bodySmall)
                         if (normalized?.startsWith("http://") == true) Text(stringResource(R.string.native_model_http_notice), style = MaterialTheme.typography.bodySmall)
                         if (profileMode) {
                             Box {
@@ -135,7 +133,6 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
                                 minLines = 2, maxLines = 4, visualTransformation = PasswordVisualTransformation(),
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                                 modifier = Modifier.fillMaxWidth().testTag("native-model-keys"))
-                            Text(stringResource(R.string.native_model_keys_hint), style = MaterialTheme.typography.bodySmall)
                         } else {
                             OutlinedTextField(value = secret, onValueChange = { invalid = false; if (it.length <= 8192) secret = it },
                                 label = { Text(stringResource(R.string.native_model_key)) }, enabled = !busy, singleLine = true,
@@ -146,7 +143,7 @@ internal fun NativeModelDialog(settings: NativeModelSettings?, busy: Boolean, er
                                 enabled = !busy && canKeep && (if (profileMode) keysText.isBlank() else secret.isEmpty()))
                             Text(stringResource(R.string.native_model_keep_key), Modifier.weight(1f).padding(top = 12.dp))
                         }
-                        if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (loading) NativeBusyIndicator()
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton(enabled = !busy && normalized != null, onClick = {
                                 attempted = true; invalid = false

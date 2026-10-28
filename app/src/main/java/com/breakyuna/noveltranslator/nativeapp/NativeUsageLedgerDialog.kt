@@ -72,7 +72,7 @@ internal fun NativeUsageLedgerDialog(ref: LocalProjectRef?, chat: ChatId?,
         NativeUsageEntriesDialog(query, loadEntries, { details = false })
         return
     }
-    AlertDialog(onDismissRequest = dismiss,
+    NativeContentDialog(onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_ledger_title)) },
         text = { Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {

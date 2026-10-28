@@ -40,7 +40,7 @@ internal fun NativeMixedApprovalDialog(
     val approval = snapshot.approval
     val pending = approval.state == MixedApprovalState.PENDING
     var expanded by remember(approval.id) { mutableStateOf(false) }
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = { if (!busy) dismiss() },
         title = { Text(stringResource(R.string.native_mixed_approval_title)) },
         text = {

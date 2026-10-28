@@ -77,7 +77,7 @@ internal fun NativePromptTemplateImportDialog(ref: LocalProjectRef, baseline: Pr
     }
     val busy = loading || previewing
     detail?.let { change ->
-        AlertDialog(onDismissRequest = { detail = null },
+        NativeContentDialog(onDismissRequest = { detail = null },
             title = { Text((change.after ?: change.before)?.name.orEmpty()) },
             text = {
                     Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {

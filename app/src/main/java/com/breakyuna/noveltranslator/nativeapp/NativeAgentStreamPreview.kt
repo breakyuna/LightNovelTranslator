@@ -2,14 +2,13 @@ package com.breakyuna.noveltranslator.nativeapp
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -47,16 +46,14 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
     if (!preview.visibleFor(ref, chat, committedIds)) return
     var thinking by rememberSaveable(ref.instanceId.value, ref.generation.value, chat?.value,
         preview.key.run.runId.value, preview.key.attemptId.value) { mutableStateOf(false) }
-    val scroll = rememberScrollState()
     val activate by rememberUpdatedState(onActive)
-    LaunchedEffect(preview.key) { if (preview.phase != AgentPreviewPhase.INTERRUPTED) activate() }
-    val following = scroll.value >= scroll.maxValue - 24
-    LaunchedEffect(state.revision, thinking) {
+    var contentHeight by remember(preview.key) { mutableStateOf(0) }
+    LaunchedEffect(preview.key, contentHeight, thinking) {
         withFrameNanos { }
-        if (following && !scroll.isScrollInProgress && preview.phase != AgentPreviewPhase.INTERRUPTED) scroll.scrollTo(scroll.maxValue)
+        if (preview.phase != AgentPreviewPhase.INTERRUPTED) activate()
     }
     Card(
-        modifier = Modifier.fillMaxWidth().testTag("native-agent-stream-preview"),
+        modifier = Modifier.fillMaxWidth().onSizeChanged { contentHeight = it.height }.testTag("native-agent-stream-preview"),
         shape = MaterialTheme.shapes.large,
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(
@@ -71,19 +68,16 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                NativeStatusBadge(
+                Text(
                     text = stringResource(
                         when (preview.phase) {
-                            AgentPreviewPhase.RECEIVING -> R.string.native_stream_receiving
+                            AgentPreviewPhase.RECEIVING -> if (preview.text.isEmpty()) R.string.native_agent_thinking else R.string.native_stream_receiving
                             AgentPreviewPhase.RECORDING -> R.string.native_stream_recording
                             AgentPreviewPhase.INTERRUPTED -> R.string.native_stream_interrupted
                         },
                     ),
-                    tone = when (preview.phase) {
-                        AgentPreviewPhase.RECEIVING -> NativeTone.PRIMARY
-                        AgentPreviewPhase.RECORDING -> NativeTone.SECONDARY
-                        AgentPreviewPhase.INTERRUPTED -> NativeTone.ERROR
-                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (preview.thinking.isNotEmpty()) {
                     TextButton(
@@ -94,7 +88,6 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                     }
                 }
             }
-            if (preview.phase == AgentPreviewPhase.RECEIVING) LinearProgressIndicator(Modifier.fillMaxWidth())
             if (preview.phase == AgentPreviewPhase.INTERRUPTED) {
                 Text(
                     text = stringResource(R.string.native_stream_partial_notice),
@@ -111,7 +104,7 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
             }
             SelectionContainer {
                 Column(
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 240.dp).verticalScroll(scroll),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     if (thinking) {
@@ -120,15 +113,10 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Text(
-                                text = preview.thinking,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(8.dp),
-                            )
+                            NativeMarkdown(preview.thinking, Modifier.padding(8.dp))
                         }
                     }
-                    if (preview.text.isNotEmpty()) Text(preview.text, style = MaterialTheme.typography.bodyMedium)
+                    if (preview.text.isNotEmpty()) NativeMarkdown(preview.text)
                 }
             }
             if (preview.toolCalls > 0) {

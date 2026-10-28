@@ -114,7 +114,7 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
     if (editorVisible) NativeSkillResourceEditor(actions, record, editing,
         dismiss = { editorVisible = false },
         changed = { refresh++; preview = null; selected = null })
-    AlertDialog(onDismissRequest = dismiss,
+    NativeContentDialog(onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_skill_files_title, record.summary.name)) },
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()).testTag("native-skill-files"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -182,7 +182,7 @@ private fun NativeSkillExecutionDialog(
     LaunchedEffect(current?.token) {
         if (token == null && current != null) token = current.token
     }
-    AlertDialog(onDismissRequest = close,
+    NativeContentDialog(onDismissRequest = close,
         title = { Text(stringResource(R.string.native_skill_run)) },
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
@@ -279,11 +279,11 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             finally { busy = false }
         }
     }
-    if (discard) AlertDialog(onDismissRequest = { discard = false },
+    if (discard) NativeContentDialog(onDismissRequest = { discard = false },
         title = { Text(stringResource(R.string.native_skill_resource_discard)) },
         confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_skill_resource_discard)) } },
         dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
-    if (deleting && file != null) AlertDialog(onDismissRequest = { if (!busy) deleting = false },
+    if (deleting && file != null) NativeContentDialog(onDismissRequest = { if (!busy) deleting = false },
         title = { Text(stringResource(R.string.native_skill_resource_delete)) },
         text = { Text(originalPath) },
         confirmButton = { TextButton(enabled = !busy, onClick = {
@@ -291,7 +291,7 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             mutate { requireNotNull(actions.deleteResource)(record.summary.id, originalPath, record.fingerprint, file.sha256) }
         }) { Text(stringResource(R.string.native_skill_resource_delete)) } },
         dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.native_cancel)) } })
-    AlertDialog(onDismissRequest = ::close,
+    NativeContentDialog(onDismissRequest = ::close,
         title = { Text(stringResource(R.string.native_skill_resource_edit)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {

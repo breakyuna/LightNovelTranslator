@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.engine.RuntimeCoordinator
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.*
@@ -27,6 +28,44 @@ class NativeModelSettingsStoreTest {
         runtime = RuntimeCoordinator(); store = NativeModelSettingsStore(context, runtime)
     }
     @After fun cleanup() = runBlocking { store.close(); runtime.close() }
+
+    @Test fun reviewedProfileSaveCreatesAdvancedSettingsAndRefusesCredentialEndpointReuse() = runBlocking {
+        val initial = store.reviewedProfileSnapshot().getValue("fingerprint").jsonPrimitive.content
+        val draft = NewModelProfile(name = "Reviewed model", purpose = ModelProfilePurpose.BOTH,
+            endpoint = "http://127.0.0.1:1234/v1", model = "local", protocol = NativeModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            keys = emptyList(), limits = ModelProfileLimits(2, 30), capabilities = ModelProfileCapabilities(tools = true),
+            generation = ModelGenerationSettings(maxOutputTokens = 1024))
+        val id = store.saveReviewedProfile(initial, null, draft, false)
+        val current = store.find(id)!!
+        assertEquals(1024, current.generation.maxOutputTokens)
+        assertEquals(2, current.limits!!.concurrency)
+        val expected = store.reviewedProfileSnapshot().getValue("fingerprint").jsonPrimitive.content
+        try {
+            store.saveReviewedProfile(expected, id, draft.copy(endpoint = "http://localhost:4321/v1"), true)
+            fail("Moved retained credentials to another endpoint")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals(current.reference, store.find(id)!!.reference)
+        assertEquals(expected, store.reviewedProfileSnapshot().getValue("fingerprint").jsonPrimitive.content)
+        assertFalse(runtime.snapshot().authenticationWriteRunning)
+    }
+
+    @Test fun reviewedModelMutationUsesCatalogCasAndDoesNotExposeCredentials() = runBlocking {
+        val profile = store.create(NewModelProfile(name = "Reviewed local", purpose = ModelProfilePurpose.BOTH,
+            endpoint = "http://127.0.0.1:1234/v1", model = "local", protocol = NativeModelProtocol.OPENAI_CHAT_COMPLETIONS,
+            keys = emptyList()))
+        val snapshot = store.reviewedProfileSnapshot()
+        val expected = snapshot.getValue("fingerprint").jsonPrimitive.content
+        assertFalse(snapshot.toString().contains("encrypted"))
+        assertFalse(snapshot.toString().contains("endpoint"))
+        store.applyReviewedProfileMutation(expected, profile.id, "rename", "Reviewed name")
+        try {
+            store.applyReviewedProfileMutation(expected, profile.id, "delete", null)
+            fail("Consumed a stale catalog approval")
+        } catch (_: IllegalArgumentException) { }
+        assertEquals("Reviewed name", store.find(profile.id)!!.name)
+        assertEquals(profile.reference, store.find(profile.id)!!.reference)
+        assertFalse(runtime.snapshot().authenticationWriteRunning)
+    }
 
     @Test fun noKeyLocalConfigurationPersistsAndResolvesWithoutAuthorization() = runBlocking {
         val saved = store.save("http://127.0.0.1:1234/v1/chat/completions", " local-model ", "")

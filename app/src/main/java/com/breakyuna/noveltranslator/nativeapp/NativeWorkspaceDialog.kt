@@ -146,7 +146,6 @@ internal fun NativeWorkspaceDialog(
             title = { Text(stringResource(R.string.native_workspace_title)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.native_workspace_notice), style = MaterialTheme.typography.bodySmall)
                     Text(stringResource(R.string.native_workspace_revision, revision), style = MaterialTheme.typography.labelMedium)
                     if (runId == null) Text(stringResource(R.string.native_workspace_no_run), style = MaterialTheme.typography.bodySmall)
                     else Text(stringResource(R.string.native_workspace_run, runId.value),
@@ -284,7 +283,6 @@ private fun NativeWorkspacePreview(
         title = { Text(title) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_workspace_preview_notice), style = MaterialTheme.typography.bodySmall)
                 when {
                     failed -> Text(stringResource(R.string.native_workspace_preview_failed),
                         color = MaterialTheme.colorScheme.error)

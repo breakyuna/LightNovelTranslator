@@ -170,7 +170,7 @@ internal fun NativeOAuthSection(
             }
             if (oauthCurrent) OAuthStatusText(oauth)
         }
-        if (oauthCurrent && oauth.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (oauthCurrent && oauth.busy) NativeBusyIndicator()
         if (oauthCurrent) {
             oauth.failure?.let { failure ->
                 Text(stringResource(nativeOAuthFailureLabel(failure)),
@@ -188,7 +188,7 @@ internal fun NativeOAuthSection(
     }
 
     if (confirmApiKey && profile != null) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { confirmApiKey = false },
             title = { Text(stringResource(R.string.native_oauth_switch_api_key_title)) },
             text = { Text(stringResource(R.string.native_oauth_switch_api_key_text)) },

@@ -28,6 +28,19 @@ class NativePriceTableStoreTest {
     private fun price(model: String) = ModelPricing(TokenPrice.ofMicrosPerMillion(1),
         TokenPrice.ofMicrosPerMillion(2), TokenPrice.ZERO, TokenPrice.ZERO, modelKey = model)
 
+    @Test fun reviewedReplacementRejectsStaleApprovalAndKeepsHistoricalPrices() = runBlocking {
+        val store = NativePriceTableStore(context)
+        val empty = store.load()
+        val first = store.save(empty.fingerprint, CurrencyCode.USD, price("old"))
+        val replacement = PriceTable(CurrencyCode.USD, 0, listOf(price("new")))
+        try { store.replaceReviewed(replacement, empty.fingerprint); fail("Accepted stale approval") }
+        catch (_: IllegalArgumentException) { }
+        assertEquals(first.fingerprint, store.load().fingerprint)
+        val next = store.replaceReviewed(replacement, first.fingerprint)
+        assertEquals(listOf("new"), next.entries.map { it.modelKey })
+        assertEquals(listOf("old"), store.load(first.version).entries.map { it.modelKey })
+    }
+
     @Test fun reopensAndRejectsStaleEditorAndCurrencyChanges() = runBlocking {
         val store = NativePriceTableStore(context)
         val empty = store.load()

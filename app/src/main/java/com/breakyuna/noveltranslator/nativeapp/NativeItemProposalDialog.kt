@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -14,6 +15,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import kotlinx.coroutines.CancellationException
@@ -33,6 +36,7 @@ internal fun NativeItemProposalDialog(view: ItemProposalSummary,
     var detailTarget by remember(view.ref, view.id) { mutableStateOf<ItemId?>(null) }
     var receipt by remember(view.ref, view.id) { mutableStateOf<ItemProposalReceipt?>(null) }
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
     val pending = view.state == ItemProposalState.PENDING
     LaunchedEffect(view.ref, view.id, view.digest) {
         try {
@@ -42,8 +46,11 @@ internal fun NativeItemProposalDialog(view: ItemProposalSummary,
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { error = true }
     }
+    Dialog(onDismissRequest = {
+        if (opened != null) { opened = null; detailTarget = null } else dismiss()
+    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
     opened?.let { member ->
-        AlertDialog(onDismissRequest = { opened = null; detailTarget = null },
+        NativeDialogSurface(
             title = { Text(stringResource(R.string.native_edit_row, member.row + 1)) },
             text = { SelectionContainer {
                 Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()),
@@ -55,9 +62,10 @@ internal fun NativeItemProposalDialog(view: ItemProposalSummary,
                     ProposalValue(member.after)
                 }
             } },
-            confirmButton = { TextButton(onClick = { opened = null; detailTarget = null }) { Text(stringResource(R.string.native_close)) } })
+            confirmButton = { TextButton(onClick = { opened = null; detailTarget = null }) { Text(stringResource(R.string.native_back)) } })
+        return@Dialog
     }
-    AlertDialog(onDismissRequest = dismiss,
+    NativeDialogSurface(
         title = { Text(stringResource(R.string.native_item_proposal_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -77,8 +85,8 @@ internal fun NativeItemProposalDialog(view: ItemProposalSummary,
                     }
                 }
                 if (error) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
-                else if (members == null) LinearProgressIndicator(Modifier.fillMaxWidth())
-                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
+                else if (members == null) NativeBusyIndicator()
+                LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), state = listState) {
                     items(members.orEmpty(), key = { it.id.value }) { member ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             if (pending) Checkbox(member.id in selected, { checked ->
@@ -131,6 +139,7 @@ internal fun NativeItemProposalDialog(view: ItemProposalSummary,
                 TextButton(onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
             }
         })
+    }
 }
 
 @Composable

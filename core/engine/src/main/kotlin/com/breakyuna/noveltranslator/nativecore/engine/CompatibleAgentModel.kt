@@ -9,7 +9,7 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
-/** Bounded streaming Chat Completions transport; only called through the shared gateway. */
+/** Bounded incremental model transport; only called through the shared gateway. */
 class CompatibleAgentModel(private val settings: NativeModelSettingsPort, private val runtime: RuntimePort,
     private val transport: CompatibleHttpTransport = CompatibleHttpTransport(),
     private val keys: ModelKeyPool = ModelKeyPool(settings),
@@ -101,10 +101,8 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         }
     }
     /**
-     * Non-chat protocols use the shared protocol transport. The current slice is
-     * non-streaming: the complete receipt is emitted as preview deltas after the
-     * response has passed the same bounded validation, so a partial provider
-     * stream can never become a persisted assistant message.
+     * Non-chat protocols use the shared transport with incremental previews. A partial
+     * stream never becomes a persisted assistant message or an executable tool call.
      */
     private suspend fun completeProtocol(request: AgentModelRequest, config: NativeModelSettings,
         profile: NativeModelProfile?, protocol: ModelProtocol, credential: ModelCredential,
@@ -161,7 +159,7 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         val response = try {
             ModelProtocolTransport(transport, capabilities)
                 .complete(protocol, config, credential.token, protocolRequest,
-                    CapabilityRequirement(tools = tools.isNotEmpty()), profile, credential.mode)
+                    CapabilityRequirement(tools = tools.isNotEmpty()), profile, credential.mode, emit)
         } catch (failure: UnsupportedModelCapability) {
             throw AgentModelFailure(ModelFailureKind.CONTENT)
         }
@@ -175,9 +173,6 @@ class CompatibleAgentModel(private val settings: NativeModelSettingsPort, privat
         }
         val message = AgentMessage.Assistant(MessageId(UUID.randomUUID().toString()), parts)
         if (AgentMessageCodec.encode(message).length > 512 * 1024) throw AgentModelFailure(ModelFailureKind.CONTENT)
-        if (response.thinking.isNotEmpty()) emit(AgentModelEvent.ThinkingDelta(response.thinking))
-        if (response.text.isNotEmpty()) emit(AgentModelEvent.TextDelta(response.text))
-        response.toolCalls.indices.forEach { emit(AgentModelEvent.ToolCallDelta(it)) }
         return AgentModelResponse(message, response.usage, response.stopReason)
     }
 

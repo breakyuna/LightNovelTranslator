@@ -56,18 +56,17 @@ internal fun NativeTranslationQueueDialog(
             failed = true
         }
     }
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_queue_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_queue_notice), style = MaterialTheme.typography.bodySmall)
                 val entries = snapshot?.entries.orEmpty()
                 LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     items(entries, key = { it.spec.run.runId.value }) { entry ->
                         Card(Modifier.fillMaxWidth().testTag("native-queue-${entry.spec.run.runId.value}")) {
                             Column(Modifier.fillMaxWidth()) {
-                                Text(entry.task.state.name, style = MaterialTheme.typography.titleSmall)
+                                Text(stringResource(queueStateLabel(entry.task.state)), style = MaterialTheme.typography.titleSmall)
                                 Text(entry.spec.options.targetLanguage, style = MaterialTheme.typography.bodySmall)
                                 Text(if (entry.spec.wholeProject) stringResource(R.string.native_simulation_scope_project)
                                     else stringResource(R.string.native_simulation_scope_page),
@@ -126,4 +125,15 @@ internal fun NativeTranslationQueueDialog(
             Text(stringResource(R.string.native_refresh))
         } },
     )
+}
+
+private fun queueStateLabel(state: com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState): Int = when (state) {
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.QUEUED -> R.string.native_queue_waiting
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.RUNNING -> R.string.native_runs_running
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.PAUSED -> R.string.native_runs_paused
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.NEEDS_REVIEW -> R.string.native_queue_review_failures
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.FAILED -> R.string.native_runs_failed
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.COMPLETED -> R.string.native_runs_succeeded
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.COMPLETED_WITH_ERRORS -> R.string.native_queue_partial
+    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskQueueState.CANCELLED -> R.string.native_runs_cancelled
 }

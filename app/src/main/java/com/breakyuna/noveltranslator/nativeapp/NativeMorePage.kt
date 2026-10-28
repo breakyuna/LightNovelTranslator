@@ -105,16 +105,9 @@ internal fun NativeMorePage(
         item(key = "title") {
             NativeSectionCard(
                 title = stringResource(R.string.native_more),
-                subtitle = stringResource(R.string.native_more_description),
                 badge = BuildConfig.VERSION_NAME,
                 badgeTone = NativeTone.PRIMARY,
             ) {}
-        }
-        item(key = "rules") {
-            RulesCard(
-                enabled = project != null && !state.busy,
-                onRules = onRules,
-            )
         }
         item(key = "models") {
             MoreEntry(
@@ -196,6 +189,7 @@ internal fun NativeMorePage(
                 enabled = !notificationsGranted && !state.busy,
                 onClick = requestNotifications,
                 tag = "native-more-notifications",
+                showDescription = true,
             )
         }
         item(key = "logs") {
@@ -369,7 +363,7 @@ internal fun NativeThemeDialog(
     select: (NativeThemeMode) -> Unit,
 ) {
     var mode by remember(current) { mutableStateOf(current) }
-    androidx.compose.material3.AlertDialog(
+    NativeContentDialog(
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_more_appearance)) },
         text = {
@@ -399,92 +393,6 @@ internal fun NativeThemeDialog(
     )
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun RulesCard(
-    enabled: Boolean,
-    onRules: (NativeRuleSection) -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth().testTag("native-more-rules"),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Surface(
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                ) {
-                    Icon(Icons.Default.Description, null, Modifier.padding(8.dp))
-                }
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.native_more_rules), style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        text = stringResource(R.string.native_more_rules_description),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                val columns = if (maxWidth >= 720.dp) 3 else if (maxWidth >= 480.dp) 2 else 1
-                val entryWidth = (maxWidth - 8.dp * (columns - 1)) / columns
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    NativeRuleSection.entries.forEach { section ->
-                        Surface(
-                            modifier = Modifier
-                                .width(entryWidth)
-                                .heightIn(min = 48.dp)
-                                .clickable(enabled = enabled) { onRules(section) }
-                                .testTag("native-more-rules-${section.slug}"),
-                            shape = MaterialTheme.shapes.medium,
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            ) {
-                                Icon(
-                                    imageVector = section.icon(),
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                                Text(
-                                    text = stringResource(section.title()),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun NativeRuleSection.icon(): ImageVector = when (this) {
-    NativeRuleSection.GLOSSARY -> Icons.Default.MenuBook
-    NativeRuleSection.TEXT_PRESERVE -> Icons.Default.Spellcheck
-    NativeRuleSection.PRE_REPLACE -> Icons.Default.Translate
-    NativeRuleSection.POST_REPLACE -> Icons.Default.Sync
-    NativeRuleSection.PROMPTS -> Icons.Default.EditNote
-}
-
 @Composable
 private fun MoreEntry(
     icon: ImageVector,
@@ -493,6 +401,7 @@ private fun MoreEntry(
     enabled: Boolean,
     onClick: () -> Unit,
     tag: String,
+    showDescription: Boolean = false,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().testTag(tag),
@@ -519,13 +428,7 @@ private fun MoreEntry(
             headlineContent = {
                 Text(title, style = MaterialTheme.typography.titleMedium)
             },
-            supportingContent = {
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
+            supportingContent = if (showDescription) ({ Text(description, style = MaterialTheme.typography.bodySmall) }) else null,
         )
     }
 }

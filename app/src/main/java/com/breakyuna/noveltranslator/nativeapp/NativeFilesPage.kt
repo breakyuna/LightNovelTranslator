@@ -107,8 +107,6 @@ internal fun NativeFilesPage(
                         )
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Text(stringResource(R.string.native_files_description), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(project.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold,
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(project.assetPath.value, style = MaterialTheme.typography.bodySmall,
@@ -124,8 +122,6 @@ internal fun NativeFilesPage(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(stringResource(R.string.native_files_assets),
                     style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                Text(stringResource(R.string.native_files_assets_description),
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (inventoryFailed) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
             }
         }
@@ -223,10 +219,6 @@ internal fun NativeFilesPage(
                 Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(stringResource(R.string.native_files_retention_title),
                         style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Text(stringResource(R.string.native_files_retention_body),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(stringResource(R.string.native_files_retention_failure),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedButton(onClick = cleanup, enabled = !busy,
                         modifier = Modifier.fillMaxWidth().testTag("native-files-cleanup")) {
                         Text(stringResource(R.string.native_more_cleanup))
@@ -260,7 +252,7 @@ internal fun NativeFilesPage(
                 }
             }
         }
-        if (busy) item(key = "busy") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        if (busy) item(key = "busy") { NativeBusyIndicator() }
     }
 }
 

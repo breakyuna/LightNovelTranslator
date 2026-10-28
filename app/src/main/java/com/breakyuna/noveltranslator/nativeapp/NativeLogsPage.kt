@@ -181,7 +181,7 @@ internal fun NativeLogsPage(
     }
 
     if (confirmClear) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text(stringResource(R.string.native_logs_clear)) },
             text = { Text(stringResource(R.string.native_logs_clear_confirm)) },
@@ -203,7 +203,7 @@ internal fun NativeLogsPage(
         )
     }
     if (confirmExport) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { confirmExport = false },
             title = { Text(stringResource(R.string.native_logs_export_confirm_title)) },
             text = {
@@ -227,7 +227,7 @@ internal fun NativeLogsPage(
         )
     }
     if (confirmDebug) {
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { confirmDebug = false },
             title = { Text(stringResource(R.string.native_logs_debug_title)) },
             text = { Text(stringResource(R.string.native_logs_debug_warning)) },
@@ -277,7 +277,7 @@ internal fun NativeLogsPage(
                     }
                 }
             }
-            if (detailLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (detailLoading) NativeBusyIndicator()
             if (detailFailed || (!detailLoading && record == null)) {
                 Text(stringResource(R.string.native_logs_detail_missing), color = MaterialTheme.colorScheme.error)
                 OutlinedButton(onClick = { detailRetry++ },
@@ -347,8 +347,6 @@ internal fun NativeLogsPage(
                             style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                    Text(stringResource(R.string.native_logs_notice), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Card(
                         modifier = Modifier.fillMaxWidth().testTag("native-logs-debug-card"),
                         colors = CardDefaults.cardColors(
@@ -390,7 +388,7 @@ internal fun NativeLogsPage(
                             modifier = Modifier.testTag("native-logs-level-ALL"))
                         NativeDiagnosticLevel.entries.forEach { candidate ->
                             FilterChip(selected = level == candidate, onClick = { levelName = candidate.name },
-                                label = { Text(candidate.name) },
+                                label = { Text(stringResource(diagnosticLevelLabel(candidate))) },
                                 modifier = Modifier.testTag("native-logs-level-${candidate.name}"))
                         }
                     }
@@ -453,7 +451,7 @@ internal fun NativeLogsPage(
                 }
             }
         }
-        if (loading) item(key = "logs-loading") { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+        if (loading) item(key = "logs-loading") { NativeBusyIndicator() }
         if (failed) item(key = "logs-error") {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(stringResource(if (stale) R.string.native_logs_stale else R.string.native_logs_error),
@@ -499,3 +497,10 @@ private fun diagnosticTone(level: NativeDiagnosticLevel): NativeTone = when (lev
 
 private fun formatDiagnosticTime(value: Long): String =
     SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(Date(value))
+
+private fun diagnosticLevelLabel(level: NativeDiagnosticLevel): Int = when (level) {
+    NativeDiagnosticLevel.DEBUG -> R.string.native_log_debug
+    NativeDiagnosticLevel.INFO -> R.string.native_log_info
+    NativeDiagnosticLevel.WARN -> R.string.native_log_warning
+    NativeDiagnosticLevel.ERROR -> R.string.native_log_error
+}

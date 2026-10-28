@@ -24,7 +24,7 @@ internal class CompatibleChatStream {
 
     suspend fun read(input: InputStream, emit: suspend (AgentModelEvent) -> Unit): String {
         try {
-            readEvents(input) { data, event ->
+            readModelStreamEvents(input) { data, event ->
                 currentCoroutineContext().ensureActive()
                 if (data.trim() == "[DONE]") false
                 else {
@@ -131,7 +131,7 @@ internal class CompatibleChatStream {
 }
 
 /** SSE framing: UTF-8, optional BOM, LF/CRLF/CR, multiline data, comments and bounded fields. No reconnect. */
-private suspend fun readEvents(input: InputStream, event: suspend (String, String) -> Boolean) {
+internal suspend fun readModelStreamEvents(input: InputStream, event: suspend (String, String) -> Boolean) {
     val bounded = object : InputStream() {
         var bytes = 0L
         override fun read(): Int = input.read().also { if (it >= 0) count(1) }

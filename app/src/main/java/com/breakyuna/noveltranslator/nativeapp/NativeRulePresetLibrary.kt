@@ -67,7 +67,7 @@ internal fun NativeRulePresetLibrary(ref: LocalProjectRef, baseline: ProjectText
         finally { busy = false }
     }
     val chosen = selected
-    if ((overwrite || deleting) && chosen != null) AlertDialog(
+    if ((overwrite || deleting) && chosen != null) NativeContentDialog(
         onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
         title = { Text(stringResource(if (deleting) R.string.native_preset_delete else R.string.native_preset_overwrite)) },
         text = { Text(stringResource(if (deleting) R.string.native_preset_delete_warning else R.string.native_preset_overwrite_warning, chosen.name)) },

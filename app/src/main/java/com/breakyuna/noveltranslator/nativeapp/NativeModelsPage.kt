@@ -46,9 +46,19 @@ internal fun NativeModelsPage(
     select: (String, ModelProfilePurpose) -> Unit,
     loadKeys: (String) -> Unit,
     setKeyEnabled: (String, String, Boolean) -> Unit,
+    requestedProfileId: String? = null,
+    requestedProfileOpened: () -> Unit = {},
 ) {
     var editing by remember { mutableStateOf<NativeModelProfile?>(null) }
     LaunchedEffect(Unit) { if (state.modelProfiles.isEmpty() && !state.modelProfilesLoading) refresh() }
+    LaunchedEffect(requestedProfileId, state.modelProfiles) {
+        if (requestedProfileId != null) {
+            state.modelProfiles.firstOrNull { it.id == requestedProfileId }?.let {
+                editing = it
+                requestedProfileOpened()
+            }
+        }
+    }
     var creating by rememberSaveable { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<NativeModelProfile?>(null) }
     if (creating || editing != null) {
@@ -71,7 +81,7 @@ internal fun NativeModelsPage(
         )
     }
     deleting?.let { target ->
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { if (!state.busy) deleting = null },
             title = { Text(stringResource(R.string.native_model_profile_delete)) },
             text = { Text(stringResource(R.string.native_model_profile_delete_confirm, target.name)) },
@@ -116,7 +126,7 @@ internal fun NativeModelsPage(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
-        if (state.modelProfilesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (state.modelProfilesLoading) NativeBusyIndicator()
         state.modelProfilesError?.let {
             NativeBanner(
                 text = stringResource(it),
@@ -146,7 +156,7 @@ internal fun NativeModelsPage(
             state.modelProfiles.forEach { profile ->
                 val group = profile.group.ifBlank { ungrouped }
                 if (group != lastGroup) {
-                    item(key = "group:$group") {
+                    item(key = "group:$group:${profile.id}") {
                         Text(
                             text = group,
                             style = MaterialTheme.typography.titleSmall,
@@ -217,9 +227,9 @@ private fun ModelProfileCard(
                     )
                 }
                 if (profile.enabled) {
-                    AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_enabled)) })
+                    NativeStatusBadge(stringResource(R.string.native_model_profile_enabled), tone = NativeTone.SUCCESS)
                 } else {
-                    AssistChip(onClick = {}, label = { Text(stringResource(R.string.native_model_profile_disabled)) })
+                    NativeStatusBadge(stringResource(R.string.native_model_profile_disabled))
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -258,11 +268,19 @@ private fun ModelProfileCard(
                         Text(stringResource(R.string.native_model_profile_use_translation))
                     }
                 }
-                TextButton(enabled = !busy, onClick = copy) { Text(stringResource(R.string.native_copy)) }
-                TextButton(enabled = !busy && canMoveUp, onClick = { move(-1) }) { Text("↑") }
-                TextButton(enabled = !busy && canMoveDown, onClick = { move(1) }) { Text("↓") }
-                TextButton(enabled = !busy, onClick = delete) {
-                    Text(stringResource(R.string.native_model_action_delete), color = MaterialTheme.colorScheme.error)
+                var menu by remember(profile.id) { mutableStateOf(false) }
+                Box {
+                    TextButton(onClick = { menu = true }, enabled = !busy) { Text(stringResource(R.string.native_more)) }
+                    DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.native_duplicate_model)) },
+                            onClick = { menu = false; copy() })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_move_up)) }, enabled = canMoveUp,
+                            onClick = { menu = false; move(-1) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.native_asset_move_down)) }, enabled = canMoveDown,
+                            onClick = { menu = false; move(1) })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.native_model_action_delete), color = MaterialTheme.colorScheme.error) },
+                            onClick = { menu = false; delete() })
+                    }
                 }
             }
         }
@@ -413,7 +431,6 @@ private fun NativeModelProfileEditor(
                             Switch(checked = enabled, onCheckedChange = { enabled = it })
                             Text(stringResource(R.string.native_model_profile_enabled))
                         }
-                        Text(stringResource(R.string.native_model_config_notice), style = MaterialTheme.typography.bodySmall)
                         OutlinedTextField(endpoint, { endpoint = it.take(2048); invalid = false },
                             label = { Text(stringResource(R.string.native_model_endpoint)) }, singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -455,62 +472,66 @@ private fun NativeModelProfileEditor(
                             actions = catalogActions,
                             choose = { descriptorPicker = true },
                         )
-                        Text(stringResource(R.string.native_model_profile_limits), style = MaterialTheme.typography.titleSmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(concurrency, { concurrency = it.take(2) },
-                                label = { Text(stringResource(R.string.native_model_profile_concurrency)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                            OutlinedTextField(rpm, { rpm = it.take(5) },
-                                label = { Text(stringResource(R.string.native_model_profile_rpm)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                        }
-                        Text(stringResource(R.string.native_model_profile_capabilities), style = MaterialTheme.typography.titleSmall)
-                        CapabilityRow(stringResource(R.string.native_model_profile_tools), tools) { tools = it }
-                        CapabilityRow(stringResource(R.string.native_model_profile_vision), vision) { vision = it }
-                        CapabilityRow(stringResource(R.string.native_model_profile_reasoning), reasoning) { reasoning = it }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(context, { context = it.take(8) },
-                                label = { Text(stringResource(R.string.native_model_profile_context)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                            OutlinedTextField(output, { output = it.take(8) },
-                                label = { Text(stringResource(R.string.native_model_profile_output)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(temperature, { temperature = it.take(8) },
-                                label = { Text(stringResource(R.string.native_model_profile_temperature)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
-                            OutlinedTextField(topP, { topP = it.take(8) },
-                                label = { Text(stringResource(R.string.native_model_profile_top_p)) }, singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(effort, { effort = it.take(32) },
-                                label = { Text(stringResource(R.string.native_model_profile_effort)) }, singleLine = true,
-                                modifier = Modifier.weight(1f))
-                            OutlinedTextField(serviceTier, { serviceTier = it.take(32) },
-                                label = { Text(stringResource(R.string.native_model_profile_service_tier)) }, singleLine = true,
-                                modifier = Modifier.weight(1f))
-                        }
-                        OutlinedTextField(headers, { headers = it },
-                            label = { Text(stringResource(R.string.native_model_profile_headers)) }, minLines = 2,
-                            modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(body, { body = it },
-                            label = { Text(stringResource(R.string.native_model_profile_extra_body)) }, minLines = 2,
-                            modifier = Modifier.fillMaxWidth())
-                        if (profile != null) {
-                            Text(stringResource(R.string.native_model_profile_key_states), style = MaterialTheme.typography.titleSmall)
-                            if (keys.isEmpty()) Text(stringResource(R.string.native_model_profile_no_keys),
-                                style = MaterialTheme.typography.bodySmall)
-                            for (key in keys) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(key.id, style = MaterialTheme.typography.bodySmall)
-                                        Text(stringResource(R.string.native_model_profile_key_failures, key.failures),
-                                            style = MaterialTheme.typography.bodySmall)
+                        NativeAgentFoldout(stringResource(R.string.native_settings_expert), stateKey = profile?.id, forceExpanded = invalid) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(stringResource(R.string.native_model_profile_limits), style = MaterialTheme.typography.titleSmall)
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(concurrency, { concurrency = it.take(2) },
+                                        label = { Text(stringResource(R.string.native_model_profile_concurrency)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                                    OutlinedTextField(rpm, { rpm = it.take(5) },
+                                        label = { Text(stringResource(R.string.native_model_profile_rpm)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                                }
+                                Text(stringResource(R.string.native_model_profile_capabilities), style = MaterialTheme.typography.titleSmall)
+                                CapabilityRow(stringResource(R.string.native_model_profile_tools), tools) { tools = it }
+                                CapabilityRow(stringResource(R.string.native_model_profile_vision), vision) { vision = it }
+                                CapabilityRow(stringResource(R.string.native_model_profile_reasoning), reasoning) { reasoning = it }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(context, { context = it.take(8) },
+                                        label = { Text(stringResource(R.string.native_model_profile_context)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                                    OutlinedTextField(output, { output = it.take(8) },
+                                        label = { Text(stringResource(R.string.native_model_profile_output)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.weight(1f))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(temperature, { temperature = it.take(8) },
+                                        label = { Text(stringResource(R.string.native_model_profile_temperature)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+                                    OutlinedTextField(topP, { topP = it.take(8) },
+                                        label = { Text(stringResource(R.string.native_model_profile_top_p)) }, singleLine = true,
+                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.weight(1f))
+                                }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(effort, { effort = it.take(32) },
+                                        label = { Text(stringResource(R.string.native_model_profile_effort)) }, singleLine = true,
+                                        modifier = Modifier.weight(1f))
+                                    OutlinedTextField(serviceTier, { serviceTier = it.take(32) },
+                                        label = { Text(stringResource(R.string.native_model_profile_service_tier)) }, singleLine = true,
+                                        modifier = Modifier.weight(1f))
+                                }
+                                OutlinedTextField(headers, { headers = it },
+                                    label = { Text(stringResource(R.string.native_model_profile_headers)) }, minLines = 2,
+                                    modifier = Modifier.fillMaxWidth())
+                                OutlinedTextField(body, { body = it },
+                                    label = { Text(stringResource(R.string.native_model_profile_extra_body)) }, minLines = 2,
+                                    modifier = Modifier.fillMaxWidth())
+                                if (profile != null) {
+                                    Text(stringResource(R.string.native_model_profile_key_states), style = MaterialTheme.typography.titleSmall)
+                                    if (keys.isEmpty()) Text(stringResource(R.string.native_model_profile_no_keys),
+                                        style = MaterialTheme.typography.bodySmall)
+                                    for (key in keys) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Column(Modifier.weight(1f)) {
+                                                Text(key.id, style = MaterialTheme.typography.bodySmall)
+                                                Text(stringResource(R.string.native_model_profile_key_failures, key.failures),
+                                                    style = MaterialTheme.typography.bodySmall)
+                                            }
+                                            Switch(checked = key.enabled, enabled = !busy,
+                                                onCheckedChange = { setKeyEnabled(profile.id, key.id, it) })
+                                        }
                                     }
-                                    Switch(checked = key.enabled, enabled = !busy,
-                                        onCheckedChange = { setKeyEnabled(profile.id, key.id, it) })
                                 }
                             }
                         }
@@ -538,7 +559,7 @@ private fun NativeModelProfileEditor(
     }
     if (profile != null && visibleCatalog.generationConfirmation) {
         val hint = visibleCatalog.billing
-        AlertDialog(
+        NativeContentDialog(
             onDismissRequest = { if (!busy) catalogActions.dismissConfirmation() },
             title = { Text(stringResource(R.string.native_model_probe_confirm_title)) },
             text = {
@@ -550,7 +571,7 @@ private fun NativeModelProfileEditor(
                     else stringResource(R.string.native_model_probe_billing_unknown,
                         NATIVE_MODEL_PROBE_MAX_OUTPUT_TOKENS))
                     Text(stringResource(R.string.native_model_probe_no_write), style = MaterialTheme.typography.bodySmall)
-                    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (busy) NativeBusyIndicator()
                 }
             },
             confirmButton = {
@@ -644,7 +665,7 @@ private fun ModelCatalogPanel(
         }
     }
     if (catalog.loading || catalog.generationRunning) {
-        LinearProgressIndicator(Modifier.fillMaxWidth())
+        NativeBusyIndicator()
         Text(stringResource(if (catalog.generationRunning) R.string.native_model_probe_generation_wait
         else R.string.native_model_catalog_loading), style = MaterialTheme.typography.bodySmall)
     }
@@ -720,7 +741,7 @@ private fun NativeCatalogPicker(
     select: (String) -> Unit,
     dismiss: () -> Unit,
 ) {
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_model_catalog_picker_title)) },
         text = {

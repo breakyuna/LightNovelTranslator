@@ -55,6 +55,8 @@ internal interface NativeAgentDao {
     fun messagePreviews(instance: String, generation: Long, chat: String): List<NativeAgentMessageListRow>
     @Query("SELECT id,role,substr(body,1,2000) AS preview,createdAt FROM native_agent_messages WHERE instanceId=:instance AND generation=:generation AND chatId=:chat AND (:time IS NULL OR createdAt<:time OR (createdAt=:time AND id<:id)) ORDER BY createdAt DESC,id DESC LIMIT 31")
     fun messagePage(instance: String, generation: Long, chat: String, time: Long?, id: String?): List<NativeAgentMessageListRow>
+    @Query("SELECT * FROM native_agent_messages WHERE instanceId=:instance AND generation=:generation AND chatId=:chat AND (createdAt>:time OR (createdAt=:time AND id>:id)) ORDER BY createdAt,id LIMIT 32")
+    fun archivePage(instance: String, generation: Long, chat: String, time: Long, id: String): List<NativeAgentMessageRow>
     @Query("SELECT * FROM native_agent_messages WHERE instanceId=:instance AND generation=:generation AND chatId=:chat AND payload IS NOT NULL AND (createdAt>:time OR (createdAt=:time AND id>:id)) ORDER BY createdAt,id LIMIT 257")
     fun contextMessages(instance: String, generation: Long, chat: String, time: Long, id: String): List<NativeAgentMessageRow>
     @Query("SELECT COUNT(*) FROM native_agent_messages WHERE instanceId=:instance AND generation=:generation AND chatId=:chat AND payload IS NOT NULL AND (createdAt>:time OR (createdAt=:time AND id>:id))")

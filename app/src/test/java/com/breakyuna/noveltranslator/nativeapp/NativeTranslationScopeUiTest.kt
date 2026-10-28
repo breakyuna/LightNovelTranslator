@@ -36,6 +36,7 @@ class NativeTranslationScopeUiTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(finished, {}, {}, {}, { calls++ }, simulateProject = { calls++ })
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).assertIsNotEnabled()
         assertEquals(0, calls)
     }
@@ -46,6 +47,7 @@ class NativeTranslationScopeUiTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(blank, {}, {}, {}, {}, simulateProject = {})
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).assertIsNotEnabled()
     }
 
@@ -54,6 +56,7 @@ class NativeTranslationScopeUiTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(state(true), {}, {}, {}, { pages++ }, simulateProject = { projects++ })
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation_scope_project)).performScrollTo().performClick()
         assertEquals(0, projects); assertEquals(0, pages)
@@ -67,6 +70,7 @@ class NativeTranslationScopeUiTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(state(false), {}, {}, {}, { calls++ }, simulateProject = { calls++ })
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).assertIsEnabled().performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation_scope_page)).assertIsNotEnabled()
         compose.onNodeWithText(context.getString(R.string.native_simulation_project_confirm)).performScrollTo().assertIsDisplayed()

@@ -255,6 +255,20 @@ class NativeTextProjectStore(
         }
     }
 
+    /** Snapshot revision is checked while holding the same write reservation as SQLite snapshot creation. */
+    suspend fun copyProjectReviewed(commandId: CommandId, ref: LocalProjectRef, expectedRevision: Long): TextProjectSummary {
+        val snapshot = operation { temporary("lnt").also { protectedCopies.add(it.absolutePath) } }
+        try {
+            saveProjectSnapshot(ref, { FileOutputStream(snapshot) }, null, expectedRevision)
+            return importProject(commandId) { snapshot.inputStream() }
+        } finally {
+            withContext(io + NonCancellable) { mutex.withLock {
+                protectedCopies.remove(snapshot.absolutePath)
+                snapshot.delete()
+            } }
+        }
+    }
+
     override suspend fun recoverProjects(): ProjectRecoveryReport = operation {
         val coroutine = currentCoroutineContext()
         withWriteLease { recoverPublished { coroutine.ensureActive() } }
@@ -876,14 +890,15 @@ class NativeTextProjectStore(
                                       archive: ArchiveReadLease): Unit = saveProjectSnapshot(ref, destination, archive)
 
     private suspend fun saveProjectSnapshot(ref: LocalProjectRef, destination: () -> OutputStream,
-                                            archive: ArchiveReadLease?): Unit = operation {
+                                            archive: ArchiveReadLease?, expectedRevision: Long? = null): Unit = operation {
         val snapshot = temporary("lnt")
         val coroutine = currentCoroutineContext()
         val write = if (archive == null) runtime.beginProjectWrite() else runtime.beginArchiveProjectWrite(archive)
         try {
             val source = file(ref) // Resolve Room identity before entering the project transaction.
             NativeProjectDatabase.open(source, writable = true).use { db ->
-                NativeProjectDatabase.summary(db, ref)
+                val summary = NativeProjectDatabase.summary(db, ref)
+                require(expectedRevision == null || summary.revision == expectedRevision) { "Project changed" }
                 NativeProjectDatabase.snapshot(db, snapshot) { coroutine.ensureActive() }
             }
         }

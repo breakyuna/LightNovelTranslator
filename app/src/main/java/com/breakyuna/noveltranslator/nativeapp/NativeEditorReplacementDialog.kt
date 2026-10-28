@@ -52,7 +52,7 @@ internal fun NativeEditorReplacementDialog(draft: NativeEditDraft, busy: Boolean
                         OutlinedButton(onClick = { options?.let(prepare) }, enabled = !busy && options != null,
                             modifier = Modifier.testTag("native-replace-preview")) { Text(stringResource(R.string.native_replace_preview)) }
                         if (busy) {
-                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                            NativeBusyIndicator()
                             TextButton(onClick = cancel) { Text(stringResource(R.string.native_cancel)) }
                         }
                         if (current != null) {

@@ -32,7 +32,7 @@ internal class NativeAppSettingsStore(context: Context) {
     fun themeMode(): NativeThemeMode = NativeThemeMode.parse(
         runCatching { preferences.getString(KEY_THEME, null) }.getOrNull())
 
-    fun saveThemeMode(mode: NativeThemeMode) {
+    fun saveThemeMode(mode: NativeThemeMode) = synchronized(SETTINGS_LOCK) {
         preferences.edit().putString(KEY_THEME, mode.name).apply()
     }
 
@@ -41,7 +41,7 @@ internal class NativeAppSettingsStore(context: Context) {
         preferences.getBoolean(KEY_AUTO_CONTEXT, false)
     }.getOrDefault(false)
 
-    fun saveAutomaticContextSummary(enabled: Boolean) {
+    fun saveAutomaticContextSummary(enabled: Boolean) = synchronized(SETTINGS_LOCK) {
         check(preferences.edit().putBoolean(KEY_AUTO_CONTEXT, enabled).commit()) { "Settings could not be saved" }
     }
 
@@ -53,7 +53,7 @@ internal class NativeAppSettingsStore(context: Context) {
         preferences.getBoolean(KEY_DIAGNOSTICS_DETAILS, false)
     }.getOrDefault(false)
 
-    fun saveDiagnosticsIncludeDetails(enabled: Boolean) {
+    fun saveDiagnosticsIncludeDetails(enabled: Boolean) = synchronized(SETTINGS_LOCK) {
         check(preferences.edit().putBoolean(KEY_DIAGNOSTICS_DETAILS, enabled).commit()) {
             "Settings could not be saved"
         }
@@ -66,7 +66,7 @@ internal class NativeAppSettingsStore(context: Context) {
     fun language(): NativeAppLanguage = NativeAppLanguage.parse(
         runCatching { preferences.getString(KEY_LANGUAGE, null) }.getOrNull())
 
-    fun saveLanguage(language: NativeAppLanguage) {
+    fun saveLanguage(language: NativeAppLanguage) = synchronized(SETTINGS_LOCK) {
         check(preferences.edit().putString(KEY_LANGUAGE, language.name).commit()) { "Language could not be saved" }
     }
 
@@ -75,23 +75,23 @@ internal class NativeAppSettingsStore(context: Context) {
         runCatching { preferences.getString(KEY_APP_PERSONA, null) }.getOrNull(),
     )
 
-    fun saveAppPersona(value: String) {
+    fun saveAppPersona(value: String) = synchronized(SETTINGS_LOCK) {
         val normalized = NativeAppPersona.requireValid(value)
         check(preferences.edit().putString(KEY_APP_PERSONA, normalized).commit()) {
             "Persona could not be saved"
         }
     }
 
-    fun snapshot(): NativeAppPreferences = NativeAppPreferences(
+    fun snapshot(): NativeAppPreferences = synchronized(SETTINGS_LOCK) { NativeAppPreferences(
         themeMode = themeMode(),
         automaticContextSummary = automaticContextSummary(),
         diagnosticsIncludeDetails = diagnosticsIncludeDetails(),
         language = language(),
         appPersona = appPersona(),
-    )
+    ) }
 
     /** One committed editor keeps the non-secret preference set mutually consistent. */
-    fun restore(preferences: NativeAppPreferences) {
+    fun restore(preferences: NativeAppPreferences) = synchronized(SETTINGS_LOCK) {
         val normalizedPersona = NativeAppPersona.requireValid(preferences.appPersona)
         check(this.preferences.edit()
             .putString(KEY_THEME, preferences.themeMode.name)
@@ -102,7 +102,13 @@ internal class NativeAppSettingsStore(context: Context) {
             .commit()) { "Settings could not be restored" }
     }
 
+    fun replaceReviewed(expected: String, next: NativeAppPreferences) = synchronized(SETTINGS_LOCK) {
+        require(NativeAgentPreferencesCodec.fingerprint(snapshot()) == expected) { "Preferences changed" }
+        restore(next)
+    }
+
     private companion object {
+        val SETTINGS_LOCK = Any()
         const val FILE = "native_app_settings"
         const val KEY_THEME = "theme_mode"
         const val KEY_AUTO_CONTEXT = "automatic_context_summary"

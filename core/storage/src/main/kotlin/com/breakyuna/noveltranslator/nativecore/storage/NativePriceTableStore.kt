@@ -124,6 +124,13 @@ class NativePriceTableStore(context: Context) : PriceTableVersionSource {
         commit(previous, next)
     } }
 
+    /** Atomic approval CAS for a complete Agent-prepared price table. */
+    suspend fun replaceReviewed(table: PriceTable, expected: String): PriceTable = withContext(Dispatchers.IO) { synchronized(LOCK) {
+        val previous = readTable(file) ?: PriceTable(CurrencyCode.USD, 0, emptyList())
+        require(previous.fingerprint == expected) { "Price table changed" }
+        commit(previous, PriceTable(table.currency, Math.addExact(previous.version, 1L), table.entries))
+    } }
+
     /** Writes history first, then the bounded manifest, and only then moves the current pointer. */
     private fun commit(previous: PriceTable, next: PriceTable): PriceTable {
         require(next.version > previous.version) { "Price version did not advance" }

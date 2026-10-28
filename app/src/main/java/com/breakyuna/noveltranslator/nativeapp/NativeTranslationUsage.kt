@@ -31,7 +31,7 @@ internal fun NativeTranslationUsage(ref: LocalProjectRef, totals: RequestUsageTo
     TextButton(onClick = { expanded = true }, modifier = Modifier.padding(horizontal = 16.dp).testTag("native-usage-toggle")) {
         Text(stringResource(R.string.native_usage_title, totals.responses))
     }
-    if (expanded) AlertDialog(onDismissRequest = { expanded = false },
+    if (expanded) NativeContentDialog(onDismissRequest = { expanded = false },
         title = { Text(stringResource(R.string.native_usage_title, totals.responses)) },
         text = { Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState())) {
             for ((label, value) in listOf(R.string.native_usage_input to totals.input,

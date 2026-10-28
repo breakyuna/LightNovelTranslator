@@ -48,22 +48,21 @@ internal fun NativeAgentHistoryDialog(ref: LocalProjectRef, chat: ChatId,
         }
     }
     detail?.let { NativeAgentMessageDialog(it, { detail = null }); return }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_agent_full_history)) },
+    NativeContentDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_agent_full_history)) },
         text = { Column {
-            Text(stringResource(R.string.native_agent_history_notice))
             if (failed) Text(stringResource(R.string.native_io_error))
             LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(page?.lines.orEmpty(), key = { it.id }) { line ->
                     Column {
                     if (prepareBranch != null && createBranch != null) TextButton(enabled = !busy,
                         onClick = { branch = MessageId(line.id) }) { Text(stringResource(R.string.native_branch_title)) }
-                    NativeAgentBubble(line, !busy) { id -> scope.launch {
+                    NativeAgentBubble(line, !busy, inspect = { id -> scope.launch {
                         busy = true; failed = false
                         try { detail = inspect(ref, chat, id) }
                         catch (cancelled: CancellationException) { throw cancelled }
                         catch (_: Exception) { failed = true }
                         finally { busy = false }
-                    } }
+                    } }, load = { id -> inspect(ref, chat, id) })
                     }
                 }
                 if (page?.lines?.isEmpty() == true) item { Text(stringResource(R.string.native_ledger_empty)) }

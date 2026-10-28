@@ -136,7 +136,7 @@ internal fun NativeProxyCredentialDispositionDialog(
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.native_settings_proxy_detach_title)) },
         text = {

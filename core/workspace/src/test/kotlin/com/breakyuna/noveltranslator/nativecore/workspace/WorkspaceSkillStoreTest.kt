@@ -28,6 +28,25 @@ class WorkspaceSkillStoreTest {
         builtInRoot.deleteRecursively()
     }
 
+    @Test fun installPublishesCompletePackageAndRejectsOverwriteOrUnsafeResources() {
+        runWorkspaceSuspend {
+            val id = WorkspaceSkillId("installed-package")
+            val draft = WorkspaceSkillDraft(id, "Installed package", "# Skill")
+            store.install(draft, mapOf("scripts/check.js" to "lg.log('ok')", "references/guide.md" to "Guide"))
+            assertEquals("# Skill", store.readContent(id))
+            assertEquals("Guide", store.readFile(id, "references/guide.md")!!.toString(Charsets.UTF_8))
+            try { store.install(draft, emptyMap()); org.junit.Assert.fail("Overwrote installed package") }
+            catch (_: WorkspaceSkillStoreException) { }
+            val rejected = WorkspaceSkillId("unsafe-package")
+            try {
+                store.install(WorkspaceSkillDraft(rejected, "Unsafe package", "# Unsafe"), mapOf("../escape.js" to "bad"))
+                org.junit.Assert.fail("Installed unsafe package")
+            } catch (_: WorkspaceSkillStoreException) { }
+            assertNull(store.record(rejected))
+            assertEquals("# Skill", store.readContent(id))
+        }
+    }
+
     @Test fun resourcesRoundTripRejectStaleWritesAndPreserveSkillBody() {
         runWorkspaceSuspend {
             val id = WorkspaceSkillId("resources")

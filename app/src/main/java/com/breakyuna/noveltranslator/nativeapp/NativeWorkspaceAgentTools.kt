@@ -622,6 +622,7 @@ private fun skillSummary(record: WorkspaceSkillRecord) = buildJsonObject {
     put("source", record.summary.source.name)
     put("languages", buildJsonArray { record.summary.languages.sorted().forEach { add(JsonPrimitive(it)) } })
     put("tags", buildJsonArray { record.summary.tags.sorted().forEach { add(JsonPrimitive(it)) } })
+    put("fingerprint", record.fingerprint.sha256)
     put("content_sha256", record.summary.contentSha256 ?: "")
     put("policy", buildJsonObject {
         put("allow_materials", record.summary.policy.allowMaterials)

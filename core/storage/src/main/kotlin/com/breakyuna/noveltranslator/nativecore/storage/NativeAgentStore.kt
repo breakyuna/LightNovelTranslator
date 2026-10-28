@@ -11,7 +11,7 @@ import kotlinx.serialization.json.*
 
 /** Device-local Room authority. No imported .lnt file can supply these execution records. */
 class NativeAgentStore(context: Context, private val projects: NativeTextProjectStore,
-    private val runtime: RuntimePort) : NativeAgentWorkspacePort, AgentPersistencePort, AgentConversationPort, AgentAutoContextPort {
+    private val runtime: RuntimePort) : NativeAgentWorkspacePort, AgentPersistencePort, AgentConversationPort, AgentAutoContextPort, AgentLoopContextPort {
     private val db = NativeAppDatabase.open(context)
     private val mutex = Mutex()
     private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) {
@@ -118,6 +118,50 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
             throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
         rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) }.also { AgentHistory.validate(it, allowPendingAtTail = true) }
     }
+    /** Complete immutable trace for archive export; active-context limits do not truncate history. */
+    suspend fun exportHistory(ref: LocalProjectRef, chat: ChatId): List<AgentMessage> = io {
+        projects.open(ref)
+        val result = ArrayList<AgentMessage>()
+        val validator = AgentHistoryValidator()
+        var time = -1L; var id = ""; var bytes = 0L; var count = 0
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val rows = db.agent().archivePage(ref.instanceId.value, ref.generation.value, chat.value, time, id)
+            if (rows.isEmpty()) break
+            rows.forEach { row ->
+                require(++count <= 100_000) { "Agent archive entry budget exceeded" }
+                row.payload?.let { payload ->
+                    bytes += TextProjectFingerprint.utf8(payload).size
+                    require(bytes <= 64L * 1024 * 1024) { "Agent archive byte budget exceeded" }
+                    val message = AgentMessageCodec.decode(payload)
+                    validator.append(message); result.add(message)
+                }
+            }
+            time = rows.last().createdAt; id = rows.last().id
+        }
+        validator.finish(allowPendingAtTail = true)
+        result
+    }
+
+    suspend fun exportMessagePreviews(ref: LocalProjectRef, chat: ChatId): List<AgentChatLine> = io {
+        projects.open(ref)
+        val result = ArrayList<AgentChatLine>()
+        var time = -1L; var id = ""; var chars = 0L
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val rows = db.agent().archivePage(ref.instanceId.value, ref.generation.value, chat.value, time, id)
+            if (rows.isEmpty()) break
+            rows.forEach { row ->
+                val text = row.body.take(2000)
+                chars += text.length
+                require(result.size < 100_000 && chars <= 64L * 1024 * 1024) { "Agent archive budget exceeded" }
+                result.add(AgentChatLine(row.id, row.role, text))
+            }
+            time = rows.last().createdAt; id = rows.last().id
+        }
+        result
+    }
+
     private fun contextRows(ref: LocalProjectRef, chat: ChatId): Pair<NativeAgentContextRow?, List<NativeAgentMessageRow>> {
         val context = db.agent().context(ref.instanceId.value, ref.generation.value, chat.value)
         if (context != null) {
@@ -143,6 +187,33 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         (summary + rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) }).also {
             AgentHistory.validate(it, allowPendingAtTail = true)
         }
+    }
+
+    override suspend fun saveLoopContext(lease: RunLease, ref: LocalProjectRef, chat: ChatId,
+        expectedMessages: List<MessageId>, boundary: MessageId, summary: String): Unit = io {
+        require(lease.identity.projectId == ref.projectId && lease.identity.chatId == chat)
+        require(summary.isNotBlank() && summary.length <= 16_384)
+        TextProjectFingerprint.utf8(summary)
+        val write = runtime.beginRunMetadataWrite(lease)
+        try {
+            projects.open(ref)
+            require(!hasUnresolved(ref, chat.value))
+            transaction {
+                val (old, rows) = contextRows(ref, chat)
+                val ids = (old?.let { listOf(MessageId("context-summary-" + it.revision)) }.orEmpty() + rows.map { MessageId(it.id) })
+                require(ids == expectedMessages) { "Agent context changed" }
+                val index = rows.indexOfFirst { it.id == boundary.value }
+                require(index >= 0 && index < rows.lastIndex)
+                val archived = rows.take(index + 1).map { AgentMessageCodec.decode(requireNotNull(it.payload)) }
+                val retained = rows.drop(index + 1).map { AgentMessageCodec.decode(requireNotNull(it.payload)) }
+                AgentHistory.validate(archived)
+                AgentHistory.validate(retained)
+                val last = rows[index]
+                db.agent().context(NativeAgentContextRow(ref.instanceId.value, ref.generation.value, chat.value,
+                    last.id, last.createdAt, summary, contextFingerprint(old, rows).sha256,
+                    Math.addExact(old?.revision ?: 0L, 1L)))
+            }
+        } finally { runtime.endProjectWrite(write) }
     }
 
     private fun contextFingerprint(context: NativeAgentContextRow?, rows: List<NativeAgentMessageRow>): ObjectFingerprint {
@@ -294,6 +365,48 @@ class NativeAgentStore(context: Context, private val projects: NativeTextProject
         val fingerprint = digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) }
         return AgentBranchPreview(ref, chat, message, ObjectFingerprint(fingerprint), count,
             AgentBranchHistory.editable(requireNotNull(selected))) to BranchSource(target, context)
+    }
+
+    suspend fun prepareBranchForAgent(lease: RunLease, ref: LocalProjectRef, chat: ChatId,
+        message: MessageId): AgentBranchPreview = io {
+        require(lease.identity.projectId == ref.projectId && lease.identity.chatId == chat)
+        val write = runtime.beginRunMetadataWrite(lease)
+        val coroutine = currentCoroutineContext()
+        try { projects.open(ref); transaction { branchPreview(ref, chat, message) { coroutine.ensureActive() }.first } }
+        finally { runtime.endProjectWrite(write) }
+    }
+
+    suspend fun contextSummary(ref: LocalProjectRef, chat: ChatId): String = io {
+        projects.open(ref)
+        db.agent().context(ref.instanceId.value, ref.generation.value, chat.value)?.summary.orEmpty()
+            .also { require(it.length <= 16_384) }
+    }
+
+    suspend fun saveReviewedContext(preview: AgentBranchPreview, summary: String): Unit = io {
+        require(summary.isNotBlank() && summary.length <= 16_384)
+        TextProjectFingerprint.utf8(summary)
+        val ref = preview.ref
+        val write = runtime.beginProjectWrite()
+        val coroutine = currentCoroutineContext()
+        try {
+            projects.open(ref)
+            require(!hasUnresolved(ref, preview.chat.value))
+            transaction {
+                val (current, source) = branchPreview(ref, preview.chat, preview.message) { coroutine.ensureActive() }
+                require(current == preview) { "Archived prefix changed" }
+                val old = db.agent().context(ref.instanceId.value, ref.generation.value, preview.chat.value)
+                val boundary = source.target
+                require(old == null || boundary.createdAt > old.boundaryTime ||
+                    boundary.createdAt == old.boundaryTime && boundary.id > old.boundaryId)
+                val rows = db.agent().contextMessages(ref.instanceId.value, ref.generation.value, preview.chat.value, boundary.createdAt, boundary.id)
+                require(rows.isNotEmpty() && rows.size <= 256)
+                AgentHistory.validate(rows.map { AgentMessageCodec.decode(requireNotNull(it.payload)) })
+                require(db.agent().contextChars(ref.instanceId.value, ref.generation.value, preview.chat.value,
+                    boundary.createdAt, boundary.id) <= 2L * 1024 * 1024)
+                db.agent().context(NativeAgentContextRow(ref.instanceId.value, ref.generation.value, preview.chat.value,
+                    boundary.id, boundary.createdAt, summary, preview.fingerprint.sha256, Math.addExact(old?.revision ?: 0L, 1L)))
+            }
+        } finally { runtime.endProjectWrite(write) }
     }
 
     suspend fun prepareBranch(ref: LocalProjectRef, chat: ChatId, message: MessageId): AgentBranchPreview = io {

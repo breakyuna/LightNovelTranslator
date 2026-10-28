@@ -3,14 +3,33 @@ package com.breakyuna.noveltranslator.nativecore.engine
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import org.junit.Assert.*
 import org.junit.Test
+import kotlinx.coroutines.test.*
 
 class AgentStreamPreviewControllerTest {
     private val ref = LocalProjectRef(ProjectId("project"), ProjectInstanceId("instance"), RecoveryGeneration(1))
     private val run = RunIdentity(ref.projectId, ChatId("chat"), RunId("run"), CommandId("send"))
     private fun key(run: RunIdentity = this.run, attempt: String = "attempt") = AgentRequestKey(run, BranchId("main"), RequestAttemptId(attempt))
 
-    @Test fun throttledDeltasAreCoalescedAndFinalFlushContainsAllTextAndThinking() {
-        var now = 0L; val controller = AgentStreamPreviewController { now }
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test fun sparseTailFlushesWithoutAnotherNetworkEventAndCannotCrossRuns() { runTest {
+        var now = 0L
+        val controller = AgentStreamPreviewController(backgroundScope) { now }
+        val session = controller.open(ref, run)
+        session.previewStarted(key())
+        session.preview(key(), AgentModelEvent.TextDelta("first"))
+        now = 1
+        session.preview(key(), AgentModelEvent.TextDelta(" tail"))
+        assertEquals("first", controller.state.value.preview!!.text)
+        runCurrent(); advanceTimeBy(16); runCurrent()
+        assertEquals("first tail", controller.state.value.preview!!.text)
+        session.preview(key(), AgentModelEvent.TextDelta(" stale"))
+        controller.open(ref, run.copy(runId = RunId("replacement")))
+        advanceTimeBy(32); runCurrent()
+        assertNull(controller.state.value.preview)
+    } }
+
+    @Test fun throttledDeltasAreCoalescedAndFinalFlushContainsAllTextAndThinking() { runTest {
+        var now = 0L; val controller = AgentStreamPreviewController(backgroundScope) { now }
         val session = controller.open(ref, run); val key = key()
         session.previewStarted(key); session.preview(key, AgentModelEvent.TextDelta("one"))
         val first = controller.state.value.revision
@@ -22,7 +41,7 @@ class AgentStreamPreviewControllerTest {
         assertEquals(AgentPreviewPhase.RECORDING, preview.phase)
         session.previewCommitted(key); assertNull(controller.state.value.preview)
         session.close()
-    }
+    } }
 
     @Test fun staleDeltasAndFinallyCannotEraseANewerExecution() {
         val controller = AgentStreamPreviewController(); val old = controller.open(ref, run)
@@ -33,6 +52,20 @@ class AgentStreamPreviewControllerTest {
         old.previewFinished(key()); old.close(); old.preview(key(), AgentModelEvent.TextDelta("late"))
         assertEquals("new", controller.state.value.preview!!.text)
         assertEquals(nextRun, controller.state.value.preview!!.key.run)
+    }
+
+    @Test fun activeLongReplyRetainsItsBeginningUntilTheInterruptedTailIsNeeded() {
+        val controller = AgentStreamPreviewController()
+        val session = controller.open(ref, run)
+        val request = key()
+        session.previewStarted(request)
+        val text = "beginning " + "x".repeat(20_000)
+        session.preview(request, AgentModelEvent.TextDelta(text))
+        assertEquals(text, controller.state.value.preview!!.text)
+        assertFalse(controller.state.value.preview!!.clipped)
+        session.close(keepPartial = true)
+        assertEquals(8192, controller.state.value.preview!!.text.length)
+        assertTrue(controller.state.value.preview!!.clipped)
     }
 
     @Test fun interruptionRetainsOnlyABoundedEphemeralTailAndRejectsLateFragments() {

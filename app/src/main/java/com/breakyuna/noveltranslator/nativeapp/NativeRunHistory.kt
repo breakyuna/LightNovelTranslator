@@ -54,7 +54,6 @@ internal fun NativeRunHistory(state: NativeProjectUiState) {
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        NativeStatusBadge(text = stringResource(stateRes), tone = tone)
                     }
                     if (run.owner == RuntimeOwner.TRANSLATION) Text(stringResource(R.string.native_runs_committed, run.checkpoint.committedItems),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

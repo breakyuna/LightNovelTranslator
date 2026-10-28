@@ -379,6 +379,27 @@ class NativeOAuthController(
         }
     }
 
+    /** One approval-bound configuration transition; CAS happens before token/flow invalidation. */
+    suspend fun applyReviewedManagement(profile: NativeModelProfile, expected: String?, operation: String,
+        draft: NativeOAuthConfigDraft?): NativeOAuthUiState = mutex.withLock {
+        val current = configs.load(profile.id)
+        require(current?.fingerprint == expected) { "OAuth configuration changed" }
+        when (operation) {
+            "save" -> {
+                val config = requireNotNull(draft).toConfig(profile.id, configs.allowsLoopbackHttp)
+                val changed = current?.fingerprint != configs.fingerprint(config)
+                if (changed) credentials.clear(profile.reference)
+                configs.save(config, expected)
+                if (changed) clearPendingIfProfile(profile.id)
+            }
+            "remove" -> { flows.clear(); credentials.clear(profile.reference); configs.clear(profile.id, expected) }
+            "logout" -> { flows.clear(); credentials.clear(profile.reference) }
+            "cancel_login" -> clearPendingIfProfile(profile.id)
+            else -> error("Unknown OAuth operation")
+        }
+        loadLocked(profile.id, notice = if (operation == "save") NativeOAuthUiNotice.CONFIG_SAVED else NativeOAuthUiNotice.SIGNED_OUT)
+    }
+
     suspend fun beginLogin(profile: NativeModelProfile): NativeOAuthLoginStart = mutex.withLock {
         try {
             val snapshot = configs.load(profile.id) ?: run {

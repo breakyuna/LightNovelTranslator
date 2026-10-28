@@ -117,18 +117,6 @@ internal fun NativeSettingsPage(
             Modifier.weight(1f).imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(stringResource(R.string.native_settings_description), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(stringResource(R.string.native_settings_scope_notice), style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
             TabRow(
                 selectedTabIndex = section.ordinal,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -169,7 +157,7 @@ private fun BasicSettings(
     setAutomaticContextSummary: (Boolean) -> Unit,
     saveAppPersona: (String) -> Unit,
 ) {
-    SettingsCard(R.string.native_settings_theme, R.string.native_settings_theme_description) {
+    NativeAgentFoldout(stringResource(R.string.native_settings_theme) + " · " + stringResource(themeMode.label()), Modifier.testTag("native-settings-theme-picker")) {
         NativeThemeMode.entries.forEach { candidate ->
             ChoiceRow(
                 selected = candidate == themeMode,
@@ -179,7 +167,7 @@ private fun BasicSettings(
             )
         }
     }
-    SettingsCard(R.string.native_settings_language, R.string.native_settings_language_description) {
+    NativeAgentFoldout(stringResource(R.string.native_settings_language) + " · " + stringResource(language.label()), Modifier.testTag("native-settings-language-picker")) {
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             NativeAppLanguage.entries.forEach { candidate ->
                 ChoiceRow(
@@ -203,15 +191,9 @@ private fun BasicSettings(
             color = MaterialTheme.colorScheme.error)
     }
     PersonaCard(appPersona, personaSaveFailed, saveAppPersona)
-    SettingsCard(R.string.native_settings_project_scope, null) {
-        Text(stringResource(R.string.native_settings_project_scope_body), style = MaterialTheme.typography.bodySmall)
-    }
-    SettingsCard(R.string.native_settings_output, null) {
-        Text(stringResource(R.string.native_settings_output_body), style = MaterialTheme.typography.bodySmall)
-    }
-    SettingsCard(R.string.native_settings_storage, null) {
-        Text(stringResource(R.string.native_settings_storage_body), style = MaterialTheme.typography.bodySmall)
-    }
+
+
+
 }
 
 @Composable
@@ -220,7 +202,6 @@ private fun PersonaCard(saved: String, saveFailed: Boolean, save: (String) -> Un
     val valid = remember(draft) { NativeAppPersona.isValid(draft) }
     SettingsCard(R.string.native_settings_persona_title,
         R.string.native_settings_persona_description) {
-        Text(stringResource(R.string.native_settings_persona_notice), style = MaterialTheme.typography.bodySmall)
         OutlinedTextField(
             value = draft,
             onValueChange = { if (it.length <= NativeAppPersona.MAX_CHARS + 1) draft = it },
@@ -237,7 +218,6 @@ private fun PersonaCard(saved: String, saveFailed: Boolean, save: (String) -> Un
             ),
             style = MaterialTheme.typography.bodySmall,
         )
-        Text(stringResource(R.string.native_settings_persona_hint), style = MaterialTheme.typography.bodySmall)
         if (!valid) Text(stringResource(R.string.native_settings_persona_invalid),
             color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         if (saveFailed) Text(stringResource(R.string.native_settings_persona_save_failed),
@@ -295,7 +275,7 @@ private fun NetworkCard(
                 }
             }
             state.loading || !state.loaded -> {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
+                NativeBusyIndicator()
                 Text(stringResource(R.string.native_settings_loading))
             }
             else -> {
@@ -362,7 +342,6 @@ private fun NetworkForm(
         else -> false
     }
     val valid = baseValid && credentialValid
-    Text(stringResource(R.string.native_settings_timeout_hint), style = MaterialTheme.typography.bodySmall)
     TimeoutField(R.string.native_settings_connect_timeout, connect, { connect = it }, "native-settings-connect-timeout")
     TimeoutField(R.string.native_settings_read_timeout, read, { read = it }, "native-settings-read-timeout")
     TimeoutField(R.string.native_settings_write_timeout, write, { write = it }, "native-settings-write-timeout")
@@ -533,7 +512,7 @@ private fun RequestLimitsCard(
                 }
             }
             state.loading || !state.loaded -> {
-                LinearProgressIndicator(Modifier.fillMaxWidth())
+                NativeBusyIndicator()
                 Text(stringResource(R.string.native_settings_loading))
             }
             else -> {
@@ -567,7 +546,6 @@ private fun RequestLimitsForm(
     var rpm by rememberSaveable { mutableStateOf(initial.requestsPerMinute.toString()) }
     val input = NativeRequestLimitsInput(concurrency, rpm)
     val valid = remember(input) { runCatching { input.toLimits() }.isSuccess }
-    Text(stringResource(R.string.native_settings_request_hint), style = MaterialTheme.typography.bodySmall)
     OutlinedTextField(
         value = concurrency,
         onValueChange = { if (it.length <= 2 && it.all(Char::isDigit)) concurrency = it },
@@ -621,8 +599,6 @@ private fun SettingsCard(title: Int, description: Int?, content: @Composable () 
     ) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(stringResource(title), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-            description?.let { Text(stringResource(it), style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant) }
             content()
         }
     }
@@ -658,7 +634,7 @@ private fun LaboratorySettingsSection(settings: LaboratorySettings, loaded: Bool
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(stringResource(R.string.native_laboratory_scope_notice), style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            if (saving) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (saving) NativeBusyIndicator()
             if (failed) Text(stringResource(R.string.native_laboratory_error), color = MaterialTheme.colorScheme.error)
             if (!loaded && !saving) {
                 Text(stringResource(R.string.native_laboratory_loading), style = MaterialTheme.typography.bodySmall)

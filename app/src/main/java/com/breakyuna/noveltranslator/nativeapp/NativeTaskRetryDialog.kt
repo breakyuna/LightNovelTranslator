@@ -33,7 +33,7 @@ internal fun NativeTaskRetryDialog(review: TranslationTaskReview,
         finally { busy = false }
     }
     LaunchedEffect(review) { fetch(0) }
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() },
+    NativeContentDialog(onDismissRequest = { if (!busy) dismiss() },
         title = { Text(stringResource(R.string.native_tasks_retry_selected)) },
         text = { Column {
             Text(stringResource(R.string.native_tasks_retry_notice))

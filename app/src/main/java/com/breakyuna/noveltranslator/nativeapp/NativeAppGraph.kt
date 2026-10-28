@@ -69,12 +69,15 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillPolicy
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillRegistration
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSelection
+import com.breakyuna.noveltranslator.nativecore.domain.queueIdentity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -319,10 +322,69 @@ class NativeAppGraph(context: Context) {
      * collects its bounded tool batch before yielding so different proposal kinds can form
      * one same-run mixed approval. No further model request runs before approval.
      */
+    internal val agentBusinessProposals = NativeAgentBusinessProposals(
+        java.io.File(context.applicationContext.filesDir, "native_agent_business_proposals"))
+    internal val agentImportService by lazy {
+        NativeAgentImportService(projects, workspace, agentBusinessProposals) { kind, ref, command, revision, path, bytes ->
+            when (kind) {
+                "lnt" -> projects.importProject(command) { bytes.inputStream() }
+                "project_backup" -> backups.restore(command) { bytes.inputStream() }
+                "project_set_backup" -> projectSetBackups.restore(command) { bytes.inputStream() }
+                "application_backup" -> applicationBackups.restore { bytes.inputStream() }
+                "asset" -> {
+                    val receipt = formatProjects.importAsset(command, ref, revision,
+                        com.breakyuna.noveltranslator.nativecore.domain.RelativePath(requireNotNull(path)), bytes)
+                    require(receipt.status == com.breakyuna.noveltranslator.nativecore.domain.AssetMutationStatus.COMMITTED)
+                }
+                else -> error("Unsupported import")
+            }
+            Unit
+        }
+    }
+    internal val agentExportService by lazy {
+        NativeAgentExportService(projects, agentBusinessProposals, workspace,
+            java.io.File(context.applicationContext.cacheDir, "native_agent_exports")) { kind, ref, asset, output ->
+            when (kind) {
+                "txt" -> projects.exportTxt(ref) { output }
+                "bilingual" -> projects.exportBilingual(ref) { output }
+                "original" -> projects.exportOriginal(ref) { output }
+                "lnt" -> projects.saveProject(ref) { output }
+                "asset", "asset_bilingual" -> {
+                    val settings = projects.projectSettings(ref)
+                    formatProjects.exportAsset(ref, requireNotNull(asset), com.breakyuna.noveltranslator.nativecore.domain.FormatWriteOptions(
+                        bilingual = kind == "asset_bilingual", deduplicateSame = settings.bilingualDeduplicateSame,
+                        writeTranslatedNames = settings.writeTranslatedNames, targetLanguage = settings.targetLanguage)) { output }
+                }
+                "project_backup" -> backups.export(ref) { output }
+                "project_set_backup" -> projectSetBackups.export { output }
+                "application_backup" -> applicationBackups.export { output }
+                "full_archive" -> applicationBackups.exportFullArchive { output }
+                "diagnostics" -> diagnostics.export(output)
+                "project_usage" -> usageLedger.export(com.breakyuna.noveltranslator.nativecore.domain.UsageLedgerQuery(ref)) { output }
+                "all_usage" -> usageLedger.export(com.breakyuna.noveltranslator.nativecore.domain.UsageLedgerQuery()) { output }
+                else -> error("Unsupported export")
+            }
+            Unit
+        }
+    }
+    internal val agentTranslationService by lazy {
+        NativeAgentTranslationService(projects, translationQueue, translationQueueScheduler, agentBusinessProposals) {
+            reference -> modelSettings.resolve(reference); Unit
+        }
+    }
+    internal val agentChatService = NativeAgentChatService(agentStore, projects, agentBusinessProposals)
+    internal val agentAuthService = NativeAgentAuthService(runtime, modelProfiles, oauth, projects, agentBusinessProposals)
+    internal val agentManagementRequests = NativeAgentManagementRequests(modelProfiles, oauth)
+    internal val agentLibraryService = NativeAgentLibraryService(rulePresets, mcp, projects, agentBusinessProposals)
+    internal val agentModelManagement = NativeAgentModelManagement(modelSettings, projects, agentBusinessProposals, oauth::clearProfile, oauth::clearCredential)
+    internal val agentSkillMaintenance = NativeAgentSkillMaintenance(workspaceSkills, projects, agentBusinessProposals)
+    internal val agentProjectManagement = NativeAgentProjectManagement(projects, agentBusinessProposals)
+    internal val agentApplicationService = NativeAgentApplicationService(
+        projects, requestLimits, laboratory, promptTemplates, agentBusinessProposals, modelProfiles, networkSettings, priceTables, agentStore, appPreferences)
     val agentWorkspace: com.breakyuna.noveltranslator.nativecore.domain.NativeAgentWorkspacePort =
         object : com.breakyuna.noveltranslator.nativecore.domain.NativeAgentWorkspacePort by agentStore {
         override suspend fun hasPending(ref: LocalProjectRef, chatId: ChatId): Boolean =
-            agentStore.hasPending(ref, chatId) ||
+            agentBusinessProposals.pending(ref, chatId) != null || agentStore.hasPending(ref, chatId) ||
                 itemProposals.pending(ref, chatId) != null ||
                 policyProposals.pending(ref, chatId) != null ||
                 pdfPageProposals.pending(ref, chatId) != null ||
@@ -352,7 +414,14 @@ class NativeAppGraph(context: Context) {
                 extraTools = nativeWorkspaceInspectionTools(workspaceRun, workspaceSkills, workspaceSkills) +
                     nativeWorkspaceFetchTools(runtime, lease, workspaceFetch) +
                     nativeWorkspaceSearchTools(runtime, lease, workspaceSearch) +
-                    nativeMcpAgentTools(runtime, lease, mcp))
+                    nativeMcpAgentTools(runtime, lease, mcp) +
+                    nativeAgentSkillTools(runtime, lease, ref, projects, workspaceSkills, agentBusinessProposals) +
+                    agentApplicationService.tools(lease, ref) + agentTranslationService.tools(lease, ref) +
+                    agentProjectManagement.tools(lease, ref) + agentSkillMaintenance.tools(lease, ref) +
+                    agentExportService.tools(lease, ref) + agentModelManagement.tools(lease, ref) +
+                    agentImportService.tools(lease, ref) + agentLibraryService.tools(lease, ref) +
+                    agentManagementRequests.tools(lease, ref) + agentAuthService.tools(lease, ref) +
+                    agentChatService.tools(lease, ref))
         },
         appPersona = { appPreferences.appPersona().takeIf { it.isNotEmpty() } },
         skillContext = {
@@ -387,7 +456,7 @@ class NativeAppGraph(context: Context) {
                 com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.WARN,
                 "agent", "Agent checkpoint write failed: ${failure::class.java.simpleName}") }
         },
-        attachments = agentAttachments)
+        attachments = agentAttachments, loopContext = agentStore)
     val translationTasks = com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationTaskStore(context.applicationContext, projects, runtime,
         com.breakyuna.noveltranslator.nativecore.engine.DefaultTranslationRetryRecoveryPolicy, usageLedger)
     val translationQueueStore = com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationQueueStore(context.applicationContext)
@@ -419,13 +488,19 @@ class NativeAppGraph(context: Context) {
         ),
         agent = object : FullArchiveAgentSource {
             override suspend fun chats(ref: LocalProjectRef) = agentStore.chats(ref)
-            override suspend fun messages(ref: LocalProjectRef, chat: ChatId) = agentStore.messages(ref, chat)
-            override suspend fun history(ref: LocalProjectRef, chat: ChatId) = agentStore.history(ref, chat)
+            override suspend fun messages(ref: LocalProjectRef, chat: ChatId) = agentStore.exportMessagePreviews(ref, chat)
+            override suspend fun history(ref: LocalProjectRef, chat: ChatId) = agentStore.exportHistory(ref, chat)
             override suspend fun approvals(ref: LocalProjectRef, chat: ChatId) = agentStore.results(ref, chat)
         },
         proposals = object : FullArchiveProposalSource {
             override suspend fun recent(ref: LocalProjectRef, chat: ChatId): List<FullArchiveProposalAudit> {
                 val result = ArrayList<FullArchiveProposalAudit>()
+                agentBusinessProposals.recent(ref, chat).forEach {
+                    result += FullArchiveProposalAudit("APPLICATION:" + it.kind, it.id, chat.value,
+                        it.document.getValue("run").jsonPrimitive.content,
+                        it.document.getValue("command").jsonPrimitive.content,
+                        it.document.getValue("revision").jsonPrimitive.long, it.status, 1)
+                }
                 itemProposals.recent(ref, chat).forEach {
                     result += FullArchiveProposalAudit("ITEM", it.id.value, it.chat.value, it.run.value,
                         it.command.value, it.revision, it.state.name, it.count)
@@ -525,7 +600,7 @@ class NativeAppGraph(context: Context) {
                         override suspend fun blockedReason(ref: com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef,
                                                            blockedChat: com.breakyuna.noveltranslator.nativecore.domain.ChatId) =
                             if (!appPreferences.automaticContextSummary()) AgentCompactionBlock.USER_DISABLED
-                            else if (agentStore.hasPending(ref, blockedChat)) AgentCompactionBlock.PENDING_APPROVAL else null
+                            else if (agentWorkspace.hasPending(ref, blockedChat)) AgentCompactionBlock.PENDING_APPROVAL else null
                     },
                 )
                 if (appPreferences.automaticContextSummary()) {
@@ -617,6 +692,14 @@ class NativeAppGraph(context: Context) {
             com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationQueueControlStore(
                 context.applicationContext)),
         requestWake = { NativeTranslationQueueWake.schedule(context.applicationContext) },
+        approvalGate = { spec ->
+            val latest = translationQueue.snapshot(spec.ref).task(spec.queueIdentity())?.commands?.lastOrNull {
+                it.action in setOf(com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskCommandAction.RESUME,
+                    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskCommandAction.RETRY_MEMBERS,
+                    com.breakyuna.noveltranslator.nativecore.domain.TranslationTaskCommandAction.SKIP_MEMBERS)
+            }?.commandId ?: spec.run.commandId
+            agentBusinessProposals.translationAuthorized(spec.ref, latest)
+        },
     )
     /**
      * Releases every Room/file owner and cancels application-scoped work. Production keeps the

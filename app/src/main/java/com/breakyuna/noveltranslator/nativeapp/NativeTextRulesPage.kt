@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
@@ -190,11 +191,11 @@ internal fun NativeTextRulesPage(
                     enabled = editing == null,
                     modifier = Modifier.testTag("native-rules-back"),
                 ) {
-                    Text(stringResource(R.string.native_more))
+                    Text(stringResource(R.string.native_back))
                 }
                 if (draft != null) {
                     NativeStatusBadge(
-                        text = if (draft.dirty) stringResource(R.string.native_policy_unsaved) else stringResource(R.string.native_rules_enabled),
+                        text = if (draft.dirty) stringResource(R.string.native_rules_prompt_unsaved) else stringResource(R.string.native_saved),
                         tone = if (draft.dirty) NativeTone.PRIMARY else NativeTone.NEUTRAL,
                     )
                 }
@@ -204,26 +205,15 @@ internal fun NativeTextRulesPage(
                 style = MaterialTheme.typography.headlineSmall,
                 modifier = Modifier.testTag("native-rules-title"),
             )
-            Text(
-                text = stringResource(R.string.native_rules_save_target, stringResource(section.title())),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.testTag("native-rules-save-target"),
-            )
         }
     }
     val sectionsContent: @Composable () -> Unit = {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                text = stringResource(R.string.native_rules_section_nav),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().testTag("native-rules-sections"),
             ) {
-                items(NativeRuleSection.entries, key = { it.name }) { entry ->
+                items(NativeRuleSection.entries.filter { it != NativeRuleSection.PROMPTS }, key = { it.name }) { entry ->
                     FilterChip(
                         selected = entry == section,
                         onClick = { selectSection(entry) },
@@ -246,7 +236,7 @@ internal fun NativeTextRulesPage(
                 enabled = writable && editing == null && draft?.dirty == true,
                 modifier = Modifier.weight(1.4f).testTag("native-policy-save"),
             ) {
-                Text(stringResource(R.string.native_rules_save_section, stringResource(section.title())), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.native_save_changes), maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             OutlinedButton(
                 onClick = {
@@ -266,13 +256,6 @@ internal fun NativeTextRulesPage(
             }
             if (draft?.conflict == true) {
                 NativeBanner(text = stringResource(R.string.native_conflict), tone = NativeTone.ERROR)
-            }
-            if (draft?.dirty == true) {
-                Text(
-                    text = stringResource(R.string.native_policy_unsaved),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
             }
             val invalidRuleId = state.policyInvalidRuleId
             if (invalidRuleId != null) {
@@ -331,7 +314,7 @@ internal fun NativeTextRulesPage(
                         Text(stringResource(R.string.native_rules_clear_selection))
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (selectedIds.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { applyBatch(true) },
                         enabled = canEdit && selectedIds.isNotEmpty(),
@@ -360,6 +343,7 @@ internal fun NativeTextRulesPage(
     val promptContent: @Composable () -> Unit = {
         if (draft != null) {
             NativeSectionCard {
+                var previewPrompt by rememberSaveable(ref) { mutableStateOf(false) }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -372,7 +356,11 @@ internal fun NativeTextRulesPage(
                     )
                     Text(stringResource(R.string.native_policy_prompt_enabled), style = MaterialTheme.typography.titleSmall)
                 }
-                OutlinedTextField(
+                TextButton(onClick = { previewPrompt = !previewPrompt }) {
+                    Text(stringResource(if (previewPrompt) R.string.native_model_action_edit else R.string.native_workspace_preview))
+                }
+                if (previewPrompt) SelectionContainer { NativeMarkdown(draft.policy.prompt) }
+                else OutlinedTextField(
                     value = draft.policy.prompt,
                     onValueChange = { value ->
                         if (value.length <= 16_384) runCatching { draft.policy.changed(prompt = value) }.getOrNull()?.let(change)
@@ -401,11 +389,6 @@ internal fun NativeTextRulesPage(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Text(
-                    text = stringResource(R.string.native_rules_prompt_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 if (draft.dirty) {
                     Text(
                         text = stringResource(R.string.native_rules_prompt_unsaved),
@@ -414,11 +397,6 @@ internal fun NativeTextRulesPage(
                         modifier = Modifier.testTag("native-rules-prompt-unsaved"),
                     )
                 }
-                Text(
-                    text = stringResource(R.string.native_rules_prompt_no_default),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         }
     }
@@ -451,13 +429,8 @@ internal fun NativeTextRulesPage(
         if (draft != null && ruleKind != null) {
             val interaction = writable && editing == null
             NativeSectionCard(
-                subtitle = stringResource(R.string.native_policy_exchange_notice),
+                subtitle = null,
             ) {
-                Text(
-                    text = stringResource(R.string.native_policy_lg_json_notice, stringResource(ruleKind.label())),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 if (presets != null) {
                     OutlinedButton(onClick = { library = true }, enabled = interaction, modifier = Modifier.fillMaxWidth()) {
                         Text(stringResource(R.string.native_preset_library))
@@ -538,7 +511,7 @@ internal fun NativeTextRulesPage(
             }
         }
     }
-    if (reloading) AlertDialog(onDismissRequest = { reloading = false },
+    if (reloading) NativeContentDialog(onDismissRequest = { reloading = false },
         title = { Text(stringResource(R.string.native_policy_reload)) },
         text = { Text(stringResource(R.string.native_policy_discard_body)) },
         confirmButton = { TextButton(onClick = { reloading = false; selectedIds = emptySet(); reload() }, enabled = !state.busy) { Text(stringResource(R.string.native_discard)) } },
@@ -575,84 +548,85 @@ internal fun NativeTextRulesPage(
                 }
             }
         }
-        if (wide) {
-            Row(Modifier.fillMaxSize()) {
-                LazyColumn(Modifier.weight(1.2f).fillMaxHeight().testTag("native-policy-page"),
-                    contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item(key = "header") { headerContent() }
-                    item(key = "sections") { sectionsContent() }
-                    item(key = "actions") { actionsContent() }
-                    item(key = "status") { statusContent() }
-                    if (draft != null && ruleKind != null) {
-                        item(key = "toolbar") { toolbarContent() }
-                        if (visibleRules.isEmpty()) item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
-                        nativeRuleItems(visibleRules, draft.policy.rules, selectedIds, canEdit,
-                            state.policyInvalidRuleId, qualityEvidence, editing ?: selectedRule?.id,
-                            onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, openDetail)
-                    }
-                }
-                VerticalDivider()
-                LazyColumn(Modifier.weight(1f).fillMaxHeight().imePadding().testTag("native-rules-detail"),
-                    contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item(key = "detail-title") {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(stringResource(section.title()), style = MaterialTheme.typography.headlineSmall)
-                            Text(stringResource(R.string.native_rules_save_target, stringResource(section.title())),
-                                style = MaterialTheme.typography.bodySmall)
+        Column(Modifier.fillMaxSize()) {
+            Surface(Modifier.fillMaxWidth()) { Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) { actionsContent() } }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                if (wide && section != NativeRuleSection.PROMPTS) {
+                    Row(Modifier.fillMaxSize()) {
+                        LazyColumn(Modifier.weight(1.2f).fillMaxHeight().testTag("native-policy-page"),
+                            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            item(key = "header") { headerContent() }
+                            if (section != NativeRuleSection.PROMPTS) item(key = "sections") { sectionsContent() }
+                            item(key = "status") { statusContent() }
+                            if (draft != null && ruleKind != null) {
+                                item(key = "toolbar") { toolbarContent() }
+                                if (visibleRules.isEmpty()) item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
+                                nativeRuleItems(visibleRules, draft.policy.rules, selectedIds, canEdit,
+                                    state.policyInvalidRuleId, qualityEvidence, editing ?: selectedRule?.id,
+                                    onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, openDetail)
+                            }
+                        }
+                        VerticalDivider()
+                        LazyColumn(Modifier.weight(1f).fillMaxHeight().imePadding().testTag("native-rules-detail"),
+                            contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            item(key = "detail-title") {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(stringResource(section.title()), style = MaterialTheme.typography.headlineSmall)
+                                }
+                            }
+                            if (draft != null && section == NativeRuleSection.PROMPTS) {
+                                item(key = "prompt") { promptContent() }
+                            }
+                            if (draft != null && ruleKind != null) {
+                                val editingId = editing
+                                when {
+                                    editingId != null -> item(key = "rule-editor-" + editingId) {
+                                        val editorKind = draft.policy.rules.firstOrNull { it.id == editingId }?.kind ?: ruleKind
+                                        NativeTextRuleEditor(ref, editingId, draft.policy.rules.firstOrNull { it.id == editingId },
+                                            editorKind, invalid = invalidEntry, close = closeEditor,
+                                            inlineForm = true, apply = applyEditedRule)
+                                    }
+                                    selectedRule != null -> item(key = "rule-detail-" + selectedRule.id) {
+                                        NativeRuleDetail(selectedRule, canEdit, selectedRule.id == state.policyInvalidRuleId,
+                                            qualityEvidence?.missingTermCounts?.get(selectedRule.id)?.takeIf { it > 0 },
+                                            qualityEvidence?.termHitCounts?.get(selectedRule.id)?.takeIf { it > 0 },
+                                            onEdit = { if (canEdit) beginEdit(selectedRule.id) })
+                                    }
+                                    else -> item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
+                                }
+                                if (editing == null) {
+                                    if (section == NativeRuleSection.GLOSSARY) item(key = "glossary-scope") { glossaryContent() }
+                                    if (section == NativeRuleSection.TEXT_PRESERVE || section == NativeRuleSection.PRE_REPLACE ||
+                                        section == NativeRuleSection.POST_REPLACE) item(key = "sample") { sampleContent() }
+                                    item(key = "exchange") { exchangeContent() }
+                                }
+                            }
+                            if (draft == null && state.policyLoadIncomplete) {
+                                item(key = "load-error") { Text(stringResource(R.string.native_policy_load_error), color = MaterialTheme.colorScheme.error) }
+                            }
                         }
                     }
-                    if (draft != null && section == NativeRuleSection.PROMPTS) {
-                        item(key = "prompt") { promptContent() }
-                    }
-                    if (draft != null && ruleKind != null) {
-                        val editingId = editing
-                        when {
-                            editingId != null -> item(key = "rule-editor-" + editingId) {
-                                val editorKind = draft.policy.rules.firstOrNull { it.id == editingId }?.kind ?: ruleKind
-                                NativeTextRuleEditor(ref, editingId, draft.policy.rules.firstOrNull { it.id == editingId },
-                                    editorKind, invalid = invalidEntry, close = closeEditor,
-                                    inlineForm = true, apply = applyEditedRule)
-                            }
-                            selectedRule != null -> item(key = "rule-detail-" + selectedRule.id) {
-                                NativeRuleDetail(selectedRule, canEdit, selectedRule.id == state.policyInvalidRuleId,
-                                    qualityEvidence?.missingTermCounts?.get(selectedRule.id)?.takeIf { it > 0 },
-                                    qualityEvidence?.termHitCounts?.get(selectedRule.id)?.takeIf { it > 0 },
-                                    onEdit = { if (canEdit) beginEdit(selectedRule.id) })
-                            }
-                            else -> item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
+                } else {
+                    LazyColumn(Modifier.fillMaxSize().testTag("native-policy-page"), contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        item(key = "header") { headerContent() }
+                        if (section != NativeRuleSection.PROMPTS) item(key = "sections") { sectionsContent() }
+                        item(key = "status") { statusContent() }
+                        if (draft != null && section == NativeRuleSection.PROMPTS) {
+                            item(key = "prompt") { promptContent() }
                         }
-                        if (editing == null) {
+                        if (draft != null && ruleKind != null) {
+                            item(key = "toolbar") { toolbarContent() }
                             if (section == NativeRuleSection.GLOSSARY) item(key = "glossary-scope") { glossaryContent() }
                             if (section == NativeRuleSection.TEXT_PRESERVE || section == NativeRuleSection.PRE_REPLACE ||
                                 section == NativeRuleSection.POST_REPLACE) item(key = "sample") { sampleContent() }
+                            if (visibleRules.isEmpty()) item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
+                            nativeRuleItems(visibleRules, draft.policy.rules, selectedIds, canEdit,
+                                state.policyInvalidRuleId, qualityEvidence, null,
+                                onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, null)
                             item(key = "exchange") { exchangeContent() }
                         }
                     }
-                    if (draft == null && state.policyLoadIncomplete) {
-                        item(key = "load-error") { Text(stringResource(R.string.native_policy_load_error), color = MaterialTheme.colorScheme.error) }
-                    }
-                }
-            }
-        } else {
-            LazyColumn(Modifier.fillMaxSize().testTag("native-policy-page"), contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                item(key = "header") { headerContent() }
-                item(key = "sections") { sectionsContent() }
-                item(key = "actions") { actionsContent() }
-                item(key = "status") { statusContent() }
-                if (draft != null && section == NativeRuleSection.PROMPTS) {
-                    item(key = "prompt") { promptContent() }
-                }
-                if (draft != null && ruleKind != null) {
-                    item(key = "toolbar") { toolbarContent() }
-                    if (section == NativeRuleSection.GLOSSARY) item(key = "glossary-scope") { glossaryContent() }
-                    if (section == NativeRuleSection.TEXT_PRESERVE || section == NativeRuleSection.PRE_REPLACE ||
-                        section == NativeRuleSection.POST_REPLACE) item(key = "sample") { sampleContent() }
-                    if (visibleRules.isEmpty()) item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
-                    nativeRuleItems(visibleRules, draft.policy.rules, selectedIds, canEdit,
-                        state.policyInvalidRuleId, qualityEvidence, null,
-                        onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, null)
-                    item(key = "exchange") { exchangeContent() }
                 }
             }
         }
@@ -1279,7 +1253,6 @@ private fun NativePolicyImportDialog(ref: LocalProjectRef, baseline: ProjectText
             Text(stringResource(if (mode == NativeRuleImportKind.PRESET) R.string.native_policy_preset_replace else R.string.native_policy_exchange_overwrite), Modifier.weight(1f))
         }
         if (external) {
-            Text(stringResource(R.string.native_policy_lg_json_notice, stringResource(ruleKind.label())))
         }
         if (!external) Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(includePrompt, { includePrompt = it; invalidate() }, enabled = !reading)

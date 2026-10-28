@@ -38,7 +38,7 @@ internal fun NativeUsageEntriesDialog(query: UsageLedgerQuery,
         finally { loading = false }
     }
     LaunchedEffect(query, refresh) { fetch(false) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_ledger_details)) },
+    NativeContentDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_ledger_details)) },
         text = { Column {
             Text(stringResource(R.string.native_ledger_details_notice), style = MaterialTheme.typography.bodySmall)
             LazyColumn(Modifier.heightIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.nativecore.engine
 
 import com.breakyuna.noveltranslator.nativecore.domain.AgentModelFailure
+import com.breakyuna.noveltranslator.nativecore.domain.AgentModelEvent
 import com.breakyuna.noveltranslator.nativecore.domain.InvalidModelNetworkSettings
 import com.breakyuna.noveltranslator.nativecore.domain.InvalidModelProxyCredential
 import com.breakyuna.noveltranslator.nativecore.domain.ModelAuthMode
@@ -11,19 +12,20 @@ import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettings
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelProfile
 import com.breakyuna.noveltranslator.nativecore.domain.NativeModelSettingsValidation
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.serialization.json.*
 import kotlinx.coroutines.CancellationException
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
- * Non-streaming HTTP adapter for [ModelProtocols]. It owns no client: all calls
+ * HTTP adapter for [ModelProtocols]. It owns no client: all calls
  * use the shared [CompatibleHttpTransport] so cancellation, redirect policy,
- * timeout and the 2 MiB response bound stay in one place.
+ * timeout and bounded response ownership stay in one place.
  *
- * Streaming is intentionally not implemented in this slice. Every codec sends
- * `stream = false`; a future streaming adapter must keep the same capability
- * validation and secret-redaction rules. Vision is required only when the request
+ * Agent callers may opt into incremental previews. Only a complete terminal response
+ * reaches the existing codec and persistence boundary. Vision is required only when the request
  * actually carries an image part: catalog metadata alone never authorizes dropping
  * an image, and a text-only request is not rejected merely because a profile also
  * claims vision support.
@@ -59,6 +61,7 @@ class ModelProtocolTransport(
         requirements: CapabilityRequirement = CapabilityRequirement.NONE,
         profile: NativeModelProfile? = null,
         authMode: ModelAuthMode = ModelAuthMode.API_KEY,
+        emit: (suspend (AgentModelEvent) -> Unit)? = null,
     ): ModelProtocolResponse {
         NativeModelSettingsValidation.validateKey(credential)
         val effective = requirements.copy(
@@ -70,16 +73,34 @@ class ModelProtocolTransport(
         (profile?.capabilityCatalog(protocol) ?: capabilities)
             .requireSupported(protocol, settings.model, effective)
         val plan = plan(protocol, settings.endpoint, settings.model, credential, request, profile, authMode)
+        val streaming = emit != null
+        val url = if (streaming && protocol == ModelProtocol.GOOGLE_GEMINI)
+            plan.url.removeSuffix(":generateContent") + ":streamGenerateContent?alt=sse" else plan.url
+        val body = if (streaming && protocol != ModelProtocol.GOOGLE_GEMINI) {
+            val json = Json.parseToJsonElement(plan.body).jsonObject
+            JsonObject(json + ("stream" to JsonPrimitive(true))).toString()
+        } else plan.body
         val http = try {
-            Request.Builder().url(plan.url).apply {
+            Request.Builder().url(url).apply {
                 plan.headers.forEach { (name, value) -> header(name, value) }
                 profile?.extraHeaders?.forEach { (name, value) -> header(name, value) }
-            }.post(plan.body.toRequestBody(JSON_MEDIA_TYPE)).build()
+                if (streaming) header("Accept", "text/event-stream")
+            }.post(body.toRequestBody(JSON_MEDIA_TYPE)).build()
         } catch (_: IllegalArgumentException) {
             throw AgentModelFailure(ModelFailureKind.CONTENT)
         }
+        val received = AtomicReference<String?>(null)
+        var streamed = false
         val payload = try {
-            transport.execute(http)
+            if (emit == null) transport.execute(http) else try {
+                transport.read(http, streaming = true) { input, contentType ->
+                    val result = if (contentType == "application/json" || contentType?.endsWith("+json") == true)
+                        transport.readUtf8(input)
+                    else { streamed = true; ModelProtocolStream(protocol).read(input, emit) }
+                    received.set(result)
+                    result
+                }
+            } catch (failure: Exception) { received.get() ?: throw failure }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (local: InvalidModelNetworkSettings) {
@@ -93,7 +114,18 @@ class ModelProtocolTransport(
         } catch (_: Exception) {
             throw AgentModelFailure(ModelFailureKind.NETWORK)
         }
-        return ModelProtocols.response(protocol, payload)
+        val response = ModelProtocols.response(protocol, payload)
+        if (emit != null && !streamed) {
+            try {
+                if (response.thinking.isNotEmpty()) emit(AgentModelEvent.ThinkingDelta(response.thinking))
+                if (response.text.isNotEmpty()) emit(AgentModelEvent.TextDelta(response.text))
+                response.toolCalls.indices.forEach { emit(AgentModelEvent.ToolCallDelta(it)) }
+            } catch (_: Exception) {
+                // A known complete receipt must reach AgentRequestBoundary even if Stop
+                // cancels the presentation callback at the IO return boundary.
+            }
+        }
+        return response
     }
 
     /** Endpoint construction follows the LinguaGacha/Pi base-URL rules used by the existing catalog. */

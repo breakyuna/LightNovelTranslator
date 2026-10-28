@@ -28,7 +28,7 @@ internal fun NativeAgentContextDialog(ref: LocalProjectRef, chat: ChatId,
         catch (_: Exception) { failed = true }
         finally { busy = false }
     }
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text(stringResource(R.string.native_context_title)) },
+    NativeContentDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text(stringResource(R.string.native_context_title)) },
         text = { Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
             Text(stringResource(R.string.native_context_notice))
             preview?.let { Text(stringResource(R.string.native_context_counts, it.archivedMessages, it.retainedMessages)) }

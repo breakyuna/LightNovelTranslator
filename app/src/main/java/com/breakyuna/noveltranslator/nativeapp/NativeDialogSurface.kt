@@ -10,8 +10,14 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
@@ -23,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +49,7 @@ internal enum class NativeTone {
 }
 
 /** Content only: the caller keeps one Dialog window alive while changing its active page. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun NativeDialogSurface(
     modifier: Modifier = Modifier,
@@ -50,7 +58,7 @@ internal fun NativeDialogSurface(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
 ) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {
         Surface(
             modifier = modifier
                 .padding(16.dp)
@@ -80,18 +88,44 @@ internal fun NativeDialogSurface(
                     ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(
+                FlowRow(
                     Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     dismissButton?.invoke()
                     confirmButton()
                 }
             }
         }
+    }
+}
+
+/** Shared bounded window for content-heavy dialogs. Footer actions never join the scroller. */
+@Composable
+internal fun NativeContentDialog(
+    onDismissRequest: () -> Unit,
+    confirmButton: @Composable () -> Unit,
+    modifier: Modifier = Modifier,
+    dismissButton: (@Composable () -> Unit)? = null,
+    title: (@Composable () -> Unit)? = null,
+    text: (@Composable () -> Unit)? = null,
+) {
+    Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        NativeDialogSurface(modifier = modifier, title = { title?.invoke() }, text = { text?.invoke() },
+            confirmButton = confirmButton, dismissButton = dismissButton)
+    }
+}
+
+@Composable
+internal fun NativeBusyIndicator(modifier: Modifier = Modifier) {
+    Row(modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 1.5.dp)
+        Text(stringResource(R.string.native_working), style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

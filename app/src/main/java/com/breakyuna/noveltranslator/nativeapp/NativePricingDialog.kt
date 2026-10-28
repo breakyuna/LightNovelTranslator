@@ -33,7 +33,7 @@ internal fun NativePricingDialog(table: PriceTable,
         } ?: List(5) { "" }
         failed = false
     }
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() },
+    NativeContentDialog(onDismissRequest = { if (!busy) dismiss() },
         title = { Text(stringResource(R.string.native_prices_title)) },
         text = { Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp)) {

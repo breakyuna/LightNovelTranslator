@@ -46,7 +46,7 @@ internal fun NativePolicyProposalDialog(originalView: PolicyApprovalSummary,
         catch (_: Exception) { failed = true }
     }
     val pending = view.state == TextApprovalState.PENDING
-    AlertDialog(onDismissRequest = { if (!selecting) dismiss() },
+    NativeContentDialog(onDismissRequest = { if (!selecting) dismiss() },
         title = { Text(stringResource(R.string.native_policy_proposal_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -57,9 +57,9 @@ internal fun NativePolicyProposalDialog(originalView: PolicyApprovalSummary,
                 if (view.promptChanged) Text(stringResource(R.string.native_policy_proposal_prompt_changed))
                 receipt?.let { result -> Text(stringResource(R.string.native_more_revision, result.revision)) }
                 if (failed) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
-                if (proposal == null && !failed) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (proposal == null && !failed) NativeBusyIndicator()
                 if (select != null && !reviewed) Text(stringResource(R.string.native_policy_select_notice))
-                if (selecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+                if (selecting) NativeBusyIndicator()
                 proposal?.let { fixed ->
                     if (select != null && fixed.before.rules.map { it.id } != fixed.after.rules.map { it.id }) Row {
                         Checkbox(acceptOrder, { acceptOrder = it }, enabled = pending && !reviewed && !selecting)

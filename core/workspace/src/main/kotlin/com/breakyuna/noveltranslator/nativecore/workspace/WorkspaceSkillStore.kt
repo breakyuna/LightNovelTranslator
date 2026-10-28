@@ -382,7 +382,18 @@ class WorkspaceSkillStore(
 
     private fun pathSegments(value: String): List<String> = value.split('/')
 
-    override suspend fun create(draft: WorkspaceSkillDraft): WorkspaceSkillRecord = synchronized(lock) {
+    override suspend fun create(draft: WorkspaceSkillDraft): WorkspaceSkillRecord = install(draft, emptyMap())
+
+    /** Publish metadata last; an interrupted package is never visible as an installed skill. */
+    suspend fun install(draft: WorkspaceSkillDraft, resources: Map<String, String>): WorkspaceSkillRecord = synchronized(lock) {
+        require(resources.size <= 64)
+        val resourceBytes = resources.mapValues { (path, text) ->
+            resourceTarget(draft.id, path)
+            val bytes = text.toByteArray(Charsets.UTF_8)
+            require(decodeUtf8(bytes) == text && bytes.size <= WorkspaceSkillLimits.MAX_CONTENT_BYTES)
+            bytes
+        }
+        require(resourceBytes.values.sumOf { it.size.toLong() } + draft.content.toByteArray(Charsets.UTF_8).size <= WorkspaceSkillLimits.MAX_TOTAL_BYTES)
         val rawId = validatedId(draft.id)
         val directory = resolveUserDirectory(rawId)
         if (directory.exists()) throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.ALREADY_EXISTS, draft.id)
@@ -398,6 +409,11 @@ class WorkspaceSkillStore(
         }
         try {
             writeFileAtomic(resolveUserFile(rawId, CONTENT_FILE), contentBytes, draft.id)
+            resourceBytes.forEach { (path, bytes) ->
+                val target = resourceTarget(draft.id, path)
+                require(target.parentFile!!.isDirectory || target.parentFile!!.mkdirs())
+                writeFileAtomic(resourceTarget(draft.id, path), bytes, draft.id)
+            }
             writeFileAtomic(resolveUserFile(rawId, METADATA_FILE), WorkspaceSkillMetadataCodec.encode(summary), draft.id)
             recordOf(summary)
         } catch (failure: Throwable) {

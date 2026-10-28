@@ -114,6 +114,7 @@ class NativeWorkspaceScreenshotTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(state, {}, {}, {}, { started = true })
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).performClick()
         assertFalse(started)
         compose.onNodeWithText(context.getString(R.string.native_simulation_start)).performClick()
@@ -127,6 +128,7 @@ class NativeWorkspaceScreenshotTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(state, {}, {}, {}, { started = true }, notificationsGranted = false) { requested++ }
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).performClick()
         compose.onNodeWithText(context.getString(R.string.native_background_notifications)).performScrollTo().performClick()
         assertEquals(1, requested); assertFalse(started)

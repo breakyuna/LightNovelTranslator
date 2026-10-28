@@ -211,11 +211,6 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                             label = { Text(stringResource(R.string.native_skills_tags)) }, maxLines = 2,
                             enabled = !readOnly && !saving,
                             modifier = Modifier.fillMaxWidth().testTag("native-skill-tags"))
-                        Text(stringResource(
-                            R.string.native_skills_labels_hint,
-                            WorkspaceSkillLimits.MAX_LANGUAGES,
-                            WorkspaceSkillLimits.MAX_TAGS,
-                        ), style = MaterialTheme.typography.bodySmall)
                         OutlinedTextField(content, { if (it.length <= 64_000) content = it },
                             label = { Text(stringResource(R.string.native_skills_content)) }, minLines = 4, maxLines = 12,
                             enabled = !readOnly && !saving,

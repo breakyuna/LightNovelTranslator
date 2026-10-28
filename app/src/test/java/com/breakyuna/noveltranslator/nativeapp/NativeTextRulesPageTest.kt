@@ -113,17 +113,12 @@ class NativeTextRulesPageTest {
         } } }
         compose.onNodeWithTag("native-rules-title")
             .assertTextEquals(context.getString(R.string.native_rules_title_pre))
-        compose.onNodeWithTag("native-rules-save-target")
-            .assertTextContains(context.getString(R.string.native_rules_title_pre), substring = true)
         compose.onNodeWithTag("native-rules-section-glossary").performClick()
         compose.runOnIdle { assertEquals(NativeRuleSection.GLOSSARY, section.value) }
         compose.onNodeWithTag("native-rules-title")
             .assertTextEquals(context.getString(R.string.native_rules_title_glossary))
-        compose.onNodeWithTag("native-rules-save-target")
-            .assertTextContains(context.getString(R.string.native_rules_title_glossary), substring = true)
         compose.onNodeWithTag("native-policy-save")
-            .assertTextEquals(context.getString(R.string.native_rules_save_section,
-                context.getString(R.string.native_rules_title_glossary)))
+            .assertTextEquals(context.getString(R.string.native_save_changes))
         assertEquals(0, changes)
     }
 

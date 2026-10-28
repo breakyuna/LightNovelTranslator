@@ -15,7 +15,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.AgentInputQueue
 import com.breakyuna.noveltranslator.nativecore.domain.CommandId
 
 /**
- * Process-owned input drafts staged for the current Chat. "Use" moves one draft back into the
+ * Durable pending messages for the current Chat; independent of the automatic composer draft. "Use" moves one draft back into the
  * composer; it never appends history or starts a paid request. Pausing only blocks the future
  * automatic queue consumer, not manual editing/deletion.
  */
@@ -23,14 +23,12 @@ import com.breakyuna.noveltranslator.nativecore.domain.CommandId
 internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismiss: () -> Unit,
                                     use: (CommandId) -> Unit, delete: (CommandId) -> Unit,
                                     togglePause: () -> Unit, sendNext: () -> Unit) {
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() },
+    NativeContentDialog(onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_agent_queue_title)) },
         text = {
             Column(Modifier.heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(stringResource(R.string.native_agent_queue_notice), style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.native_agent_queue_count, queue.drafts.size), style = MaterialTheme.typography.labelLarge)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(stringResource(R.string.native_agent_queue_count, queue.drafts.size),
-                        style = MaterialTheme.typography.labelLarge)
                     TextButton(onClick = togglePause, enabled = !busy,
                         modifier = Modifier.testTag("native-agent-queue-pause")) {
                         Text(stringResource(if (queue.paused) R.string.native_agent_queue_resume else R.string.native_agent_queue_pause))
@@ -61,5 +59,5 @@ internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismi
                 }
             }
         },
-        confirmButton = { TextButton(onClick = dismiss, enabled = !busy) { Text(stringResource(R.string.native_close)) } })
+        confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) } })
 }

@@ -23,7 +23,7 @@ internal fun NativeWorkspaceChangeDialog(
     dismiss: () -> Unit,
 ) {
     val pending = view.state == WorkspaceChangeProposalState.PENDING
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_workspace_change_title)) },
         text = {
@@ -35,16 +35,22 @@ internal fun NativeWorkspaceChangeDialog(
                 view.paths.forEach { path ->
                     Text(path, style = MaterialTheme.typography.bodySmall)
                 }
-                Text(stringResource(R.string.native_workspace_change_revision, view.baseRevision))
-                Text(stringResource(R.string.native_workspace_change_digest, view.digest.sha256.take(16)))
-                Text(stringResource(R.string.native_workspace_change_state, view.state.name),
+                NativeAgentFoldout(stringResource(R.string.native_agent_message_details), stateKey = view.digest) {
+                    Text(stringResource(R.string.native_workspace_change_revision, view.baseRevision))
+                    Text(stringResource(R.string.native_workspace_change_digest, view.digest.sha256.take(16)))
+                }
+                Text(stringResource(R.string.native_workspace_change_state, stringResource(workspaceProposalLabel(view.state))),
                     modifier = Modifier.testTag("native-workspace-change-state"))
                 Text(stringResource(R.string.native_workspace_change_notice),
                     style = MaterialTheme.typography.bodySmall)
                 view.receipt?.let { receipt ->
                     Text(stringResource(
                         R.string.native_workspace_change_receipt,
-                        receipt.status.name, receipt.committed, receipt.conflicts,
+                        stringResource(when (receipt.status) {
+                            com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceApplyStatus.COMMITTED -> R.string.native_saved
+                            com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceApplyStatus.PARTIAL -> R.string.native_item_proposal_partial
+                            com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceApplyStatus.REJECTED -> R.string.native_agent_result_rejected
+                        }), receipt.committed, receipt.conflicts,
                     ), style = MaterialTheme.typography.bodySmall)
                     receipt.conflictPaths.forEach { path ->
                         Text(path, style = MaterialTheme.typography.bodySmall,
@@ -64,4 +70,12 @@ internal fun NativeWorkspaceChangeDialog(
             } else TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) }
         },
     )
+}
+
+private fun workspaceProposalLabel(state: WorkspaceChangeProposalState): Int = when (state) {
+    WorkspaceChangeProposalState.PENDING -> R.string.native_item_proposal_pending
+    WorkspaceChangeProposalState.APPLIED -> R.string.native_saved
+    WorkspaceChangeProposalState.PARTIAL -> R.string.native_item_proposal_partial
+    WorkspaceChangeProposalState.REJECTED -> R.string.native_agent_result_rejected
+    WorkspaceChangeProposalState.CONFLICT -> R.string.native_conflict
 }

@@ -425,6 +425,152 @@ class NativeModelSettingsStore(context: Context, private val runtime: RuntimePor
         }
     }
 
+    /** Opaque CAS over profile metadata and immutable configuration revisions; no secret leaves storage. */
+    private fun reviewedCatalogFingerprintLocked(): String = TextProjectFingerprint.bytes(TextProjectFingerprint.utf8(
+        buildJsonArray { db.profiles().list().forEach { row -> add(buildJsonObject {
+            put("profileId", JsonPrimitive(row.profileId))
+            put("name", JsonPrimitive(row.name))
+            put("kind", JsonPrimitive(row.kind))
+            put("purpose", JsonPrimitive(row.purpose))
+            put("groupName", JsonPrimitive(row.groupName))
+            put("orderIndex", JsonPrimitive(row.orderIndex))
+            put("enabled", JsonPrimitive(row.enabled))
+            put("concurrency", JsonPrimitive(row.concurrency))
+            put("requestsPerMinute", JsonPrimitive(row.requestsPerMinute))
+            put("tools", JsonPrimitive(row.tools))
+            put("vision", JsonPrimitive(row.vision))
+            put("reasoning", JsonPrimitive(row.reasoning))
+            put("contextWindowTokens", JsonPrimitive(row.contextWindowTokens))
+            put("maxOutputTokens", JsonPrimitive(row.maxOutputTokens))
+            put("temperature", JsonPrimitive(row.temperature))
+            put("topP", JsonPrimitive(row.topP))
+            put("generationMaxOutputTokens", JsonPrimitive(row.generationMaxOutputTokens))
+            put("reasoningEffort", JsonPrimitive(row.reasoningEffort))
+            put("serviceTier", JsonPrimitive(row.serviceTier))
+            put("extraHeaders", JsonPrimitive(row.extraHeaders))
+            put("extraBody", JsonPrimitive(row.extraBody))
+            put("selectedTranslation", JsonPrimitive(row.selectedTranslation))
+            put("selectedAgent", JsonPrimitive(row.selectedAgent))
+            put("revision", JsonPrimitive(row.revision))
+            put("configurationRevision", JsonPrimitive(db.models().current(row.profileId)?.revision))
+        }) } }.toString()))
+
+    suspend fun reviewedProfileSnapshot(): JsonObject = withContext(Dispatchers.IO) {
+        profileMutex.withLock {
+            ensureProfilesLocked()
+            buildJsonObject {
+                put("fingerprint", JsonPrimitive(reviewedCatalogFingerprintLocked()))
+                put("profiles", buildJsonArray { db.profiles().list().forEach { row -> add(buildJsonObject {
+                    put("id", JsonPrimitive(row.profileId)); put("name", JsonPrimitive(row.name))
+                    put("kind", JsonPrimitive(row.kind)); put("purpose", JsonPrimitive(row.purpose))
+                    put("group", JsonPrimitive(row.groupName)); put("order", JsonPrimitive(row.orderIndex))
+                    put("enabled", JsonPrimitive(row.enabled))
+                    put("selected_translation", JsonPrimitive(row.selectedTranslation)); put("selected_agent", JsonPrimitive(row.selectedAgent))
+                    put("configuration_revision", JsonPrimitive(requireNotNull(db.models().current(row.profileId)).revision))
+                }) } })
+            }
+        }
+    }
+
+    suspend fun saveReviewedProfile(expected: String, id: String?, draft: NewModelProfile,
+        retainCredentials: Boolean): String = withContext(Dispatchers.IO) {
+        NativeModelProfileValidation.validate(draft)
+        require(draft.keys.isEmpty()) { "Reviewed profile data cannot carry credentials" }
+        val base = NativeModelEndpoint.normalize(draft.endpoint)
+        val write = runtime.beginAuthenticationWrite()
+        try {
+            profileMutex.withLock {
+                ensureProfilesLocked()
+                require(reviewedCatalogFingerprintLocked() == expected) { "Model catalog changed" }
+                val rows = db.profiles().list()
+                val old = id?.let { requireNotNull(db.profiles().find(it)) }
+                require(old != null || rows.size < MAX_PROFILES)
+                val target = id ?: UUID.randomUUID().toString()
+                val keys = if (retainCredentials) {
+                    val settings = requireNotNull(old?.let { db.models().current(it.profileId) })
+                    require(NativeModelEndpoint.base(settings.endpoint) == base) { "Cannot move credentials to another endpoint" }
+                    credentials(settings)
+                } else emptyList()
+                val selected = if (old == null) NativeModelProfile.PURPOSES_FOR_SELECTION.filter { purpose ->
+                    draft.enabled && draft.purpose.serves(purpose) && rows.none { purpose in selectedPurposes(it) }
+                }.toSet() else selectedPurposes(old).filter { draft.enabled && draft.purpose.serves(it) }.toSet()
+                val order = old?.orderIndex ?: ((rows.maxOfOrNull { it.orderIndex } ?: -1) + 1)
+                val record = profileRow(target, draft, order, selected).copy(revision = Math.addExact(old?.revision ?: 0L, 1L),
+                    // Opaque user-supplied extra fields are retained without exposing them to the Agent.
+                    extraHeaders = old?.extraHeaders ?: "{}", extraBody = old?.extraBody)
+                transaction {
+                    persist(target, base, draft.model.trim(), draft.protocol, keys)
+                    if (old == null) db.profiles().insert(record) else db.profiles().update(record)
+                }
+                target
+            }
+        } finally { runtime.endAuthenticationWrite(write) }
+    }
+
+    /** Atomic approval CAS; existing manual mutations share profileMutex. Credentials stay inside this store. */
+    suspend fun applyReviewedProfileMutation(expected: String, id: String, operation: String, name: String?): String = withContext(Dispatchers.IO) {
+        val write = runtime.beginAuthenticationWrite()
+        try {
+            profileMutex.withLock {
+                ensureProfilesLocked()
+                require(reviewedCatalogFingerprintLocked() == expected) { "Model catalog changed" }
+                val rows = db.profiles().list()
+                val row = requireNotNull(rows.singleOrNull { it.profileId == id })
+                when (operation) {
+                    "rename" -> {
+                        val label = requireNotNull(name)
+                        NativeModelProfileValidation.validateName(label)
+                        db.profiles().update(row.copy(name = label, revision = Math.addExact(row.revision, 1L)))
+                        id
+                    }
+                    "enable", "disable" -> {
+                        val enabled = operation == "enable"
+                        db.profiles().update(row.copy(enabled = enabled, revision = Math.addExact(row.revision, 1L),
+                            selectedTranslation = enabled && row.selectedTranslation, selectedAgent = enabled && row.selectedAgent))
+                        id
+                    }
+                    "move_up", "move_down" -> {
+                        val ordered = rows.toMutableList()
+                        val index = ordered.indexOfFirst { it.profileId == id }
+                        val to = index + if (operation == "move_up") -1 else 1
+                        require(to in ordered.indices)
+                        java.util.Collections.swap(ordered, index, to)
+                        transaction { ordered.forEachIndexed { order, next -> db.profiles().update(next.copy(orderIndex = order)) } }
+                        id
+                    }
+                    "select_translation", "select_agent" -> {
+                        val purpose = if (operation == "select_translation") ModelProfilePurpose.TRANSLATION else ModelProfilePurpose.AGENT
+                        require(row.enabled && ModelProfilePurpose.valueOf(row.purpose).serves(purpose))
+                        transaction { rows.forEach { next -> db.profiles().update(
+                            if (purpose == ModelProfilePurpose.TRANSLATION) next.copy(selectedTranslation = next.profileId == id)
+                            else next.copy(selectedAgent = next.profileId == id)) } }
+                        id
+                    }
+                    "delete" -> {
+                        transaction { db.profiles().delete(id); db.models().deleteForProfile(id) }
+                        id
+                    }
+                    "copy" -> {
+                        val label = requireNotNull(name)
+                        NativeModelProfileValidation.validateName(label)
+                        require(rows.size < MAX_PROFILES)
+                        val settings = requireNotNull(db.models().current(id))
+                        val keys = credentials(settings)
+                        val created = UUID.randomUUID().toString()
+                        transaction {
+                            persist(created, settings.endpoint, settings.model, protocolOf(settings), keys)
+                            db.profiles().insert(row.copy(profileId = created, name = label, kind = ModelProfileKind.CUSTOM.name,
+                                orderIndex = (rows.maxOfOrNull { it.orderIndex } ?: -1) + 1,
+                                selectedTranslation = false, selectedAgent = false, revision = 1))
+                        }
+                        created
+                    }
+                    else -> error("Unknown reviewed model action")
+                }
+            }
+        } finally { runtime.endAuthenticationWrite(write) }
+    }
+
     /** Creates a legacy row when a pre-profile database only has settings revisions. */
     private fun ensureProfilesLocked() {
         val existing = db.profiles().list()

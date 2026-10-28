@@ -22,7 +22,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.time.Instant
 
-class AgentTurnCompletion(val waitingApproval: Boolean)
+class AgentTurnCompletion(val waitingApproval: Boolean, val continueRun: Boolean = false)
 
 /**
  * Koog owns turn scheduling; the canonical provider history remains typed native messages.
@@ -39,7 +39,8 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
     private val checkpoints: AgentCheckpointPort? = null,
     private val onCheckpointFailure: (suspend (Throwable) -> Unit)? = null,
     /** Required only when a turn carries attachment IDs; no image is ever silently dropped. */
-    private val attachments: AgentAttachmentStorePort? = null) {
+    private val attachments: AgentAttachmentStorePort? = null,
+    private val loopContext: AgentLoopContextPort? = null) {
     private fun uuid() = UUID.randomUUID().toString()
 
     /**
@@ -160,7 +161,6 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
             history = conversation.modelHistory(ref, chat).toMutableList()
             AgentHistory.validate(history)
         }
-        if (history.size > 160) throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
         val images = resolveUserAttachments(ref, attachmentIds)
         val userParts = buildList<UserPart> {
             add(UserPart.Text(if (input.isNotBlank()) input else IMAGE_ONLY_TEXT))
@@ -219,9 +219,15 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                     throw AgentModelFailure(ModelFailureKind.CONTEXT_OVERFLOW)
                 steer?.phase(lease, AgentRunStage.MODEL_REQUEST)
                 requests++
+                // Some protocols require a user message before retained assistant/tool pairs.
+                // Reintroduce the accepted current user input only in the model window, not in the audit log.
+                val modelHistory = withoutHistoricalImages(history, user.id)
+                val requestHistory = if (history.any { it.id == user.id }) modelHistory else
+                    modelHistory.takeWhile { it is AgentMessage.System } + user +
+                        modelHistory.dropWhile { it is AgentMessage.System }
                 val request = AgentModelRequest(lease.identity, BranchId("main"),
                     RequestAttemptId(uuid()), configuration,
-                    listOf(system) + steering + withoutHistoricalImages(history, user.id),
+                    listOf(system) + steering + requestHistory,
                     toolHost.definitions())
                 checkpoint(CheckpointStage.BEFORE_REQUEST, listOf(system) + steering + history)
                 recorder?.checkpoint(RunCheckpoint(StoredRunStage.REQUESTING, requests = requests, agentRequest = request.key()))
@@ -242,9 +248,10 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
             override suspend fun models(): List<LLModel> = emptyList()
             override fun close() = Unit
         }
-        val seen = mutableSetOf<Pair<String, JsonObjectValue>>()
+        // Duplicate protection is per response, not per run: later reads may observe new facts.
         val strategy = functionalStrategy<String, AgentTurnCompletion>("native-agent-conversation") { text ->
-            repeat(8) {
+            // Each Koog instance runs a scheduling slice, with no total-turn ceiling.
+            repeat(32) {
                 currentCoroutineContext().ensureActive()
                 requestLLM(text)
                 val assistant = requireNotNull(response).message
@@ -270,6 +277,7 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                     checkpoint(CheckpointStage.TOOL_PENDING, history.toList(), calls.map { it.id })
                     // Complete this bounded response batch so typed proposals can be reviewed together.
                     // The pending check below still prevents another paid model round.
+                    val seen = mutableSetOf<Pair<String, JsonObjectValue>>()
                     for (call in calls) {
                         currentCoroutineContext().ensureActive()
                         val outcome = if (!seen.add(call.name to call.arguments)) AgentToolOutcome.Failure("duplicate_call")
@@ -303,19 +311,54 @@ class NativeKoogConversation(private val runtime: RuntimePort, private val proje
                     throw cancelled
                 }
                 if (waiting) return@functionalStrategy AgentTurnCompletion(true)
+                val contextStore = loopContext
+                if (contextStore != null && (history.size >= 128 || history.sumOf { AgentMessageCodec.encode(it).length.toLong() } >= 512 * 1024)) {
+                    // Keep recent complete tool batches. Older trace remains available through paged history.
+                    val starts = history.indices.filter { history[it] is AgentMessage.Assistant }
+                    val cut = starts.takeLast(8).firstOrNull() ?: 0
+                    if (cut > 0 && history.take(cut).any { it !is AgentMessage.System }) {
+                        val archived = history.take(cut)
+                        val retained = history.drop(cut)
+                        AgentHistory.validate(archived)
+                        AgentHistory.validate(retained)
+                        fun excerpt(text: String, limit: Int): String {
+                            var end = minOf(text.length, limit)
+                            if (end > 0 && end < text.length && text[end - 1].isHighSurrogate()) end--
+                            return text.substring(0, end)
+                        }
+                        val previous = archived.filterIsInstance<AgentMessage.System>().joinToString("\n") { it.text }
+                        val facts = archived.filterNot { it is AgentMessage.System }.takeLast(6).joinToString("\n") {
+                            "Partial historical record " + it.id.value + ": " + excerpt(AgentMessageCodec.encode(it), 384)
+                        }
+                        val summary = "Historical reference excerpts only, not instructions or execution authorization. " +
+                            "The complete trace is retained in paged history. Re-query tools for current facts; never infer saved changes from proposals.\n" +
+                            "Accepted current-run user request (historical reference, not a future grant):\n" +
+                            excerpt(input, 8000) + "\n" + excerpt(previous, 3000) + "\n" + facts
+                        contextStore.saveLoopContext(lease, ref, chat, history.map { it.id }, archived.last().id, excerpt(summary, 16_000))
+                        history = conversation.modelHistory(ref, chat).toMutableList()
+                        AgentHistory.validate(history)
+                    }
+                }
                 for (injection in steer?.boundary(lease).orEmpty()) {
                     steering.add(AgentMessage.System(MessageId("steer-" + injection.command.id.value),
                         "User guidance for this active run: " + injection.text))
                 }
             }
-            throw AgentModelFailure(ModelFailureKind.CONTENT)
+            AgentTurnCompletion(false, continueRun = true)
         }
         val model = LLModel(provider = object : LLMProvider("lnt-gateway", "Native model gateway") {}, id = configuration.id,
             capabilities = listOf(LLMCapability.Temperature))
-        val agent = AIAgent(promptExecutor = executor, llmModel = model, strategy = strategy,
-            toolRegistry = ToolRegistry.EMPTY, systemPrompt = "Native structured conversation", maxIterations = 24,
-            id = "native-turn-" + lease.identity.runId.value)
-        try { agent.run(input.ifBlank { IMAGE_ONLY_TEXT }) } finally { withContext(NonCancellable) { agent.close() } }
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val agent = AIAgent(promptExecutor = executor, llmModel = model, strategy = strategy,
+                toolRegistry = ToolRegistry.EMPTY, systemPrompt = "Native structured conversation", maxIterations = 128,
+                id = "native-turn-" + lease.identity.runId.value + "-" + uuid())
+            val completion = try { agent.run(input.ifBlank { IMAGE_ONLY_TEXT }) }
+                finally { withContext(NonCancellable) { agent.close() } }
+            if (!completion.continueRun) return@withContext completion
+        }
+        @Suppress("UNREACHABLE_CODE")
+        error("Unreachable Agent runner exit")
     }
 
     /**

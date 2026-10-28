@@ -528,7 +528,7 @@ internal fun NativeMcpSettingsDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (toolsLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        if (toolsLoading) NativeBusyIndicator()
                         nativeMcpErrorText(toolsFailed)?.let { error ->
                             Text(
                                 text = if (error.detail == null) stringResource(error.resource)
@@ -579,7 +579,7 @@ internal fun NativeMcpSettingsDialog(
                             style = MaterialTheme.typography.bodySmall)
                     }
                     if (loading) {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                        NativeBusyIndicator()
                         Text(stringResource(R.string.native_mcp_loading), style = MaterialTheme.typography.bodySmall)
                     }
                     if (failed) {

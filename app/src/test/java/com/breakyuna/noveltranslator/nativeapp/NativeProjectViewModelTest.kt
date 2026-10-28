@@ -634,6 +634,45 @@ class NativeProjectViewModelTest {
         }
     }
 
+    @Test fun composerDraftsFollowTheirChatAndPromptNavigationPreservesTheRuleSection() { runBlocking<Unit> {
+        withTimeout(10_000) {
+            val project = graph.projects.createTxt(CommandId("composer-drafts"), "drafts",
+                RelativePath("source.txt"), "source".toByteArray())
+            val saved = SavedStateHandle(mapOf("native_ref" to arrayListOf(project.ref.projectId.value,
+                project.ref.instanceId.value, project.ref.generation.value.toString())))
+            val (store, first) = model(saved, graph.projects, graph.backgroundTranslations)
+            val initial = first.state.first { !it.busy && it.agentChatId != null }
+            val original = initial.agentChatId!!
+            first.agentInput("first unsent draft")
+            first.newAgentChat()
+            val other = first.state.first { !it.busy && it.agentChatId != original }.agentChatId!!
+            assertEquals("", first.state.value.agentInput)
+            first.agentInput("second unsent draft")
+            first.selectAgentChat(original)
+            first.state.first { !it.busy && it.agentChatId == original }
+            assertEquals("first unsent draft", first.state.value.agentInput)
+            first.selectAgentChat(other)
+            first.state.first { !it.busy && it.agentChatId == other }
+            assertEquals("second unsent draft", first.state.value.agentInput)
+            first.openRules(NativeRuleSection.POST_REPLACE)
+            first.changeTextPolicy(first.state.value.policyDraft!!.policy.changed(prompt = "unsaved prompt"))
+            val command = first.state.value.policyDraft!!.command
+            first.selectPage(NativePage.PROMPTS)
+            assertEquals(NativeRuleSection.PROMPTS, first.state.value.rulesSection)
+            first.selectPage(NativePage.RULES)
+            assertEquals(NativeRuleSection.POST_REPLACE, first.state.value.rulesSection)
+            assertEquals(command, first.state.value.policyDraft!!.command)
+            assertEquals(0L, graph.projects.open(project.ref).revision)
+            store.clear(); first.viewModelScope.coroutineContext.job.join()
+            val (_, second) = model(saved, graph.projects, graph.backgroundTranslations)
+            second.state.first { !it.busy && it.agentChatId == other }
+            assertEquals("second unsent draft", second.state.value.agentInput)
+            second.selectAgentChat(original)
+            second.state.first { !it.busy && it.agentChatId == original }
+            assertEquals("first unsent draft", second.state.value.agentInput)
+        }
+    } }
+
     @Test fun ruleSectionSelectionSurvivesPageNavigationAndRecreationWithoutSavingTheDraft() = runBlocking {
         withTimeout(10_000) {
             val project = graph.projects.createTxt(CommandId("rules-section-ui"), "fixture",

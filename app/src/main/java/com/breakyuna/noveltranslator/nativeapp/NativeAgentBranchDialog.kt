@@ -33,7 +33,7 @@ internal fun NativeAgentBranchDialog(ref: LocalProjectRef, chat: ChatId, id: Mes
         catch (_: Exception) { failed = true }
         finally { busy = false }
     }
-    AlertDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text(stringResource(R.string.native_branch_title)) },
+    NativeContentDialog(onDismissRequest = { if (!busy) dismiss() }, title = { Text(stringResource(R.string.native_branch_title)) },
         text = { Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
             Text(stringResource(R.string.native_branch_notice))
             preview?.let { value ->

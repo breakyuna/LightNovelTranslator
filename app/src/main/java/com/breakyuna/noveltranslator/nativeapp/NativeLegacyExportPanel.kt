@@ -136,7 +136,7 @@ internal fun NativeLegacyExportPanel(
                                             modifier = Modifier.fillMaxWidth(),
                                         )
                                     } else {
-                                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                                        NativeBusyIndicator()
                                     }
                                     progress?.let {
                                         Text(

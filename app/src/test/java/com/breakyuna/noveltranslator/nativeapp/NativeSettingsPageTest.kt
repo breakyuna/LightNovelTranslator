@@ -63,7 +63,9 @@ class NativeSettingsPageTest {
                 }
             }
         }
+        compose.onNodeWithTag("native-settings-language-picker").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-language-GERMAN").performScrollTo().performClick()
+        compose.onNodeWithTag("native-settings-theme-picker").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-theme-DARK").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-auto-context").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-back").performClick()

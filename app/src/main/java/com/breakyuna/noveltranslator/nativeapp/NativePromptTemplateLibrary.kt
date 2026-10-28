@@ -161,7 +161,7 @@ internal fun NativePromptTemplateLibrary(ref: LocalProjectRef, body: String,
             selected = null; selectedBody = ""; saved = true; importing = false
         }
     }
-    if ((overwrite || deleting) && selected != null) AlertDialog(
+    if ((overwrite || deleting) && selected != null) NativeContentDialog(
         onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
         title = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete else R.string.native_prompt_template_overwrite)) },
         text = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete_warning else R.string.native_prompt_template_overwrite_warning, selected!!.name)) },
@@ -184,7 +184,7 @@ internal fun NativePromptTemplateLibrary(ref: LocalProjectRef, body: String,
         }, enabled = !busy && enabled && !selectionConflict && snapshot != null, modifier = Modifier.testTag("native-template-confirm")) { Text(stringResource(R.string.native_asset_confirm)) } },
         dismissButton = { TextButton(onClick = { overwrite = false; deleting = false }, enabled = !busy) {
             Text(stringResource(R.string.native_cancel)) } })
-    if (pendingSelection != null || discardToClose) AlertDialog(
+    if (pendingSelection != null || discardToClose) NativeContentDialog(
         onDismissRequest = { pendingSelection = null; discardToClose = false },
         title = { Text(stringResource(R.string.native_template_unsaved)) },
         text = { Text(stringResource(R.string.native_policy_discard_body)) },

@@ -24,7 +24,7 @@ import com.breakyuna.noveltranslator.R
 @Composable
 internal fun NativeAgentSettingsDialog(current: Boolean, dismiss: () -> Unit, save: (Boolean) -> Unit) {
     var enabled by remember(current) { mutableStateOf(current) }
-    AlertDialog(onDismissRequest = dismiss,
+    NativeContentDialog(onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_agent_settings)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

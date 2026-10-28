@@ -90,7 +90,6 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.native_pdf_pages), style = MaterialTheme.typography.headlineSmall)
                     Text(asset.path.value, maxLines = 1)
-                    Text(stringResource(R.string.native_pdf_pages_description), style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(from, { if (it.length <= 4 && it.all(Char::isDigit)) from = it },
                             label = { Text(stringResource(R.string.native_pdf_from)) }, singleLine = true,
@@ -177,7 +176,6 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
         if (loadThumbnail != null) {
-            Text(stringResource(R.string.native_pdf_thumbnail_notice), style = MaterialTheme.typography.bodySmall)
             val renderError = thumbnailError
             when {
                 thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
@@ -195,7 +193,6 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
                 }
             }
         }
-        Text(stringResource(R.string.native_pdf_text_preview_notice), style = MaterialTheme.typography.bodySmall)
         if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
         else if (item == null && loadPage != null) CircularProgressIndicator()
         item?.let { loaded ->

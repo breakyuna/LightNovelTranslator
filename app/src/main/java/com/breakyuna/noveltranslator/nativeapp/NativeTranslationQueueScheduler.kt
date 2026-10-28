@@ -63,6 +63,8 @@ class NativeTranslationQueueScheduler(
     controlIntents: TranslationQueueControlIntentPort = NoTranslationQueueControlIntents,
     /** Schedules the unique boot-safe queue job; never starts paid work directly. */
     private val requestWake: () -> Unit = {},
+    /** Rechecks durable Agent approval after restart, before any paid task can dispatch. */
+    private val approvalGate: suspend (TranslationTaskSpec) -> Boolean = { true },
 ) {
     private val processLease = TranslationQueueProcessLease(processLeaseFile)
     private val mutableEvents = MutableSharedFlow<TranslationQueueSchedulerEvent>(extraBufferCapacity = 16)
@@ -90,9 +92,7 @@ class NativeTranslationQueueScheduler(
             override fun stop(identity: TranslationTaskQueueIdentity): Boolean =
                 live(identity)?.let { runner.stop(it.token) } == true
         },
-        isBusy = {
-            runtime.snapshot().activeRun != null || runner.state.value?.phase?.active == true
-        },
+        isBusy = { hasActiveExecution() },
         recoverJournal = { runs.recoverInterrupted() },
         onSettled = { dispatch -> publish(dispatch.identity) },
         failures = tasks,
@@ -174,8 +174,11 @@ class NativeTranslationQueueScheduler(
         snapshot.queue.tasks.any { it.state == TranslationTaskQueueState.QUEUED }
     }
 
-    private fun hasActiveExecution(): Boolean =
-        runtime.snapshot().activeRun != null || runner.state.value?.phase?.active == true
+    private fun hasActiveExecution(): Boolean {
+        val state = runtime.snapshot()
+        return state.activeRun != null || state.projectWriteRunning || state.authenticationWriteRunning ||
+            state.closed || runner.state.value?.phase?.active == true
+    }
 
     /**
      * Recovery that must not run beside a drain in another process. The initial application load
@@ -397,6 +400,7 @@ class NativeTranslationQueueScheduler(
      */
     private suspend fun validateRevision(spec: TranslationTaskSpec): TranslationQueueRevisionDecision {
         val current = projects.open(spec.ref).revision
+        if (!approvalGate(spec)) return TranslationQueueRevisionDecision.Refused(current, "agent-approval-not-committed")
         if (current == spec.revision) return TranslationQueueRevisionDecision.Current(current)
         if (current < spec.revision) {
             return TranslationQueueRevisionDecision.Refused(current, "project-revision-regressed")

@@ -6,9 +6,9 @@ import com.breakyuna.noveltranslator.nativecore.domain.TextRuleKind
 import java.util.Locale
 
 /**
- * The five rule/prompt destinations reachable from More and from the rules page itself.
+ * Four rule sections and the prompt destination share one project policy draft.
  *
- * The page keeps these as one routed page so an unsaved policy draft survives every section
+ * Rules and Prompts have separate navigation entries; the unsaved policy draft survives every section
  * switch. Each non-prompt section is backed by exactly one native [TextRuleKind]; [PROMPTS]
  * edits the single project prompt body (there is no separate prompt identity in the domain).
  */

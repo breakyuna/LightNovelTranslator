@@ -130,6 +130,17 @@ internal class NativeWorkspaceAccess(
             base.last() in '1'..'9'
     }
 
+    /** Agent imports accept only user-uploaded material IDs and re-verify their content digest. */
+    internal suspend fun readVerifiedUpload(ref: LocalProjectRef, id: WorkspaceMaterialId,
+        expectedSha256: String): ByteArray = withContext(Dispatchers.IO) {
+        val store = WorkspaceFileStore(rootFor(ref))
+        val summary = store.list(WorkspaceMaterialKind.UPLOAD).single { it.id == id }
+        require(summary.sha256 == expectedSha256)
+        val content = store.read(id, WorkspaceHardLimits.MAX_SINGLE_BYTES)
+        require(content.sha256 == expectedSha256)
+        content.bytes
+    }
+
     suspend fun projectRevision(ref: LocalProjectRef): Long = withContext(Dispatchers.IO) {
         val summary = projects.open(ref)
         require(summary.ref == ref) { "Workspace project identity changed" }

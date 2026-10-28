@@ -74,6 +74,7 @@ class NativeProofreadingQueryDialogTest {
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
             Proofreading(filtered, {}, {}, {}, { starts++ }, query = { applied.add(it) })
         } } }
+        compose.onNodeWithTag("native-proof-actions").performClick()
         compose.onNodeWithText(context.getString(R.string.native_simulation)).assertIsNotEnabled()
         compose.onNodeWithText(context.getString(R.string.native_proof_filter)).performClick()
         compose.onNodeWithTag("native-proof-clear").performScrollTo().performClick()

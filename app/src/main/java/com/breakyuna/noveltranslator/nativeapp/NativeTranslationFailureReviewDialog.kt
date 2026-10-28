@@ -314,7 +314,7 @@ internal fun NativeTranslationFailureReviewDialog(
         }
     }
 
-    AlertDialog(
+    NativeContentDialog(
         onDismissRequest = { if (!busy) dismiss() },
         title = {
             Text(stringResource(R.string.native_failure_review_title),
@@ -335,7 +335,7 @@ internal fun NativeTranslationFailureReviewDialog(
                     }
                 }
                 if (loading && task == null) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    NativeBusyIndicator()
                     Text(stringResource(R.string.native_failure_review_loading),
                         style = MaterialTheme.typography.bodySmall)
                 }

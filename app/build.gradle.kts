@@ -123,6 +123,9 @@ kotlin {
 }
 
 dependencies {
+  implementation(libs.commonmark)
+  implementation(libs.commonmark.tables)
+  implementation(libs.commonmark.strikethrough)
   implementation(project(":core:domain"))
   implementation(project(":core:engine"))
   implementation(project(":core:agent"))

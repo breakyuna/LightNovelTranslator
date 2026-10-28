@@ -74,7 +74,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
         }
     }
     decision?.let { snapshot ->
-        AlertDialog(onDismissRequest = { if (!deciding) decision = null },
+        NativeContentDialog(onDismissRequest = { if (!deciding) decision = null },
             title = { Text(stringResource(R.string.native_tasks_review_title)) },
             text = { Column {
                 Text(stringResource(R.string.native_tasks_progress, snapshot.committed, snapshot.remaining, snapshot.requests))
@@ -104,14 +104,13 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
     }
     confirmation?.let { preview ->
         val spec = preview.spec
-        AlertDialog(onDismissRequest = { confirmation = null }, title = { Text(stringResource(R.string.native_tasks_resume)) },
+        NativeContentDialog(onDismissRequest = { confirmation = null }, title = { Text(stringResource(R.string.native_tasks_resume)) },
             text = { Text(stringResource(R.string.native_tasks_confirmation, spec.options.targetLanguage, preview.model)) },
             confirmButton = { TextButton(onClick = { confirmation = null; resume(spec) }, Modifier.testTag("native-task-confirm")) {
                 Text(stringResource(R.string.native_tasks_resume))
             } }, dismissButton = { TextButton(onClick = { confirmation = null }) { Text(stringResource(R.string.native_cancel)) } })
-    } ?: AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_tasks_title)) },
+    } ?: NativeContentDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_tasks_title)) },
         text = { Column {
-            Text(stringResource(R.string.native_tasks_notice), style = MaterialTheme.typography.bodySmall)
             if (failed) Text(stringResource(R.string.native_io_error))
             if (review) Text(stringResource(R.string.native_tasks_review), Modifier.testTag("native-task-review"))
             if (tasks == null && !failed) Text(stringResource(R.string.native_working))

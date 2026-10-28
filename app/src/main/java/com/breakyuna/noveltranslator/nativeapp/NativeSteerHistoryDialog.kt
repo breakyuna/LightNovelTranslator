@@ -37,7 +37,7 @@ internal fun NativeSteerHistoryDialog(ref: LocalProjectRef, chat: ChatId,
         finally { busy = false }
     }
     LaunchedEffect(ref, chat) { fetch(false) }
-    AlertDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_steer_history)) },
+    NativeContentDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_steer_history)) },
         text = { Column {
             Text(stringResource(R.string.native_steer_history_notice))
             if (failed) Text(stringResource(R.string.native_io_error))

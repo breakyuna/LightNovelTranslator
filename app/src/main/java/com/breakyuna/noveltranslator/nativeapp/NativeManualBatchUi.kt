@@ -93,7 +93,7 @@ internal fun NativeQueryBatchButton(state: NativeProjectUiState, actions: Native
 @Composable
 internal fun NativeManualBatchDialog(state: NativeProjectUiState, actions: NativeBatchActions) {
     val batch = state.manualBatch ?: return
-    AlertDialog(onDismissRequest = { if (!state.busy) actions.dismiss(batch) }, modifier = Modifier.testTag("native-batch-dialog"),
+    NativeContentDialog(onDismissRequest = { if (!state.busy) actions.dismiss(batch) }, modifier = Modifier.testTag("native-batch-dialog"),
         title = { Text(stringResource(R.string.native_batch_confirm)) },
         text = {
             Column(Modifier.heightIn(max = 320.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
