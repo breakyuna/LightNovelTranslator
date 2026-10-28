@@ -38,6 +38,42 @@ class NativeModelGatewayTest {
         } finally { runtime.finishRun(lease) }
     }
 
+    @Test fun diagnosticsReportClassifiedFailureWithoutRequestBodies() = runTest {
+        val runtime = runtime(); val lease = runtime.beginRun(identity, RuntimeOwner.TRANSLATION)
+        val events = mutableListOf<ModelDiagnosticEvent>()
+        try {
+            val gateway = NativeModelGateway(runtime, backend { throw AgentModelFailure(ModelFailureKind.TIMEOUT) },
+                diagnostic = { events += it })
+            try { gateway.complete(lease, request()); fail("Expected failure") }
+            catch (failure: AgentModelFailure) { assertEquals(ModelFailureKind.TIMEOUT, failure.kind) }
+            assertEquals(listOf(ModelDiagnosticPhase.STARTED, ModelDiagnosticPhase.FAILED), events.map { it.phase })
+            assertEquals(ModelFailureKind.TIMEOUT, events.last().failure)
+            assertFalse(events.toString().contains("source"))
+        } finally { runtime.finishRun(lease) }
+    }
+
+    @Test fun diagnosticCallbackFailureDoesNotChangeModelResult() = runTest {
+        val runtime = runtime(); val lease = runtime.beginRun(identity, RuntimeOwner.TRANSLATION)
+        try {
+            val gateway = NativeModelGateway(runtime, backend { response(listOf(1)) },
+                diagnostic = { throw IllegalStateException("diagnostic unavailable") })
+            assertEquals(ModelStopReason.COMPLETE, gateway.complete(lease, request()).stop)
+        } finally { runtime.finishRun(lease) }
+    }
+
+    @Test fun debugEligibilityIsCapturedWhenTheGatewayCallStarts() = runTest {
+        val runtime = runtime(); val lease = runtime.beginRun(identity, RuntimeOwner.TRANSLATION)
+        val events = mutableListOf<ModelDiagnosticEvent>()
+        var enabled = false
+        try {
+            val gateway = NativeModelGateway(runtime, backend { enabled = true; response(listOf(1)) },
+                diagnosticEnabled = { enabled }, diagnostic = { events += it })
+            gateway.complete(lease, request())
+            assertEquals(listOf(ModelDiagnosticPhase.STARTED, ModelDiagnosticPhase.COMPLETED), events.map { it.phase })
+            assertTrue(events.none { it.debugAtStart })
+        } finally { runtime.finishRun(lease) }
+    }
+
     @Test fun stopBlocksNextRequestWithoutCallingBackend() = runTest {
         val runtime = runtime(); val lease = runtime.beginRun(identity, RuntimeOwner.TRANSLATION)
         var calls = 0

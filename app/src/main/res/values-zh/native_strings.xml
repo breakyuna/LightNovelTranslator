@@ -53,6 +53,7 @@
     <string name="native_logs_detail">事件详情</string>
     <string name="native_logs_export">导出</string>
     <string name="native_logs_clear">清空</string>
+    <string name="native_logs_clear_failed">无法清空诊断记录，重新加载后仍可能存在记录。</string>
     <string name="native_logs_clear_confirm">清空全部诊断记录？此操作不可撤销。</string>
     <string name="native_logs_exported">诊断日志已导出</string>
     <string name="native_logs_cleared">诊断日志已清空</string>
@@ -1081,8 +1082,8 @@
     <string name="native_logs_reload">重新加载最新</string>
     <string name="native_logs_stale">日志游标已失效。请重新加载最新记录，不要继续使用旧游标。</string>
     <string name="native_logs_export_confirm_title">导出诊断日志</string>
-    <string name="native_logs_export_confirm_body">把全部已记录诊断导出为 JSONL。消息已脱敏；若已开启 Debug 详情，导出可能包含新记录中的额外正文相邻上下文。提示词、凭据和完整正文不得写入日志；分享前请检查文件。</string>
-    <string name="native_logs_export_details_warning">当前已开启 Debug 详情，导出中的新记录可能包含敏感上下文。</string>
+    <string name="native_logs_export_confirm_body">将全部保留的诊断记录导出为 JSONL。分享前请检查文件。</string>
+    <string name="native_logs_export_details_warning">即使现在已关闭 Debug，导出仍可能包含以前保存的详情。</string>
     <string name="native_logs_debug_title">Debug 详情</string>
     <string name="native_logs_debug_body">默认关闭。开启只影响新记录，已有记录不变。详情可能包含正文相邻的敏感上下文，日常分享时不要开启。</string>
     <string name="native_logs_debug_warning">开启 Debug 详情？新记录可能保存额外的敏感文本。仅影响之后的记录。</string>

@@ -199,7 +199,30 @@ class NativeLogsPageTest {
         compose.onNodeWithTag("native-logs-clear").performClick()
         compose.onNodeWithText(context.getString(R.string.native_logs_clear_confirm)).assertIsDisplayed()
         compose.onNodeWithTag("native-logs-clear-confirm").performClick()
-        assertEquals(true, cleared)
+        compose.waitUntil(5_000) { cleared }
+    }
+
+    @Test fun failedClearReloadsRecordsAndShowsFailure() {
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeLogsPage(
+                        includeDetails = false, back = {},
+                        loadPage = { cursor, level, category -> page(cursor, level, category) },
+                        loadDetail = { null }, loadCategories = { emptyList() },
+                        setIncludeDetails = {}, export = {}, clear = { throw java.io.IOException() },
+                    )
+                }
+            }
+        }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("newest model event").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("native-logs-clear").performScrollTo().performClick()
+        compose.onNodeWithTag("native-logs-clear-confirm").performClick()
+        val error = ApplicationProvider.getApplicationContext<android.content.Context>().getString(R.string.native_logs_clear_failed)
+        compose.waitUntil(5_000) { compose.onAllNodesWithText(error).fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("newest model event").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("native-logs-page").performScrollToNode(hasTestTag("native-log-new"))
+        compose.onNodeWithText("newest model event").assertIsDisplayed()
     }
 
     @Test fun detailsUnavailableShowNoStoredDetail() {

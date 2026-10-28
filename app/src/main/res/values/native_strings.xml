@@ -53,6 +53,7 @@
     <string name="native_logs_detail">Event detail</string>
     <string name="native_logs_export">Export</string>
     <string name="native_logs_clear">Clear</string>
+    <string name="native_logs_clear_failed">Could not clear the diagnostics. Reloaded records may still exist.</string>
     <string name="native_logs_clear_confirm">Clear all recorded diagnostics? This cannot be undone.</string>
     <string name="native_logs_exported">Diagnostics exported</string>
     <string name="native_logs_cleared">Diagnostics cleared</string>
@@ -1081,8 +1082,8 @@
     <string name="native_logs_reload">Reload newest</string>
     <string name="native_logs_stale">The log cursor is no longer valid. Reload newest records instead of continuing this page.</string>
     <string name="native_logs_export_confirm_title">Export diagnostics</string>
-    <string name="native_logs_export_confirm_body">Exports every recorded diagnostic as JSONL. Messages are redacted. If debug details are enabled, the export can include extra body-adjacent context from new records. Prompts, credentials and full source text must never be logged; review the file before sharing.</string>
-    <string name="native_logs_export_details_warning">Debug details are currently enabled. New records may contain sensitive context in the export.</string>
+    <string name="native_logs_export_confirm_body">Export all retained diagnostics as JSONL. Review the file before sharing.</string>
+    <string name="native_logs_export_details_warning">Previously recorded details may remain in the export even when Debug is now off.</string>
     <string name="native_logs_debug_title">Debug details</string>
     <string name="native_logs_debug_body">Off by default. Enabling stores extra detail for new records only; existing records are unchanged. Detail may include sensitive body-adjacent context, so never enable it for routine sharing.</string>
     <string name="native_logs_debug_warning">Enable debug details? New records may store extra text that is sensitive. This only affects future records.</string>

@@ -1302,7 +1302,7 @@ class NativeProjectViewModel internal constructor(
         mutable.value = mutable.value.copy(notice = R.string.native_logs_exported)
     }
 
-    fun clearDiagnostics() = action {
+    internal suspend fun clearDiagnostics() {
         graph.diagnostics.clear()
         mutable.value = mutable.value.copy(notice = R.string.native_logs_cleared)
     }
@@ -6176,7 +6176,12 @@ class NativeProjectViewModel internal constructor(
         runCatching {
             graph.diagnostics.append(
                 com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticLevel.ERROR,
-                "action", error.javaClass.simpleName)
+                "action", error.javaClass.simpleName + when (error) {
+                    is AgentModelFailure -> ": ${error.kind.name}"
+                    is TextProjectException -> ": ${error.reason.name}"
+                    is RuntimeUnavailable -> ": ${error.reason.name}"
+                    else -> ""
+                })
         }
         mutable.value = mutable.value.copy(
             qualityInvalidated = mutable.value.qualityInvalidated || mutable.value.qualityView != null &&

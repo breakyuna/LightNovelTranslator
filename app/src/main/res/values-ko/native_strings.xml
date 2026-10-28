@@ -53,6 +53,7 @@
     <string name="native_logs_detail">이벤트 세부 정보</string>
     <string name="native_logs_export">내보내기</string>
     <string name="native_logs_clear">지우기</string>
+    <string name="native_logs_clear_failed">진단 기록을 지우지 못했습니다. 다시 불러온 후에도 기록이 남아 있을 수 있습니다.</string>
     <string name="native_logs_clear_confirm">모든 진단 기록을 지울까요? 되돌릴 수 없습니다.</string>
     <string name="native_logs_exported">진단 로그를 내보냈습니다</string>
     <string name="native_logs_cleared">진단 로그를 지웠습니다</string>
@@ -1081,8 +1082,8 @@
     <string name="native_logs_reload">최신 항목 다시 불러오기</string>
     <string name="native_logs_stale">로그 커서가 더 이상 유효하지 않습니다. 이전 커서를 계속 사용하지 말고 최신 레코드를 다시 불러오세요.</string>
     <string name="native_logs_export_confirm_title">진단 로그 내보내기</string>
-    <string name="native_logs_export_confirm_body">기록된 모든 진단을 JSONL로 내보냅니다. 메시지는 마스킹됩니다. 디버그 세부 정보가 켜져 있으면 새 레코드의 본문 인접 컨텍스트가 포함될 수 있습니다. 프롬프트, 자격 증명, 전체 원문은 기록되어서는 안 됩니다. 공유 전에 파일을 검토하세요.</string>
-    <string name="native_logs_export_details_warning">현재 디버그 세부 정보가 켜져 있습니다. 내보낸 새 레코드에 민감한 컨텍스트가 포함될 수 있습니다.</string>
+    <string name="native_logs_export_confirm_body">보관된 진단을 모두 JSONL로 내보냅니다. 공유 전에 파일을 확인하세요.</string>
+    <string name="native_logs_export_details_warning">현재 Debug가 꺼져 있어도 이전에 저장된 세부 정보가 내보내기에 포함될 수 있습니다.</string>
     <string name="native_logs_debug_title">디버그 세부 정보</string>
     <string name="native_logs_debug_body">기본값은 꺼짐입니다. 켜면 새 레코드에만 추가 세부 정보를 저장하며 기존 레코드는 변경되지 않습니다. 본문 인접의 민감한 컨텍스트가 포함될 수 있으므로 일상 공유에는 켜지 마세요.</string>
     <string name="native_logs_debug_warning">디버그 세부 정보를 켜시겠습니까? 새 레코드에 민감한 추가 텍스트가 저장될 수 있습니다. 이후 레코드에만 적용됩니다.</string>

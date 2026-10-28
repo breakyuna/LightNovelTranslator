@@ -53,6 +53,7 @@
     <string name="native_logs_detail">Ereignisdetails</string>
     <string name="native_logs_export">Exportieren</string>
     <string name="native_logs_clear">Löschen</string>
+    <string name="native_logs_clear_failed">Diagnosen konnten nicht gelöscht werden. Nach dem Neuladen können noch Einträge vorhanden sein.</string>
     <string name="native_logs_clear_confirm">Alle Diagnoseeinträge löschen? Das kann nicht rückgängig gemacht werden.</string>
     <string name="native_logs_exported">Diagnose exportiert</string>
     <string name="native_logs_cleared">Diagnose gelöscht</string>
@@ -1081,8 +1082,8 @@
     <string name="native_logs_reload">Neueste neu laden</string>
     <string name="native_logs_stale">Der Log-Cursor ist nicht mehr gültig. Neueste Einträge neu laden, statt diesen Cursor weiterzuverwenden.</string>
     <string name="native_logs_export_confirm_title">Diagnose exportieren</string>
-    <string name="native_logs_export_confirm_body">Exportiert alle aufgezeichneten Diagnosen als JSONL. Meldungen sind redigiert. Bei aktivierten Debug-Details kann der Export zusätzlichen textnahen Kontext neuer Einträge enthalten. Prompts, Zugangsdaten und vollständiger Quelltext dürfen nie protokolliert werden; Datei vor dem Teilen prüfen.</string>
-    <string name="native_logs_export_details_warning">Debug-Details sind derzeit aktiviert. Neue Einträge im Export können sensiblen Kontext enthalten.</string>
+    <string name="native_logs_export_confirm_body">Exportiert alle gespeicherten Diagnosen als JSONL. Datei vor dem Teilen prüfen.</string>
+    <string name="native_logs_export_details_warning">Auch bei derzeit deaktiviertem Debug können früher gespeicherte Details im Export enthalten sein.</string>
     <string name="native_logs_debug_title">Debug-Details</string>
     <string name="native_logs_debug_body">Standardmäßig aus. Aktivieren speichert Zusatzdetails nur für neue Einträge; bestehende bleiben unverändert. Details können sensiblen textnahen Kontext enthalten; für routinemäßiges Teilen nicht aktivieren.</string>
     <string name="native_logs_debug_warning">Debug-Details aktivieren? Neue Einträge können zusätzlichen sensiblen Text speichern. Nur künftige Einträge sind betroffen.</string>

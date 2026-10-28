@@ -53,6 +53,7 @@
     <string name="native_logs_detail">イベント詳細</string>
     <string name="native_logs_export">書き出し</string>
     <string name="native_logs_clear">消去</string>
+    <string name="native_logs_clear_failed">診断を消去できませんでした。再読み込み後も記録が残っている場合があります。</string>
     <string name="native_logs_clear_confirm">すべての診断記録を消去しますか？元に戻せません。</string>
     <string name="native_logs_exported">診断ログを書き出しました</string>
     <string name="native_logs_cleared">診断ログを消去しました</string>
@@ -1081,8 +1082,8 @@
     <string name="native_logs_reload">最新を再読み込み</string>
     <string name="native_logs_stale">ログカーソルが無効になりました。古いカーソルを続けず、最新レコードを再読み込みしてください。</string>
     <string name="native_logs_export_confirm_title">診断ログを書き出す</string>
-    <string name="native_logs_export_confirm_body">記録済みの診断をすべて JSONL として書き出します。メッセージは匿名化済みです。デバッグ詳細が有効な場合、新しいレコードの本文隣接コンテキストが含まれることがあります。プロンプト、認証情報、完全な本文は記録してはいけません。共有前にファイルを確認してください。</string>
-    <string name="native_logs_export_details_warning">現在デバッグ詳細が有効です。書き出した新しいレコードに敏感なコンテキストが含まれる可能性があります。</string>
+    <string name="native_logs_export_confirm_body">保存された診断をすべて JSONL で書き出します。共有前にファイルを確認してください。</string>
+    <string name="native_logs_export_details_warning">現在 Debug がオフでも、以前保存された詳細が書き出しに含まれる場合があります。</string>
     <string name="native_logs_debug_title">デバッグ詳細</string>
     <string name="native_logs_debug_body">既定ではオフです。有効にすると新しいレコードだけに追加詳細を保存し、既存レコードは変わりません。本文隣接の敏感なコンテキストを含む場合があるため、日常的な共有では有効にしないでください。</string>
     <string name="native_logs_debug_warning">デバッグ詳細を有効にしますか？新しいレコードに敏感な追加テキストが保存される可能性があります。以後のレコードだけに影響します。</string>

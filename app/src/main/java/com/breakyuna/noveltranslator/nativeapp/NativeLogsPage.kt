@@ -78,7 +78,7 @@ internal fun NativeLogsPage(
     loadCategories: suspend () -> List<String>,
     setIncludeDetails: (Boolean) -> Unit,
     export: () -> Unit,
-    clear: () -> Unit,
+    clear: suspend () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -103,6 +103,8 @@ internal fun NativeLogsPage(
     var detailLoading by remember { mutableStateOf(false) }
     var detailFailed by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
+    var clearing by remember { mutableStateOf(false) }
+    var clearFailed by remember { mutableStateOf(false) }
     var confirmExport by remember { mutableStateOf(false) }
     var confirmDebug by remember { mutableStateOf(false) }
     var copied by remember { mutableStateOf(false) }
@@ -188,11 +190,32 @@ internal fun NativeLogsPage(
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
-                    clear()
-                    entries = emptyList()
-                    cursor = null
-                    failed = false
-                    stale = false
+                    clearing = true
+                    clearFailed = false
+                    requestId++
+                    loading = false
+                    scope.launch {
+                        try {
+                            clear()
+                            cursor = null
+                            fetch(false)
+                            try {
+                                categories = categoryLoader()
+                                categoriesFailed = false
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                categoriesFailed = true
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            clearFailed = true
+                            fetch(false)
+                        } finally {
+                            clearing = false
+                        }
+                    }
                 }, modifier = Modifier.testTag("native-logs-clear-confirm")) {
                     Text(stringResource(R.string.native_discard))
                 }
@@ -209,10 +232,8 @@ internal fun NativeLogsPage(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.native_logs_export_confirm_body))
-                    if (includeDetails) {
-                        Text(stringResource(R.string.native_logs_export_details_warning),
-                            color = MaterialTheme.colorScheme.error)
-                    }
+                    Text(stringResource(R.string.native_logs_export_details_warning),
+                        color = MaterialTheme.colorScheme.error)
                 }
             },
             confirmButton = {
@@ -384,10 +405,12 @@ internal fun NativeLogsPage(
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(selected = level == null, onClick = { levelName = null; category = null },
+                            enabled = !clearing,
                             label = { Text(stringResource(R.string.native_logs_level_all)) },
                             modifier = Modifier.testTag("native-logs-level-ALL"))
                         NativeDiagnosticLevel.entries.forEach { candidate ->
                             FilterChip(selected = level == candidate, onClick = { levelName = candidate.name },
+                                enabled = !clearing,
                                 label = { Text(stringResource(diagnosticLevelLabel(candidate))) },
                                 modifier = Modifier.testTag("native-logs-level-${candidate.name}"))
                         }
@@ -395,7 +418,7 @@ internal fun NativeLogsPage(
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         androidx.compose.foundation.layout.Box {
-                            OutlinedButton(onClick = { categoryMenu = true },
+                            OutlinedButton(onClick = { categoryMenu = true }, enabled = !clearing,
                                 modifier = Modifier.testTag("native-logs-category")) {
                                 Text(category ?: stringResource(R.string.native_logs_category_all))
                             }
@@ -413,12 +436,19 @@ internal fun NativeLogsPage(
                         if (categoriesFailed) Text(stringResource(R.string.native_logs_categories_error),
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.weight(1f))
-                        OutlinedButton(onClick = { confirmExport = true }, modifier = Modifier.testTag("native-logs-export")) {
+                        OutlinedButton(onClick = { confirmExport = true }, enabled = !clearing, modifier = Modifier.testTag("native-logs-export")) {
                             Text(stringResource(R.string.native_logs_export))
                         }
-                        OutlinedButton(onClick = { confirmClear = true }, modifier = Modifier.testTag("native-logs-clear")) {
+                        OutlinedButton(onClick = { confirmClear = true }, enabled = !clearing, modifier = Modifier.testTag("native-logs-clear")) {
                             Text(stringResource(R.string.native_logs_clear))
                         }
+                    }
+                    if (clearing) NativeBusyIndicator()
+                    if (clearFailed) Text(stringResource(R.string.native_logs_clear_failed),
+                        color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { scope.launch { fetch(false) } }, enabled = !loading && !clearing,
+                        modifier = Modifier.testTag("native-logs-refresh")) {
+                        Text(stringResource(R.string.native_refresh))
                     }
                 }
             }
@@ -429,7 +459,7 @@ internal fun NativeLogsPage(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             ) {
-                TextButton(onClick = { selectedId = entry.id }, modifier = Modifier.fillMaxWidth()
+                TextButton(onClick = { selectedId = entry.id }, enabled = !clearing, modifier = Modifier.fillMaxWidth()
                     .testTag("native-log-open-${entry.id}")) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Row(
@@ -468,7 +498,7 @@ internal fun NativeLogsPage(
         if (!loading && !failed && entries.isEmpty()) item(key = "logs-empty") {
             Text(stringResource(R.string.native_logs_empty))
         }
-        if (!loading && !failed && cursor != null) item(key = "logs-more") {
+        if (!loading && !failed && !clearing && cursor != null) item(key = "logs-more") {
             TextButton(onClick = { scope.launch { fetch(true) } }, modifier = Modifier.testTag("native-logs-more")) {
                 Text(stringResource(R.string.native_logs_more))
             }

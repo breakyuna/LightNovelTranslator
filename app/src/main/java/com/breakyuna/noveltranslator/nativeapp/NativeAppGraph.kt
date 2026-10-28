@@ -75,6 +75,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -84,6 +85,7 @@ import kotlinx.serialization.json.put
 /** One process owner for native IO and reservations; no legacy engine or model client. */
 class NativeAppGraph(context: Context) {
     private val appPreferences = NativeAppSettingsStore(context.applicationContext)
+    private val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val priceTables = com.breakyuna.noveltranslator.nativecore.storage.NativePriceTableStore(context.applicationContext)
     val diagnostics = com.breakyuna.noveltranslator.nativecore.storage.NativeDiagnosticsStore(
         java.io.File(context.applicationContext.filesDir, "native_diagnostics"),
@@ -304,7 +306,24 @@ class NativeAppGraph(context: Context) {
         remoteTranslation = CompatibleTranslationModel(modelSettings, runtime, translationAudit,
             transport = http, keys = modelKeys,
             profiles = { reference -> modelProfiles.resolveProfile(reference) },
-            credentials = modelCredentials))
+            credentials = modelCredentials),
+        diagnosticEnabled = { diagnostics.includeDetails },
+        diagnostic = { event ->
+            val debugAtEvent = event.debugAtStart
+            if (debugAtEvent || event.phase == com.breakyuna.noveltranslator.nativecore.engine.ModelDiagnosticPhase.FAILED) {
+                executionScope.launch {
+                    if (debugAtEvent && !diagnostics.includeDetails &&
+                        event.phase != com.breakyuna.noveltranslator.nativecore.engine.ModelDiagnosticPhase.FAILED) return@launch
+                    runCatching {
+                        val failed = event.phase == com.breakyuna.noveltranslator.nativecore.engine.ModelDiagnosticPhase.FAILED
+                        diagnostics.append(if (failed) NativeDiagnosticLevel.ERROR else NativeDiagnosticLevel.DEBUG,
+                            "model", "${event.operation.name} ${event.phase.name}" +
+                                (event.failure?.let { ": ${it.name}" } ?: ""),
+                            detail = if (debugAtEvent) "gateway_elapsed_ms=${event.elapsedMillis}" else null)
+                    }
+                }
+            }
+        })
     val modelCatalog: NativeModelCatalogPort = gateway
     private val workspaceFetch = com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceHttpFetch(networkSettings)
     private val workspaceSearch: com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSearchPort =
@@ -572,7 +591,6 @@ class NativeAppGraph(context: Context) {
     val translations = TextTranslationService(runtime, projects, projects, gateway, runs, translationTasks, usageLedger,
         com.breakyuna.noveltranslator.nativecore.storage.NativeTranslationRetryCheckpointStore(context.applicationContext, runtime),
         laboratory = laboratory)
-    private val executionScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val agentPreviews = com.breakyuna.noveltranslator.nativecore.engine.AgentStreamPreviewController()
     val backgroundAgents = com.breakyuna.noveltranslator.nativecore.engine.ForegroundAgentRunner(runtime, runs, executionScope,
         runTurn = { request, lease, recorder, emit ->

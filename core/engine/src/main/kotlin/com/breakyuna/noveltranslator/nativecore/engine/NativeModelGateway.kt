@@ -4,13 +4,41 @@ import com.breakyuna.noveltranslator.nativecore.domain.*
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.CancellationException
+
+enum class ModelDiagnosticOperation { AGENT, TRANSLATION }
+enum class ModelDiagnosticPhase { STARTED, COMPLETED, FAILED, CANCELLED }
+data class ModelDiagnosticEvent(val operation: ModelDiagnosticOperation, val phase: ModelDiagnosticPhase,
+    val elapsedMillis: Long, val failure: ModelFailureKind? = null, val debugAtStart: Boolean = false)
 
 /** One scheduling/validation boundary for the first translation slice; no implicit retries. */
 class NativeModelGateway(private val runtime: RuntimePort, private val backend: TranslationModelBackend,
     private val agentTransport: AgentModelPort? = null,
     private val catalog: NativeModelCatalogPort? = null,
     private val scheduler: ModelRequestScheduler = ModelRequestScheduler(),
-    private val remoteTranslation: ConfiguredTranslationBackend? = null) : DispatchAwareTranslationGateway, DispatchAwareAgentModelPort, NativeModelCatalogPort {
+    private val remoteTranslation: ConfiguredTranslationBackend? = null,
+    private val diagnosticEnabled: () -> Boolean = { false },
+    private val diagnostic: (ModelDiagnosticEvent) -> Unit = {}) : DispatchAwareTranslationGateway, DispatchAwareAgentModelPort, NativeModelCatalogPort {
+    private suspend fun <T> observe(operation: ModelDiagnosticOperation, block: suspend () -> T): T {
+        val started = System.nanoTime()
+        val debugAtStart = runCatching { diagnosticEnabled() }.getOrDefault(false)
+        fun report(phase: ModelDiagnosticPhase, failure: ModelFailureKind? = null) {
+            val elapsed = ((System.nanoTime() - started).coerceAtLeast(0L) / 1_000_000L)
+            runCatching { diagnostic(ModelDiagnosticEvent(operation, phase, elapsed, failure, debugAtStart)) }
+        }
+        report(ModelDiagnosticPhase.STARTED)
+        try {
+            val result = block()
+            report(ModelDiagnosticPhase.COMPLETED)
+            return result
+        } catch (cancelled: CancellationException) {
+            report(ModelDiagnosticPhase.CANCELLED)
+            throw cancelled
+        } catch (failure: Exception) {
+            report(ModelDiagnosticPhase.FAILED, (failure as? AgentModelFailure)?.kind)
+            throw failure
+        }
+    }
     override suspend fun models(endpoint: String, key: String, savedCredential: ModelConfigurationRef?): List<String> =
         models(endpoint, key, savedCredential, NativeModelProtocol.OPENAI_CHAT_COMPLETIONS)
 
@@ -24,13 +52,13 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
         completePrepared(request, {}, emit)
 
     override suspend fun completePrepared(request: AgentModelRequest, beforeDispatch: suspend () -> Unit,
-        emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse {
+        emit: suspend (AgentModelEvent) -> Unit): AgentModelResponse = observe(ModelDiagnosticOperation.AGENT) {
         currentCoroutineContext().ensureActive()
         val owner = runtime.snapshot().activeRun
         require(owner != null && owner.identity == request.run && owner.owner == RuntimeOwner.AGENT)
         if (owner.phase != RuntimePhase.RUNNING) throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
         val transport = agentTransport ?: throw AgentModelFailure(ModelFailureKind.AUTHENTICATION)
-        return scheduler.execute(request.configuration) {
+        scheduler.execute(request.configuration) {
             val current = runtime.snapshot().activeRun
             if (current == null || current.identity != request.run || current.owner != RuntimeOwner.AGENT ||
                 current.phase != RuntimePhase.RUNNING) throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
@@ -47,13 +75,13 @@ class NativeModelGateway(private val runtime: RuntimePort, private val backend: 
         completePrepared(lease, request) {}
 
     override suspend fun completePrepared(lease: RunLease, request: TranslationModelRequest,
-        beforeDispatch: suspend () -> Unit): TranslationModelResponse {
+        beforeDispatch: suspend () -> Unit): TranslationModelResponse = observe(ModelDiagnosticOperation.TRANSLATION) {
         require(lease.identity == request.run)
         val local = request.configuration == backend.configuration
         require(if (local) request.options == null else request.options != null)
         val remote = if (local) null else remoteTranslation ?: throw AgentModelFailure(ModelFailureKind.CONTENT)
         currentCoroutineContext().ensureActive()
-        return scheduler.execute(request.configuration) {
+        scheduler.execute(request.configuration) {
             val owner = runtime.snapshot().activeRun
             if (owner == null || owner.identity != request.run || owner.owner != RuntimeOwner.TRANSLATION ||
                 owner.phase != RuntimePhase.RUNNING) throw RuntimeUnavailable(RuntimeUnavailable.Reason.STOPPING)
