@@ -72,6 +72,70 @@ class NativeWorkspaceScreenshotTest {
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-agent.png")
     }
 
+    @Test fun agentSuggestionsPreserveTheDraftAndRequireExplicitSend() {
+        val draft = mutableStateOf("")
+        var sent = 0
+        val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "http://localhost:1234/v1", "fixture-model", false)
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeAgentPage(
+                NativeProjectUiState(project = summary, agentInput = draft.value, modelSettings = settings),
+                {}, { _, _ -> }, {}, {}, {},
+                input = { draft.value = it },
+                send = { sent++ },
+            )
+        } } }
+        val suggestion = context.getString(R.string.native_agent_suggestion_summary)
+        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(suggestion))
+        compose.onNodeWithText(suggestion).performClick()
+        compose.runOnIdle {
+            assertEquals(suggestion, draft.value)
+            assertEquals(0, sent)
+        }
+        val otherSuggestion = context.getString(R.string.native_agent_suggestion_translate)
+        compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText(otherSuggestion))
+        compose.onNodeWithText(otherSuggestion).assertIsNotEnabled()
+        compose.onNodeWithText(context.getString(R.string.native_agent_send)).performClick()
+        compose.runOnIdle { assertEquals(1, sent); assertEquals(suggestion, draft.value) }
+    }
+
+    @Test fun oversizedPasteShowsFeedbackAndRetainsTheExistingDraft() {
+        val draft = mutableStateOf("Keep this draft")
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeAgentPage(
+                NativeProjectUiState(project = summary, agentInput = draft.value),
+                {}, { _, _ -> }, {}, {}, {}, input = { draft.value = it },
+            )
+        } } }
+        compose.onNodeWithTag("native-agent-input").performTextReplacement("x".repeat(8001))
+        compose.onNodeWithText(context.getString(R.string.native_agent_message_too_long, 8001)).assertIsDisplayed()
+        compose.runOnIdle { assertEquals("Keep this draft", draft.value) }
+        compose.onNodeWithTag("native-agent-input").performTextReplacement("Shorter text")
+        compose.onNodeWithText(context.getString(R.string.native_agent_message_too_long, 8001)).assertDoesNotExist()
+        compose.runOnIdle { assertEquals("Shorter text", draft.value) }
+    }
+
+    @Test fun activeRunKeepsGuidanceAndStopAsSeparateActions() {
+        var guided = 0
+        var stopped = 0
+        compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
+            NativeAgentPage(
+                NativeProjectUiState(
+                    project = summary,
+                    busy = true,
+                    foregroundAgentActive = true,
+                    agentInput = "Use the approved terminology",
+                ),
+                {}, { _, _ -> }, {}, {}, {},
+                cancel = { stopped++ },
+                steer = { guided++ },
+            )
+        } } }
+        compose.onNodeWithText(context.getString(R.string.native_agent_steer)).assertIsDisplayed().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_agent_stop)).assertIsDisplayed().performClick()
+        assertEquals(1, guided)
+        assertEquals(1, stopped)
+    }
+
     @Test fun workbenchOffersNativeSnapshotAndBilingualExport() {
         var selected: NativeExport? = null
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {

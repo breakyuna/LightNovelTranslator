@@ -233,6 +233,7 @@
     <string name="native_agent_choose_chat">切换会话</string>
     <string name="native_agent_chat_number">会话 %1$d</string>
     <string name="native_agent_message">向 Agent 发送消息</string>
+    <string name="native_agent_message_too_long">输入超出上限（%1$d/8000 字），本次编辑未应用。原草稿已保留，请缩短后重试。</string>
     <string name="native_agent_send">发送</string>
     <string name="native_agent_attachment_add">添加图片</string>
     <string name="native_agent_attachment_count">已选 %1$d/%2$d 张图片</string>
@@ -331,6 +332,8 @@
     <string name="native_model_probe_unknown">未知探测错误</string>
     <string name="native_agent_welcome">与工程协作</string>
     <string name="native_agent_welcome_body">可以询问原稿、读取指定条目或拟写译文。工程修改需要你审批；本地工具无需配置模型。</string>
+    <string name="native_agent_suggestion_summary">总结这个工程的原稿，并列出需要关注的条目</string>
+    <string name="native_agent_suggestion_translate">为下一条待处理条目拟写译文，并先展示修改差异</string>
     <string name="native_agent_waiting_hint">请先裁决待审批差异，再继续对话。</string>
     <string name="native_agent_stop">停止</string>
     <string name="native_agent_local_tools">本地工具与审批演练</string>

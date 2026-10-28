@@ -1,6 +1,7 @@
 package com.breakyuna.noveltranslator.nativeapp
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
@@ -59,13 +60,15 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
     val clipboard = LocalClipboardManager.current
     var copied by remember(preview.key) { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
-    Column(
-        modifier = Modifier.fillMaxWidth().onSizeChanged { contentHeight = it.height }.testTag("native-agent-stream-preview"),
+    Surface(
+        modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth().onSizeChanged { contentHeight = it.height }
+            .testTag("native-agent-stream-preview"),
+        shape = RoundedCornerShape(18.dp),
+        color = androidx.compose.ui.graphics.Color.Transparent,
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -76,8 +79,10 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                             AgentPreviewPhase.INTERRUPTED -> R.string.native_stream_interrupted
                         },
                     ),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (preview.phase == AgentPreviewPhase.INTERRUPTED) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary,
                 )
                 if (preview.thinking.isNotEmpty()) {
                     TextButton(
@@ -86,6 +91,12 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                     ) {
                         Text(stringResource(R.string.native_agent_reasoning), style = MaterialTheme.typography.labelSmall)
                     }
+                }
+                IconButton(enabled = preview.text.isNotEmpty(), onClick = {
+                    clipboard.setText(AnnotatedString(preview.text)); copied = true
+                }) {
+                    Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(17.dp))
                 }
             }
             if (preview.phase == AgentPreviewPhase.INTERRUPTED) {
@@ -110,7 +121,7 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                     if (thinking) {
                         Surface(
                             shape = MaterialTheme.shapes.medium,
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            color = MaterialTheme.colorScheme.surface,
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             NativeMarkdown(preview.thinking, Modifier.padding(8.dp))
@@ -124,14 +135,6 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                     text = stringResource(R.string.native_stream_tools, preview.toolCalls),
                     tone = NativeTone.NEUTRAL,
                 )
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-            IconButton(enabled = preview.text.isNotEmpty(), onClick = {
-                clipboard.setText(AnnotatedString(preview.text)); copied = true
-            }) {
-                Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                    stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(16.dp))
             }
         }
     }

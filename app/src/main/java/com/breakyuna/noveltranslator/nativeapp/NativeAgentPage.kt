@@ -25,6 +25,9 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
@@ -46,6 +49,7 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceArtifactRecor
 import kotlinx.coroutines.flow.StateFlow
 
 /** Conversation first. Local exercises and execution diagnostics are explicitly expandable. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, prepare: (String, String) -> Unit,
     allow: () -> Unit, reject: () -> Unit, navigate: (NativePage) -> Unit,
@@ -90,6 +94,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
         state.agentChatId?.value, state.agentRunId?.value) { mutableStateOf(false) }
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
     var showActions by remember(ref, state.agentChatId) { mutableStateOf(false) }
+    var rejectedInputLength by remember(ref, state.agentChatId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(ref, state.agentChatId, state.agentInput) { rejectedInputLength = null }
     val workspaceUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { workspace?.uploadUri?.invoke(it) }
     }
@@ -156,6 +162,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
         { id -> historyDetail(ref, requireNotNull(state.agentChatId), id) }
     } else null
     val showPreview = rememberAgentStreamPreviewVisible(ref, state.agentChatId, committedIds, stream)
+    val showWelcome = state.agentMessages.isEmpty() && !state.busy && !showPreview && !state.hasAgentApproval
     var followTail by rememberSaveable(ref.instanceId.value, ref.generation.value, state.agentChatId?.value) { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
     val scrolling = remember(timeline, ref, state.agentChatId) {
@@ -198,8 +205,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Column(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (interrupted) TextButton(
                             onClick = { runs = true },
@@ -230,24 +237,13 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            OutlinedButton(
-                                onClick = { showModel = true },
-                                enabled = !state.busy,
-                                modifier = Modifier.weight(1f, fill = false).widthIn(max = 320.dp),
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                            ) {
-                                Text(
-                                    text = state.modelSettings?.model ?: stringResource(R.string.native_model_configure),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Box {
+                            Box(Modifier.weight(1f)) {
                                 TextButton(
                                     onClick = { showChats = true },
-                                    enabled = !state.busy,
+                                    enabled = ready && !state.hasAgentApproval && state.agentAttachments.isEmpty() &&
+                                        state.agentChats.isNotEmpty(),
                                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 ) {
                                     val currentChatIndex = state.agentChats.indexOf(state.agentChatId)
@@ -256,7 +252,10 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                         else stringResource(R.string.native_agent_choose_chat),
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.weight(1f, fill = false),
                                     )
+                                    Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(20.dp))
                                 }
                                 DropdownMenu(showChats, { showChats = false }) {
                                     state.agentChats.forEachIndexed { index, chat ->
@@ -287,12 +286,12 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                         enabled = ready && !state.hasAgentApproval && state.agentAttachments.isEmpty(),
                                         onClick = { showActions = false; queueInput() },
                                     )
-                                    if (workspace != null) DropdownMenuItem(
+                                    if (workspace != null && !wide) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_workspace_open)) },
                                         enabled = ready,
                                         onClick = { showActions = false; showWorkspace = true },
                                     )
-                                    DropdownMenuItem(
+                                    if (!wide) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0)) },
                                         enabled = state.agentQueue != null,
                                         onClick = { showActions = false; showQueue = true },
@@ -312,7 +311,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                         enabled = !state.busy,
                                         onClick = { showActions = false; showSteerHistory = true },
                                     )
-                                    if (state.recentRuns.isNotEmpty()) DropdownMenuItem(
+                                    if (state.recentRuns.isNotEmpty() && !wide) DropdownMenuItem(
                                         text = { Text(stringResource(if (interrupted) R.string.native_runs_interrupted else R.string.native_runs_title)) },
                                         enabled = true,
                                         onClick = { showActions = false; runs = true },
@@ -330,11 +329,30 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                 }
                             }
                         }
+                        OutlinedButton(
+                            onClick = { showModel = true },
+                            enabled = !state.busy,
+                            modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                        ) {
+                            Icon(Icons.Default.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = state.modelSettings?.model ?: stringResource(R.string.native_model_configure),
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
                 reviewApplicationProposal?.let { review ->
-                    TextButton(onClick = review, modifier = Modifier.padding(horizontal = 12.dp)
-                        .testTag("native-agent-application-approval")) {
+                    Button(
+                        onClick = review,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp)
+                            .testTag("native-agent-application-approval"),
+                    ) {
                         Text(stringResource(R.string.native_agent_business_review))
                     }
                 }
@@ -362,13 +380,26 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             )
                         }
                     }
-                    if (state.agentMessages.isEmpty()) {
+                    if (showWelcome) {
                         item(key = "empty") {
                             NativeSectionCard(
                                 title = stringResource(R.string.native_agent_welcome),
-                                subtitle = null,
+                                subtitle = stringResource(R.string.native_agent_welcome_body),
                             ) {
-                                OutlinedButton(onClick = query, enabled = ready) {
+                                listOf(
+                                    R.string.native_agent_suggestion_summary,
+                                    R.string.native_agent_suggestion_translate,
+                                ).forEach { suggestion ->
+                                    val suggestionText = stringResource(suggestion)
+                                    OutlinedButton(
+                                        onClick = { input(suggestionText) },
+                                        enabled = ready && !state.hasAgentApproval && state.agentInput.isEmpty(),
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(suggestionText, modifier = Modifier.weight(1f))
+                                    }
+                                }
+                                TextButton(onClick = query, enabled = ready) {
                                     Text(stringResource(R.string.native_agent_query))
                                 }
                             }
@@ -391,7 +422,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                 NativeAgentStreamPreview(ref, state.agentChatId, committedIds, stream) {
                                     if (followTail && !timeline.isScrollInProgress) {
                                         val warnings = (if (state.agentLoadIncomplete) 1 else 0) + (if (state.runLoadIncomplete) 1 else 0)
-                                        val index = warnings + if (state.agentMessages.isEmpty()) 1 else state.agentMessages.size
+                                        val index = warnings + state.agentMessages.size + if (showWelcome) 1 else 0
                                         revealTail(index)
                                     }
                                 }
@@ -550,18 +581,26 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         )
                         OutlinedTextField(
                             value = state.agentInput,
-                            onValueChange = input,
-                            modifier = Modifier.fillMaxWidth(),
+                            onValueChange = { text ->
+                                rejectedInputLength = text.length.takeIf { it > 8000 }
+                                if (text.length <= 8000) input(text)
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("native-agent-input"),
                             minLines = 1,
                             maxLines = 5,
                             shape = RoundedCornerShape(16.dp),
                             enabled = (ready || state.foregroundAgentActive) && !state.hasAgentApproval,
                             placeholder = { Text(stringResource(R.string.native_agent_message)) },
+                            isError = rejectedInputLength != null || state.agentInput.length > 8000,
+                            supportingText = if (rejectedInputLength != null || state.agentInput.length > 8000) {
+                                { Text(stringResource(R.string.native_agent_message_too_long,
+                                    rejectedInputLength ?: state.agentInput.length)) }
+                            } else null,
                         )
-                        Row(
+                        FlowRow(
                             modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
                             if (state.agentAttachmentActions != null) {
                                 NativeAgentAttachmentButton(
@@ -570,14 +609,22 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                     onClick = { attachmentPicker.launch(arrayOf("image/*")) },
                                 )
                             }
-                            if (state.foregroundAgentActive && state.agentInput.isNotBlank()) {
-                                TextButton(onClick = steer, enabled = state.agentAttachments.isEmpty() && !state.hasAgentApproval) {
-                                    Text(stringResource(R.string.native_agent_steer))
-                                }
-                            }
-                            Spacer(Modifier.weight(1f))
                             if (state.busy) {
-                                Button(onClick = cancel) {
+                                if (state.foregroundAgentActive && state.agentInput.isNotBlank()) {
+                                    Button(
+                                        onClick = steer,
+                                        enabled = state.agentAttachments.isEmpty() && !state.hasAgentApproval &&
+                                            state.agentInput.length <= 8000 && !state.agentAttachmentBusy,
+                                    ) {
+                                        Text(stringResource(R.string.native_agent_steer))
+                                    }
+                                }
+                                OutlinedButton(
+                                    onClick = cancel,
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                ) {
+                                    Icon(Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
                                     Text(stringResource(R.string.native_agent_stop))
                                 }
                             } else {
@@ -587,6 +634,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                         canSendAgentMessage(ready, state.hasAgentApproval,
                                             state.agentInput, state.agentAttachments.size),
                                 ) {
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(Modifier.width(6.dp))
                                     Text(stringResource(R.string.native_agent_send))
                                 }
                             }
@@ -650,7 +699,7 @@ private fun NativeAgentSidePanel(
             item(key = "queue") {
                 OutlinedButton(
                     onClick = openQueue,
-                    enabled = true,
+                    enabled = state.agentQueue != null,
                     modifier = Modifier.fillMaxWidth().testTag("native-agent-side-queue"),
                 ) {
                     Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0))
@@ -702,11 +751,50 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
         }
     }
     Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
-        Column(
-            modifier = Modifier.widthIn(max = if (user) 560.dp else 720.dp).fillMaxWidth().onSizeChanged { onResized() },
+        Surface(
+            modifier = Modifier.then(
+                if (user) Modifier.widthIn(max = 560.dp)
+                else Modifier.widthIn(max = 760.dp).fillMaxWidth(),
+            ).onSizeChanged { onResized() },
+            shape = RoundedCornerShape(if (operation) 12.dp else 18.dp),
+            color = when {
+                user -> MaterialTheme.colorScheme.primaryContainer
+                operation -> MaterialTheme.colorScheme.surfaceContainerLow
+                else -> androidx.compose.ui.graphics.Color.Transparent
+            },
+            contentColor = if (user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = if (operation) 2.dp else 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Column(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (operation) 4.dp else 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = roleLabel(line.role),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (user) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    IconButton(enabled = enabled && !loading, onClick = {
+                        scope.launch {
+                            loading = true; failed = false
+                            try {
+                                val full = body ?: detail ?: load?.invoke(line.id)
+                                if (full != null) detail = full
+                                clipboard.setText(AnnotatedString(if (operation && full != null)
+                                    listOf(full.text, full.tools).filter(String::isNotEmpty).joinToString("\n\n")
+                                    else full?.text ?: line.text))
+                                copied = true
+                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                            catch (_: Exception) { failed = true }
+                            finally { loading = false }
+                        }
+                    }) {
+                        Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                            stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(17.dp))
+                    }
+                }
                 if (operation) {
                     TextButton(onClick = { if (load == null) inspect(line.id) else expand() }, enabled = enabled,
                         contentPadding = PaddingValues(horizontal = 0.dp)) {
@@ -721,13 +809,8 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
                         detail?.let { NativeCodeBlock(listOf(it.text, it.tools).filter(String::isNotEmpty).joinToString("\n\n")) }
                     }
                 } else {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(roleLabel(line.role), Modifier.weight(1f), style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                    }
                     SelectionContainer {
-                        if (user) Text(body?.text ?: detail?.text ?: line.text, style = MaterialTheme.typography.bodyMedium)
+                        if (user) Text(body?.text ?: detail?.text ?: line.text, style = MaterialTheme.typography.bodyLarge)
                         else NativeMarkdown(body?.text ?: detail?.text ?: line.text)
                     }
                     (body ?: detail)?.let { full ->
@@ -739,32 +822,21 @@ internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (
                         }
                     }
                     if (load != null && detail == null && body == null) {
-                        TextButton(onClick = { if (!expanded || failed) { expanded = false; expand() } }, enabled = !loading) {
+                        TextButton(
+                            onClick = { if (!expanded || failed) { expanded = false; expand() } },
+                            enabled = !loading,
+                            contentPadding = PaddingValues(horizontal = 0.dp),
+                        ) {
                             Text(stringResource(if (loading) R.string.native_working else R.string.native_agent_expand_message))
                         }
-                        if (failed) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
                     }
                 }
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                if (failed) Text(stringResource(R.string.native_agent_load_error), color = MaterialTheme.colorScheme.error)
-                IconButton(enabled = enabled && !loading, onClick = {
-                    scope.launch {
-                        loading = true; failed = false
-                        try {
-                            val full = body ?: detail ?: load?.invoke(line.id)
-                            if (full != null) detail = full
-                            clipboard.setText(AnnotatedString(if (operation && full != null)
-                                listOf(full.text, full.tools).filter(String::isNotEmpty).joinToString("\n\n")
-                                else full?.text ?: line.text))
-                            copied = true
-                        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                        catch (_: Exception) { failed = true }
-                        finally { loading = false }
-                    }
-                }) {
-                    Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                        stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(16.dp))
+                if (failed) {
+                    Text(
+                        text = stringResource(R.string.native_agent_load_error),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
                 }
             }
         }

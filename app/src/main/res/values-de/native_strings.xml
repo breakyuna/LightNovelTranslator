@@ -233,6 +233,7 @@
     <string name="native_agent_choose_chat">Chat wählen</string>
     <string name="native_agent_chat_number">Chat %1$d</string>
     <string name="native_agent_message">Nachricht an den Agent</string>
+    <string name="native_agent_message_too_long">Eingabe zu lang (%1$d/8000 Zeichen). Diese Änderung wurde nicht übernommen. Der Entwurf bleibt erhalten; bitte kürzen und erneut versuchen.</string>
     <string name="native_agent_send">Senden</string>
     <string name="native_agent_attachment_add">Bild hinzufügen</string>
     <string name="native_agent_attachment_count">%1$d von %2$d Bildern</string>
@@ -331,6 +332,8 @@
     <string name="native_model_probe_unknown">Unbekannter Prüffehler</string>
     <string name="native_agent_welcome">Mit dem Projekt arbeiten</string>
     <string name="native_agent_welcome_body">Fragen zum Original stellen, bestimmte Einträge lesen oder Übersetzungen vorschlagen. Änderungen benötigen Ihre Freigabe. Lokale Werkzeuge benötigen kein Modell.</string>
+    <string name="native_agent_suggestion_summary">Fassen Sie den Originaltext dieses Projekts zusammen und markieren Sie prüfenswerte Einträge</string>
+    <string name="native_agent_suggestion_translate">Entwerfen Sie eine Übersetzung für den nächsten offenen Eintrag und zeigen Sie zuerst den Unterschied</string>
     <string name="native_agent_waiting_hint">Entscheiden Sie zuerst über die ausstehende Änderung, bevor Sie das Gespräch fortsetzen.</string>
     <string name="native_agent_stop">Stoppen</string>
     <string name="native_agent_local_tools">Lokale Werkzeuge und Freigabeübung</string>

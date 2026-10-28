@@ -233,6 +233,7 @@
     <string name="native_agent_choose_chat">Choose chat</string>
     <string name="native_agent_chat_number">Chat %1$d</string>
     <string name="native_agent_message">Message to Agent</string>
+    <string name="native_agent_message_too_long">Input exceeds the limit (%1$d/8000 characters). This edit was not applied; shorten it and try again. Your draft is retained.</string>
     <string name="native_agent_send">Send</string>
     <string name="native_agent_attachment_add">Add image</string>
     <string name="native_agent_attachment_count">%1$d of %2$d images</string>
@@ -331,6 +332,8 @@
     <string name="native_model_probe_unknown">Unknown probe failure</string>
     <string name="native_agent_welcome">Work with your project</string>
     <string name="native_agent_welcome_body">Ask about the source, read specific items, or propose a translation. Project changes require your approval. Local tools work without a model.</string>
+    <string name="native_agent_suggestion_summary">Summarize this project’s source text and highlight items that need attention</string>
+    <string name="native_agent_suggestion_translate">Draft a translation for the next pending item and show the difference first</string>
     <string name="native_agent_waiting_hint">Review the pending change before continuing the conversation.</string>
     <string name="native_agent_stop">Stop</string>
     <string name="native_agent_local_tools">Local tools and approval exercise</string>

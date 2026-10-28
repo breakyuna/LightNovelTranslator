@@ -233,6 +233,7 @@
     <string name="native_agent_choose_chat">会話を選択</string>
     <string name="native_agent_chat_number">会話 %1$d</string>
     <string name="native_agent_message">Agent へのメッセージ</string>
+    <string name="native_agent_message_too_long">入力が上限を超えています（%1$d/8000 文字）。この編集は適用されていません。下書きは保持されています。短くして再試行してください。</string>
     <string name="native_agent_send">送信</string>
     <string name="native_agent_attachment_add">画像を追加</string>
     <string name="native_agent_attachment_count">画像 %1$d/%2$d</string>
@@ -331,6 +332,8 @@
     <string name="native_model_probe_unknown">不明な確認エラー</string>
     <string name="native_agent_welcome">プロジェクトと作業する</string>
     <string name="native_agent_welcome_body">原稿について質問したり、指定した項目を読んだり、訳文を提案できます。変更には承認が必要です。ローカルツールはモデル不要です。</string>
+    <string name="native_agent_suggestion_summary">このプロジェクトの原稿を要約し、注意が必要な項目を挙げてください</string>
+    <string name="native_agent_suggestion_translate">次の未処理項目の訳文を作成し、まず変更差分を表示してください</string>
     <string name="native_agent_waiting_hint">会話を続ける前に、保留中の変更を承認または拒否してください。</string>
     <string name="native_agent_stop">停止</string>
     <string name="native_agent_local_tools">ローカルツールと承認の練習</string>
