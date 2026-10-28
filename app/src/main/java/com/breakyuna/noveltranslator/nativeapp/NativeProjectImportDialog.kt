@@ -1,5 +1,7 @@
 package com.breakyuna.noveltranslator.nativeapp
 
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,9 +51,9 @@ internal fun NativeProjectImportDialog(
         onDismissRequest = { if (!state.busy) actions.cancel() },
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
             Surface(
-                modifier = Modifier.padding(20.dp).widthIn(min = 300.dp, max = 640.dp).fillMaxWidth()
+                modifier = Modifier.padding(20.dp).widthIn(max = 640.dp).fillMaxWidth()
                     .heightIn(max = 640.dp).testTag("native-project-import-dialog"),
                 shape = MaterialTheme.shapes.extraLarge,
                 tonalElevation = 6.dp,

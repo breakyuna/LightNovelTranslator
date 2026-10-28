@@ -395,6 +395,7 @@ class NativeAppGraph(context: Context) {
     internal val agentAuthService = NativeAgentAuthService(runtime, modelProfiles, oauth, projects, agentBusinessProposals)
     internal val agentManagementRequests = NativeAgentManagementRequests(modelProfiles, oauth)
     internal val agentLibraryService = NativeAgentLibraryService(rulePresets, mcp, projects, agentBusinessProposals)
+    internal val agentDiagnosticsService = NativeAgentDiagnosticsService(diagnostics, projects, agentBusinessProposals)
     internal val agentModelManagement = NativeAgentModelManagement(modelSettings, projects, agentBusinessProposals, oauth::clearProfile, oauth::clearCredential)
     internal val agentSkillMaintenance = NativeAgentSkillMaintenance(workspaceSkills, projects, agentBusinessProposals)
     internal val agentProjectManagement = NativeAgentProjectManagement(projects, agentBusinessProposals)
@@ -440,7 +441,7 @@ class NativeAppGraph(context: Context) {
                     agentExportService.tools(lease, ref) + agentModelManagement.tools(lease, ref) +
                     agentImportService.tools(lease, ref) + agentLibraryService.tools(lease, ref) +
                     agentManagementRequests.tools(lease, ref) + agentAuthService.tools(lease, ref) +
-                    agentChatService.tools(lease, ref))
+                    agentChatService.tools(lease, ref) + agentDiagnosticsService.tools(lease, ref))
         },
         appPersona = { appPreferences.appPersona().takeIf { it.isNotEmpty() } },
         skillContext = {

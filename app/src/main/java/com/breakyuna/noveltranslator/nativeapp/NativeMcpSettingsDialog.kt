@@ -266,6 +266,7 @@ internal fun NativeMcpSettingsDialog(
     Dialog(
         onDismissRequest = {
             when {
+                saving -> Unit
                 toolsView != null -> toolsView = null
                 editing != null -> { editing = null; creating = false }
                 else -> dismiss()
@@ -509,7 +510,7 @@ internal fun NativeMcpSettingsDialog(
                     ) { Text(stringResource(if (saving) R.string.native_settings_saving else R.string.native_save)) }
                 },
                 dismissButton = {
-                    TextButton(onClick = { editing = null; creating = false }) {
+                    TextButton(enabled = !saving, onClick = { editing = null; creating = false }) {
                         Text(stringResource(R.string.native_cancel))
                     }
                 },

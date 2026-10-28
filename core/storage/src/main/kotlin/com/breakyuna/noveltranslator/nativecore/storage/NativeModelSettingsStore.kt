@@ -495,9 +495,13 @@ class NativeModelSettingsStore(context: Context, private val runtime: RuntimePor
                     draft.enabled && draft.purpose.serves(purpose) && rows.none { purpose in selectedPurposes(it) }
                 }.toSet() else selectedPurposes(old).filter { draft.enabled && draft.purpose.serves(it) }.toSet()
                 val order = old?.orderIndex ?: ((rows.maxOfOrNull { it.orderIndex } ?: -1) + 1)
+                // Opaque extras may contain user-supplied authentication material. Never
+                // carry them to another endpoint through an Agent standard-field edit.
+                val retainExtras = old?.let { db.models().current(it.profileId) }
+                    ?.let { NativeModelEndpoint.base(it.endpoint) == base } == true
                 val record = profileRow(target, draft, order, selected).copy(revision = Math.addExact(old?.revision ?: 0L, 1L),
-                    // Opaque user-supplied extra fields are retained without exposing them to the Agent.
-                    extraHeaders = old?.extraHeaders ?: "{}", extraBody = old?.extraBody)
+                    extraHeaders = if (retainExtras) old?.extraHeaders ?: "{}" else "{}",
+                    extraBody = if (retainExtras) old?.extraBody else null)
                 transaction {
                     persist(target, base, draft.model.trim(), draft.protocol, keys)
                     if (old == null) db.profiles().insert(record) else db.profiles().update(record)

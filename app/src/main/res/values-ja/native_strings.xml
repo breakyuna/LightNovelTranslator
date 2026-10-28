@@ -20,6 +20,7 @@
     <string name="native_more">その他</string>
     <string name="native_more_description">ワークスペースツールとアプリ設定。</string>
     <string name="native_more_rules">ルールとプロンプト</string>
+    <string name="native_more_prompts_description">プロジェクトの指示とプロンプトテンプレート。</string>
     <string name="native_more_rules_description">用語、テキスト保護、置換、プリセット、プロンプトテンプレート。</string>
     <string name="native_more_models">モデルとキー</string>
     <string name="native_more_models_description">Agent と翻訳で使うエンドポイント、プロトコル、モデル、API キー。</string>
@@ -52,8 +53,8 @@
     <string name="native_logs_more">以前のイベントを読み込む</string>
     <string name="native_logs_detail">イベント詳細</string>
     <string name="native_logs_export">書き出し</string>
-    <string name="native_logs_clear">消去</string>
     <string name="native_logs_clear_failed">診断を消去できませんでした。再読み込み後も記録が残っている場合があります。</string>
+    <string name="native_logs_clear">消去</string>
     <string name="native_logs_clear_confirm">すべての診断記録を消去しますか？元に戻せません。</string>
     <string name="native_logs_exported">診断ログを書き出しました</string>
     <string name="native_logs_cleared">診断ログを消去しました</string>
@@ -1584,6 +1585,8 @@
     <string name="native_agent_business_kind_mcp_delete">MCP サーバーを削除</string>
     <string name="native_agent_business_kind_oauth">OAuth 設定の管理</string>
     <string name="native_agent_business_kind_chat">Agent 会話の管理</string>
+    <string name="native_agent_business_kind_clear_diagnostics">アプリの診断ログをすべて削除</string>
     <string name="native_agent_business_refresh_failed">操作は保存されましたが、更新またはスケジュールに失敗しました。次の操作の前に記録を確認してください。</string>
     <string name="native_agent_business_scope">プロジェクト：%1$s</string>
+    <string name="native_expand_editor">編集欄を拡大</string>
 </resources>

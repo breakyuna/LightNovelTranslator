@@ -152,50 +152,6 @@ internal fun NativePromptTemplateLibrary(ref: LocalProjectRef, body: String,
         catch (_: Exception) { error = true }
         finally { busy = false }
     }
-    if (importing && snapshot != null) NativePromptTemplateImportDialog(ref, requireNotNull(snapshot),
-        enabled && !busy, { importing = false }) { preview ->
-        perform {
-            require(preview.clean)
-            snapshot = actions.replace(preview.expected, preview.templates)
-            editingFingerprint = snapshot?.fingerprint; selectionConflict = false
-            selected = null; selectedBody = ""; saved = true; importing = false
-        }
-    }
-    if ((overwrite || deleting) && selected != null) NativeContentDialog(
-        onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
-        title = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete else R.string.native_prompt_template_overwrite)) },
-        text = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete_warning else R.string.native_prompt_template_overwrite_warning, selected!!.name)) },
-        confirmButton = { TextButton(onClick = {
-            val remove = deleting
-            overwrite = false; deleting = false
-            val current = snapshot ?: return@TextButton
-            val chosen = selected ?: return@TextButton
-            perform {
-                if (remove) {
-                    persist(PromptTemplateSet(current.templates.templates.filter { it.id != chosen.id }), null)
-                } else {
-                    val replacement = edited(chosen.id)
-                    persist(PromptTemplateSet(current.templates.templates.map {
-                        if (it.id == chosen.id) replacement else it
-                    }), replacement.id)
-                    choose(replacement)
-                }
-            }
-        }, enabled = !busy && enabled && !selectionConflict && snapshot != null, modifier = Modifier.testTag("native-template-confirm")) { Text(stringResource(R.string.native_asset_confirm)) } },
-        dismissButton = { TextButton(onClick = { overwrite = false; deleting = false }, enabled = !busy) {
-            Text(stringResource(R.string.native_cancel)) } })
-    if (pendingSelection != null || discardToClose) NativeContentDialog(
-        onDismissRequest = { pendingSelection = null; discardToClose = false },
-        title = { Text(stringResource(R.string.native_template_unsaved)) },
-        text = { Text(stringResource(R.string.native_policy_discard_body)) },
-        confirmButton = { TextButton(onClick = {
-            val next = pendingSelection
-            val leave = discardToClose
-            pendingSelection = null; discardToClose = false
-            if (leave) close() else next?.let(::choose)
-        }, modifier = Modifier.testTag("native-template-discard")) { Text(stringResource(R.string.native_discard)) } },
-        dismissButton = { TextButton(onClick = { pendingSelection = null; discardToClose = false }) {
-            Text(stringResource(R.string.native_cancel)) } })
     NativePolicyForm({ if (!busy) { if (draftDirty) discardToClose = true else close() } }, stringResource(R.string.native_prompt_template_library),
         "native-prompt-template-library", enabled && !busy && selected != null && !selectionConflict && snapshot != null,
         { selected?.let {
@@ -308,6 +264,51 @@ internal fun NativePromptTemplateLibrary(ref: LocalProjectRef, body: String,
             Text(stringResource(R.string.native_policy_reload))
         }
     }
+    if (importing && snapshot != null) NativePromptTemplateImportDialog(ref, requireNotNull(snapshot),
+        enabled && !busy, { importing = false }) { preview ->
+        perform {
+            require(preview.clean)
+            snapshot = actions.replace(preview.expected, preview.templates)
+            editingFingerprint = snapshot?.fingerprint; selectionConflict = false
+            selected = null; selectedBody = ""; saved = true; importing = false
+        }
+    }
+    if ((overwrite || deleting) && selected != null) NativeContentDialog(
+        onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
+        title = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete else R.string.native_prompt_template_overwrite)) },
+        text = { Text(stringResource(if (deleting) R.string.native_prompt_template_delete_warning else R.string.native_prompt_template_overwrite_warning, selected!!.name)) },
+        confirmButton = { TextButton(onClick = {
+            val remove = deleting
+            overwrite = false; deleting = false
+            val current = snapshot ?: return@TextButton
+            val chosen = selected ?: return@TextButton
+            perform {
+                if (remove) {
+                    persist(PromptTemplateSet(current.templates.templates.filter { it.id != chosen.id }), null)
+                } else {
+                    val replacement = edited(chosen.id)
+                    persist(PromptTemplateSet(current.templates.templates.map {
+                        if (it.id == chosen.id) replacement else it
+                    }), replacement.id)
+                    choose(replacement)
+                }
+            }
+        }, enabled = !busy && enabled && !selectionConflict && snapshot != null, modifier = Modifier.testTag("native-template-confirm")) { Text(stringResource(R.string.native_asset_confirm)) } },
+        dismissButton = { TextButton(onClick = { overwrite = false; deleting = false }, enabled = !busy) {
+            Text(stringResource(R.string.native_cancel)) } })
+    if (pendingSelection != null || discardToClose) NativeContentDialog(
+        onDismissRequest = { pendingSelection = null; discardToClose = false },
+        title = { Text(stringResource(R.string.native_template_unsaved)) },
+        text = { Text(stringResource(R.string.native_policy_discard_body)) },
+        confirmButton = { TextButton(onClick = {
+            val next = pendingSelection
+            val leave = discardToClose
+            pendingSelection = null; discardToClose = false
+            if (leave) close() else next?.let(::choose)
+        }, modifier = Modifier.testTag("native-template-discard")) { Text(stringResource(R.string.native_discard)) } },
+        dismissButton = { TextButton(onClick = { pendingSelection = null; discardToClose = false }) {
+            Text(stringResource(R.string.native_cancel)) } })
+
 }
 
 @Composable

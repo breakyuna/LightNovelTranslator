@@ -77,6 +77,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             "mcp_server_delete" -> R.string.native_agent_business_kind_mcp_delete
             "oauth_management" -> R.string.native_agent_business_kind_oauth
             "chat_management" -> R.string.native_agent_business_kind_chat
+            "clear_diagnostics" -> R.string.native_agent_business_kind_clear_diagnostics
             else -> R.string.native_agent_business_review
         }
         NativeContentDialog(onDismissRequest = { businessReviewVisible = false },
@@ -309,6 +310,29 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
     val managementRequest by model.agentManagementRequests.collectAsStateWithLifecycle()
     var requestedModelProfile by remember(state.project?.ref) { mutableStateOf<String?>(null) }
     var requestedMcpCredentials by remember { mutableStateOf(false) }
+    var requestedWorkspace by remember(state.project?.ref, state.agentChatId) { mutableStateOf(false) }
+    var requestedSkills by remember(state.project?.ref, state.agentChatId) { mutableStateOf(false) }
+    var managementUploadRef by remember { mutableStateOf<LocalProjectRef?>(null) }
+    var managementUploadChat by remember { mutableStateOf<ChatId?>(null) }
+    val managementUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val current = model.state.value
+        if (uri != null && !current.busy && current.project?.ref == managementUploadRef &&
+            current.agentChatId == managementUploadChat) model.workspaceActions.uploadUri?.invoke(uri)
+        managementUploadRef = null
+        managementUploadChat = null
+    }
+    if (requestedSkills) NativeSkillsDialog(model.skillActions, dismiss = { requestedSkills = false })
+    if (requestedWorkspace) state.project?.let { project ->
+        NativeWorkspaceDialog(ref = project.ref, revision = project.revision, chatId = state.agentChatId,
+            runId = state.agentRunId, actions = model.workspaceActions,
+            dismiss = { requestedWorkspace = false },
+            saveArtifact = { artifact -> model.prepareWorkspaceArtifactExport(artifact)?.let(saveWorkspaceArtifact::launch) },
+            upload = {
+                managementUploadRef = project.ref
+                managementUploadChat = state.agentChatId
+                managementUpload.launch(arrayOf("*/*"))
+            }, refreshKey = state.workspaceUploadRevision)
+    }
     if (requestedMcpCredentials) NativeMcpSettingsDialog(model.mcpActions, dismiss = { requestedMcpCredentials = false })
     LaunchedEffect(managementRequest, state.busy, state.project?.ref, state.agentChatId) {
         val request = managementRequest ?: return@LaunchedEffect
@@ -318,7 +342,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         }
         if (state.busy || !model.consumeAgentManagementRequest(request)) return@LaunchedEffect
         when (request.area) {
-            "model_profiles", "model_credentials", "oauth", "model_catalog" -> {
+            "model_profiles", "model_credentials", "model_advanced", "provider_probe", "oauth", "model_catalog" -> {
                 requestedModelProfile = request.profileId
                 model.openModels()
             }
@@ -326,6 +350,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             "proxy_credentials" -> model.openSettings(NativeSettingsSection.EXPERT)
             "legacy_export" -> { model.beginLegacyExport(); legacyExportVisible = true }
             "project_import" -> model.beginProjectImport()
+            "workspace" -> requestedWorkspace = true
+            "skills" -> requestedSkills = true
             "files" -> model.openFiles()
             "diagnostics" -> model.openLogs()
             "usage" -> usageVisible = true
@@ -399,7 +425,8 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
             state.page == NativePage.FILES -> model.closeFiles()
             state.page == NativePage.LOGS -> model.closeLogs()
             state.page == NativePage.MODELS -> model.closeModels()
-            state.project != null && (state.page == NativePage.RULES || state.page == NativePage.PROMPTS) -> model.selectPage(NativePage.AGENT)
+            state.project != null && state.page == NativePage.PROMPTS -> model.selectPage(NativePage.MORE)
+            state.project != null && state.page == NativePage.RULES -> model.selectPage(NativePage.AGENT)
             state.project != null && state.page != NativePage.AGENT -> model.selectPage(NativePage.AGENT)
             state.project != null && !state.busy -> home()
         }
@@ -493,9 +520,6 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                         }
                                         DropdownMenu(manageActions, { manageActions = false }) {
                                             if (state.project != null) {
-                                                DropdownMenuItem(text = { Text(stringResource(R.string.native_more)) },
-                                                    enabled = !ruleEditorOpen,
-                                                    onClick = { manageActions = false; model.selectPage(NativePage.MORE) })
                                                 DropdownMenuItem(text = { Text(stringResource(R.string.native_tasks_title)) },
                                                     onClick = { manageActions = false; tasksVisible = true })
                                                 DropdownMenuItem(text = { Text(stringResource(R.string.native_queue_title)) },
@@ -753,7 +777,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                                     model.rulePresetActions, model.promptTemplateActions,
                                     section = state.rulesSection,
                                     selectSection = model::selectRulesSection,
-                                    back = { model.selectPage(NativePage.AGENT) },
+                                    back = { model.selectPage(if (state.page == NativePage.PROMPTS) NativePage.MORE else NativePage.AGENT) },
                                     wideLayout = wide,
                                     onEditingChange = { ruleEditorOpen = it })
                                 NativePage.SETTINGS -> Unit
@@ -2074,6 +2098,8 @@ internal fun Editor(
                         maxLines = 18,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    NativeExpandedTextEditor(listOf(draft.ref, draft.item.id),
+                        stringResource(R.string.native_translation), draft.text, onText, !busy)
                     NativeAgentFoldout(stringResource(R.string.native_quality_title), stateKey = listOf(draft.ref, draft.item.id), forceExpanded = editorError != null) { NativeEditorQuality(draft, busy, qualityEnabled, quality, onInspect) }
                     NativeSectionCard(title = stringResource(R.string.native_status)) {
                         val manualStatuses = TextItemStatus.entries.filter { it.manual }
@@ -2167,7 +2193,7 @@ internal fun Editor(
 
 private fun NativePage.belongsToMore(): Boolean =
     this == NativePage.MORE || this == NativePage.SETTINGS ||
-        this == NativePage.FILES || this == NativePage.LOGS || this == NativePage.MODELS
+        this == NativePage.FILES || this == NativePage.LOGS || this == NativePage.MODELS || this == NativePage.PROMPTS
 
 private fun NativePage.label(): Int = when (this) {
     NativePage.AGENT -> R.string.native_agent

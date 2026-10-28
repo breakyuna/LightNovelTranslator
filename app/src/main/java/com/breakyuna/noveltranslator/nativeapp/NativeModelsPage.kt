@@ -354,6 +354,12 @@ private fun NativeModelProfileEditor(
     LaunchedEffect(profile?.id) {
         profile?.let { loadKeys(it.id) }
     }
+    val fields = listOf(name, group, purposeName, enabled, endpoint, model, protocolName, secret, concurrency, rpm, tools, vision, reasoning, context, output, temperature, topP, effort, serviceTier, headers, body)
+    val originalFields = remember(profile?.id) { fields }
+    var discard by remember(profile?.id) { mutableStateOf(false) }
+    val requestClose: () -> Unit = {
+        if (!busy) { if (fields != originalFields) discard = true else dismiss() }
+    }
     fun submit() {
         try {
             val limits = ModelProfileLimits(concurrency.trim().toInt(), rpm.trim().toInt())
@@ -390,10 +396,10 @@ private fun NativeModelProfileEditor(
             invalid = false
         } catch (_: Exception) { invalid = true }
     }
-    Dialog(onDismissRequest = { if (!busy) dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(onDismissRequest = { requestClose() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(
-                interactionSource = remember { MutableInteractionSource() }, indication = null) { if (!busy) dismiss() })
+                interactionSource = remember { MutableInteractionSource() }, indication = null) { requestClose() })
             Surface(
                 modifier = Modifier.padding(16.dp).imePadding().widthIn(max = 720.dp).fillMaxWidth().heightIn(max = 720.dp),
                 shape = MaterialTheme.shapes.large,
@@ -539,7 +545,7 @@ private fun NativeModelProfileEditor(
                             color = MaterialTheme.colorScheme.error)
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(enabled = !busy, onClick = dismiss) { Text(stringResource(R.string.native_cancel)) }
+                        TextButton(enabled = !busy, onClick = requestClose) { Text(stringResource(R.string.native_cancel)) }
                         TextButton(enabled = !busy, onClick = { submit() },
                             modifier = Modifier.testTag("native-model-profile-save")) {
                             Text(stringResource(R.string.native_save))
@@ -587,6 +593,12 @@ private fun NativeModelProfileEditor(
             },
         )
     }
+    if (discard) NativeContentDialog(onDismissRequest = { discard = false },
+        title = { Text(stringResource(R.string.native_discard_title)) },
+        text = { Text(stringResource(R.string.native_discard_body)) },
+        confirmButton = { TextButton(enabled = !busy, onClick = dismiss) { Text(stringResource(R.string.native_discard)) } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
+
 }
 
 @OptIn(ExperimentalLayoutApi::class)

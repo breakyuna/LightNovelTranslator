@@ -279,18 +279,6 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             finally { busy = false }
         }
     }
-    if (discard) NativeContentDialog(onDismissRequest = { discard = false },
-        title = { Text(stringResource(R.string.native_skill_resource_discard)) },
-        confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_skill_resource_discard)) } },
-        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
-    if (deleting && file != null) NativeContentDialog(onDismissRequest = { if (!busy) deleting = false },
-        title = { Text(stringResource(R.string.native_skill_resource_delete)) },
-        text = { Text(originalPath) },
-        confirmButton = { TextButton(enabled = !busy, onClick = {
-            deleting = false
-            mutate { requireNotNull(actions.deleteResource)(record.summary.id, originalPath, record.fingerprint, file.sha256) }
-        }) { Text(stringResource(R.string.native_skill_resource_delete)) } },
-        dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.native_cancel)) } })
     NativeContentDialog(onDismissRequest = ::close,
         title = { Text(stringResource(R.string.native_skill_resource_edit)) },
         text = {
@@ -316,4 +304,17 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             onClick = { mutate { requireNotNull(actions.writeResource)(record.summary.id, path, text,
                 record.fingerprint, file?.sha256) } }) { Text(stringResource(R.string.native_save)) } },
         dismissButton = { TextButton(enabled = !busy, onClick = ::close) { Text(stringResource(R.string.native_cancel)) } })
+    if (discard) NativeContentDialog(onDismissRequest = { discard = false },
+        title = { Text(stringResource(R.string.native_skill_resource_discard)) },
+        confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_skill_resource_discard)) } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
+    if (deleting && file != null) NativeContentDialog(onDismissRequest = { if (!busy) deleting = false },
+        title = { Text(stringResource(R.string.native_skill_resource_delete)) },
+        text = { Text(originalPath) },
+        confirmButton = { TextButton(enabled = !busy, onClick = {
+            deleting = false
+            mutate { requireNotNull(actions.deleteResource)(record.summary.id, originalPath, record.fingerprint, file.sha256) }
+        }) { Text(stringResource(R.string.native_skill_resource_delete)) } },
+        dismissButton = { TextButton(onClick = { deleting = false }) { Text(stringResource(R.string.native_cancel)) } })
+
 }

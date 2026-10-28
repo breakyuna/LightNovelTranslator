@@ -31,12 +31,19 @@ internal fun NativeNameEditDialog(draft: NativeNameEditDraft, busy: Boolean,
         draft.ref.generation.value.toString(), draft.itemId.value.toString(), draft.revision.toString())
     var source by rememberSaveable(*identity) { mutableStateOf(draft.sourceText) }
     var translation by rememberSaveable(*identity) { mutableStateOf(draft.translationText) }
-    Dialog(onDismissRequest = { if (!busy) onDismiss() },
+    var discard by rememberSaveable(*identity) { mutableStateOf(false) }
+    val close: () -> Unit = {
+        if (!busy) {
+            if (source != draft.sourceText || translation != draft.translationText) discard = true
+            else onDismiss()
+        }
+    }
+    Dialog(onDismissRequest = close,
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(Modifier.fillMaxSize()) {
             Scaffold(topBar = {
                 TopAppBar(title = { Text(stringResource(R.string.native_names_title)) },
-                    navigationIcon = { IconButton(onClick = onDismiss, enabled = !busy) {
+                    navigationIcon = { IconButton(onClick = close, enabled = !busy) {
                         Icon(Icons.Default.ArrowBack, stringResource(R.string.native_back))
                     } },
                     actions = { TextButton(onClick = { onSave(source, translation) }, enabled = !busy,
@@ -60,4 +67,10 @@ internal fun NativeNameEditDialog(draft: NativeNameEditDraft, busy: Boolean,
             }
         }
     }
+    if (discard) AlertDialog(onDismissRequest = { discard = false },
+        title = { Text(stringResource(R.string.native_discard_title)) },
+        text = { Text(stringResource(R.string.native_discard_body)) },
+        confirmButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text(stringResource(R.string.native_discard)) } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
+
 }

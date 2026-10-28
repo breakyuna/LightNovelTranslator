@@ -39,11 +39,11 @@ internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismis
             // A wrap-content dialog window keeps remeasuring a text field (Compose never reports
             // idle); a full-bleed window with a centered, height-bounded card settles, as in the
             // model settings dialog.
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
                 Box(Modifier.matchParentSize().testTag("native-proof-scrim").clickable(
                     interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() })
                 Surface(
-                    modifier = Modifier.padding(20.dp).widthIn(min = 280.dp, max = 560.dp).fillMaxWidth()
+                    modifier = Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth()
                         .heightIn(max = 480.dp).testTag("native-proof-dialog"),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,

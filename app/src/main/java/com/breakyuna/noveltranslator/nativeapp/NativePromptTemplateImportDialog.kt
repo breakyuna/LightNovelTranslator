@@ -76,29 +76,6 @@ internal fun NativePromptTemplateImportDialog(ref: LocalProjectRef, baseline: Pr
         finally { previewing = false }
     }
     val busy = loading || previewing
-    detail?.let { change ->
-        NativeContentDialog(onDismissRequest = { detail = null },
-            title = { Text((change.after ?: change.before)?.name.orEmpty()) },
-            text = {
-                    Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
-                        Text(stringResource(R.string.native_template_before))
-                        change.before?.let {
-                            Text(stringResource(R.string.native_template_metadata, it.name, stringResource(if (it.enabled) R.string.native_prompt_template_enabled else R.string.native_prompt_template_disabled), it.order,
-                                it.languages.joinToString(", ") { language -> language.value }))
-                            Text(it.body)
-                            Text(it.description)
-                        }
-                        Text(stringResource(R.string.native_template_after))
-                        change.after?.let {
-                            Text(stringResource(R.string.native_template_metadata, it.name, stringResource(if (it.enabled) R.string.native_prompt_template_enabled else R.string.native_prompt_template_disabled), it.order,
-                                it.languages.joinToString(", ") { language -> language.value }))
-                            Text(it.body)
-                            Text(it.description)
-                        }
-                    }
-            },
-            confirmButton = { TextButton(onClick = { detail = null }) { Text(stringResource(R.string.native_close)) } })
-    }
     NativePolicyForm(close, stringResource(R.string.native_template_import), "native-template-import-dialog",
         enabled && !busy && preview?.clean == true, { preview?.takeIf { it.clean }?.let(apply) }) {
         Text(stringResource(R.string.native_template_import_notice))
@@ -136,4 +113,28 @@ internal fun NativePromptTemplateImportDialog(ref: LocalProjectRef, baseline: Pr
             }
         }
     }
+    detail?.let { change ->
+        NativeContentDialog(onDismissRequest = { detail = null },
+            title = { Text((change.after ?: change.before)?.name.orEmpty()) },
+            text = {
+                    Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                        Text(stringResource(R.string.native_template_before))
+                        change.before?.let {
+                            Text(stringResource(R.string.native_template_metadata, it.name, stringResource(if (it.enabled) R.string.native_prompt_template_enabled else R.string.native_prompt_template_disabled), it.order,
+                                it.languages.joinToString(", ") { language -> language.value }))
+                            Text(it.body)
+                            Text(it.description)
+                        }
+                        Text(stringResource(R.string.native_template_after))
+                        change.after?.let {
+                            Text(stringResource(R.string.native_template_metadata, it.name, stringResource(if (it.enabled) R.string.native_prompt_template_enabled else R.string.native_prompt_template_disabled), it.order,
+                                it.languages.joinToString(", ") { language -> language.value }))
+                            Text(it.body)
+                            Text(it.description)
+                        }
+                    }
+            },
+            confirmButton = { TextButton(onClick = { detail = null }) { Text(stringResource(R.string.native_close)) } })
+    }
+
 }

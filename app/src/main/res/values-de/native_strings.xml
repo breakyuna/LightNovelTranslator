@@ -20,6 +20,7 @@
     <string name="native_more">Mehr</string>
     <string name="native_more_description">Workspace-Werkzeuge und App-Einstellungen.</string>
     <string name="native_more_rules">Regeln und Prompts</string>
+    <string name="native_more_prompts_description">Projektanweisungen und Prompt-Vorlagen.</string>
     <string name="native_more_rules_description">Begriffe, Textschutz, Ersetzungen, Vorgaben und Prompt-Vorlagen.</string>
     <string name="native_more_models">Modell und Schlüssel</string>
     <string name="native_more_models_description">Endpunkt, Protokoll, Modell und API-Schlüssel für Agent und Übersetzung.</string>
@@ -52,8 +53,8 @@
     <string name="native_logs_more">Frühere Ereignisse laden</string>
     <string name="native_logs_detail">Ereignisdetails</string>
     <string name="native_logs_export">Exportieren</string>
-    <string name="native_logs_clear">Löschen</string>
     <string name="native_logs_clear_failed">Diagnosen konnten nicht gelöscht werden. Nach dem Neuladen können noch Einträge vorhanden sein.</string>
+    <string name="native_logs_clear">Löschen</string>
     <string name="native_logs_clear_confirm">Alle Diagnoseeinträge löschen? Das kann nicht rückgängig gemacht werden.</string>
     <string name="native_logs_exported">Diagnose exportiert</string>
     <string name="native_logs_cleared">Diagnose gelöscht</string>
@@ -1584,6 +1585,8 @@
     <string name="native_agent_business_kind_mcp_delete">MCP-Server löschen</string>
     <string name="native_agent_business_kind_oauth">OAuth-Konfiguration verwalten</string>
     <string name="native_agent_business_kind_chat">Agent-Konversation verwalten</string>
+    <string name="native_agent_business_kind_clear_diagnostics">Alle App-Diagnoseprotokolle löschen</string>
     <string name="native_agent_business_refresh_failed">Die Aktion wurde gespeichert, aber die Aktualisierung oder Planung ist fehlgeschlagen. Prüfen Sie zuerst den Beleg.</string>
     <string name="native_agent_business_scope">Projekt: %1$s</string>
+    <string name="native_expand_editor">Editor vergrößern</string>
 </resources>

@@ -36,14 +36,6 @@ internal fun NativePromptTemplateDialog(project: TextProjectSummary, baseline: P
     var reading by remember(project.ref) { mutableStateOf(false) }
     var invalid by remember(project.ref) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    if (libraryOpen && library != null) NativePromptTemplateLibrary(project.ref, body, library,
-        enabled && !reading, { libraryOpen = false }) { chosen ->
-        body = chosen.body
-        template = null
-        preview = null
-        invalid = false
-        libraryOpen = false
-    }
     NativePolicyForm({ if (!reading) close() }, stringResource(R.string.native_prompt_template), "native-prompt-template-dialog",
         enabled && !reading && preview != null, { preview?.let { apply(baseline.fingerprint(), it) } }) {
         Text(stringResource(R.string.native_prompt_template_notice))
@@ -113,4 +105,13 @@ internal fun NativePromptTemplateDialog(project: TextProjectSummary, baseline: P
                 modifier = Modifier.fillMaxWidth().testTag("native-prompt-template-rendered"))
         }
     }
+    if (libraryOpen && library != null) NativePromptTemplateLibrary(project.ref, body, library,
+        enabled && !reading, { libraryOpen = false }) { chosen ->
+        body = chosen.body
+        template = null
+        preview = null
+        invalid = false
+        libraryOpen = false
+    }
+
 }

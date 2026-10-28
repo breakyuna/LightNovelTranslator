@@ -20,6 +20,7 @@
     <string name="native_more">더 보기</string>
     <string name="native_more_description">워크스페이스 도구 및 앱 설정.</string>
     <string name="native_more_rules">규칙 및 프롬프트</string>
+    <string name="native_more_prompts_description">프로젝트 지침 및 프롬프트 템플릿.</string>
     <string name="native_more_rules_description">용어, 텍스트 보호, 바꾸기, 사전 설정 및 프롬프트 템플릿.</string>
     <string name="native_more_models">모델 및 키</string>
     <string name="native_more_models_description">Agent와 번역에서 사용하는 엔드포인트, 프로토콜, 모델 및 API 키.</string>
@@ -52,8 +53,8 @@
     <string name="native_logs_more">이전 이벤트 불러오기</string>
     <string name="native_logs_detail">이벤트 세부 정보</string>
     <string name="native_logs_export">내보내기</string>
-    <string name="native_logs_clear">지우기</string>
     <string name="native_logs_clear_failed">진단 기록을 지우지 못했습니다. 다시 불러온 후에도 기록이 남아 있을 수 있습니다.</string>
+    <string name="native_logs_clear">지우기</string>
     <string name="native_logs_clear_confirm">모든 진단 기록을 지울까요? 되돌릴 수 없습니다.</string>
     <string name="native_logs_exported">진단 로그를 내보냈습니다</string>
     <string name="native_logs_cleared">진단 로그를 지웠습니다</string>
@@ -1584,6 +1585,8 @@
     <string name="native_agent_business_kind_mcp_delete">MCP 서버 삭제</string>
     <string name="native_agent_business_kind_oauth">OAuth 설정 관리</string>
     <string name="native_agent_business_kind_chat">Agent 대화 관리</string>
+    <string name="native_agent_business_kind_clear_diagnostics">모든 앱 진단 로그 삭제</string>
     <string name="native_agent_business_refresh_failed">작업은 저장되었으나 새로고침 또는 예약에 실패했습니다. 다음 작업 전에 기록을 확인하세요.</string>
     <string name="native_agent_business_scope">프로젝트: %1$s</string>
+    <string name="native_expand_editor">편집기 확대</string>
 </resources>

@@ -61,6 +61,29 @@ internal class NativeAgentProjectManagement(private val projects: NativeTextProj
             }.toString(), JsonInputLimits(4096, 4))
         }
         return listOf(
+            RegisteredAgentTool("project_file_inventory", "Read source availability and last modification time for a bounded page of project assets. " +
+                "Availability is structural, not export-time SHA verification. No file bodies or host filesystem paths are returned. " +
+                "Use next_after_asset_id to continue and require the same revision on subsequent pages.",
+                ToolParameterSchema(mapOf("revision" to ToolParameter.Integer(0, Long.MAX_VALUE),
+                    "after_asset_id" to ToolParameter.Integer(0, Long.MAX_VALUE, required = false),
+                    "limit" to ToolParameter.Integer(1, 100, required = false))), ToolEffect.READ_ONLY,
+                AgentToolHandler { run, args ->
+                    require(run == lease.identity)
+                    val revision = requireNotNull(args.integer("revision"))
+                    val inventory = projects.fileInventory(ref, revision)
+                    val after = args.integer("after_asset_id") ?: 0L
+                    val limit = (args.integer("limit") ?: 50L).toInt()
+                    val remaining = inventory.entries.filter { it.assetId > after }.sortedBy { it.assetId }
+                    val page = remaining.take(limit)
+                    JsonObjectValue.parse(buildJsonObject {
+                        put("revision", inventory.revision)
+                        put("entries", buildJsonArray { page.forEach { entry -> add(buildJsonObject {
+                            put("asset_id", entry.assetId); put("source_availability", entry.source.name)
+                            put("updated_at", entry.updatedAtMillis?.let(::JsonPrimitive) ?: JsonNull)
+                        }) } })
+                        if (remaining.size > page.size) put("next_after_asset_id", page.last().assetId)
+                    }.toString(), JsonInputLimits(64 * 1024, 8))
+                }),
             RegisteredAgentTool("project_management_snapshot", "Read exact saved project settings and asset fingerprints/order for management proposals.",
                 ToolParameterSchema(emptyMap()), ToolEffect.READ_ONLY, AgentToolHandler { run, _ ->
                     require(run == lease.identity)

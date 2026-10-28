@@ -54,14 +54,15 @@ class NativeMorePageTest {
             }
         }
         compose.onNodeWithTag("native-more-rules-glossary").assertDoesNotExist()
-        compose.onNodeWithTag("native-more-rules-prompts").assertDoesNotExist()
+        compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-rules-prompts"))
+        compose.onNodeWithTag("native-more-rules-prompts").performClick()
         compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-models"))
         compose.onNodeWithTag("native-more-models").performClick()
         compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-settings"))
         compose.onNodeWithTag("native-more-settings").performClick()
         compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-appearance"))
         compose.onNodeWithTag("native-more-appearance").performClick()
-        assertEquals(emptyList<NativeRuleSection>(), sections)
+        assertEquals(listOf(NativeRuleSection.PROMPTS), sections)
         assertEquals(1, models); assertEquals(1, settings); assertEquals(1, appearance)
         compose.onNodeWithTag("native-more-page").performScrollToNode(hasTestTag("native-more-formats"))
         compose.onNodeWithTag("native-more-formats").assertIsDisplayed()

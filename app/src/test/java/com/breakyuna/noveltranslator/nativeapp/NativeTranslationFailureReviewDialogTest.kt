@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import com.breakyuna.noveltranslator.nativecore.domain.CommandId
 import com.breakyuna.noveltranslator.nativecore.domain.ItemId
@@ -234,8 +235,9 @@ class NativeTranslationFailureReviewDialogTest {
             assertEquals(listOf(ItemId(1)), skipped!!.third)
             assertTrue(changed >= 1)
         }
-        compose.onNodeWithTag("native-failure-terminate").performClick()
-        compose.onNodeWithTag("native-failure-terminate-confirm").performClick()
+        compose.onNodeWithTag("native-failure-terminate").performScrollTo().performClick()
+        compose.onNodeWithTag("native-failure-terminate-confirm").performScrollTo().performClick()
+        compose.waitUntil(5_000) { terminated != null }
         compose.waitUntil(5_000) { dismissed == 1 }
         compose.runOnIdle {
             assertEquals(identity, terminated)

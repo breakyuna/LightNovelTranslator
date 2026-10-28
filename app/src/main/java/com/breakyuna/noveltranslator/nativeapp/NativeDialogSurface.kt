@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -58,7 +59,7 @@ internal fun NativeDialogSurface(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
 ) {
-    Box(Modifier.fillMaxSize().imePadding(), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
         Surface(
             modifier = modifier
                 .padding(16.dp)
@@ -67,8 +68,8 @@ internal fun NativeDialogSurface(
                 .heightIn(max = 640.dp),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp,
-            shadowElevation = 8.dp,
+            tonalElevation = 0.dp,
+            shadowElevation = 4.dp,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
             Column {
@@ -179,7 +180,6 @@ internal fun NativeSectionCard(
             containerColor = MaterialTheme.colorScheme.surface,
             contentColor = MaterialTheme.colorScheme.onSurface,
         ),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(
             modifier = Modifier.padding(14.dp),
@@ -210,12 +210,10 @@ internal fun NativeSectionCard(
                             )
                         }
                     }
-                    if (badge != null) {
-                        NativeStatusBadge(text = badge, tone = badgeTone)
-                    }
                     headerAction?.invoke()
                 }
             }
+            if (badge != null) NativeStatusBadge(text = badge, tone = badgeTone)
             content()
         }
     }
@@ -245,16 +243,15 @@ internal fun NativeBanner(
         contentColor = fg,
         border = BorderStroke(1.dp, border),
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodySmall,
                 color = fg,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             )
             action?.invoke()
         }
@@ -274,7 +271,6 @@ internal fun NativeSubpageHeader(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -297,8 +293,8 @@ internal fun NativeSubpageHeader(
             ) {
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    maxLines = 1,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (!subtitle.isNullOrBlank()) {

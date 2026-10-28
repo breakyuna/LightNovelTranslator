@@ -32,8 +32,10 @@ internal class NativeAgentManagementRequests(private val models: NativeModelProf
                 }.toString(), JsonInputLimits(4096, 4))
             }),
         RegisteredAgentTool("request_user_management", "Request the application's user interaction for secrets, consent or system file selection. " +
-            "area: model_credentials, oauth, model_catalog (profile_id required), model_profiles, mcp_credentials, proxy_credentials, " +
-            "legacy_export, project_import, files, diagnostics, usage. The host opens the existing native interface after this run " +
+            "area: model_credentials, model_advanced, provider_probe, oauth, model_catalog (profile_id required), model_profiles, mcp_credentials, proxy_credentials, " +
+            "legacy_export, project_import, workspace, skills, files, diagnostics, usage. workspace opens materials/artifacts with user file selection; " +
+            "model_advanced opens the profile editor for opaque headers/body; provider_probe opens that editor and requires the user to initiate the probe. " +
+            "The host opens the existing native interface after this run " +
             "finishes; finish your response after requesting it. This only delivers a handoff: USER_INTERACTION_REQUIRED never " +
             "means authentication, a probe, export or configuration has succeeded. Do not ask the user to put secrets into chat. " +
             "The existing UI owns credential entry, browser consent, file selection and paid-probe confirmation.",
@@ -41,10 +43,10 @@ internal class NativeAgentManagementRequests(private val models: NativeModelProf
             ToolEffect.READ_ONLY, AgentToolHandler { run, args ->
                 require(run == lease.identity)
                 val area = requireNotNull(args.text("area"))
-                require(area in setOf("model_credentials", "oauth", "model_catalog", "model_profiles", "mcp_credentials", "proxy_credentials",
-                    "legacy_export", "project_import", "files", "diagnostics", "usage"))
+                require(area in setOf("model_credentials", "model_advanced", "provider_probe", "oauth", "model_catalog", "model_profiles", "mcp_credentials", "proxy_credentials",
+                    "legacy_export", "project_import", "workspace", "skills", "files", "diagnostics", "usage"))
                 val profileId = args.text("profile_id")
-                if (area in setOf("model_credentials", "oauth", "model_catalog")) require(profileId != null)
+                if (area in setOf("model_credentials", "model_advanced", "provider_probe", "oauth", "model_catalog")) require(profileId != null)
                 if (profileId != null) require(models.find(profileId) != null)
                 val request = NativeAgentManagementRequest(UUID.randomUUID().toString(), ref, requireNotNull(run.chatId), area, profileId)
                 val current = pendingState.value

@@ -41,7 +41,7 @@ internal fun NativePricingDialog(table: PriceTable,
             for (entry in current.entries) entry.modelKey?.let { key ->
                 TextButton(onClick = { select(key) }, enabled = !busy) { Text(key) }
             }
-            OutlinedTextField(model, { select(it) }, label = { Text(stringResource(R.string.native_model_name)) },
+            OutlinedTextField(model, { model = it; failed = false }, label = { Text(stringResource(R.string.native_model_name)) },
                 enabled = !busy, singleLine = true)
             OutlinedTextField(currency, { currency = it }, label = { Text(stringResource(R.string.native_prices_currency)) },
                 enabled = !busy && current.entries.isEmpty(), singleLine = true)

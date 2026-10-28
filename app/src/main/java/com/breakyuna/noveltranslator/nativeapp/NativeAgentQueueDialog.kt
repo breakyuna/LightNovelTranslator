@@ -19,6 +19,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.CommandId
  * composer; it never appends history or starts a paid request. Pausing only blocks the future
  * automatic queue consumer, not manual editing/deletion.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismiss: () -> Unit,
                                     use: (CommandId) -> Unit, delete: (CommandId) -> Unit,
@@ -28,7 +29,7 @@ internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismi
         text = {
             Column(Modifier.heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(stringResource(R.string.native_agent_queue_count, queue.drafts.size), style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = togglePause, enabled = !busy,
                         modifier = Modifier.testTag("native-agent-queue-pause")) {
                         Text(stringResource(if (queue.paused) R.string.native_agent_queue_resume else R.string.native_agent_queue_pause))
@@ -40,12 +41,12 @@ internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismi
                     }
                 }
                 if (queue.drafts.isEmpty()) Text(stringResource(R.string.native_agent_queue_empty))
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                LazyColumn(Modifier.weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(queue.drafts, key = { it.id.value }) { draft ->
                         Card(Modifier.fillMaxWidth().testTag("native-agent-queue-${draft.id.value}")) {
                             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                 Text(draft.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     TextButton(onClick = { use(draft.id) }, enabled = !busy) {
                                         Text(stringResource(R.string.native_agent_queue_use))
                                     }

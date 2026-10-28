@@ -33,7 +33,7 @@ internal class NativeAgentModelManagement(private val models: NativeModelSetting
         return buildJsonObject { put("profile_id", id); if (deleting) put("auth_cleanup_complete", cleaned) }
     }
     fun tools(lease: RunLease, ref: LocalProjectRef): List<RegisteredAgentTool> = listOf(
-        RegisteredAgentTool("read_model_profile", "Read complete non-secret standard profile configuration. Extra headers/body and credentials are never returned; existing opaque extra fields are preserved on save.",
+        RegisteredAgentTool("read_model_profile", "Read complete non-secret standard profile configuration. Extra headers/body and credentials are never returned; opaque extra fields are preserved only at the same endpoint. Use request_user_management area model_advanced for user editing of opaque fields.",
             ToolParameterSchema(mapOf("profile_id" to ToolParameter.Text(1, 128))), ToolEffect.READ_ONLY, AgentToolHandler { run, args ->
                 require(run == lease.identity)
                 val before = models.reviewedProfileSnapshot()
@@ -48,7 +48,7 @@ internal class NativeAgentModelManagement(private val models: NativeModelSetting
             "optional paired concurrency/requests_per_minute, tools/vision/reasoning booleans, context_tokens/output_tokens, temperature/top_p decimal strings, " +
             "generation_output_tokens, reasoning_effort/service_tier. Read read_model_profile before editing and keep unrelated fields. " +
             "credential_handling must be clear or retain: retain only works for an existing profile at the same endpoint; clear installs no API key. " +
-            "Secrets must be entered by the user outside chat. Capability flags are configuration, not verified provider capability. Opaque extra fields are preserved.",
+            "Secrets must be entered by the user outside chat. Capability flags are configuration, not verified provider capability. Opaque extra fields are preserved at the same endpoint and cleared when the endpoint changes.",
             ToolParameterSchema(mapOf("profile_id" to ToolParameter.Text(1, 128, required = false), "base_fingerprint" to ToolParameter.Text(64, 64),
                 "value_json" to ToolParameter.Text(2, 32 * 1024), "credential_handling" to ToolParameter.Text(1, 16))),
             ToolEffect.APPROVAL_PREPARATION, AgentToolHandler { run, args ->
@@ -63,6 +63,8 @@ internal class NativeAgentModelManagement(private val models: NativeModelSetting
                 if (handling == "retain") require(old != null && NativeModelEndpoint.base(old.settings.endpoint) == NativeModelEndpoint.base(draft.endpoint))
                 val proposal = proposals.prepare(ref, run, projects.open(ref).revision, "model_profile_save", buildJsonObject {
                     put("before", before); put("id", id); put("credential_handling", handling); put("value", value)
+                    put("opaque_extra_fields_handling", if (old != null && NativeModelEndpoint.base(old.settings.endpoint) == NativeModelEndpoint.base(draft.endpoint))
+                        "retain_at_same_endpoint" else "clear")
                     old?.let { put("previous_value", NativeAgentModelProfileCodec.encode(it)) }
                 })
                 JsonObjectValue.parse(buildJsonObject {

@@ -43,7 +43,7 @@ internal fun NativeProjectSettingsDialog(state: NativeProjectUiState, close: () 
         state.editor == null && state.manualBatch == null && !state.selectingItems &&
         !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true
     Dialog(onDismissRequest = { if (!state.busy) close() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
             Surface(Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp),
                 shape = MaterialTheme.shapes.extraLarge, tonalElevation = 6.dp) {
                 Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -51,16 +51,16 @@ internal fun NativeProjectSettingsDialog(state: NativeProjectUiState, close: () 
                     Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(stringResource(R.string.native_project_settings_description))
-                        OutlinedTextField(target, { if (it.length <= 80) target = it }, singleLine = true,
+                        OutlinedTextField(target, { if (it.length <= 80) target = it }, singleLine = true, enabled = !state.busy,
                             label = { Text(stringResource(R.string.native_remote_target)) }, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(source, { if (it.length <= 80) source = it }, singleLine = true,
+                        OutlinedTextField(source, { if (it.length <= 80) source = it }, singleLine = true, enabled = !state.busy,
                             label = { Text(stringResource(R.string.native_remote_source)) }, modifier = Modifier.fillMaxWidth())
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(deduplicate, { deduplicate = it })
+                            Checkbox(deduplicate, { deduplicate = it }, enabled = !state.busy)
                             Text(stringResource(R.string.native_project_settings_deduplicate), Modifier.weight(1f))
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Checkbox(names, { names = it })
+                            Checkbox(names, { names = it }, enabled = !state.busy)
                             Text(stringResource(R.string.native_project_settings_names), Modifier.weight(1f))
                         }
                     }

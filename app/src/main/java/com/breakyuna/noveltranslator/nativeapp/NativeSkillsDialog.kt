@@ -122,6 +122,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
     // Keep the window and focus owner stable when switching between catalog and editor.
     Dialog(onDismissRequest = {
         when {
+            saving -> Unit
             deleteConfirm != null -> deleteConfirm = null
             selected != null || creating -> { selected = null; creating = false }
             else -> dismiss()
@@ -133,9 +134,14 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                 text = { Text(stringResource(R.string.native_skills_delete_confirm, fixed.summary.name)) },
                 confirmButton = { TextButton(onClick = {
                     deleteConfirm = null
+                    saving = true
                     scope.launch {
-                        runCatching { actions.delete(fixed.summary.id, fixed.fingerprint) }
-                        selected = null; reload()
+                        try {
+                            actions.delete(fixed.summary.id, fixed.fingerprint)
+                            selected = null; reload()
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { failed = true }
+                        finally { saving = false }
                     }
                 }, modifier = Modifier.testTag("native-skill-delete-confirm")) { Text(stringResource(R.string.native_discard)) } },
                 dismissButton = { TextButton(onClick = { deleteConfirm = null }) { Text(stringResource(R.string.native_cancel)) } })
@@ -243,7 +249,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                             }
                         }, modifier = Modifier.testTag("native-skill-save")) { Text(stringResource(R.string.native_save)) }
                 },
-                dismissButton = { TextButton(onClick = { selected = null; creating = false },
+                dismissButton = { TextButton(enabled = !saving, onClick = { selected = null; creating = false },
                     modifier = Modifier.testTag("native-skill-editor-cancel")) { Text(stringResource(R.string.native_cancel)) } })
             return@Dialog
         }

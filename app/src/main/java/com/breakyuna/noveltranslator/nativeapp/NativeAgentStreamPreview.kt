@@ -1,9 +1,13 @@
 package com.breakyuna.noveltranslator.nativeapp
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -52,15 +56,11 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
         withFrameNanos { }
         if (preview.phase != AgentPreviewPhase.INTERRUPTED) activate()
     }
-    Card(
+    val clipboard = LocalClipboardManager.current
+    var copied by remember(preview.key) { mutableStateOf(false) }
+    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
+    Column(
         modifier = Modifier.fillMaxWidth().onSizeChanged { contentHeight = it.height }.testTag("native-agent-stream-preview"),
-        shape = MaterialTheme.shapes.large,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        border = BorderStroke(
-            1.dp,
-            if (preview.phase == AgentPreviewPhase.INTERRUPTED) MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
-            else MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-        ),
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
@@ -124,6 +124,14 @@ internal fun NativeAgentStreamPreview(ref: LocalProjectRef, chat: ChatId?, commi
                     text = stringResource(R.string.native_stream_tools, preview.toolCalls),
                     tone = NativeTone.NEUTRAL,
                 )
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            IconButton(enabled = preview.text.isNotEmpty(), onClick = {
+                clipboard.setText(AnnotatedString(preview.text)); copied = true
+            }) {
+                Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(16.dp))
             }
         }
     }

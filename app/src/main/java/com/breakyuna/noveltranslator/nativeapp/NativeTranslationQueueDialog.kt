@@ -46,15 +46,17 @@ internal fun NativeTranslationQueueDialog(
 ) {
     var snapshot by remember(ref) { mutableStateOf<TranslationQueueSnapshot?>(null) }
     var refresh by remember(ref) { mutableIntStateOf(0) }
+    var loading by remember(ref) { mutableStateOf(true) }
     var failed by remember(ref) { mutableStateOf(false) }
     LaunchedEffect(ref, refresh, refreshKey) {
+        loading = true
         try {
             snapshot = load(ref); failed = false
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
             failed = true
-        }
+        } finally { loading = false }
     }
     NativeContentDialog(
         onDismissRequest = dismiss,
@@ -114,14 +116,15 @@ internal fun NativeTranslationQueueDialog(
                     if (failed) item(key = "queue-error") {
                         Text(stringResource(R.string.native_queue_error), color = MaterialTheme.colorScheme.error)
                     }
-                    if (!failed && entries.isEmpty()) item(key = "queue-empty") {
+                    if (loading) item(key = "queue-loading") { NativeBusyIndicator() }
+                    if (!loading && !failed && entries.isEmpty()) item(key = "queue-empty") {
                         Text(stringResource(R.string.native_queue_empty))
                     }
                 }
             }
         },
         confirmButton = { TextButton(onClick = dismiss) { Text(stringResource(R.string.native_close)) } },
-        dismissButton = { TextButton(onClick = { refresh++ }, modifier = Modifier.testTag("native-queue-refresh")) {
+        dismissButton = { TextButton(enabled = !loading, onClick = { refresh++ }, modifier = Modifier.testTag("native-queue-refresh")) {
             Text(stringResource(R.string.native_refresh))
         } },
     )

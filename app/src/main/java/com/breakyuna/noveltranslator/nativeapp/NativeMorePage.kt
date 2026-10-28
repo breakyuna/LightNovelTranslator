@@ -120,6 +120,16 @@ internal fun NativeMorePage(
             )
         }
         if (project != null) {
+            item(key = "prompts") {
+                MoreEntry(
+                    icon = Icons.Default.EditNote,
+                    title = stringResource(R.string.native_rules_prompts),
+                    description = stringResource(R.string.native_more_prompts_description),
+                    enabled = !state.busy && state.editor == null && state.manualBatch == null,
+                    onClick = { onRules(NativeRuleSection.PROMPTS) },
+                    tag = "native-more-rules-prompts",
+                )
+            }
             item(key = "settings") {
                 MoreEntry(
                     icon = Icons.Default.Settings,

@@ -335,11 +335,9 @@ class NativeWorkspaceScreenshotTest {
                 agentMessages = listOf(AgentChatLine("saved", "ASSISTANT", "Saved message"))),
                 {}, { _, _ -> }, {}, {}, {}, stream = if (enabled.value) controller.state else null)
         } } }
-        val editor = compose.onNodeWithText(context.getString(R.string.native_open_proofreading))
-        val baseline = editor.fetchSemanticsNode().boundsInRoot.top
         fun assertNoPreviewSpacing() {
+            compose.onNodeWithTag("native-agent-stream-slot").assertDoesNotExist()
             compose.onNodeWithTag("native-agent-stream-preview").assertDoesNotExist()
-            assertEquals(baseline, editor.fetchSemanticsNode().boundsInRoot.top, 0.5f)
         }
         compose.runOnIdle { enabled.value = true }
         assertNoPreviewSpacing()
@@ -358,10 +356,12 @@ class NativeWorkspaceScreenshotTest {
             session.previewStarted(key); session.preview(key, AgentModelEvent.TextDelta("Live preview"))
         }
         compose.onNodeWithTag("native-agent-stream-preview").assertExists()
+        compose.onNodeWithTag("native-agent-stream-slot").assertExists()
         compose.runOnIdle { session.previewCompleted(key, MessageId("saved")) }
         assertNoPreviewSpacing()
         compose.runOnIdle { controller.open(ref, run).previewStarted(key) }
         compose.onNodeWithTag("native-agent-stream-preview").assertExists()
+        compose.onNodeWithTag("native-agent-stream-slot").assertExists()
         compose.runOnIdle { controller.clear() }
         assertNoPreviewSpacing()
     }

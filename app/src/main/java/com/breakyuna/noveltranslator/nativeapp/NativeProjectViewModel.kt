@@ -79,8 +79,8 @@ private val PROJECT_IMPORT_BINDING_KEYS = listOf(
     "native_import_ref",
 )
 
-/** Frequent editing destinations stay one tap away; management lives in the top menu. */
-internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.RULES, NativePage.PROMPTS)
+/** Primary destinations are shared by the bottom bar and navigation rail. */
+internal val NativeNavigationPages = listOf(NativePage.AGENT, NativePage.WORKBENCH, NativePage.PROOFREADING, NativePage.RULES, NativePage.MORE)
 enum class NativeExport { PROJECT, TRANSLATION, BILINGUAL, ORIGINAL }
 
 /** Precise, path-free PDF failure text for imports, exports and page previews. */
@@ -3196,6 +3196,11 @@ class NativeProjectViewModel internal constructor(
                                 if (languageChanged) agentRecreateState.value = true
                             }
                         } finally { graph.runtime.endProjectWrite(lock) }
+                    }
+                    "clear_diagnostics" -> {
+                        val applying = graph.agentBusinessProposals.transition(ref, chat, expected, "APPLYING")
+                        graph.agentDiagnosticsService.apply(expected)
+                        graph.agentBusinessProposals.transition(ref, chat, applying, "COMMITTED")
                     }
                     "chat_management" -> {
                         saveComposer(ref, agentChat, mutable.value.agentInput)

@@ -20,6 +20,7 @@
     <string name="native_more">更多</string>
     <string name="native_more_description">工作区工具与应用设置。</string>
     <string name="native_more_rules">规则与提示词</string>
+    <string name="native_more_prompts_description">工程提示词与提示词模板。</string>
     <string name="native_more_rules_description">术语、文本保护、替换、预设与提示词模板。</string>
     <string name="native_more_models">模型与密钥</string>
     <string name="native_more_models_description">Agent 与翻译使用的端点、协议、模型和 API Key。</string>
@@ -52,8 +53,8 @@
     <string name="native_logs_more">加载更早事件</string>
     <string name="native_logs_detail">事件详情</string>
     <string name="native_logs_export">导出</string>
-    <string name="native_logs_clear">清空</string>
     <string name="native_logs_clear_failed">无法清空诊断记录，重新加载后仍可能存在记录。</string>
+    <string name="native_logs_clear">清空</string>
     <string name="native_logs_clear_confirm">清空全部诊断记录？此操作不可撤销。</string>
     <string name="native_logs_exported">诊断日志已导出</string>
     <string name="native_logs_cleared">诊断日志已清空</string>
@@ -1584,6 +1585,8 @@
     <string name="native_agent_business_kind_mcp_delete">删除 MCP 服务器</string>
     <string name="native_agent_business_kind_oauth">管理 OAuth 配置</string>
     <string name="native_agent_business_kind_chat">管理 Agent 会话</string>
+    <string name="native_agent_business_kind_clear_diagnostics">清除全部应用诊断日志</string>
     <string name="native_agent_business_refresh_failed">操作已保存，但刷新或调度失败。请先检查回执，再执行其他操作。</string>
     <string name="native_agent_business_scope">工程：%1$s</string>
+    <string name="native_expand_editor">展开编辑</string>
 </resources>

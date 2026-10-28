@@ -67,30 +67,6 @@ internal fun NativeRulePresetLibrary(ref: LocalProjectRef, baseline: ProjectText
         finally { busy = false }
     }
     val chosen = selected
-    if ((overwrite || deleting) && chosen != null) NativeContentDialog(
-        onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
-        title = { Text(stringResource(if (deleting) R.string.native_preset_delete else R.string.native_preset_overwrite)) },
-        text = { Text(stringResource(if (deleting) R.string.native_preset_delete_warning else R.string.native_preset_overwrite_warning, chosen.name)) },
-        confirmButton = { TextButton(onClick = {
-            val expected = fingerprint ?: return@TextButton
-            val remove = deleting
-            overwrite = false; deleting = false
-            perform {
-                if (remove) {
-                    actions.remove(chosen.id, expected)
-                    selected = null; fingerprint = null; preview = null
-                } else {
-                    val replacement = withContext(Dispatchers.Default) {
-                        RulePreset(chosen.id, name.trim(), description, baseline.rules, baseline.prompt, baseline.promptEnabled)
-                    }
-                    actions.save(replacement, expected)
-                    choose(replacement)
-                }
-                entries = actions.list(); saved = true
-            }
-        }, enabled = !busy && enabled && (deleting || name.isNotBlank())) { Text(stringResource(R.string.native_asset_confirm)) } },
-        dismissButton = { TextButton(onClick = { overwrite = false; deleting = false }, enabled = !busy) {
-            Text(stringResource(R.string.native_cancel)) } })
     NativePolicyForm({ if (!busy) close() }, stringResource(R.string.native_preset_library), "native-preset-library",
         enabled && !busy && preview != null, { preview?.let { apply(baseline.fingerprint(), it.policy) } }) {
         Text(stringResource(R.string.native_preset_library_notice))
@@ -150,4 +126,29 @@ internal fun NativeRulePresetLibrary(ref: LocalProjectRef, baseline: ProjectText
         if (saved) Text(stringResource(R.string.native_preset_saved))
         TextButton(onClick = { perform { entries = actions.list() } }, enabled = enabled && !busy) { Text(stringResource(R.string.native_policy_reload)) }
     }
+    if ((overwrite || deleting) && chosen != null) NativeContentDialog(
+        onDismissRequest = { if (!busy) { overwrite = false; deleting = false } },
+        title = { Text(stringResource(if (deleting) R.string.native_preset_delete else R.string.native_preset_overwrite)) },
+        text = { Text(stringResource(if (deleting) R.string.native_preset_delete_warning else R.string.native_preset_overwrite_warning, chosen.name)) },
+        confirmButton = { TextButton(onClick = {
+            val expected = fingerprint ?: return@TextButton
+            val remove = deleting
+            overwrite = false; deleting = false
+            perform {
+                if (remove) {
+                    actions.remove(chosen.id, expected)
+                    selected = null; fingerprint = null; preview = null
+                } else {
+                    val replacement = withContext(Dispatchers.Default) {
+                        RulePreset(chosen.id, name.trim(), description, baseline.rules, baseline.prompt, baseline.promptEnabled)
+                    }
+                    actions.save(replacement, expected)
+                    choose(replacement)
+                }
+                entries = actions.list(); saved = true
+            }
+        }, enabled = !busy && enabled && (deleting || name.isNotBlank())) { Text(stringResource(R.string.native_asset_confirm)) } },
+        dismissButton = { TextButton(onClick = { overwrite = false; deleting = false }, enabled = !busy) {
+            Text(stringResource(R.string.native_cancel)) } })
+
 }

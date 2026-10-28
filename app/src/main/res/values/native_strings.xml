@@ -20,6 +20,7 @@
     <string name="native_more">More</string>
     <string name="native_more_description">Workspace tools and application settings.</string>
     <string name="native_more_rules">Rules and prompts</string>
+    <string name="native_more_prompts_description">Project instructions and prompt templates.</string>
     <string name="native_more_rules_description">Terms, text protection, replacements, presets and prompt templates.</string>
     <string name="native_more_models">Model and keys</string>
     <string name="native_more_models_description">Endpoint, protocol, model and API keys used by Agent and translation.</string>
@@ -52,8 +53,8 @@
     <string name="native_logs_more">Load earlier events</string>
     <string name="native_logs_detail">Event detail</string>
     <string name="native_logs_export">Export</string>
-    <string name="native_logs_clear">Clear</string>
     <string name="native_logs_clear_failed">Could not clear the diagnostics. Reloaded records may still exist.</string>
+    <string name="native_logs_clear">Clear</string>
     <string name="native_logs_clear_confirm">Clear all recorded diagnostics? This cannot be undone.</string>
     <string name="native_logs_exported">Diagnostics exported</string>
     <string name="native_logs_cleared">Diagnostics cleared</string>
@@ -1584,6 +1585,8 @@
     <string name="native_agent_business_kind_mcp_delete">Delete MCP server</string>
     <string name="native_agent_business_kind_oauth">Manage OAuth configuration</string>
     <string name="native_agent_business_kind_chat">Manage Agent conversation</string>
+    <string name="native_agent_business_kind_clear_diagnostics">Clear all application diagnostics</string>
     <string name="native_agent_business_refresh_failed">The action was saved, but refresh or scheduling failed. Inspect its receipt before taking another action.</string>
     <string name="native_agent_business_scope">Project: %1$s</string>
+    <string name="native_expand_editor">Expand editor</string>
 </resources>

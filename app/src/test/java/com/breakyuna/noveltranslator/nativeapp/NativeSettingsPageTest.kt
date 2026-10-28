@@ -63,9 +63,12 @@ class NativeSettingsPageTest {
                 }
             }
         }
-        compose.onNodeWithTag("native-settings-language-picker").performScrollTo().performClick()
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val languageTitle = context.getString(R.string.native_settings_language) + " · " + context.getString(R.string.native_language_english)
+        val themeTitle = context.getString(R.string.native_settings_theme) + " · " + context.getString(R.string.native_theme_system)
+        compose.onNodeWithText(languageTitle).performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-language-GERMAN").performScrollTo().performClick()
-        compose.onNodeWithTag("native-settings-theme-picker").performScrollTo().performClick()
+        compose.onNodeWithText(themeTitle).performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-theme-DARK").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-auto-context").performScrollTo().performClick()
         compose.onNodeWithTag("native-settings-back").performClick()

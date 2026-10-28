@@ -291,16 +291,48 @@ class NativeDiagnosticsStore(
      * Removes every generation and rotates the store id so a cursor issued before the clear
      * can never address newly appended records.
      */
+    /** Bind destructive maintenance to the exact retained log generation and record set. */
+    suspend fun maintenanceSnapshot(): JsonObject = withContext(Dispatchers.IO) {
+        synchronized(PROCESS_LOCK) {
+            ensureDirectory()
+            maintenanceSnapshotLocked()
+        }
+    }
+
+    private fun maintenanceSnapshotLocked(): JsonObject {
+        val records = readAllRecords().sortedBy { it.sequence }
+        val identity = buildString {
+            append(ensureStoreId()).append('\n')
+            records.forEach { append(it.sequence).append(':').append(it.id).append('\n') }
+        }
+        return buildJsonObject {
+            put("fingerprint", com.breakyuna.noveltranslator.nativecore.domain.TextProjectFingerprint.bytes(identity.toByteArray(Charsets.UTF_8)))
+            put("record_count", records.size)
+        }
+    }
+
+    suspend fun clearReviewed(expected: JsonObject): Unit = withContext(Dispatchers.IO) {
+        synchronized(PROCESS_LOCK) {
+            ensureDirectory()
+            require(maintenanceSnapshotLocked() == expected) { "Diagnostics changed" }
+            clearLocked()
+        }
+    }
+
     suspend fun clear(): Unit = withContext(Dispatchers.IO) {
         synchronized(PROCESS_LOCK) {
             ensureDirectory()
+            clearLocked()
+        }
+    }
+
+    private fun clearLocked() {
             // Rotate the store id first so an interrupted clear can never make an old cursor
             // address records from the new history.
             writeStoreId(UUID.randomUUID().toString())
             rotatedFiles().forEach { file -> if (file.exists()) require(file.delete()) }
             FileOutputStream(activeFile(), false).use { output -> output.fd.sync() }
             nextSequence = 0L
-        }
     }
 
     private fun appendRecord(record: NativeDiagnosticRecord) {

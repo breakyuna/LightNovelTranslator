@@ -518,7 +518,7 @@ internal fun NativeTextRulesPage(
         dismissButton = { TextButton(onClick = { reloading = false }) { Text(stringResource(R.string.native_cancel)) } })
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout || maxWidth >= NativeTwoPaneBreakpoint
-        BackHandler(enabled = wide && editing != null) { closeEditor() }
+
         if (draft != null) {
             if (templateOpen && section == NativeRuleSection.PROMPTS) key(ref, draft.command) {
                 NativePromptTemplateDialog(requireNotNull(state.project), draft.policy, writable,
@@ -1075,6 +1075,13 @@ private fun NativeTextRuleEditor(
             ProjectTextRule(id, existing?.kind ?: kind, source, target, note, enabled, regex, sensitive, ruleScope)
         }.getOrNull()
     }
+    var discard by rememberSaveable(ref, id) { mutableStateOf(false) }
+    val dirty = source != existing?.source.orEmpty() || target != existing?.target.orEmpty() ||
+        note != existing?.note.orEmpty() || regex != (existing?.regex ?: (kind == TextRuleKind.PROTECT)) ||
+        sensitive != (existing?.caseSensitive ?: true) || enabled != (existing?.enabled ?: true) ||
+        ruleScope != (existing?.scope ?: TextRuleScope.BODY)
+    val requestClose: () -> Unit = { if (dirty) discard = true else close() }
+    BackHandler(enabled = inlineForm) { requestClose() }
     val title = stringResource(R.string.native_rules_rule_editor)
     val fields: @Composable ColumnScope.() -> Unit = {
         if (invalid) Text(stringResource(R.string.native_policy_invalid), color = MaterialTheme.colorScheme.error)
@@ -1087,6 +1094,8 @@ private fun NativeTextRuleEditor(
             maxLines = 4,
             modifier = Modifier.fillMaxWidth().testTag("native-policy-source"),
         )
+        NativeExpandedTextEditor(listOf(ref, id, "source"), stringResource(R.string.native_policy_source), source,
+            { if (it.length <= 4096) source = it })
         if (kind != TextRuleKind.PROTECT) {
             OutlinedTextField(
                 value = target,
@@ -1097,6 +1106,8 @@ private fun NativeTextRuleEditor(
                 modifier = Modifier.fillMaxWidth().testTag("native-policy-target"),
             )
         }
+        if (kind != TextRuleKind.PROTECT) NativeExpandedTextEditor(listOf(ref, id, "target"),
+            stringResource(R.string.native_policy_target), target, { if (it.length <= 4096) target = it })
         OutlinedTextField(
             value = note,
             onValueChange = { if (it.length <= 2048) note = it },
@@ -1161,7 +1172,7 @@ private fun NativeTextRuleEditor(
                 Text(title, style = MaterialTheme.typography.headlineSmall)
                 fields()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = close) { Text(stringResource(R.string.native_cancel)) }
+                    TextButton(onClick = requestClose) { Text(stringResource(R.string.native_cancel)) }
                     TextButton(
                         onClick = { rule?.let(apply) },
                         enabled = rule != null,
@@ -1173,10 +1184,16 @@ private fun NativeTextRuleEditor(
             }
         }
     } else {
-        NativePolicyForm(close, title, "native-policy-rule-dialog", rule != null, { rule?.let(apply) }) {
+        NativePolicyForm(requestClose, title, "native-policy-rule-dialog", rule != null, { rule?.let(apply) }) {
             fields()
         }
     }
+    if (discard) AlertDialog(onDismissRequest = { discard = false },
+        title = { Text(stringResource(R.string.native_discard_title)) },
+        text = { Text(stringResource(R.string.native_discard_body)) },
+        confirmButton = { TextButton(onClick = close) { Text(stringResource(R.string.native_discard)) } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_cancel)) } })
+
 }
 
 private enum class NativeRuleImportKind { POLICY, EXCHANGE, PRESET, LG_JSON, CSV, LG_XLSX }
@@ -1326,7 +1343,7 @@ internal fun NativePolicyForm(
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { close() })
             Surface(
                 modifier = Modifier.padding(16.dp).widthIn(max = 580.dp).fillMaxWidth().heightIn(max = 600.dp).testTag(tag),

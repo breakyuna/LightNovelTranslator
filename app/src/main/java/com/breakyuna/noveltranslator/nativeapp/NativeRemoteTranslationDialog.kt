@@ -57,7 +57,7 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
         (if (whole) pendingProject else pendingPage)
     Dialog(onDismissRequest = { if (!state.busy) onDismiss() },
         properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
             Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null) { if (!state.busy) onDismiss() })
             Surface(
