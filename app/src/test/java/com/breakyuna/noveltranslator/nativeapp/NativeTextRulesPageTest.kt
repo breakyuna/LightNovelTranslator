@@ -36,12 +36,13 @@ class NativeTextRulesPageTest {
         compose.onNodeWithTag("native-policy-save").assertIsNotEnabled()
         compose.onNodeWithTag("native-policy-add").performScrollTo().performClick()
         compose.onNodeWithTag("native-policy-source").performScrollTo().performTextInput("source")
-        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_discard)).performClick()
         assertEquals(0, changes); assertEquals(0, saves)
         compose.onNodeWithTag("native-policy-add").performScrollTo().performClick()
         compose.onNodeWithTag("native-policy-source").performScrollTo().performTextInput("source")
         compose.onNodeWithTag("native-policy-target").performScrollTo().performTextInput("target")
-        compose.onNodeWithTag("native-policy-apply").performClick()
+        compose.onNodeWithTag("native-policy-apply").performScrollTo().performClick()
         assertEquals(1, changes); assertEquals(0, saves)
     }
     @Test fun aConflictingDraftStaysVisibleAndCannotBeSaved() {

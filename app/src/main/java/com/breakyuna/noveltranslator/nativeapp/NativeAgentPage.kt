@@ -3,6 +3,7 @@ package com.breakyuna.noveltranslator.nativeapp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -20,8 +21,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.ExpandLess
@@ -39,6 +38,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -79,9 +80,11 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     reviewWorkspaceChange: ((WorkspaceChangeProposalSummary) -> Unit)? = null,
     workspace: NativeWorkspaceActions? = null,
     saveWorkspaceArtifact: (WorkspaceArtifactRecord) -> Unit = {},
-    wideLayout: Boolean = false, reviewApplicationProposal: (() -> Unit)? = null) {
+    wideLayout: Boolean = false, reviewApplicationProposal: (() -> Unit)? = null,
+    selectProfile: ((String) -> Unit)? = null, refreshProfiles: () -> Unit = {}) {
     val ref = state.project!!.ref
     val ready = !state.busy && !state.agentLoadIncomplete && !state.runLoadIncomplete
+    var configureModel by remember(ref) { mutableStateOf(false) }
     var showModel by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
     var showChats by remember(ref.instanceId, ref.generation) { mutableStateOf(false) }
     var showHistory by remember(ref, state.agentChatId) { mutableStateOf(false) }
@@ -94,8 +97,26 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
         state.agentChatId?.value, state.agentRunId?.value) { mutableStateOf(false) }
     val interrupted = state.recentRuns.any { it.state == StoredRunState.INTERRUPTED }
     var showActions by remember(ref, state.agentChatId) { mutableStateOf(false) }
+    var branchMessage by remember(ref, state.agentChatId) { mutableStateOf<MessageId?>(null) }
     var rejectedInputLength by remember(ref, state.agentChatId) { mutableStateOf<Int?>(null) }
     LaunchedEffect(ref, state.agentChatId, state.agentInput) { rejectedInputLength = null }
+    fun openPanel(target: String, toggle: Boolean = false) {
+        val wasOpen = when (target) {
+            "model" -> showModel
+            "workspace" -> showWorkspace
+            "queue" -> showQueue
+            "history" -> showHistory
+            "runs" -> runs
+            else -> tools
+        }
+        val open = !toggle || !wasOpen
+        showModel = open && target == "model"
+        showWorkspace = open && target == "workspace"
+        showQueue = open && target == "queue"
+        showHistory = open && target == "history"
+        runs = open && target == "runs"
+        tools = open && target == "tools"
+    }
     val workspaceUpload = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { workspace?.uploadUri?.invoke(it) }
     }
@@ -103,43 +124,14 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
         ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) state.agentAttachmentActions?.add(uris)
     }
-    if (showWorkspace && workspace != null) NativeWorkspaceDialog(
-        ref = ref, revision = state.project!!.revision, chatId = state.agentChatId,
-        runId = state.agentRunId, actions = workspace,
-        dismiss = { showWorkspace = false }, saveArtifact = saveWorkspaceArtifact,
-        upload = { workspaceUpload.launch(arrayOf("*/*")) },
-        refreshKey = state.workspaceUploadRevision,
-    )
-    if (showModel) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
-        { showModel = false }, configure, fetchModels, cancel, configureProfile, fetchProfile)
-    if (showQueue) state.agentQueue?.let {
-        NativeAgentQueueDialog(it, state.busy, { showQueue = false }, useQueued, deleteQueued, toggleQueue) {
-            showQueue = false
-            sendQueued()
+    state.agentMessageDetail?.let { NativeAgentMessageDialog(it, closeDetail) }
+    val currentChat = state.agentChatId
+    if (currentChat != null && prepareBranch != null && createBranch != null && historyDetail != null) {
+        branchMessage?.let { message ->
+            NativeAgentBranchDialog(ref, currentChat, message, prepareBranch, historyDetail, createBranch,
+                dismiss = { branchMessage = null }, done = { branchMessage = null })
         }
     }
-    if (showSteerHistory && loadSteerHistory != null && loadSteerDetail != null) state.agentChatId?.let { chat ->
-        NativeSteerHistoryDialog(ref, chat, loadSteerHistory, loadSteerDetail, restoreSteer, { showSteerHistory = false })
-    }
-    if (showContext && prepareContext != null && saveContext != null) state.agentChatId?.let { chat ->
-        NativeAgentContextDialog(ref, chat, prepareContext, saveContext, { showContext = false })
-    }
-    if (showHistory && loadHistory != null && historyDetail != null) state.agentChatId?.let { chat ->
-        NativeAgentHistoryDialog(ref, chat, loadHistory, historyDetail, { showHistory = false }, prepareBranch, createBranch)
-    }
-    if (runs || tools) NativeContentDialog(
-        onDismissRequest = { runs = false; tools = false },
-        title = { Text(stringResource(if (runs) R.string.native_runs_title else R.string.native_agent_local_tools)) },
-        text = {
-            Column(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
-                if (runs) NativeRunHistory(state) else NativeLocalAgentTools(state, query, prepare)
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = { runs = false; tools = false }) { Text(stringResource(R.string.native_close)) }
-        },
-    )
-    state.agentMessageDetail?.let { NativeAgentMessageDialog(it, closeDetail) }
     val timeline = key(ref.instanceId, ref.generation, state.agentChatId) { rememberLazyListState() }
     val fullBodies = remember(ref, state.agentChatId) { mutableStateMapOf<String, AgentMessageDetail>() }
     val lastLine = state.agentMessages.lastOrNull()
@@ -199,7 +191,8 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout || maxWidth >= NativeTwoPaneBreakpoint
         Row(Modifier.fillMaxSize()) {
-            Column(Modifier.weight(1f).fillMaxHeight()) {
+            Column(Modifier.weight(1f).fillMaxHeight()
+                .background(MaterialTheme.colorScheme.background)) {
                 Surface(
                     color = MaterialTheme.colorScheme.surface,
                     modifier = Modifier.fillMaxWidth(),
@@ -209,7 +202,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         if (interrupted) TextButton(
-                            onClick = { runs = true },
+                            onClick = { openPanel("runs") },
                             contentPadding = PaddingValues(horizontal = 0.dp, vertical = 0.dp),
                             modifier = Modifier.testTag("native-agent-interrupted"),
                         ) {
@@ -289,17 +282,17 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                     if (workspace != null && !wide) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_workspace_open)) },
                                         enabled = ready,
-                                        onClick = { showActions = false; showWorkspace = true },
+                                        onClick = { showActions = false; openPanel("workspace") },
                                     )
                                     if (!wide) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_agent_queue_button, state.agentQueue?.drafts?.size ?: 0)) },
                                         enabled = state.agentQueue != null,
-                                        onClick = { showActions = false; showQueue = true },
+                                        onClick = { showActions = false; openPanel("queue") },
                                     )
                                     if (loadHistory != null && historyDetail != null && state.agentChatId != null) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_agent_full_history)) },
                                         enabled = true,
-                                        onClick = { showActions = false; showHistory = true },
+                                        onClick = { showActions = false; openPanel("history") },
                                     )
                                     if (prepareContext != null && saveContext != null && state.agentChatId != null) DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_context_title)) },
@@ -314,7 +307,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                     if (state.recentRuns.isNotEmpty() && !wide) DropdownMenuItem(
                                         text = { Text(stringResource(if (interrupted) R.string.native_runs_interrupted else R.string.native_runs_title)) },
                                         enabled = true,
-                                        onClick = { showActions = false; runs = true },
+                                        onClick = { showActions = false; openPanel("runs") },
                                     )
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_open_proofreading)) },
@@ -324,13 +317,13 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                                     DropdownMenuItem(
                                         text = { Text(stringResource(R.string.native_agent_local_tools)) },
                                         enabled = !state.busy,
-                                        onClick = { showActions = false; tools = true },
+                                        onClick = { showActions = false; openPanel("tools") },
                                     )
                                 }
                             }
                         }
                         OutlinedButton(
-                            onClick = { showModel = true },
+                            onClick = { openPanel("model", toggle = true); refreshProfiles() },
                             enabled = !state.busy,
                             modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().heightIn(min = 48.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -345,6 +338,60 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                             )
                             Icon(Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(18.dp))
                         }
+                    }
+                }
+                if (showModel) NativeContentDialog(inline = true,
+                    onDismissRequest = { showModel = false },
+                    title = { Text(stringResource(R.string.native_models_title)) },
+                    text = { androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 180.dp)) {
+                        items(state.modelProfiles.filter { it.enabled && it.purpose.serves(ModelProfilePurpose.AGENT) }, key = { it.id }) { profile ->
+                            TextButton(enabled = !state.busy && selectProfile != null,
+                                onClick = { selectProfile?.invoke(profile.id); showModel = false }) {
+                                Text(profile.name + " · " + profile.settings.model)
+                            }
+                        }
+                    } },
+                    confirmButton = { TextButton(onClick = { showModel = false; configureModel = true }) {
+                        Text(stringResource(R.string.native_model_configure))
+                    } }, dismissButton = { TextButton(onClick = { showModel = false }) { Text(stringResource(R.string.native_close)) } })
+                Box(Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.5f)) {
+                    Column {
+                        if (showWorkspace && workspace != null) NativeWorkspaceDialog(
+                            ref = ref, revision = state.project!!.revision, chatId = state.agentChatId,
+                            runId = state.agentRunId, actions = workspace,
+                            dismiss = { showWorkspace = false }, saveArtifact = saveWorkspaceArtifact,
+                            upload = { workspaceUpload.launch(arrayOf("*/*")) },
+                            refreshKey = state.workspaceUploadRevision, inline = true,
+                        )
+                        if (configureModel) NativeModelDialog(state.modelSettings, state.busy, state.modelSettingsError, state.modelCatalogLoading,
+                            { configureModel = false }, configure, fetchModels, cancel, configureProfile, fetchProfile)
+                        if (showQueue) state.agentQueue?.let {
+                            NativeAgentQueueDialog(it, state.busy, { showQueue = false }, { id -> useQueued(id); showQueue = false }, deleteQueued, toggleQueue) {
+                                showQueue = false
+                                sendQueued()
+                            }
+                        }
+                        if (showSteerHistory && loadSteerHistory != null && loadSteerDetail != null) state.agentChatId?.let { chat ->
+                            NativeSteerHistoryDialog(ref, chat, loadSteerHistory, loadSteerDetail, restoreSteer, { showSteerHistory = false })
+                        }
+                        if (showContext && prepareContext != null && saveContext != null) state.agentChatId?.let { chat ->
+                            NativeAgentContextDialog(ref, chat, prepareContext, saveContext, { showContext = false })
+                        }
+                        if (showHistory && loadHistory != null && historyDetail != null) state.agentChatId?.let { chat ->
+                            NativeAgentHistoryDialog(ref, chat, loadHistory, historyDetail, { showHistory = false }, prepareBranch, createBranch)
+                        }
+                        if (runs || tools) NativeContentDialog(inline = true,
+                            onDismissRequest = { runs = false; tools = false },
+                            title = { Text(stringResource(if (runs) R.string.native_runs_title else R.string.native_agent_local_tools)) },
+                            text = {
+                                Column(Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                                    if (runs) NativeRunHistory(state) else NativeLocalAgentTools(state, query, prepare)
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { runs = false; tools = false }) { Text(stringResource(R.string.native_close)) }
+                            },
+                        )
                     }
                 }
                 reviewApplicationProposal?.let { review ->
@@ -362,7 +409,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     modifier = Modifier.fillMaxSize().nestedScroll(scrolling).testTag("native-agent-page"),
                     state = timeline,
                     contentPadding = PaddingValues(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     if (state.agentLoadIncomplete) {
                         item(key = "load-error") {
@@ -406,15 +453,20 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         }
                     }
                     items(state.agentMessages, key = { "message-" + it.id }) { line ->
-                        NativeAgentBubble(line, true, inspect, load = detailLoader, body = fullBodies[line.id], onResized = {
-                            if (followTail && !showPreview && line.id == lastLine?.id) scope.launch {
-                                withFrameNanos { }
-                                if (followTail && !timeline.isScrollInProgress) {
-                                    val warnings = (if (state.agentLoadIncomplete) 1 else 0) + (if (state.runLoadIncomplete) 1 else 0)
-                                    revealTail(warnings + state.agentMessages.lastIndex)
+                        NativeAgentBubble(line, true, inspect, load = detailLoader, body = fullBodies[line.id],
+                            stateKey = listOf(ref, state.agentChatId, line.id),
+                            branch = if (prepareBranch != null && createBranch != null && historyDetail != null && currentChat != null)
+                                ({ branchMessage = MessageId(line.id) }) else null,
+                            branchEnabled = ready && !state.hasAgentApproval && state.agentAttachments.isEmpty() && state.agentInput.isBlank(),
+                            onResized = {
+                                if (followTail && !showPreview && line.id == lastLine?.id) scope.launch {
+                                    withFrameNanos { }
+                                    if (followTail && !timeline.isScrollInProgress) {
+                                        val warnings = (if (state.agentLoadIncomplete) 1 else 0) + (if (state.runLoadIncomplete) 1 else 0)
+                                        revealTail(warnings + state.agentMessages.lastIndex)
+                                    }
                                 }
-                            }
-                        })
+                            })
                     }
                     if (showPreview && stream != null) {
                         item(key = "stream-preview") {
@@ -557,9 +609,20 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                         modifier = Modifier.fillMaxWidth().imePadding().padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (workspace != null) TextButton(onClick = { openPanel("workspace", toggle = true) }) {
+                                Text(stringResource(R.string.native_workspace_open))
+                            }
+                            if (state.agentQueue != null) TextButton(onClick = { openPanel("queue", toggle = true) }) {
+                                Text(stringResource(R.string.native_agent_queue_button, state.agentQueue.drafts.size))
+                            }
+                            if (loadHistory != null && historyDetail != null) TextButton(onClick = { openPanel("history", toggle = true) }) {
+                                Text(stringResource(R.string.native_agent_full_history))
+                            }
+                        }
                         if (state.modelSettings == null) {
                             TextButton(
-                                onClick = { showModel = true },
+                                onClick = { openPanel("model", toggle = true); refreshProfiles() },
                                 enabled = !state.busy,
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                             ) {
@@ -648,9 +711,9 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                 NativeAgentSidePanel(
                     state = state,
                     workspaceAvailable = workspace != null,
-                    openWorkspace = { showWorkspace = true },
-                    openQueue = { showQueue = true },
-                    openRuns = { runs = true },
+                    openWorkspace = { openPanel("workspace") },
+                    openQueue = { openPanel("queue") },
+                    openRuns = { openPanel("runs") },
                     modifier = Modifier.width(NativeAgentSidePanelWidth).fillMaxHeight(),
                 )
             }
@@ -729,114 +792,132 @@ private fun roleLabel(role: String): String = stringResource(
 @Composable
 internal fun NativeAgentBubble(line: AgentChatLine, enabled: Boolean, inspect: (String) -> Unit,
     load: (suspend (String) -> AgentMessageDetail)? = null, body: AgentMessageDetail? = null,
-    onResized: () -> Unit = {}) {
+    stateKey: Any = line.id, branch: (() -> Unit)? = null, branchEnabled: Boolean = true, onResized: () -> Unit = {}) {
     val user = line.role == "USER"
     val operation = line.role == "TOOL" || line.role == "ASSISTANT" && line.text.isBlank()
-    var expanded by rememberSaveable(line.id) { mutableStateOf(false) }
-    var detail by remember(line.id) { mutableStateOf<AgentMessageDetail?>(null) }
-    var loading by remember(line.id) { mutableStateOf(false) }
-    var failed by remember(line.id) { mutableStateOf(false) }
+    val role = roleLabel(line.role)
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
+    var detail by remember(stateKey) { mutableStateOf<AgentMessageDetail?>(null) }
+    var loading by remember(stateKey) { mutableStateOf(false) }
+    var failed by remember(stateKey) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    var copied by remember(line.id) { mutableStateOf(false) }
+    var copied by remember(stateKey) { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
+    val full = body ?: detail
     fun expand() {
         expanded = !expanded
-        if (expanded && detail == null && load != null && !loading) scope.launch {
-            loading = true; failed = false
+        if (expanded && full == null && load != null && !loading) scope.launch {
+            loading = true
+            failed = false
             try { detail = load(line.id) }
             catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (_: Exception) { failed = true }
             finally { loading = false }
         }
     }
-    Box(Modifier.fillMaxWidth(), contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
-        Surface(
-            modifier = Modifier.then(
-                if (user) Modifier.widthIn(max = 560.dp)
-                else Modifier.widthIn(max = 760.dp).fillMaxWidth(),
-            ).onSizeChanged { onResized() },
-            shape = RoundedCornerShape(if (operation) 12.dp else 18.dp),
-            color = when {
-                user -> MaterialTheme.colorScheme.primaryContainer
-                operation -> MaterialTheme.colorScheme.surfaceContainerLow
-                else -> androidx.compose.ui.graphics.Color.Transparent
-            },
-            contentColor = if (user) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+    val copy: () -> Unit = {
+        scope.launch {
+            loading = true
+            failed = false
+            try {
+                val loaded = full ?: load?.invoke(line.id)
+                if (loaded != null) detail = loaded
+                val text = if (operation && loaded != null)
+                    listOf(loaded.text, loaded.reasoning, loaded.tools).filter(String::isNotEmpty).joinToString("\n\n")
+                    else loaded?.text ?: line.text
+                clipboard.setText(AnnotatedString(text))
+                copied = true
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (_: Exception) { failed = true }
+            finally { loading = false }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth().testTag("native-agent-message-${line.id}")
+        .semantics { contentDescription = role },
+        contentAlignment = if (user) Alignment.CenterEnd else Alignment.CenterStart) {
+        Column(
+            modifier = (if (user) Modifier.widthIn(max = minOf(560.dp, maxWidth * 0.88f))
+                else Modifier.fillMaxWidth()).onSizeChanged { onResized() },
+            horizontalAlignment = if (user) Alignment.End else Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = if (operation) 4.dp else 8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = roleLabel(line.role),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (user) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    IconButton(enabled = enabled && !loading, onClick = {
-                        scope.launch {
-                            loading = true; failed = false
-                            try {
-                                val full = body ?: detail ?: load?.invoke(line.id)
-                                if (full != null) detail = full
-                                clipboard.setText(AnnotatedString(if (operation && full != null)
-                                    listOf(full.text, full.tools).filter(String::isNotEmpty).joinToString("\n\n")
-                                    else full?.text ?: line.text))
-                                copied = true
-                            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                            catch (_: Exception) { failed = true }
-                            finally { loading = false }
-                        }
-                    }) {
-                        Icon(if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                            stringResource(if (copied) R.string.native_copied else R.string.native_copy_message), Modifier.size(17.dp))
+            if (operation) {
+                // These suffixes are the short receipt facts written by NativeAgentStore.
+                val complete = line.role == "TOOL" && line.text.endsWith(" : complete")
+                val error = line.role == "TOOL" && line.text.endsWith(" : error")
+                val title = if (line.role == "TOOL") line.text.removeSuffix(" : complete").removeSuffix(" : error")
+                    else stringResource(R.string.native_agent_reasoning)
+                NativeAgentActivityHeader(
+                    title = title,
+                    expanded = expanded,
+                    onClick = { if (load == null && full == null) inspect(line.id) else expand() },
+                    enabled = enabled && !loading,
+                    tool = line.role == "TOOL",
+                    tone = when { error -> NativeTone.ERROR; complete -> NativeTone.SUCCESS; else -> NativeTone.NEUTRAL },
+                    status = stringResource(when {
+                        error -> R.string.native_runs_failed
+                        complete -> R.string.native_runs_succeeded
+                        else -> R.string.native_agent_tool_activity
+                    }),
+                )
+                if (expanded) {
+                    if (loading) Text(stringResource(R.string.native_working), style = MaterialTheme.typography.bodySmall)
+                    full?.let {
+                        if (it.reasoning.isNotEmpty()) SelectionContainer { NativeMarkdown(it.reasoning) }
+                        if (it.text.isNotEmpty()) NativeCodeBlock(it.text)
+                        if (it.tools.isNotEmpty()) NativeCodeBlock(it.tools)
+                    }
+                    NativeAgentMessageActions(copied, enabled && !loading, copy,
+                        branch = branch, branchEnabled = enabled && branchEnabled && !loading)
+                }
+            } else {
+                if (full != null && full.reasoning.isNotEmpty()) {
+                    NativeAgentMessageFoldout(stringResource(R.string.native_agent_reasoning), stateKey = stateKey,
+                        tone = NativeTone.SUCCESS, status = stringResource(R.string.native_runs_succeeded)) {
+                        SelectionContainer { NativeMarkdown(full.reasoning) }
                     }
                 }
-                if (operation) {
-                    TextButton(onClick = { if (load == null) inspect(line.id) else expand() }, enabled = enabled,
-                        contentPadding = PaddingValues(horizontal = 0.dp)) {
-                        Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text(line.text.ifBlank { stringResource(R.string.native_agent_tool_activity) },
-                            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelMedium)
+                if (full != null && full.tools.isNotEmpty()) {
+                    NativeAgentMessageFoldout(stringResource(R.string.native_agent_tool_details), stateKey = stateKey) {
+                        NativeCodeBlock(full.tools)
                     }
-                    if (expanded) {
-                        if (loading) Text(stringResource(R.string.native_working), style = MaterialTheme.typography.labelSmall)
-                        if (failed) TextButton(onClick = { expanded = false; expand() }) { Text(stringResource(R.string.native_refresh)) }
-                        detail?.let { NativeCodeBlock(listOf(it.text, it.tools).filter(String::isNotEmpty).joinToString("\n\n")) }
+                }
+                if (user) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        SelectionContainer {
+                            Text(full?.text ?: line.text, Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                style = MaterialTheme.typography.bodyLarge)
+                        }
                     }
                 } else {
-                    SelectionContainer {
-                        if (user) Text(body?.text ?: detail?.text ?: line.text, style = MaterialTheme.typography.bodyLarge)
-                        else NativeMarkdown(body?.text ?: detail?.text ?: line.text)
-                    }
-                    (body ?: detail)?.let { full ->
-                        if (full.reasoning.isNotEmpty()) NativeAgentFoldout(stringResource(R.string.native_agent_reasoning), stateKey = line.id) {
-                            NativeMarkdown(full.reasoning)
-                        }
-                        if (full.tools.isNotEmpty()) NativeAgentFoldout(stringResource(R.string.native_agent_tool_details), stateKey = line.id) {
-                            NativeCodeBlock(full.tools)
-                        }
-                    }
-                    if (load != null && detail == null && body == null) {
-                        TextButton(
-                            onClick = { if (!expanded || failed) { expanded = false; expand() } },
-                            enabled = !loading,
-                            contentPadding = PaddingValues(horizontal = 0.dp),
-                        ) {
-                            Text(stringResource(if (loading) R.string.native_working else R.string.native_agent_expand_message))
-                        }
-                    }
+                    SelectionContainer { NativeMarkdown(full?.text ?: line.text) }
                 }
-                if (failed) {
-                    Text(
-                        text = stringResource(R.string.native_agent_load_error),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+                NativeAgentMessageActions(
+                    copied = copied,
+                    copyEnabled = enabled && !loading,
+                    copy = copy,
+                    branch = branch.takeIf { user || line.role == "ASSISTANT" },
+                    branchEnabled = enabled && branchEnabled && !loading,
+                    alignEnd = user,
+                    detailsLabel = if (load != null && full == null)
+                        stringResource(if (loading) R.string.native_working else R.string.native_agent_expand_message) else null,
+                    detailsEnabled = enabled && !loading,
+                    details = { if (!expanded || failed) { expanded = false; expand() } },
+                )
+                if (line.role == "ASSISTANT") HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+            if (failed) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.native_agent_load_error), modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    TextButton(onClick = { expanded = false; expand() }, enabled = enabled && !loading) {
+                        Text(stringResource(R.string.native_refresh))
+                    }
                 }
             }
         }
@@ -966,15 +1047,16 @@ internal fun NativeAgentMessageDialog(detail: AgentMessageDetail, dismiss: () ->
             title = { Text(roleLabel(detail.role)) },
             text = {
                 Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (detail.reasoning.isNotEmpty()) NativeAgentMessageFoldout(stringResource(R.string.native_agent_reasoning), stateKey = detail.id,
+                        tone = NativeTone.SUCCESS, status = stringResource(R.string.native_runs_succeeded)) {
+                        SelectionContainer { NativeMarkdown(detail.reasoning) }
+                    }
                     SelectionContainer {
                         if (detail.role == "ASSISTANT") NativeMarkdown(detail.text)
                         else if (detail.role == "TOOL") NativeCodeBlock(detail.text)
                         else Text(detail.text)
                     }
-                    if (detail.reasoning.isNotEmpty()) NativeAgentFoldout(stringResource(R.string.native_agent_reasoning), stateKey = detail.id) {
-                        SelectionContainer { NativeMarkdown(detail.reasoning) }
-                    }
-                    if (detail.tools.isNotEmpty()) NativeAgentFoldout(stringResource(R.string.native_agent_tool_details), stateKey = detail.id) {
+                    if (detail.tools.isNotEmpty()) NativeAgentMessageFoldout(stringResource(R.string.native_agent_tool_details), stateKey = detail.id) {
                         NativeCodeBlock(detail.tools)
                     }
                 }

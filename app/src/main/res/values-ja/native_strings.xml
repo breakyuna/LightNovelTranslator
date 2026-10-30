@@ -1592,4 +1592,7 @@
     <string name="native_agent_business_refresh_failed">操作は保存されましたが、更新またはスケジュールに失敗しました。次の操作の前に記録を確認してください。</string>
     <string name="native_agent_business_scope">プロジェクト：%1$s</string>
     <string name="native_expand_editor">編集欄を拡大</string>
+    <string name="native_agent_branch_action">分岐</string>
+    <string name="native_agent_details_expanded">展開済み</string>
+    <string name="native_agent_details_collapsed">折りたたみ</string>
 </resources>

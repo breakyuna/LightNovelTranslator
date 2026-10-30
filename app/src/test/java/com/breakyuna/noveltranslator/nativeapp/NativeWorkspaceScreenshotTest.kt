@@ -23,6 +23,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertContentDescriptionEquals
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.printToString
@@ -375,7 +376,7 @@ class NativeWorkspaceScreenshotTest {
         assertEquals("http://192.168.1.2:1234/v1", capturedEndpoint)
     }
 
-    @Test fun composerStaysVisibleWhileTimelineScrollsAndMessagesUseRoles() {
+    @Test fun composerStaysVisibleWhileTimelineScrollsAndRolesRemainAccessible() {
         val settings = NativeModelSettings(ModelConfigurationRef("fixture", 1), "http://localhost:1234/v1", "fixture-model", false)
         val lines = (1..20).map { AgentChatLine("line-$it", if (it % 2 == 0) "ASSISTANT" else "USER", "Synthetic message $it") }
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
@@ -384,7 +385,8 @@ class NativeWorkspaceScreenshotTest {
         } } }
         compose.onNodeWithTag("native-agent-page").performScrollToNode(hasText("Synthetic message 1"))
         compose.onNodeWithText(context.getString(R.string.native_agent_send)).assertIsDisplayed()
-        compose.onAllNodesWithText(context.getString(R.string.native_role_you))[0].assertExists()
+        compose.onNodeWithTag("native-agent-message-line-1")
+            .assertContentDescriptionEquals(context.getString(R.string.native_role_you))
         compose.onRoot().captureRoboImage(filePath = "src/test/screenshots/native-agent-conversation.png")
     }
 

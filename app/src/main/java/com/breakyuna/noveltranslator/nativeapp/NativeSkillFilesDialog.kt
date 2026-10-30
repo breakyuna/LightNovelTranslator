@@ -73,7 +73,7 @@ internal fun skillExecutionPhaseLabel(snapshot: ForegroundWorkspaceSnapshot?): I
 /** Resource browsing and version-checked user-file edits; execution uses the app-owned runner. */
 @Composable
 internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: WorkspaceSkillRecord,
-    dismiss: () -> Unit) {
+    dismiss: () -> Unit, inline: Boolean = false, navigationGuard: NativeSkillNavigationGuard? = null) {
     var files by remember(record.summary.id) { mutableStateOf<List<WorkspaceSkillFile>?>(null) }
     var preview by remember(record.summary.id) { mutableStateOf<String?>(null) }
     var selected by remember(record.summary.id) { mutableStateOf<String?>(null) }
@@ -111,10 +111,13 @@ internal fun NativeSkillFilesDialog(actions: NativeSkillActions, record: Workspa
     if (execution != null && controller != null) {
         NativeSkillExecutionDialog(controller, execution!!) { execution = null }
     }
-    if (editorVisible) NativeSkillResourceEditor(actions, record, editing,
-        dismiss = { editorVisible = false },
-        changed = { refresh++; preview = null; selected = null })
-    NativeContentDialog(onDismissRequest = dismiss,
+    if (editorVisible) {
+        NativeSkillResourceEditor(actions, record, editing,
+            dismiss = { editorVisible = false },
+            changed = { refresh++; preview = null; selected = null }, inline = inline, navigationGuard = navigationGuard)
+        return
+    }
+    NativeContentDialog(inline = inline, onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_skill_files_title, record.summary.name)) },
         text = {
             Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState()).testTag("native-skill-files"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -248,7 +251,8 @@ private fun NativeSkillExecutionDialog(
 
 @Composable
 private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: WorkspaceSkillRecord,
-    file: WorkspaceSkillFile?, dismiss: () -> Unit, changed: () -> Unit) {
+    file: WorkspaceSkillFile?, dismiss: () -> Unit, changed: () -> Unit, inline: Boolean = false,
+    navigationGuard: NativeSkillNavigationGuard? = null) {
     val originalPath = file?.path?.value?.removePrefix(record.summary.id.value + "/").orEmpty()
     var path by remember(record.summary.id, originalPath) { mutableStateOf(originalPath) }
     var text by remember(record.summary.id, originalPath) { mutableStateOf("") }
@@ -261,6 +265,7 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
     var deleting by remember(record.summary.id, originalPath) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val dirty = text != base || path != originalPath
+    ObserveSkillNavigation(navigationGuard, resource = true, dirty = dirty, busy = busy)
     fun close() { if (!busy) { if (dirty) discard = true else dismiss() } }
     LaunchedEffect(record.summary.id, originalPath) {
         if (file != null) try {
@@ -279,7 +284,7 @@ private fun NativeSkillResourceEditor(actions: NativeSkillActions, record: Works
             finally { busy = false }
         }
     }
-    NativeContentDialog(onDismissRequest = ::close,
+    NativeContentDialog(inline = inline, onDismissRequest = ::close,
         title = { Text(stringResource(R.string.native_skill_resource_edit)) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {

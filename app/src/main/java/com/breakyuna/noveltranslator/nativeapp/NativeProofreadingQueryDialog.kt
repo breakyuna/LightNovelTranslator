@@ -15,14 +15,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
 /** Draft-only controls: only Apply/Clear dispatch a query, and neither authorizes translation. */
 @Composable
-internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismiss: () -> Unit, apply: (TextItemQuery) -> Unit) {
+internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismiss: () -> Unit, apply: (TextItemQuery) -> Unit, inline: Boolean = false) {
     val applied = state.proofreadingQuery
     key(state.project?.ref, applied) {
         var text by rememberSaveable { mutableStateOf(applied.text) }
@@ -35,16 +33,16 @@ internal fun NativeProofreadingQueryDialog(state: NativeProjectUiState, onDismis
         val status = statusName?.let(TextItemStatus::valueOf)
         val field = TextSearchField.valueOf(fieldName)
         val query = runCatching { TextItemQuery(status, text, field, assetId) }.getOrNull()
-        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        NativePanelHost(inline, onDismiss) {
             // A wrap-content dialog window keeps remeasuring a text field (Compose never reports
             // idle); a full-bleed window with a centered, height-bounded card settles, as in the
             // model settings dialog.
-            Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
-                Box(Modifier.matchParentSize().testTag("native-proof-scrim").clickable(
+            Box(if (inline) Modifier.fillMaxWidth() else Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
+                if (!inline) Box(Modifier.matchParentSize().testTag("native-proof-scrim").clickable(
                     interactionSource = remember { MutableInteractionSource() }, indication = null) { onDismiss() })
                 Surface(
-                    modifier = Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth()
-                        .heightIn(max = 480.dp).testTag("native-proof-dialog"),
+                    modifier = Modifier.padding(if (inline) 4.dp else 20.dp).widthIn(max = 560.dp).fillMaxWidth()
+                        .heightIn(max = if (inline) 300.dp else 480.dp).testTag("native-proof-dialog"),
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surface,
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),

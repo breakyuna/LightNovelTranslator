@@ -1,6 +1,9 @@
 package com.breakyuna.noveltranslator.nativeapp
 
 import android.content.Context
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -8,8 +11,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import com.breakyuna.noveltranslator.R
-import com.breakyuna.noveltranslator.nativecore.domain.AgentChatLine
-import com.breakyuna.noveltranslator.nativecore.domain.AgentMessageDetail
+import com.breakyuna.noveltranslator.nativecore.domain.*
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -25,6 +27,26 @@ class NativeAgentPresentationTest {
     @get:Rule val compose = createComposeRule()
     private val context get() = ApplicationProvider.getApplicationContext<Context>()
 
+    @Test fun fullHistoryPaginationStaysReachableInHalfHeightPanel() {
+        val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
+        val chat = ChatId("chat")
+        val cursor = AgentMessageCursor(ref, chat, 10, MessageId("older"))
+        val requests = mutableListOf<AgentMessageCursor?>()
+        compose.setContent { NativeTheme { Box(Modifier.height(300.dp)) {
+            NativeAgentHistoryDialog(ref, chat,
+                load = { _, _, before ->
+                    requests += before
+                    AgentMessagePage(List(20) { AgentChatLine("line-$it", "USER", "Message $it") },
+                        if (before == null) cursor else null)
+                }, inspect = { _, _, _ -> error("No detail expected") }, dismiss = {})
+        } } }
+        val older = compose.onNodeWithText(context.getString(R.string.native_agent_history_older))
+        val newer = compose.onNodeWithText(context.getString(R.string.native_agent_history_newer))
+        older.assertIsDisplayed().assertIsEnabled().performClick()
+        newer.assertIsDisplayed().assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(listOf(null, cursor, null), requests) }
+    }
+
     @Test fun toolReceiptsLoadOnlyWhenOpened() {
         var loads = 0
         compose.setContent { NativeTheme { Surface(Modifier.fillMaxSize()) {
@@ -35,10 +57,10 @@ class NativeAgentPresentationTest {
         } } }
         compose.onNodeWithText("unique receipt").assertDoesNotExist()
         compose.runOnIdle { assertEquals(0, loads) }
-        compose.onNodeWithText("lookup : complete").performClick()
+        compose.onNodeWithText("lookup").performClick()
         compose.onNodeWithText("unique receipt").assertIsDisplayed()
         compose.runOnIdle { assertEquals(1, loads) }
-        compose.onNodeWithText("lookup : complete").performClick()
+        compose.onNodeWithText("lookup").performClick()
         compose.onNodeWithText("unique receipt").assertDoesNotExist()
     }
 

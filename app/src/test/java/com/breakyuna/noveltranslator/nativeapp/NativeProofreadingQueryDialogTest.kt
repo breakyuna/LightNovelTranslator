@@ -66,6 +66,23 @@ class NativeProofreadingQueryDialogTest {
         compose.onNodeWithTag("native-proof-search").assertIsNotEnabled()
     }
 
+    @Test fun inlineFilterKeepsParentActionsReachableAndOnlyAppliesExplicitly() {
+        val applied = mutableListOf<TextItemQuery>()
+        var parentClicks = 0
+        compose.setContent { NativeTheme {
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
+                NativeProofreadingQueryDialog(state, {}, { applied.add(it) }, inline = true)
+                androidx.compose.material3.Button(onClick = { parentClicks++ }) { androidx.compose.material3.Text("parent-action") }
+            }
+        } }
+        compose.onNodeWithTag("native-proof-search").performScrollTo().performTextReplacement("draft")
+        compose.onNodeWithText("parent-action").performClick()
+        compose.runOnIdle { assertEquals(1, parentClicks); assertTrue(applied.isEmpty()) }
+        compose.onNodeWithTag("native-proof-apply").performClick()
+        compose.runOnIdle { assertEquals(listOf(TextItemQuery(text = "draft")), applied) }
+        compose.onNodeWithText("parent-action").assertIsDisplayed()
+    }
+
     @Test fun filteredPageCannotStartUnfilteredSimulationAndOffersExplicitClear() {
         var starts = 0
         val applied = mutableListOf<TextItemQuery>()

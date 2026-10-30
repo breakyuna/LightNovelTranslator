@@ -31,6 +31,9 @@ import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.activity.compose.BackHandler
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,6 +42,23 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.R
+
+private val LocalNativeInlinePanel = staticCompositionLocalOf { false }
+
+/** Page-owned content retains navigation and does not create another window. */
+@Composable
+internal fun NativePanelHost(inline: Boolean, onDismissRequest: () -> Unit,
+    content: @Composable () -> Unit) {
+    if (inline) {
+        BackHandler(onBack = onDismissRequest)
+        CompositionLocalProvider(LocalNativeInlinePanel provides true) { content() }
+    } else {
+        Dialog(onDismissRequest = onDismissRequest,
+            properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            CompositionLocalProvider(LocalNativeInlinePanel provides false) { content() }
+        }
+    }
+}
 
 internal enum class NativeTone {
     NEUTRAL,
@@ -59,13 +79,14 @@ internal fun NativeDialogSurface(
     confirmButton: @Composable () -> Unit,
     dismissButton: (@Composable () -> Unit)? = null,
 ) {
-    Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
+    val inline = LocalNativeInlinePanel.current
+    Box(if (inline) Modifier.fillMaxWidth() else Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
         Surface(
             modifier = modifier
-                .padding(16.dp)
+                .padding(if (inline) 0.dp else 16.dp)
                 .widthIn(max = 580.dp)
                 .fillMaxWidth()
-                .heightIn(max = 640.dp),
+                .heightIn(max = if (inline) 440.dp else 640.dp),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 0.dp,
@@ -76,15 +97,15 @@ internal fun NativeDialogSurface(
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 12.dp),
+                        .padding(horizontal = if (inline) 12.dp else 20.dp, vertical = if (inline) 8.dp else 16.dp),
                 ) {
-                    ProvideTextStyle(MaterialTheme.typography.headlineSmall, title)
+                    ProvideTextStyle(if (inline) MaterialTheme.typography.titleMedium else MaterialTheme.typography.headlineSmall, title)
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Box(
                     Modifier
                         .weight(1f, fill = false)
-                        .padding(horizontal = 20.dp, vertical = 14.dp),
+                        .padding(horizontal = if (inline) 12.dp else 20.dp, vertical = if (inline) 8.dp else 14.dp),
                 ) {
                     ProvideTextStyle(MaterialTheme.typography.bodyMedium, text)
                 }
@@ -113,8 +134,9 @@ internal fun NativeContentDialog(
     dismissButton: (@Composable () -> Unit)? = null,
     title: (@Composable () -> Unit)? = null,
     text: (@Composable () -> Unit)? = null,
+    inline: Boolean = false,
 ) {
-    Dialog(onDismissRequest = onDismissRequest, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    NativePanelHost(inline, onDismissRequest) {
         NativeDialogSurface(modifier = modifier, title = { title?.invoke() }, text = { text?.invoke() },
             confirmButton = confirmButton, dismissButton = dismissButton)
     }

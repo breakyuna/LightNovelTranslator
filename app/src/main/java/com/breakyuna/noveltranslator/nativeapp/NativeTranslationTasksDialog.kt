@@ -74,7 +74,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
         }
     }
     decision?.let { snapshot ->
-        NativeContentDialog(onDismissRequest = { if (!deciding) decision = null },
+        NativeContentDialog(inline = true, onDismissRequest = { if (!deciding) decision = null },
             title = { Text(stringResource(R.string.native_tasks_review_title)) },
             text = { Column {
                 Text(stringResource(R.string.native_tasks_progress, snapshot.committed, snapshot.remaining, snapshot.requests))
@@ -109,7 +109,7 @@ internal fun NativeTranslationTasksDialog(ref: LocalProjectRef,
             confirmButton = { TextButton(onClick = { confirmation = null; resume(spec) }, Modifier.testTag("native-task-confirm")) {
                 Text(stringResource(R.string.native_tasks_resume))
             } }, dismissButton = { TextButton(onClick = { confirmation = null }) { Text(stringResource(R.string.native_cancel)) } })
-    } ?: NativeContentDialog(onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_tasks_title)) },
+    } ?: NativeContentDialog(inline = true, onDismissRequest = dismiss, title = { Text(stringResource(R.string.native_tasks_title)) },
         text = { Column {
             if (failed) Text(stringResource(R.string.native_io_error))
             if (review) Text(stringResource(R.string.native_tasks_review), Modifier.testTag("native-task-review"))

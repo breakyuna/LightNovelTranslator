@@ -343,7 +343,7 @@
     <string name="native_role_system">系统</string>
     <string name="native_agent_tool_activity">有工具活动，可打开完整消息查看。</string>
     <string name="native_agent_message_details">详情</string>
-    <string name="native_agent_reasoning">思考内容</string>
+    <string name="native_agent_reasoning">思考过程</string>
     <string name="native_agent_tool_details">工具调用</string>
     <string name="native_close">关闭</string>
     <string name="native_copied">已复制</string>
@@ -1592,4 +1592,7 @@
     <string name="native_agent_business_refresh_failed">操作已保存，但刷新或调度失败。请先检查回执，再执行其他操作。</string>
     <string name="native_agent_business_scope">工程：%1$s</string>
     <string name="native_expand_editor">展开编辑</string>
+    <string name="native_agent_branch_action">分支</string>
+    <string name="native_agent_details_expanded">已展开</string>
+    <string name="native_agent_details_collapsed">已折叠</string>
 </resources>

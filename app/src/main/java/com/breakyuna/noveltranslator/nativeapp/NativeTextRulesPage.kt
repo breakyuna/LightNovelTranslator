@@ -213,7 +213,7 @@ internal fun NativeTextRulesPage(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth().testTag("native-rules-sections"),
             ) {
-                items(NativeRuleSection.entries.filter { it != NativeRuleSection.PROMPTS }, key = { it.name }) { entry ->
+                items(NativeRuleSection.entries, key = { it.name }) { entry ->
                     FilterChip(
                         selected = entry == section,
                         onClick = { selectSection(entry) },
@@ -280,6 +280,7 @@ internal fun NativeTextRulesPage(
             Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = search,
+                    enabled = editing == null,
                     onValueChange = { if (it.length <= 200) { search = it; selectedIds = emptySet() } },
                     label = { Text(stringResource(R.string.native_rules_search)) },
                     singleLine = true,
@@ -533,13 +534,6 @@ internal fun NativeTextRulesPage(
                     }
                 }
             }
-            if (!wide) {
-                editing?.let { id ->
-                    val editorKind = draft.policy.rules.firstOrNull { it.id == id }?.kind ?: ruleKind
-                    if (editorKind != null) NativeTextRuleEditor(ref, id, draft.policy.rules.firstOrNull { it.id == id }, editorKind,
-                        invalid = invalidEntry, close = closeEditor, apply = applyEditedRule)
-                }
-            }
             if (exchange && ruleKind != null) key(ref, draft.command, draft.policy.fingerprint()) {
                 NativePolicyImportDialog(ref, draft.policy, ruleKind, close = { exchange = false }) { expected, policy ->
                     if (writable && draft.policy.fingerprint() == expected) {
@@ -556,7 +550,7 @@ internal fun NativeTextRulesPage(
                         LazyColumn(Modifier.weight(1.2f).fillMaxHeight().testTag("native-policy-page"),
                             contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             item(key = "header") { headerContent() }
-                            if (section != NativeRuleSection.PROMPTS) item(key = "sections") { sectionsContent() }
+                            item(key = "sections") { sectionsContent() }
                             item(key = "status") { statusContent() }
                             if (draft != null && ruleKind != null) {
                                 item(key = "toolbar") { toolbarContent() }
@@ -610,20 +604,26 @@ internal fun NativeTextRulesPage(
                     LazyColumn(Modifier.fillMaxSize().testTag("native-policy-page"), contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         item(key = "header") { headerContent() }
-                        if (section != NativeRuleSection.PROMPTS) item(key = "sections") { sectionsContent() }
+                        item(key = "sections") { sectionsContent() }
                         item(key = "status") { statusContent() }
                         if (draft != null && section == NativeRuleSection.PROMPTS) {
                             item(key = "prompt") { promptContent() }
                         }
                         if (draft != null && ruleKind != null) {
                             item(key = "toolbar") { toolbarContent() }
+                            if (editing != null && draft.policy.rules.none { it.id == editing }) item(key = "new-rule") {
+                                NativeTextRuleEditor(ref, requireNotNull(editing), null, ruleKind,
+                                    invalid = invalidEntry, close = closeEditor, inlineForm = true, apply = applyEditedRule)
+                            }
                             if (section == NativeRuleSection.GLOSSARY) item(key = "glossary-scope") { glossaryContent() }
                             if (section == NativeRuleSection.TEXT_PRESERVE || section == NativeRuleSection.PRE_REPLACE ||
                                 section == NativeRuleSection.POST_REPLACE) item(key = "sample") { sampleContent() }
                             if (visibleRules.isEmpty()) item(key = "empty") { Text(stringResource(R.string.native_policy_empty)) }
                             nativeRuleItems(visibleRules, draft.policy.rules, selectedIds, canEdit,
                                 state.policyInvalidRuleId, qualityEvidence, null,
-                                onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, null)
+                                onSelected, onEnabled, { beginEdit(it.id) }, onDelete, onMove, null,
+                                editor = { rule -> if (editing == rule.id) NativeTextRuleEditor(ref, rule.id, rule, rule.kind,
+                                    invalid = invalidEntry, close = closeEditor, inlineForm = true, apply = applyEditedRule) })
                             item(key = "exchange") { exchangeContent() }
                         }
                     }
@@ -647,6 +647,7 @@ private fun LazyListScope.nativeRuleItems(
     onDelete: (ProjectTextRule) -> Unit,
     onMove: (ProjectTextRule, Int) -> Unit,
     onOpen: ((ProjectTextRule) -> Unit)?,
+    editor: (@Composable (ProjectTextRule) -> Unit)? = null,
 ) {
     itemsIndexed(visibleRules, key = { _, rule -> "rule-" + rule.id }) { visibleIndex, rule ->
         NativeRuleCard(rule, visibleIndex, visibleRules, allRules,
@@ -662,6 +663,7 @@ private fun LazyListScope.nativeRuleItems(
             onDelete = { onDelete(rule) },
             onMove = { other -> onMove(rule, other) },
             onOpen = onOpen?.let { open -> { open(rule) } })
+        editor?.invoke(rule)
     }
 }
 

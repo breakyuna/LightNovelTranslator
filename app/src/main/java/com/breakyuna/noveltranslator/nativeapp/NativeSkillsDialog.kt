@@ -18,6 +18,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,8 +33,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillLimits
@@ -43,6 +43,27 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
+/** Page navigation queries the live editors before removing their composition. */
+internal class NativeSkillNavigationGuard {
+    var editor: () -> Pair<Boolean, Boolean> = { false to false }
+    var resource: () -> Pair<Boolean, Boolean> = { false to false }
+    val busy get() = editor().second || resource().second
+    val dirty get() = editor().first || resource().first
+}
+
+@Composable
+internal fun ObserveSkillNavigation(guard: NativeSkillNavigationGuard?, resource: Boolean = false,
+    dirty: Boolean, busy: Boolean) {
+    val current = rememberUpdatedState(dirty to busy)
+    DisposableEffect(guard, resource) {
+        val read = { current.value }
+        if (resource) guard?.resource = read else guard?.editor = read
+        onDispose {
+            if (resource) guard?.resource = { false to false } else guard?.editor = { false to false }
+        }
+    }
+}
+
 /**
  * Skill catalog editor over the existing file-backed store: list, enable, reorder, create,
  * metadata/body edit and delete. Built-in skills stay read-only. This dialog never executes a
@@ -50,7 +71,8 @@ import kotlinx.coroutines.launch
  */
 @Composable
 internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit,
-                                openPersona: (() -> Unit)? = null) {
+                                openPersona: (() -> Unit)? = null, inline: Boolean = false,
+                                navigationGuard: NativeSkillNavigationGuard? = null) {
     var records by remember { mutableStateOf<List<WorkspaceSkillRecord>>(emptyList()) }
     var selected by remember { mutableStateOf<WorkspaceSkillRecord?>(null) }
     var content by remember { mutableStateOf("") }
@@ -60,6 +82,9 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
     var order by remember { mutableStateOf("0") }
     var languages by remember { mutableStateOf("") }
     var tags by remember { mutableStateOf("") }
+    var originalFields by remember { mutableStateOf<List<String>>(emptyList()) }
+    var originalContent by remember { mutableStateOf("") }
+    var discardEditor by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
@@ -69,6 +94,13 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
     var filesFor by remember { mutableStateOf<WorkspaceSkillRecord?>(null) }
     val scope = rememberCoroutineScope()
 
+    fun fields() = listOf(name, description, enabled.toString(), order, languages, tags)
+    fun requestEditorClose() {
+        if (!saving) {
+            if (fields() != originalFields || content != originalContent) discardEditor = true
+            else { selected = null; creating = false }
+        }
+    }
     suspend fun reload() {
         loading = true; failed = false
         try { records = actions.list() } catch (cancelled: CancellationException) { throw cancelled }
@@ -84,6 +116,8 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
         languages = NativeSkillMetadata.formatLabels(record?.summary?.languages.orEmpty())
         tags = NativeSkillMetadata.formatLabels(record?.summary?.tags.orEmpty())
         content = ""
+        originalContent = ""
+        originalFields = fields()
         editorError = null
         saving = false
     }
@@ -105,7 +139,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
         val target = record.summary.id
         try {
             val text = actions.read(target).orEmpty()
-            if (selected?.summary?.id == target) content = text
+            if (selected?.summary?.id == target) { content = text; originalContent = text }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -115,19 +149,28 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
         }
     }
 
+    ObserveSkillNavigation(navigationGuard,
+        dirty = (selected != null || creating) && (fields() != originalFields || content != originalContent),
+        busy = saving)
+    if (discardEditor) NativeContentDialog(onDismissRequest = { discardEditor = false },
+        title = { Text(stringResource(R.string.native_discard_title)) },
+        text = { Text(stringResource(R.string.native_discard_body)) },
+        confirmButton = { TextButton(onClick = { discardEditor = false; selected = null; creating = false }) {
+            Text(stringResource(R.string.native_discard))
+        } }, dismissButton = { TextButton(onClick = { discardEditor = false }) { Text(stringResource(R.string.native_keep_editing)) } })
     filesFor?.let { fixed ->
-        NativeSkillFilesDialog(actions, fixed, { filesFor = null })
+        NativeSkillFilesDialog(actions, fixed, { filesFor = null }, inline = inline, navigationGuard = navigationGuard)
         return
     }
     // Keep the window and focus owner stable when switching between catalog and editor.
-    Dialog(onDismissRequest = {
+    NativePanelHost(inline, onDismissRequest = {
         when {
             saving -> Unit
             deleteConfirm != null -> deleteConfirm = null
-            selected != null || creating -> { selected = null; creating = false }
+            selected != null || creating -> requestEditorClose()
             else -> dismiss()
         }
-    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    }) {
         deleteConfirm?.let { fixed ->
             NativeDialogSurface(
                 title = { Text(stringResource(R.string.native_skills_delete)) },
@@ -145,7 +188,7 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                     }
                 }, modifier = Modifier.testTag("native-skill-delete-confirm")) { Text(stringResource(R.string.native_discard)) } },
                 dismissButton = { TextButton(onClick = { deleteConfirm = null }) { Text(stringResource(R.string.native_cancel)) } })
-            return@Dialog
+            return@NativePanelHost
         }
 
         if (selected != null || creating) {
@@ -249,9 +292,9 @@ internal fun NativeSkillsDialog(actions: NativeSkillActions, dismiss: () -> Unit
                             }
                         }, modifier = Modifier.testTag("native-skill-save")) { Text(stringResource(R.string.native_save)) }
                 },
-                dismissButton = { TextButton(enabled = !saving, onClick = { selected = null; creating = false },
+                dismissButton = { TextButton(enabled = !saving, onClick = ::requestEditorClose,
                     modifier = Modifier.testTag("native-skill-editor-cancel")) { Text(stringResource(R.string.native_cancel)) } })
-            return@Dialog
+            return@NativePanelHost
         }
 
         NativeDialogSurface(

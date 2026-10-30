@@ -1592,4 +1592,7 @@
     <string name="native_agent_business_refresh_failed">작업은 저장되었으나 새로고침 또는 예약에 실패했습니다. 다음 작업 전에 기록을 확인하세요.</string>
     <string name="native_agent_business_scope">프로젝트: %1$s</string>
     <string name="native_expand_editor">편집기 확대</string>
+    <string name="native_agent_branch_action">분기</string>
+    <string name="native_agent_details_expanded">펼쳐짐</string>
+    <string name="native_agent_details_collapsed">접힘</string>
 </resources>

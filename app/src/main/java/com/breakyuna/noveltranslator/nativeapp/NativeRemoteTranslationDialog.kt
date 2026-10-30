@@ -15,8 +15,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 
@@ -25,7 +23,7 @@ internal typealias NativeRemoteTranslationAction = (LocalProjectRef, Long, Model
 /** A separate explicit paid-call confirmation. Merely editing this form never starts a request. */
 @Composable
 internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismiss: () -> Unit,
-    start: NativeRemoteTranslationAction, queue: NativeRemoteTranslationAction? = null) {
+    start: NativeRemoteTranslationAction, queue: NativeRemoteTranslationAction? = null, inline: Boolean = false) {
     val project = remember { requireNotNull(state.project) }
     val model = remember { requireNotNull(state.translationModelSettings) }
     var target by rememberSaveable(project.ref) { mutableStateOf(project.settings?.targetLanguage.orEmpty()) }
@@ -55,13 +53,12 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
         activeProject.revision == project.revision && !state.proofreadingQuery.active && state.qualityView == null &&
         state.editor == null && !state.selectingItems && state.manualBatch == null &&
         (if (whole) pendingProject else pendingPage)
-    Dialog(onDismissRequest = { if (!state.busy) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
-            Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
+    NativePanelHost(inline, { if (!state.busy) onDismiss() }) {
+        Box(if (inline) Modifier.fillMaxWidth() else Modifier.fillMaxSize().safeDrawingPadding().imePadding(), contentAlignment = Alignment.Center) {
+            if (!inline) Box(Modifier.matchParentSize().clickable(interactionSource = remember { MutableInteractionSource() },
                 indication = null) { if (!state.busy) onDismiss() })
             Surface(
-                modifier = Modifier.padding(20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = 620.dp)
+                modifier = Modifier.padding(if (inline) 4.dp else 20.dp).widthIn(max = 560.dp).fillMaxWidth().heightIn(max = if (inline) 360.dp else 620.dp)
                     .testTag("native-remote-translation-dialog"),
                 shape = MaterialTheme.shapes.large,
                 color = MaterialTheme.colorScheme.surface,
@@ -98,6 +95,7 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
                             label = { Text(stringResource(R.string.native_remote_source)) }, modifier = Modifier.fillMaxWidth())
                         OutlinedTextField(instructions, { if (it.length <= 16_384) instructions = it }, minLines = 2, maxLines = 5,
                             label = { Text(stringResource(R.string.native_remote_instructions)) }, modifier = Modifier.fillMaxWidth())
+                        NativeAgentFoldout(stringResource(R.string.native_settings_expert), stateKey = project.ref) {
                         OutlinedTextField(batch, { if (it.length <= 2 && it.all { c -> c in '0'..'9' }) batch = it }, singleLine = true,
                             label = { Text(stringResource(R.string.native_remote_batch)) }, modifier = Modifier.fillMaxWidth())
                         OutlinedTextField(characters, { if (it.length <= 5 && it.all { c -> c in '0'..'9' }) characters = it }, singleLine = true,
@@ -114,6 +112,7 @@ internal fun NativeRemoteTranslationDialog(state: NativeProjectUiState, onDismis
                         OutlinedTextField(preceding, { if (it.length <= 2 && it.all { c -> c in '0'..'9' }) preceding = it },
                             singleLine = true, label = { Text(stringResource(R.string.native_translation_preceding)) },
                             modifier = Modifier.fillMaxWidth().testTag("native-translation-preceding"))
+                        }
                         TextButton(onClick = { whole = false }, enabled = pendingPage) {
                             RadioButton(!whole, onClick = null); Text(stringResource(R.string.native_simulation_scope_page))
                         }

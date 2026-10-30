@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.assertIsDisplayed
@@ -27,6 +29,7 @@ import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreExc
 import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSummary
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
@@ -59,9 +62,12 @@ class NativeSkillsDialogTest {
     private fun actions(
         record: WorkspaceSkillRecord,
         read: suspend (WorkspaceSkillId) -> String? = { "body" },
+        writeResource: (suspend (WorkspaceSkillId, String, String, WorkspaceDigest, String?) ->
+            com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillFile)? = null,
         update: suspend (WorkspaceSkillId, WorkspaceSkillDraft, WorkspaceDigest) -> WorkspaceSkillRecord =
             { _, _, _ -> record },
     ) = NativeSkillActions(
+        writeResource = writeResource,
         list = { listOf(record) },
         read = read,
         create = { error("Create was not expected") },
@@ -83,6 +89,41 @@ class NativeSkillsDialogTest {
         compose.onNodeWithTag("native-skill-policy").performScrollTo().assertIsDisplayed()
         compose.onNodeWithTag("native-skill-content").performScrollTo()
             .assertTextContains("body", substring = true)
+    }
+
+    @Test fun navigationSeesResourceDraftAndKeepEditingPreservesIt() {
+        val guard = NativeSkillNavigationGuard()
+        val fixed = record()
+        compose.setContent { NativeTheme {
+            NativeSkillFilesDialog(actions(fixed, writeResource = { _, _, _, _, _ -> error("Unexpected save") }),
+                fixed, {}, inline = true, navigationGuard = guard)
+        } }
+        compose.onNodeWithText(context.getString(R.string.native_skill_resource_new)).performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_skill_resource_path)).performTextReplacement("notes.txt")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNode(hasText(context.getString(R.string.native_cancel)) and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithText("notes.txt").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(guard.dirty) }
+    }
+
+    @Test fun navigationSeesUnsavedSkillBodyAndCancelKeepsIt() {
+        val guard = NativeSkillNavigationGuard()
+        compose.setContent { NativeTheme {
+            NativeSkillsDialog(actions(record()), {}, navigationGuard = guard)
+        } }
+        openEditor()
+        compose.runOnIdle { assertFalse(guard.dirty) }
+        compose.onNodeWithTag("native-skill-content").performScrollTo().performTextReplacement("unsaved draft")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_keep_editing)).performClick()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("unsaved draft")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_discard)).performClick()
+        compose.runOnIdle { assertFalse(guard.dirty) }
     }
 
     @Test fun editorReloadsAfterCancelThenSavesLanguagesTagsOrderAndEnabled() {

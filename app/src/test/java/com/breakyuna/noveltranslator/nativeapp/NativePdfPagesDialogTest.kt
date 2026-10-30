@@ -48,6 +48,27 @@ class NativePdfPagesDialogTest {
         compose.onNodeWithText(context.getString(R.string.native_pdf_edit_settings_first)).assertIsDisplayed()
     }
 
+    @Test fun closingUnsavedPageDecisionsRequiresAnExplicitDiscard() {
+        val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
+        val asset = ProjectAssetSummary(2, RelativePath("book.pdf"), ProjectAssetFormat.PDF, 0, true, 10, "a".repeat(64), 3)
+        val project = TextProjectSummary(ref, "test", 7, asset.path, 3, listOf(asset), ProjectSettings())
+        var closed = 0
+        compose.setContent { NativeTheme {
+            NativePdfPagesDialog(NativeProjectUiState(project = project), asset, { closed++ }, { error("Unexpected save") })
+        } }
+        val context: Context = ApplicationProvider.getApplicationContext()
+        compose.onAllNodesWithText(context.getString(R.string.native_pdf_default))[0].performClick()
+        compose.onNodeWithText(context.getString(R.string.native_pdf_omit)).performClick()
+        compose.onNodeWithText(context.getString(R.string.native_pdf_apply_range)).performClick()
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        compose.runOnIdle { assertEquals(0, closed) }
+        compose.onNodeWithText(context.getString(R.string.native_keep_editing)).performClick()
+        compose.runOnIdle { assertEquals(0, closed) }
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        compose.onNodeWithText(context.getString(R.string.native_discard)).performClick()
+        compose.runOnIdle { assertEquals(1, closed) }
+    }
+
     @Test fun textPreviewLoadsOnlyTheSelectedPageAndDoesNotSaveDecisions() {
         val ref = LocalProjectRef(ProjectId("p"), ProjectInstanceId("i"), RecoveryGeneration(1))
         val asset = ProjectAssetSummary(2, RelativePath("book.pdf"), ProjectAssetFormat.PDF, 0, true, 10, "a".repeat(64), 3)
@@ -117,15 +138,15 @@ class NativePdfPagesDialogTest {
                     assertEquals(ref, actual); assertEquals(7L, revision); assertEquals(asset, source)
                     pages.add(page)
                     pending.await()
-                })
+                }, editPage = { _, _, _, _ -> error("Unexpected edit") })
         } }
         compose.runOnIdle { assertTrue(pages.isEmpty()) }
         compose.onAllNodesWithText(context.getString(R.string.native_pdf_preview))[0].performClick()
-        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onAllNodes(isDialog()).assertCountEquals(0)
         compose.onNodeWithTag("pdf-pages-list").assertDoesNotExist()
         compose.onNodeWithTag("pdf-page-preview").assertIsDisplayed()
         compose.onNodeWithTag(PdfThumbnailLoadingTag).assertIsDisplayed()
-        compose.onNodeWithText("page body 1").assertIsDisplayed()
+        compose.onNodeWithText("page body 1").performScrollTo().assertIsDisplayed()
         val closeButton = compose.onNodeWithText(context.getString(R.string.native_close))
         closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled()
         compose.runOnIdle {
@@ -139,11 +160,12 @@ class NativePdfPagesDialogTest {
         }
         compose.onNodeWithTag(PdfThumbnailFailedTag).assertDoesNotExist()
         compose.onNodeWithTag(PdfThumbnailLoadingTag).assertDoesNotExist()
-        compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
-        compose.onNodeWithText("page body 1").assertIsDisplayed()
+        compose.onNodeWithTag(PdfThumbnailImageTag).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText("page body 1").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_pdf_edit_page)).assertIsDisplayed().assertIsEnabled()
         closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled().performClick()
         awaitVisiblePageList()
-        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onAllNodes(isDialog()).assertCountEquals(0)
         compose.onNodeWithTag("pdf-pages-list").assertIsDisplayed()
         compose.onNodeWithTag("pdf-page-preview").assertDoesNotExist()
         compose.runOnIdle {
@@ -152,19 +174,20 @@ class NativePdfPagesDialogTest {
         }
         // The restored list must remain interactive and open another page without a new window.
         compose.onAllNodesWithText(context.getString(R.string.native_pdf_preview))[1].performClick()
-        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onAllNodes(isDialog()).assertCountEquals(0)
         compose.onNodeWithTag("pdf-pages-list").assertDoesNotExist()
         compose.onNodeWithTag("pdf-page-preview").assertIsDisplayed()
-        compose.onNodeWithText("page body 2").assertIsDisplayed()
+        compose.onNodeWithText("page body 2").performScrollTo().assertIsDisplayed()
         compose.waitUntil(10_000) {
             compose.onAllNodesWithTag(PdfThumbnailImageTag).fetchSemanticsNodes().isNotEmpty() ||
                 compose.onAllNodesWithTag(PdfThumbnailFailedTag).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag(PdfThumbnailFailedTag).assertDoesNotExist()
-        compose.onNodeWithTag(PdfThumbnailImageTag).assertIsDisplayed()
+        compose.onNodeWithTag(PdfThumbnailImageTag).performScrollTo().assertIsDisplayed()
+        compose.onNodeWithText(context.getString(R.string.native_pdf_edit_page)).assertIsDisplayed().assertIsEnabled()
         closeButton.assertIsDisplayed().assertHeightIsAtLeast(1.dp).assertIsEnabled().performClick()
         awaitVisiblePageList()
-        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onAllNodes(isDialog()).assertCountEquals(0)
         compose.onNodeWithTag("pdf-page-preview").assertDoesNotExist()
         compose.runOnIdle {
             assertEquals(listOf(1, 2), pages)
@@ -196,7 +219,7 @@ class NativePdfPagesDialogTest {
 
     private fun awaitVisiblePageList() {
         try {
-            // Wait for placement and window visibility as well as restored semantics.
+            // Wait for placement and visibility of the restored inline list.
             compose.waitUntil(10_000) { compose.onNodeWithTag("pdf-pages-list").isDisplayed() }
         } catch (failure: Throwable) {
             // Preserve the original failure even if diagnostics cannot be collected.
@@ -215,7 +238,7 @@ class NativePdfPagesDialogTest {
                 }
             }.exceptionOrNull()?.let { failure.addSuppressed(it) }
             runCatching {
-                val bitmap = compose.onNode(isDialog()).captureToImage().asAndroidBitmap()
+                val bitmap = compose.onNodeWithTag("pdf-pages-list").captureToImage().asAndroidBitmap()
                 File("src/test/screenshots/native-pdf-return-failure.png").apply {
                     parentFile.mkdirs()
                     outputStream().use { output ->
@@ -229,7 +252,7 @@ class NativePdfPagesDialogTest {
     }
 
     private fun pngBytes(): ByteArray {
-        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(600, 900, Bitmap.Config.ARGB_8888)
         return try {
             ByteArrayOutputStream().use { output ->
                 assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output))

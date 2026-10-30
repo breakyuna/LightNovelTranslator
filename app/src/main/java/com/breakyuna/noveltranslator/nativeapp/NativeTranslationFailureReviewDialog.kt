@@ -316,7 +316,7 @@ internal fun NativeTranslationFailureReviewDialog(
         }
     }
 
-    NativeContentDialog(
+    NativeContentDialog(inline = true,
         onDismissRequest = { if (!busy) dismiss() },
         title = {
             Text(stringResource(R.string.native_failure_review_title),

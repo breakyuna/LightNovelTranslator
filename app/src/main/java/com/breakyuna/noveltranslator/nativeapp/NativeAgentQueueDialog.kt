@@ -24,7 +24,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.CommandId
 internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismiss: () -> Unit,
                                     use: (CommandId) -> Unit, delete: (CommandId) -> Unit,
                                     togglePause: () -> Unit, sendNext: () -> Unit) {
-    NativeContentDialog(onDismissRequest = dismiss,
+    NativeContentDialog(inline = true,onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_agent_queue_title)) },
         text = {
             Column(Modifier.heightIn(max = 460.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -45,7 +45,7 @@ internal fun NativeAgentQueueDialog(queue: AgentInputQueue, busy: Boolean, dismi
                     items(queue.drafts, key = { it.id.value }) { draft ->
                         Card(Modifier.fillMaxWidth().testTag("native-agent-queue-${draft.id.value}")) {
                             Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text(draft.text, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                                androidx.compose.foundation.text.selection.SelectionContainer { Text(draft.text) }
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     TextButton(onClick = { use(draft.id) }, enabled = !busy) {
                                         Text(stringResource(R.string.native_agent_queue_use))

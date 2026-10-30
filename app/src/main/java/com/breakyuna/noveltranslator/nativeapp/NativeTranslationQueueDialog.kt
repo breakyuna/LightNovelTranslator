@@ -58,7 +58,7 @@ internal fun NativeTranslationQueueDialog(
             failed = true
         } finally { loading = false }
     }
-    NativeContentDialog(
+    NativeContentDialog(inline = true,
         onDismissRequest = dismiss,
         title = { Text(stringResource(R.string.native_queue_title)) },
         text = {

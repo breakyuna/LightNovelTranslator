@@ -93,12 +93,15 @@ internal fun NativeMorePage(
     onFullArchiveExport: (() -> Unit)? = null,
     onFullArchiveImport: (() -> Unit)? = null,
     onLegacyExport: (() -> Unit)? = null,
+    skillPanel: (@Composable () -> Unit)? = null,
 ) {
     val project = state.project
     var mcpVisible by remember { mutableStateOf(false) }
     LaunchedEffect(project?.ref) { refreshStorage() }
+    Column(Modifier.fillMaxSize()) {
+    skillPanel?.invoke()
     LazyColumn(
-        Modifier.fillMaxSize().wrapContentSize(Alignment.TopCenter).widthIn(max = 1000.dp).fillMaxSize().testTag("native-more-page"),
+        Modifier.weight(1f).wrapContentSize(Alignment.TopCenter).widthIn(max = 1000.dp).fillMaxSize().testTag("native-more-page"),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -359,6 +362,7 @@ internal fun NativeMorePage(
                 )
             }
         }
+    }
     }
     if (mcpVisible) {
         val model: NativeProjectViewModel = viewModel()

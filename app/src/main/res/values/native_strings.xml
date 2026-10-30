@@ -1592,4 +1592,7 @@
     <string name="native_agent_business_refresh_failed">The action was saved, but refresh or scheduling failed. Inspect its receipt before taking another action.</string>
     <string name="native_agent_business_scope">Project: %1$s</string>
     <string name="native_expand_editor">Expand editor</string>
+    <string name="native_agent_branch_action">Branch</string>
+    <string name="native_agent_details_expanded">Expanded</string>
+    <string name="native_agent_details_collapsed">Collapsed</string>
 </resources>

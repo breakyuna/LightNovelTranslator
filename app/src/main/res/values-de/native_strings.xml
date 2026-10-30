@@ -1592,4 +1592,7 @@
     <string name="native_agent_business_refresh_failed">Die Aktion wurde gespeichert, aber die Aktualisierung oder Planung ist fehlgeschlagen. Prüfen Sie zuerst den Beleg.</string>
     <string name="native_agent_business_scope">Projekt: %1$s</string>
     <string name="native_expand_editor">Editor vergrößern</string>
+    <string name="native_agent_branch_action">Verzweigen</string>
+    <string name="native_agent_details_expanded">Ausgeklappt</string>
+    <string name="native_agent_details_collapsed">Eingeklappt</string>
 </resources>

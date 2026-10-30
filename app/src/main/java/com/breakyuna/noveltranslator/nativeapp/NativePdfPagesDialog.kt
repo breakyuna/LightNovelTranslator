@@ -19,8 +19,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.*
 import com.breakyuna.noveltranslator.nativecore.formats.PdfFormatException
@@ -69,14 +67,24 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
     val eligible = valid && !state.busy && current != null && current.ref == project.ref && current.revision == project.revision &&
         state.editor == null && state.manualBatch == null && !state.selectingItems &&
         !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true
-    // Keep one window/focus owner while showing a page preview; the list must not cover it.
-    Dialog(onDismissRequest = {
-        if (previewPage != null) previewPage = null else if (!state.busy) close()
-    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    var discard by rememberSaveable(project.ref, asset.id) { mutableStateOf(false) }
+    val requestClose: () -> Unit = {
+        if (!state.busy) {
+            if (decisions != starting) discard = true else close()
+        }
+    }
+    if (discard) NativeContentDialog(onDismissRequest = { discard = false },
+        title = { Text(stringResource(R.string.native_discard_title)) },
+        text = { Text(stringResource(R.string.native_discard_body)) },
+        confirmButton = { TextButton(onClick = close) { Text(stringResource(R.string.native_discard)) } },
+        dismissButton = { TextButton(onClick = { discard = false }) { Text(stringResource(R.string.native_keep_editing)) } })
+    NativePanelHost(inline = true, onDismissRequest = {
+        if (previewPage != null) previewPage = null else requestClose()
+    }) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             // Keep the measured panel alive when returning from a preview to the page list.
             Surface(Modifier.testTag(if (previewPage == null) "pdf-pages-list" else "pdf-page-preview")
-                .padding(16.dp).widthIn(max = 680.dp).fillMaxWidth().fillMaxHeight(.92f),
+                .widthIn(max = 680.dp).fillMaxWidth().heightIn(max = 500.dp),
                 shape = MaterialTheme.shapes.extraLarge) {
                 previewPage?.let { page ->
                     NativePdfPagePreview(project.ref, project.revision, asset, page,
@@ -84,7 +92,9 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
                         edit = if (editPage != null && !state.busy && decisions == starting && current?.revision == project.revision &&
                             state.editor == null && state.manualBatch == null && !state.selectingItems &&
                             !state.policyLoadIncomplete && !state.runLoadIncomplete && state.policyDraft?.dirty != true)
-                            ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null)
+                            ({ previewPage = null; close(); editPage(project.ref, project.revision, asset, page) }) else null,
+                        previous = if (page > 1) ({ previewPage = page - 1 }) else null,
+                        next = if (page < decisions.length) ({ previewPage = page + 1 }) else null)
                     return@Surface
                 }
                 Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -128,7 +138,7 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
                         }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        TextButton(close, enabled = !state.busy) { Text(stringResource(R.string.native_cancel)) }
+                        TextButton(requestClose, enabled = !state.busy) { Text(stringResource(R.string.native_cancel)) }
                         TextButton(onClick = { settings?.let {
                             submitted = true
                             save(NativeProjectSettingsChange(project.ref, project.revision, CommandId(command), it))
@@ -146,7 +156,7 @@ internal fun NativePdfPagesDialog(state: NativeProjectUiState, asset: ProjectAss
 private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: ProjectAssetSummary, page: Int,
     loadPage: (suspend (LocalProjectRef, Long, ProjectAssetSummary, Int) -> TextProjectItem)?,
     loadThumbnail: (suspend (LocalProjectRef, Long, ProjectAssetSummary, Int) -> ByteArray)?,
-    close: () -> Unit, edit: (() -> Unit)? = null) {
+    close: () -> Unit, edit: (() -> Unit)? = null, previous: (() -> Unit)? = null, next: (() -> Unit)? = null) {
     var item by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf<TextProjectItem?>(null) }
     var failed by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf(false) }
     var thumbnail by remember(ref, revision, asset.id, asset.sha256, page) { mutableStateOf<ImageBitmap?>(null) }
@@ -175,33 +185,32 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
     }
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.native_pdf_page_number, page), style = MaterialTheme.typography.titleLarge)
-        if (loadThumbnail != null) {
-            val renderError = thumbnailError
-            when {
-                thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
-                    contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
-                renderError != null -> Text(stringResource(renderError),
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.testTag(PdfThumbnailFailedTag))
-                else -> Row(verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.native_pdf_thumbnail_loading))
+        // The thumbnail and selectable text share one scroller; actions keep their height.
+        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (loadThumbnail != null) {
+                val renderError = thumbnailError
+                when {
+                    thumbnail != null -> Image(bitmap = requireNotNull(thumbnail),
+                        contentDescription = stringResource(R.string.native_pdf_thumbnail_description, page),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).testTag(PdfThumbnailImageTag))
+                    renderError != null -> Text(stringResource(renderError),
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.testTag(PdfThumbnailFailedTag))
+                    else -> Row(verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.testTag(PdfThumbnailLoadingTag)) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.native_pdf_thumbnail_loading))
+                    }
                 }
             }
-        }
-        if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
-        else if (item == null && loadPage != null) CircularProgressIndicator()
-        item?.let { loaded ->
-            // Compose 1.7's SelectionContainer wraps its modifier in another layout.
-            // Keep Column parent data on this direct child so the action buttons retain height.
-            Box(Modifier.weight(1f).fillMaxWidth()) {
-                SelectionContainer(Modifier.fillMaxSize()) {
-                    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (failed) Text(stringResource(R.string.native_pdf_preview_failed))
+            else if (item == null && loadPage != null) CircularProgressIndicator()
+            item?.let { loaded ->
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(stringResource(loaded.status.label()), style = MaterialTheme.typography.labelLarge)
                         Text(stringResource(R.string.native_source), style = MaterialTheme.typography.titleMedium)
                         Text(loaded.source.ifEmpty { stringResource(R.string.native_pdf_no_text) })
@@ -211,6 +220,10 @@ private fun NativePdfPagePreview(ref: LocalProjectRef, revision: Long, asset: Pr
                     }
                 }
             }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            TextButton(onClick = { previous?.invoke() }, enabled = previous != null) { Text(stringResource(R.string.native_previous)) }
+            TextButton(onClick = { next?.invoke() }, enabled = next != null) { Text(stringResource(R.string.native_next)) }
         }
         if (edit != null) TextButton(onClick = edit, enabled = item != null && !failed) {
             Text(stringResource(R.string.native_pdf_edit_page))

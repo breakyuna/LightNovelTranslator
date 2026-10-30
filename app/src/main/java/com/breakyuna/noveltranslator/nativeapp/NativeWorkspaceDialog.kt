@@ -30,8 +30,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.ChatId
 import com.breakyuna.noveltranslator.nativecore.domain.LocalProjectRef
@@ -77,6 +75,7 @@ internal fun NativeWorkspaceDialog(
     saveArtifact: (WorkspaceArtifactRecord) -> Unit,
     upload: (() -> Unit)? = null,
     refreshKey: Int = 0,
+    inline: Boolean = false,
 ) {
     var materials by remember(ref, revision) { mutableStateOf<List<WorkspaceMaterialSummary>?>(null) }
     var materialFailed by remember(ref, revision) { mutableStateOf(false) }
@@ -113,20 +112,20 @@ internal fun NativeWorkspaceDialog(
     var importing by remember(ref, revision, chatId, runId) { mutableStateOf<WorkspaceArtifactRecord?>(null) }
     var importBusy by remember(ref, revision, chatId, runId) { mutableStateOf(false) }
     // All pages share one window; switching content must not recreate the focus owner.
-    Dialog(onDismissRequest = {
+    NativePanelHost(inline = inline, onDismissRequest = {
         when {
             importing != null -> if (!importBusy) importing = null
             preview != null -> preview = null
             else -> dismiss()
         }
-    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    }) {
         val importingArtifact = importing
         if (importingArtifact != null) {
             NativeWorkspaceArtifactImport(ref, revision, importingArtifact, requireNotNull(actions.importArtifact),
                 busy = importBusy, setBusy = { importBusy = it }, close = { importing = null })
-            return@Dialog
+            return@NativePanelHost
         }
-        preview?.let { target -> when (target) {
+        val previewContent: @Composable () -> Unit = { preview?.let { target -> when (target) {
             is WorkspacePreviewTarget.Material -> NativeWorkspacePreview(
                 title = stringResource(R.string.native_workspace_preview_title),
                 identity = listOf("material", ref, revision, chatId, runId, target.id.value),
@@ -139,13 +138,13 @@ internal fun NativeWorkspaceDialog(
                 load = { actions.readArtifact(ref, runId, target.id) },
                 close = { preview = null },
             )
-        }; return@Dialog }
+        } } }
 
         NativeDialogSurface(
             modifier = Modifier.testTag("native-workspace-dialog"),
             title = { Text(stringResource(R.string.native_workspace_title)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.native_workspace_revision, revision), style = MaterialTheme.typography.labelMedium)
                     if (runId == null) Text(stringResource(R.string.native_workspace_no_run), style = MaterialTheme.typography.bodySmall)
                     else Text(stringResource(R.string.native_workspace_run, runId.value),
@@ -175,6 +174,7 @@ internal fun NativeWorkspaceDialog(
                             }
                         }
                     }
+                    previewContent()
                     HorizontalDivider()
                     Text(stringResource(R.string.native_workspace_artifacts), style = MaterialTheme.typography.titleSmall)
                     if (actions.inventory != null) TextButton(onClick = { refresh++ }) { Text(stringResource(R.string.native_workspace_recheck)) }
@@ -287,7 +287,7 @@ private fun NativeWorkspacePreview(
                     failed -> Text(stringResource(R.string.native_workspace_preview_failed),
                         color = MaterialTheme.colorScheme.error)
                     text == null -> CircularProgressIndicator()
-                    else -> SelectionContainer(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
+                    else -> SelectionContainer(Modifier.heightIn(max = 240.dp).verticalScroll(rememberScrollState())) {
                         Text(requireNotNull(text), Modifier.testTag("native-workspace-preview-text"))
                     }
                 }

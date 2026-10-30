@@ -13,8 +13,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.breakyuna.noveltranslator.R
 import com.breakyuna.noveltranslator.nativecore.domain.ManualNameEdit
 
@@ -26,7 +24,7 @@ import com.breakyuna.noveltranslator.nativecore.domain.ManualNameEdit
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NativeNameEditDialog(draft: NativeNameEditDraft, busy: Boolean,
-                                  onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
+                                  onDismiss: () -> Unit, onSave: (String, String) -> Unit, inline: Boolean = false) {
     val identity = arrayOf(draft.ref.projectId.value, draft.ref.instanceId.value,
         draft.ref.generation.value.toString(), draft.itemId.value.toString(), draft.revision.toString())
     var source by rememberSaveable(*identity) { mutableStateOf(draft.sourceText) }
@@ -38,9 +36,8 @@ internal fun NativeNameEditDialog(draft: NativeNameEditDraft, busy: Boolean,
             else onDismiss()
         }
     }
-    Dialog(onDismissRequest = close,
-        properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(Modifier.fillMaxSize()) {
+    NativePanelHost(inline, close) {
+        Surface(if (inline) Modifier.fillMaxWidth().heightIn(max = 360.dp) else Modifier.fillMaxSize()) {
             Scaffold(topBar = {
                 TopAppBar(title = { Text(stringResource(R.string.native_names_title)) },
                     navigationIcon = { IconButton(onClick = close, enabled = !busy) {
