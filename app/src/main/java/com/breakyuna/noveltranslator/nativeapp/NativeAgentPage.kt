@@ -190,6 +190,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val wide = wideLayout || maxWidth >= NativeTwoPaneBreakpoint
+        val panelMaxHeight = maxHeight * 0.5f
         Row(Modifier.fillMaxSize()) {
             Column(Modifier.weight(1f).fillMaxHeight()
                 .background(MaterialTheme.colorScheme.background)) {
@@ -354,7 +355,7 @@ internal fun NativeAgentPage(state: NativeProjectUiState, query: () -> Unit, pre
                     confirmButton = { TextButton(onClick = { showModel = false; configureModel = true }) {
                         Text(stringResource(R.string.native_model_configure))
                     } }, dismissButton = { TextButton(onClick = { showModel = false }) { Text(stringResource(R.string.native_close)) } })
-                Box(Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.5f)) {
+                Box(Modifier.fillMaxWidth().heightIn(max = panelMaxHeight)) {
                     Column {
                         if (showWorkspace && workspace != null) NativeWorkspaceDialog(
                             ref = ref, revision = state.project!!.revision, chatId = state.agentChatId,

@@ -468,6 +468,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val rail = maxWidth >= NativeRailBreakpoint && state.project != null
             val wide = maxWidth >= NativeTwoPaneBreakpoint && state.project != null
+            val panelMaxHeight = maxHeight * 0.5f
             val subpage = state.page == NativePage.SETTINGS || state.page == NativePage.MODELS ||
                 state.page == NativePage.FILES || state.page == NativePage.LOGS
             Scaffold(
@@ -645,7 +646,7 @@ fun NativeProjectApp(model: NativeProjectViewModel) {
                             }
                         }
                         if (queueVisible || tasksVisible || failureReview != null) {
-                            Box(Modifier.fillMaxWidth().heightIn(max = maxHeight * 0.5f)) { taskPanels() }
+                            Box(Modifier.fillMaxWidth().heightIn(max = panelMaxHeight)) { taskPanels() }
                         }
                         pageStates.SaveableStateProvider("${state.project?.ref?.instanceId?.value}:${state.project?.ref?.generation?.value}:${state.page.name}") {
                             if (state.page == NativePage.SETTINGS) NativeSettingsPage(
