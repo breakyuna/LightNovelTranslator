@@ -14,6 +14,7 @@ import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.breakyuna.noveltranslator.ui.adaptive.rememberWindowSize
+import com.breakyuna.noveltranslator.ui.screens.agent.AgentChatHostScreen
 import com.breakyuna.noveltranslator.ui.screens.history.ReadingHistoryScreen
 import com.breakyuna.noveltranslator.ui.screens.bookshelf.BookShelfScreen
 import com.breakyuna.noveltranslator.ui.screens.reader.PlatformReaderScreen
@@ -43,6 +44,7 @@ fun AppNavigation(
         (currentRoute?.startsWith("tasks") == true) ||
         (currentRoute?.startsWith("workbench") == true) ||
         (currentRoute?.startsWith("history") == true) ||
+        (currentRoute?.startsWith("agent") == true) ||
         (currentRoute?.startsWith("settings") == true)
 
     // Handle floating messages
@@ -177,7 +179,8 @@ fun AppNavigation(
                             onNavigateBack = { navController.popBackStack() },
                             onOpenReader = { targetBookId, chapterId ->
                                 navController.navigate(AppDestination.PlatformReader.createRoute(targetBookId, chapterId))
-                            }
+                            },
+                            onOpenAgent = { navController.navigate(AppDestination.AgentChat.createRoute()) }
                         )
                     }
 
@@ -212,7 +215,33 @@ fun AppNavigation(
                         ApiSettingsScreen(
                             viewModel = viewModel,
                             onBack = { navController.popBackStack() },
-                            initialTab = tab
+                            initialTab = tab,
+                            onOpenAgent = { navController.navigate(AppDestination.AgentChat.createRoute()) }
+                        )
+                    }
+
+                    // ==========================================
+                    // 6. Agent assistant (Top-Level)
+                    //
+                    // TopLevelDestination.AGENT navigates to the plain route "agent",
+                    // which resolves to this entry because sessionId has a default
+                    // value (same mechanism as TASKS "tasks" / SETTINGS "settings").
+                    // The optional sessionId keeps the "resume a specific
+                    // conversation" entry points (workbench action, settings row)
+                    // working: they pass an explicit sessionId or -1 for "latest".
+                    // ==========================================
+                    composable(
+                        route = AppDestination.AgentChat.route,
+                        arguments = listOf(navArgument("sessionId") {
+                            type = NavType.LongType
+                            defaultValue = -1L
+                        })
+                    ) { backStackEntry ->
+                        val sessionId = backStackEntry.arguments?.getLong("sessionId")?.takeIf { it > 0 }
+                        AgentChatHostScreen(
+                            viewModel = viewModel,
+                            onBack = { navController.popBackStack() },
+                            initialSessionId = sessionId
                         )
                     }
 

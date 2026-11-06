@@ -1,0 +1,59 @@
+# 共享请求调度与用量汇总契约
+
+当前进度与验证边界统一见 [HANDOFF §3](HANDOFF.md)。当前代码基线 `1d3dd1c` 的 [Actions run 40329494778](https://github.com/breakyuna/LightNovelTranslator/actions/runs/40329494778) 已通过 test（2268 项，0 失败）、lint、release 与两组 API 35 设备测试（app 2/2、workspace 13/13）；新增设备/视觉、真实供应商、ARM/多版本与 Room 2—18 schema 导出仍待补齐。
+
+开发记录见 HANDOFF §39，当前 CI 证据与验证边界见 [HANDOFF §3](HANDOFF.md)。本文不关闭 R11，不表示密钥池、完整供应商协议或持久用量账本已完成。
+
+## 请求资格
+
+`NativeModelGateway` 的 Agent 和翻译推理入口共用一个 `ModelRequestScheduler`。应用装配中的网关是进程级单例；GET 模型目录属于单独的元数据操作，不算推理响应或翻译请求。
+
+- 每个资源有 FIFO 等待队列、实际在途计数与启动速率时钟。默认资源键为配置 ID；配置修订仍绑定实际请求，但保存同一配置的新修订不重新赠送启动额度。不同逻辑配置可有各自资源池。
+- `ModelRequestLimits` 为固定并发 1—16、RPM 0—60,000。默认并发 4、RPM 0；这只是当前装配默认值，没有声称实现 LG 双零自动探测。RPM 非零按 `60,000 / RPM` 毫秒间隔派发；RPM 为零使用容量及每秒补充速率都等于固定并发的令牌桶。
+- 调度器本身不为排队增加模型操作，也不扣启动额度；Agent 持久请求边界仍在整个准备/排队期间持有自己的 Runtime 准备租约，防止旧 Run 被释放并以相同字面身份替换。只有队首同时满足并发与速率才取得资格；取消等待者会删除自身并唤醒后继，在途结束/失败/取消释放并发。
+- 调度状态由调用协程持有，不启动独立轮询 Job。通知版本与取消可中断的有界等待协作；更新与清理在短 Mutex 临界区完成，不在锁内执行模型或网络调用。
+- 每池最多 256 个排队项、进程最多 256 个资源。不会为了接纳新配置驱逐旧时钟并重置速率。一个资源在调度器生命周期中的限额固定，冲突配置拒绝；动态限额与 Key 冷却仍需后续实现。
+- `DispatchAwareAgentModelPort` 在取得派发资格后调用一次持久 beforeDispatch：PREPARED → DISPATCHED 的 CAS 成功后才取得派发操作并启动预览。排队中取消/停止保持 PREPARED，不冒充已发送；普通本地/测试端口保留原来的直接派发边界。同 attempt 的并发队列副本只有一份能通过 CAS，另一份拒绝而不重复调用供应商。登记后的取消/IO 边界仍可能产生保守不确定状态，不自动重发。
+- Agent 在资格取得时及持久回调返回后分别重新核对完整 Run 身份、AGENT 所有者和 RUNNING；翻译在派发时取得既有 Runtime 模型操作租约，停止或旧租约不能调用后端。调度不做重试或更换 Key。
+- 调度释放并发不切换响应的 Dispatcher；Agent 完整响应仍交给既有持久请求边界处理。翻译迟到响应继续按原网关规则丢弃，不提交工程。
+
+参考的 LG 实际生产链路为 `src/backend/batch-translation/core/translation-request-scheduler.ts` 与 `request-rate.ts`：真实派发才消耗资格、跨任务复用速率时钟、默认隐藏 RPS 与显式 RPM。Key 池、429 降档/冷却/恢复探测及其用量累计没有被本契约冒充完成。
+
+## 用量事实
+
+`RequestUsageTotals` 是本次翻译运行的不可变响应汇总。输入、缓存读、缓存写、思考和输出分别保留：
+
+1. ACTUAL Token 的精确累计；
+2. ESTIMATED Token 的独立精确累计；
+3. UNKNOWN 的响应数。
+
+累计 Token 数使用 `BigInteger`，不把未知当成零，也不因后一响应未知丢弃之前已知的数值。这里累计的是 Token 数，尚无货币定价。原 `RequestUsage` 兼容投影保留保守语义，混入未知或 Long 溢出时显示未知；精确事实仍在 totals 中，溢出不再中断已校验译文的写回。
+
+`TranslationProgress` 携带 totals 和对应 Run 身份；校对页可打开有滚动区域的详情对话框，展开状态绑定完整工程实例/代际和运行命令，避免新运行复用旧弹窗。无响应时不显示伪造的实测零。请求尝试数、有效响应数和计费次数不是同一个概念。
+
+这些统计随本次进程内运行快照保留，尚未进入 Room 或工程历史，不能当成持久 UsageLedger、跨进程账本或计费账单。失败但未取得可解析响应的调用也可能产生供应商费用，不能从这里的响应数推断费用。
+
+## 验证要求
+
+调度回归包括 FIFO、排队/在途取消、并发与 RPS、RPM 跨配置修订、独立资源、无隐式重试、响应与取消竞态，以及停止后的 Agent/翻译不派发。用量回归包括实测/估算/未知分离、分量缺失、Long 以上精确累计、三页写回及对话框切换运行。
+
+上述回归已纳入提交 `8e74fff` 的 Actions #136 全量 test/lint/release 成功基线，统计见 HANDOFF §41；当前总基线为 `77daf74` / #158。仍需验收设备取消、前台服务、界面视觉和大工程预算。
+
+## 后续独立核心与接线边界
+
+§49 的 KeyPool、ModelProtocolTransport、CapabilityCatalog 与用量账本已有独立核心和 CI；§69 源码（#158 覆盖）已把协议/多密钥/KeyPool 选择与 UsageLedger 接入 Agent/翻译网关，并把协议/多密钥列存入 Room v5。§79 已接密钥冷却/禁用/轮换的持久状态；OAuth、动态探测/限额、费用定价及完整跨 Agent 账本仍待实施；现有共享 FIFO/并发/RPM 接线继续使用。
+
+
+§78 源码（#158 覆盖）：Agent 与翻译后端共用应用图中的同一 ModelKeyPool，认证禁用/冷却按不可变配置修订共享；全部认证禁用返回 AUTHENTICATION，冷却耗尽仍返回 RATE_LIMIT。跨进程状态持久化由 §79 补齐，完整设备验证仍待。
+
+
+§79 源码（#158 覆盖）：共享密钥池经 ModelKeyStatePort / NativeModelKeyStateStore 保存轮换、禁用和冷却的无凭据事实；进程重建按配置修订恢复。坏状态拒绝，派发前轮换保存失败阻止请求；响应后的保存失败不覆盖已收到结果并阻止后续派发。§80 后续已接派发/响应与用量账本同事务持久化，验证状态以 HANDOFF §3 为准；动态限额、完整认证管理 UI 和真实供应商验证仍缺。
+
+
+## 事务持久账本与界面（§80，#158 覆盖）
+
+应用 Room v6 新增轻量 usage receipts，Agent 与翻译请求的准备/派发/响应和账本更新在同一事务完成；原回执重放不重复计数。读取按全局/完整工程身份/Chat/Run/配置修订筛选，一致快照逐页累计五类实际/估算/未知用量。已派发缺回执单列等待或未知；旧版本无账本元数据的历史不推算。应用图与顶部五语账本入口已接该持久端口，进程内 UsageLedgerRecorder 不再挂接生产后端。费用定价仍缺；§99—100 已补请求明细分页与 JSONL 导出（#158 覆盖），供应商/设备验收仍缺；实际证据以 HANDOFF §3 为准。
+
+## 费用核心（§110，未接线）
+
+§110 新增 `ModelPricing`/`PriceTable`/`UsageCost`/`UsageCostCalculator`：价格以每百万 token 的整数微单位保存，成本用 BigDecimal 12 位小数；input/cacheRead/cacheWrite/output/thinking 分量独立，thinking 必须显式按 output 或单独定价；actual 与 estimated 分开，未知回执与缺价显式保留，不伪造零费用。尚未接模型配置、用量账本 UI、真实供应商价格或持久价格表，因此当前账本仍只展示 Token 事实，不展示费用。

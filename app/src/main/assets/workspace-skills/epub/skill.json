@@ -1,0 +1,15 @@
+{
+  "name": "epub",
+  "description": "读取或分析工程内 EPUB 的章节顺序、XHTML、目录与资源关系；工程外独立 EPUB 的打包受原生工具限制。",
+  "enabled": true,
+  "order": 500,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "epub",
+    "format",
+    "analysis"
+  ],
+  "contentSha256": "ea466543853e1ebc9fb83fa3355a9ae78dfb368f4aee467a64f21746be59550c"
+}

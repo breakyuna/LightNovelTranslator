@@ -373,7 +373,11 @@ class TranslationProtocolTest {
 
         assertTrue(prompt.contains("[CURRENT_CHUNK]"))
         assertTrue(prompt.contains("Chunk 2/3"))
-        assertTrue(prompt.contains("must never be copied into output"))
+        // 瘦身后的契约：分块只留一行标记，不再带"不得复制进输出"的长说明。
+        // 防泄漏改由系统提示词的全局规则承担（"不得在协议之外输出任何内容"）。
+        assertFalse(prompt.contains("must never be copied into output"))
+        // 前块译文尾已从请求中移除（对标 LG 零前文），这是串行依赖的根因。
+        assertFalse(prompt.contains("[PREVIOUS_CHUNK_TRANSLATION_TAIL]"))
     }
 
     @Test

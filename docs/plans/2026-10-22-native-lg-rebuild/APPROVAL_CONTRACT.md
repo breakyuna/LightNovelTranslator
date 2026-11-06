@@ -1,0 +1,113 @@
+# 审批与工程变更契约
+
+当前证据见 [HANDOFF §3](HANDOFF.md)：单条 TXT 与工作区文件的持久审批已在 `1d3dd1c` 构建/测试；完整多对象/部分接受、后台恢复与 Agent 真机闭环仍未验收。
+
+当前实现边界：新增单条 TXT 的 NativeAgentWorkspacePort/NativeAgentStore 持久切片，保存正文/命令绑定、允许一次/拒绝与回执核对，见 [S2_AGENT_SLICE](S2_AGENT_SLICE.md)。单条切片与工作区文件 apply 已进入当前基线，尚未实现完整 ApprovalPersistencePort/ProjectWritePort 的全部对象与恢复协议；下文完整目标不因该切片自动完成，旧“待实现”段落按完整协议理解。实际进度及当前 CI 见 HANDOFF §3（原开发轮见 §24）。
+
+本文 §1—4 说明现有 `PreparedChangeSet` 与审批协调器原型；§5 定义完整接线必须满足的恢复协议，不能视为现有端口的全部能力。实施进度与 CI 证据只记 [HANDOFF](HANDOFF.md)。单条 TXT 的审批 UI、持久存储和受控工程写入已有切片；完整多对象审批及 `workspace_apply` 尚未完成。手工 TXT 的独立切片边界见 [NATIVE_STORAGE](NATIVE_STORAGE.md)，不替代本契约的全范围验收。
+
+新增条目批量适配器：`ItemChangeProposal` / `NativeItemProposalStore` / `ProjectWriteStore.approvedItems` 提供译文、姓名和状态的不可变多条提案、接受子集、固定冲突策略、Room 消费绑定与 `.lnt` 工程回执；隔离脚本经 `prepare_project_script` 直接准备条目提案。另有 NativePolicyProposalStore 的整策略规则/提示词审批，复用既有策略事务和回执。它们不实现通用所有对象的 ApprovalPersistencePort/ProjectWritePort；下文涉及“完整多对象未完成”仍包括逐规则独立选择/部分接受、文件/资产/PDF 等范围。存储与导入审计契约见 [NATIVE_STORAGE 的 v6 小节](NATIVE_STORAGE.md)，实际进度及验证边界仍只见 HANDOFF。
+
+## 1. 实际代码与消费者
+
+| 位置 | 已实现的责任 | 当前消费者 |
+|---|---|---|
+| `domain/ChangeSet.kt` | 变更对象身份、操作类型、基准对象指纹、批次摘要与规范 SHA-256 | `ApprovalRecord`、`ApprovalGrant`、变更摘要测试 |
+| `domain/Approval.kt` | 审批记录、状态、授权凭据、CAS 端口与结果分类 | `ApprovalCoordinator`；只有测试提供内存适配器 |
+| `engine/ApprovalCoordinator.kt` | 创建、裁决、超时、取消、单次消费与模式快照 | 引擎测试；尚未接应用服务、UI 或工具注册表 |
+
+路径相对 `core/<module>/src/main/kotlin/com/breakyuna/noveltranslator/nativecore/`。
+没有复制旧 `AgentDecisionCoordinator` 的会话对象、SSE 或 `AppViewModel` 依赖，也没有假审批进入 app 主链路。
+
+## 2. 变更批次
+
+- 身份是 `ChangeTarget(kind, id, parentId)`，不是列表序号、译文或行号。`ITEM`、`PDF_PAGE`、`ASSET`、四类规则与提示词分别计数。
+- `CREATE` 不得携带基准指纹；`UPDATE`/`DELETE`/`REORDER` 必须携带，确保过时批次被写入口拒绝而不是覆盖新事实。
+- 同一批次重复对象直接拒绝；重复判定用完整身份 `(kind, id, parentId)`——两个 PDF 资产各自的第 3 页是两个对象，不能因为局部 id 相同就判重。空批次拒绝；孤立 UTF-16 代理项拒绝，避免哈希碰撞。
+- `digest` 覆盖版本、批次身份、Project/Chat/Run 与逐项字段，规范编码固定字段顺序。**在用户看到差异之后再编辑内容会使 digest 不再匹配**，必须重新准备并重新审批。
+- `summary` 的计数用于审批页展示；`assets` 是原生扩展字段，不冒充 LG 摘要字段。
+
+## 3. 审批状态
+
+```text
+PENDING ──allow_once──> APPROVED ──consume──> CONSUMED
+   │                       │
+   ├──reject──> REJECTED   └──(不能再次消费)
+   ├──deadline/恢复──> EXPIRED
+   └──运行收尾──> CANCELLED
+```
+
+- 裁决只有 `ALLOW_ONCE` 与 `REJECT`，与 LG `AgentWriteApprovalDecision` 的 `allow_once`/`reject` 一致；不存在会话级长期授权。
+- 每个 Chat 同时最多一个 `PENDING`；服务层预检查，存储适配器必须原子保证。
+- `mode` 在创建记录时快照。记录为 `MANUAL` 时，之后把应用偏好改成 `AUTO` 不会替当前请求裁决；记录为 `AUTO` 时立即结算为 `APPROVED`，不进入待决列表。
+- `AUTO` 记录不允许 deadline；`MANUAL` 超时由 `expireOverdue` 在服务恢复/前台时结算，不在协调器里起定时器。
+- LG 当前没有审批倒计时；超时是原生补充终态，调用方不传 deadline 时不启用，不改变 LG 默认行为。
+- `EXPIRED`、`CANCELLED`、`REJECTED` 都是终态，之后任何 `decide` 都返回已结算状态，不能改成批准。
+- `cancelRun` 只结算属于真正结束的 Run 的请求，不影响同一 Chat 的下一轮。
+
+## 4. 单次授权与提交
+
+`consume` 返回 `ApprovalGrant`，包含请求、工程、Chat、Run、批次身份与 digest。
+存储端 CAS 只能把 `APPROVED` 改成 `CONSUMED` 一次；第二次消费返回 `ALREADY_CONSUMED`。
+写入口必须再次核对 grant 与自己的持久回执、对象指纹和分区修订，grant 对象本身不是授权。
+
+重复 `request`（相同请求身份与相同内容）是幂等的；相同身份但内容、Run 或模式不同返回冲突。
+这对应“传输重试复用命令身份，用户重新发送产生新尝试”。
+
+## 5. 生产提交与恢复协议（待实现）
+
+现有 `consume(id)` 只做一次 CAS，尚无命令绑定、正文仓库或生产恢复查询。接入 R08/R19 前必须扩展端口和适配器；不能用内存 grant 或“第二次消费拒绝”代替本节。
+
+契约类型已经落地（`domain/ProjectWrite.kt`）：`ChangePayloadRef`、`ApprovalCommandBinding`、`WriteReceipt`、`WriteOutcome`、`ProjectWritePort` 与 `WriteRecovery` 判定表；`ProjectInstanceId`/`RecoveryGeneration` 在 `domain/Identity.kt`。它们只是端口与纯判定，**没有生产适配器、事务或恢复查询**，不能当成 R08/R19 已实现。
+
+### 5.1 固定正文与审批内容
+
+审批前将实际变更正文写入不可变、版本化的 payload 存储，校验后才发布审批记录。持久引用包含内容摘要、Schema/规范化版本、对象依赖、基准指纹与所选冲突策略；正文可能含材料，沿用工程的访问与日志脱敏边界。
+
+UI 差异与执行器读取同一 payload，不从可变 `changes` 文件重新生成；重新计算摘要不符、正文缺失或版本不可读时禁止提交，保留诊断并要求重新准备。正文被待决审批、未决命令、回执审计或备份引用时不得清理。已结算记录的保留/清理策略由存储规则统一实现，不能仅按 Chat 页面是否可见判断。
+
+### 5.2 消费绑定与跨库顺序
+
+单次授权限制的是一个提交意图，不是进程内一次函数调用。为审批绑定唯一 `commandId`，包含本地实例、恢复代际、Project/Chat/Run、批次、payload 摘要和冲突策略；策略也属于用户批准的内容。
+
+1. 准备阶段持久化正文和审批。执行前重新核对实际 Run、Stop 状态、实例/代际与当前授权。
+2. 在同一个 AppStore 事务中，将 `APPROVED` 改为 `CONSUMED` 并写入唯一命令绑定和准备回执。两者同时成功或同时失败，不允许先消费再单独创建命令。
+3. 通过唯一写入口取得当前有效 lease。工程事务先按绑定身份和 `commandId` 查询回执，再核对摘要/修订/对象指纹；无既有回执时应用变更，并在同事务记录实际接受/拒绝对象与最终结果。
+4. 工程事务成功后补记 AppStore 与展示状态；失败时按下表核对。不得持有一个数据库事务等待另一个数据库、UI 或模型。
+
+生产端口须支持按绑定命令读取消费记录与结果。恢复读取既有绑定不产生第二个 grant、不把状态退回 APPROVED；不同命令、摘要、实例或代际一律拒绝。最终状态包含未提交终止、冲突、部分提交或完整提交的业务结果；`CONSUMED` 本身不是“工程已保存”。
+
+### 5.3 故障窗口与恢复动作
+
+| 持久事实 | 必须执行的恢复动作 |
+|---|---|
+| 已批准，尚无消费/命令绑定 | 在有效 Run 与同实例/代际下原子绑定；已停止/取消则禁止执行并记未提交终止 |
+| 已消费并绑定，工程无回执 | 查询正文和绑定，先确认旧执行者已退出；同代际用户明确继续且原 Run 仍可恢复时，重取 lease 后以同一命令进入工程事务。取消/Stop 已终止、正文损坏或身份变化则终止，不自动重授 |
+| 工程已提交，AppStore 未补记 | 从工程回执返回同一结果并补记，不重新应用变更 |
+| 工程事务回滚 | 可恢复存储故障在条件恢复后重试同命令；明确校验/冲突终态按原结果返回，不因重复调用变成成功 |
+| 两边记录摘要/身份不一致，或工程不可访问 | 保留不确定状态，阻止写入，要求重新关联/核对；不能把“读不到”当“没有提交” |
+| 恢复备份/复制导致新实例或代际 | 旧命令/审批只作审计；如需继续修改，重新准备和审批，不搬运可执行授权 |
+
+明确的无写入终态也需保存幂等结果；恢复必须先查询已结算记录，防止稍后对象变化让同一命令产生不同结果。每个窗口都用真实 SQLite/AppStore 和故障注入验证，至少覆盖消费事务前后、工程提交前后、回执补记失败及两个恢复者竞争。
+
+### 5.4 部分冲突、停止与时间
+
+- 批次准备时固定“整批冲突拒绝”或“允许独立对象部分接受”的策略，UI 必须显示；策略改变需要重新审批。允许部分接受时，按已固定对象依赖拒绝依赖失败对象，不能临时拆出新的变更意图。
+- 工程事务原子保存实际接受集合、拒绝原因与结果回执；数据库失败仍整批回滚。重复同命令返回相同集合，不能利用旧批准稍后提交原拒绝对象；剩余对象重新准备新批次。
+- 现有 `cancelRun` 仅处理 PENDING。生产接线必须另外禁止已批准/已消费但尚未提交的终止 Run 继续写入，保存对应未提交终态。Stop 与事务的先后边界由写 lease 和事务定义；已提交事实不回滚，未确认收尾不能显示“已停止”。
+- 普通问答的自动选择可按前台可操作时长计时；写审批没有自动选择批准。可选 `deadlineMillis` 只限制待决裁决，后台继续经过绝对截止时间；恢复时结算过期，具体边界统一为 `now >= deadline`。当前原型使用 `now > deadline`，需在 R19 同步实现与边界用例。
+- 已批准后是否允许执行由命令绑定、Run 状态和当前实例/代际决定，不能借过期问题的默认回答或修改全局 AUTO 偏好取得授权。旋转不重置时间，进程重启不凭 UI 本地状态批准。
+
+## 6. 尚未完成
+
+1. **生产存储适配器**：完整多对象 `ApprovalPersistencePort` 的 Room 原子 insert/settle/consume、单 Chat 唯一 pending、崩溃恢复与审计字段仍未实现；单条 TXT 现走 NativeAgentStore 的持久审批表。不可把单条切片当作完整实现。
+2. **真正写入口**：通用多对象 `ProjectWritePort` 已有类型与恢复判定；单条/批量文本写入由 ProjectWriteStore 实现，完整审批消费、部分冲突接受与跨对象恢复仍是 R08。
+3. **工具接线**：`AgentToolRegistry` 继续拒绝 `PROJECT_WRITE`；审批可用后必须由真实执行层接入，不能靠模型文案或假端口放行。
+4. **UI**：U02 的完整差异编辑器、超时与恢复、自动偏好入口尚未实现；单条 TXT 与工作区文件已有允许一次/拒绝与结算结果界面（`1d3dd1c` 构建/测试），不能代替完整审批台。
+5. **恢复语义**：§5 的消费/命令原子绑定、回执查询、Stop 后未提交终态、进程恢复与竞争测试；现有端口尚未提供完整能力。
+6. **差异生成**：当前只保存摘要与指纹，没有把正文差异绑定到展示；需实现 payload 存储、冲突策略与引用寿命。
+
+## 7. 验证边界
+
+现有原型用例的 CI 记录见 [HANDOFF](HANDOFF.md) §3 与历史 §11—13，不在本文重复维护通过数量。当前基线覆盖单条 TXT 与工作区文件审批及回执核对源码；§5 的完整多对象契约仍未实现或取得运行证据，旧原型测试不覆盖它。
+本机只做静态审查，未实际构建、运行测试/Lint 或设备验证。真实审批必须由 PC/CI 与后续设备流程证明，本文不登记任何功能 ID 为完成。

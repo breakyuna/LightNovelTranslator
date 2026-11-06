@@ -1,0 +1,14 @@
+{
+  "name": "glossary",
+  "description": "扫描术语字面命中、分析词形关系和公共词根，生成有界调查报告。",
+  "enabled": false,
+  "order": 300,
+  "languages": [
+    "zh"
+  ],
+  "tags": [
+    "glossary",
+    "analysis"
+  ],
+  "contentSha256": "7b771927e0b6d67d3a633cdf164757112a61d8948e1d28152948c21e2ac68bdb"
+}

@@ -1,0 +1,50 @@
+[
+    {
+        "sourceTerm": "ダリヤ",
+        "targetTerm": "达莉雅",
+        "kind": "PROPER_NOUN",
+        "category": "CHARACTER",
+        "aliases": [
+            "ダーリャ"
+        ],
+        "notes": "示例条目：女主角",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "コリウス",
+        "targetTerm": "科尔维斯",
+        "kind": "PROPER_NOUN",
+        "category": "CHARACTER",
+        "aliases": [],
+        "notes": "示例条目：男主角",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "エルギア",
+        "targetTerm": "埃尔迦",
+        "kind": "PROPER_NOUN",
+        "category": "LOCATION",
+        "aliases": [],
+        "notes": "示例条目：故事发生地",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    },
+    {
+        "sourceTerm": "魔導具",
+        "targetTerm": "魔导具",
+        "kind": "TERMINOLOGY",
+        "category": "ITEM",
+        "aliases": [
+            "魔導器物"
+        ],
+        "notes": "示例条目：术语类，展示 kind 与 aliases",
+        "caseSensitive": false,
+        "exactMatch": true,
+        "priority": 0
+    }
+]

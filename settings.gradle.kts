@@ -23,3 +23,6 @@ dependencyResolutionManagement {
 rootProject.name = "Novel Translator"
 
 include(":app")
+
+// Native LG rebuild. Old app remains the migration source until the device gates pass.
+include(":core:domain", ":core:engine", ":core:agent", ":core:storage", ":core:formats", ":core:workspace")

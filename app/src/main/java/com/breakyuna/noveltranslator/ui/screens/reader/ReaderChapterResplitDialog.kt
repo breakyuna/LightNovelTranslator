@@ -11,6 +11,7 @@ import androidx.compose.ui.unit.dp
 import com.breakyuna.noveltranslator.core.parser.TxtParser
 import com.breakyuna.noveltranslator.ui.i18n.LocalAppStrings
 import com.breakyuna.noveltranslator.ui.i18n.platformUiStrings
+import com.breakyuna.noveltranslator.ui.theme.DialogShape
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,6 +36,7 @@ fun ReaderChapterResplitDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = DialogShape,
         title = { Text(if (english) "Chapter parsing" else "重新分章") },
         text = {
             Column(

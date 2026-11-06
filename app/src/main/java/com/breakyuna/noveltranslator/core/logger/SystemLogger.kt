@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.ArrayDeque
@@ -48,14 +49,20 @@ data class SystemLogEntry(
  * Memory publication is serialized by [stateLock]. Persistence commands are enqueued while
  * holding the same lock and consumed by one IO worker, so memory snapshots and JSONL append
  * order cannot overtake each other under concurrent callers.
+ *
+ * On-disk layout (under `files/logs/`): `system_runtime.jsonl` plus the rotated generations
+ * `.1` (newest) … `.3` (oldest), each capped at [MAX_FILE_BYTES], so roughly three days of a
+ * busy translation run survive a restart. Every write goes through [LogSanitizer] first.
  */
 object SystemLogger {
     internal const val JSONL_FILE_NAME = "system_runtime.jsonl"
-    private const val ROTATED_FILE_SUFFIX = ".1"
+    /** Newest rotated generation first, matching [ROTATED_SUFFIXES]. */
+    internal val ROTATED_SUFFIXES = listOf(".1", ".2", ".3")
     internal const val MAX_MEMORY_LOGS = 600
-    private const val MAX_FILE_BYTES = 5L * 1024L * 1024L
+    private const val MAX_FILE_BYTES = 2L * 1024L * 1024L
     private const val RETENTION_MILLIS = 30L * 24L * 60L * 60L * 1_000L
     private const val CLEANUP_INTERVAL_MILLIS = 24L * 60L * 60L * 1_000L
+    private const val EXPORT_MAX_ENTRIES = 5_000
 
     private sealed interface PersistenceCommand {
         data class Initialize(val directory: File, val recoveryGeneration: Long) : PersistenceCommand
@@ -177,6 +184,78 @@ object SystemLogger {
         }
     }
 
+    /**
+     * Newest [limit] entries from the persisted JSONL generations, oldest first, merged with any
+     * in-memory entry that has not been flushed to disk yet (deduplicated by id).
+     *
+     * This is the read side of the persistence contract: after a crash and restart the memory
+     * buffer is empty, so a UI that only looked at [logsFlow] would show nothing. Runs on
+     * [Dispatchers.IO] and never throws — a missing or corrupt file yields an empty list.
+     */
+    suspend fun recentEntries(limit: Int): List<SystemLogEntry> {
+        val requested = limit.coerceAtLeast(0)
+        if (requested == 0) return emptyList()
+        val persisted = withContext(Dispatchers.IO) { readPersistedTail(requested) }
+        if (persisted.isEmpty()) return emptyList()
+        val pending = logsFlow.value.filter { live -> persisted.none { it.id == live.id } }
+        return (persisted + pending).sortedBy { it.timestamp }.takeLast(requested)
+    }
+
+    /**
+     * Full text export of the persisted history for the share sheet / clipboard. Unlike
+     * [exportLogsAsString] this survives a restart, because it reads the JSONL generations.
+     */
+    suspend fun exportText(): String {
+        val entries = withContext(Dispatchers.IO) { readPersistedTail(EXPORT_MAX_ENTRIES) }
+        return buildString {
+            appendLine("=== NOVEL TRANSLATOR STUDIO - SYSTEM RUNTIME LOG ===")
+            appendLine("Exported At: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())}")
+            appendLine("Persisted Entries: ${entries.size}")
+            appendLine("Redaction: API keys, Authorization headers, tokens and book bodies are removed.")
+            appendLine()
+            entries.forEach { entry ->
+                append("[${entry.formattedDate}] [${entry.level}] [${entry.tag}] ")
+                if (entry.projectId != null) append("[Proj#${entry.projectId}] ")
+                if (entry.chapterIndex != null) append("[Chap#${entry.chapterIndex}] ")
+                appendLine(entry.message)
+                if (!entry.details.isNullOrBlank()) {
+                    appendLine("  >>> Details: ${entry.details}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Reads the tail of the JSONL generations. Ordering is oldest generation first, so the
+     * bounded deque naturally ends up with the newest [limit] entries in chronological order.
+     */
+    private fun readPersistedTail(limit: Int): List<SystemLogEntry> {
+        val directory = logFile?.parentFile ?: return emptyList()
+        val deque = ArrayDeque<SystemLogEntry>()
+        orderedLogFiles(directory).forEach { file ->
+            if (!file.exists()) return@forEach
+            runCatching {
+                file.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    lines.forEach { line ->
+                        if (line.isBlank()) return@forEach
+                        val entry = runCatching { adapter.fromJson(line) }.getOrNull() ?: return@forEach
+                        deque.addLast(entry)
+                        while (deque.size > limit) deque.removeFirst()
+                    }
+                }
+            }
+        }
+        return deque.toList()
+    }
+
+    /** `[.3, .2, .1, active]` — chronological order across the rotation. */
+    private fun orderedLogFiles(directory: File): List<File> {
+        val active = logFile ?: File(directory, JSONL_FILE_NAME)
+        return ROTATED_SUFFIXES.reversed().map { suffix ->
+            File(directory, active.name + suffix)
+        } + active
+    }
+
     private fun publishAndEnqueue(entry: SystemLogEntry) {
         synchronized(stateLock) {
             memoryLogs.addLast(entry)
@@ -280,18 +359,22 @@ object SystemLogger {
         file.appendText(adapter.toJson(entry) + "\n", Charsets.UTF_8)
     }
 
-    /** Keep the historical log file useful without allowing unbounded growth. */
+    /** Keep the historical log files useful without allowing unbounded growth. */
     private fun cleanupExpiredLogs(currentFile: File, now: Long) {
         val cutoff = now - RETENTION_MILLIS
         pruneJsonlFile(currentFile, cutoff)
-        val rotated = File(currentFile.parentFile, currentFile.name + ROTATED_FILE_SUFFIX)
-        if (rotated.exists()) {
+        rotatedFiles(currentFile).forEach { rotated ->
             if (rotated.lastModified() < cutoff) {
                 rotated.delete()
             } else {
                 pruneJsonlFile(rotated, cutoff)
             }
         }
+    }
+
+    private fun rotatedFiles(currentFile: File): List<File> {
+        val parent = currentFile.parentFile ?: return emptyList()
+        return ROTATED_SUFFIXES.map { suffix -> File(parent, currentFile.name + suffix) }
     }
 
     private fun pruneJsonlFile(file: File, cutoff: Long) {
@@ -321,26 +404,31 @@ object SystemLogger {
         }
     }
 
+    /**
+     * Rolls the active file to `.1` and shifts the existing generations up, dropping `.3`.
+     * Three generations of [MAX_FILE_BYTES] keep the recent history readable after a restart
+     * without letting the directory grow without bound.
+     */
     private fun rotate(file: File) {
-        val rotated = File(file.parentFile, file.name + ROTATED_FILE_SUFFIX)
-        if (rotated.exists() && !rotated.delete()) return
-        if (!file.renameTo(rotated)) return
+        val parent = file.parentFile ?: return
+        File(parent, file.name + ROTATED_SUFFIXES.last()).takeIf { it.exists() }?.delete()
+        for (index in ROTATED_SUFFIXES.size - 1 downTo 1) {
+            val from = File(parent, file.name + ROTATED_SUFFIXES[index - 1])
+            if (!from.exists()) continue
+            val to = File(parent, file.name + ROTATED_SUFFIXES[index])
+            if (!from.renameTo(to)) return
+        }
+        if (!file.renameTo(File(parent, file.name + ROTATED_SUFFIXES.first()))) return
         file.createNewFile()
     }
 
     private fun clearPersistedLogs() {
         val file = activeLogFile ?: logFile ?: return
         runCatching {
-            listOf(
-                file,
-                File(file.parentFile, file.name + ROTATED_FILE_SUFFIX)
-            ).forEach { candidate ->
-                if (candidate == file) {
-                    candidate.parentFile?.mkdirs()
-                    candidate.writeText("", Charsets.UTF_8)
-                } else if (candidate.exists()) {
-                    candidate.delete()
-                }
+            file.parentFile?.mkdirs()
+            file.writeText("", Charsets.UTF_8)
+            rotatedFiles(file).forEach { rotated ->
+                if (rotated.exists()) rotated.delete()
             }
         }
     }
@@ -349,11 +437,7 @@ object SystemLogger {
         while (memoryLogs.size > MAX_MEMORY_LOGS) memoryLogs.removeFirst()
     }
 
-    private fun sanitize(value: String): String = value
-        .replace(Regex("(?i)(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,}]+"), "\$1[REDACTED]")
-        .replace(Regex("(?i)(x-goog-api-key\\s*[:=]\\s*)[^\\s,}]+"), "\$1[REDACTED]")
-        .replace(Regex("(?i)(api[_-]?key|token|secret|password)\\s*[:=]\\s*[^\\s,}]+"), "\$1=[REDACTED]")
-        .replace(Regex("(?s)\\b(?:Original|Translation|Prompt|Response)\\s*:\\s*.{0,4000}"), "[CONTENT REDACTED]")
+    private fun sanitize(value: String): String = LogSanitizer.sanitize(value)
 
     internal suspend fun awaitIdleForTests() {
         val completion = CompletableDeferred<Unit>()

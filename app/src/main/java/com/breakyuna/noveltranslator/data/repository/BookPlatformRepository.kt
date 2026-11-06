@@ -2,6 +2,7 @@ package com.breakyuna.noveltranslator.data.repository
 
 import androidx.room.withTransaction
 import com.breakyuna.noveltranslator.core.book.BookFileManager
+import com.breakyuna.noveltranslator.core.translation.TranslationContinuity
 import com.breakyuna.noveltranslator.data.db.AppDatabase
 import com.breakyuna.noveltranslator.data.model.*
 import kotlinx.coroutines.Dispatchers
@@ -99,6 +100,10 @@ class BookPlatformRepository(
                 modelName = normalizedModelName,
                 styleGuide = normalizedStyleGuide.ifBlank { "保持文学韵味与专有名词一致性" },
                 maxBatchChapters = project.maxBatchChapters.coerceIn(1, 5),
+                parallelChapters = project.parallelChapters.coerceIn(1, 5),
+                continuityMode = normalizeContinuityMode(project.continuityMode),
+                metadataEnabled = project.metadataEnabled,
+                promptCacheEnabled = project.promptCacheEnabled,
                 seamlessAheadChapters = project.seamlessAheadChapters.coerceIn(1, 50),
                 rangeStart = project.rangeStart.takeIf { project.translationMode == TranslationMode.CHAPTER_RANGE.name },
                 rangeEnd = project.rangeEnd.takeIf { project.translationMode == TranslationMode.CHAPTER_RANGE.name },
@@ -129,7 +134,8 @@ class BookPlatformRepository(
             latest.translationSystemPrompt == normalized.translationSystemPrompt &&
             latest.translationUserPromptTemplate == normalized.translationUserPromptTemplate &&
             latest.polishSystemPrompt == normalized.polishSystemPrompt &&
-            latest.polishUserPromptTemplate == normalized.polishUserPromptTemplate
+            latest.polishUserPromptTemplate == normalized.polishUserPromptTemplate &&
+            latest.includeMetadataRules == normalized.includeMetadataRules
         ) {
             return latest
         }
@@ -139,7 +145,8 @@ class BookPlatformRepository(
             translationSystemPrompt = normalized.translationSystemPrompt,
             translationUserPromptTemplate = normalized.translationUserPromptTemplate,
             polishSystemPrompt = normalized.polishSystemPrompt,
-            polishUserPromptTemplate = normalized.polishUserPromptTemplate
+            polishUserPromptTemplate = normalized.polishUserPromptTemplate,
+            includeMetadataRules = normalized.includeMetadataRules
         )
         promptProfiles.insert(profile)
         return profile
@@ -150,7 +157,8 @@ class BookPlatformRepository(
             translationSystemPrompt = draft.translationSystemPrompt.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
             translationUserPromptTemplate = draft.translationUserPromptTemplate.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
             polishSystemPrompt = draft.polishSystemPrompt.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
-            polishUserPromptTemplate = draft.polishUserPromptTemplate.trim().take(MAX_PROMPT_TEMPLATE_CHARS)
+            polishUserPromptTemplate = draft.polishUserPromptTemplate.trim().take(MAX_PROMPT_TEMPLATE_CHARS),
+            includeMetadataRules = draft.includeMetadataRules
         )
         require(isSafeText(normalized.translationSystemPrompt, allowLineBreaks = true) &&
             isSafeText(normalized.translationUserPromptTemplate, allowLineBreaks = true) &&
@@ -341,6 +349,10 @@ class BookPlatformRepository(
         modelName: String,
         mode: TranslationMode = TranslationMode.FULL_BOOK,
         maxBatchChapters: Int = 1,
+        parallelChapters: Int = 1,
+        continuityMode: String = com.breakyuna.noveltranslator.core.translation.TranslationContinuity.SOURCE_TAIL,
+        metadataEnabled: Boolean = false,
+        promptCacheEnabled: Boolean = true,
         rangeStart: Int? = null,
         rangeEnd: Int? = null,
         seamlessAheadChapters: Int = 5,
@@ -384,6 +396,10 @@ class BookPlatformRepository(
                 modelName = normalizedModelName,
                 translationMode = mode.name,
                 maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                parallelChapters = parallelChapters.coerceIn(1, 5),
+                continuityMode = normalizeContinuityMode(continuityMode),
+                metadataEnabled = metadataEnabled,
+                promptCacheEnabled = promptCacheEnabled,
                 rangeStart = rangeStart.takeIf { mode == TranslationMode.CHAPTER_RANGE },
                 rangeEnd = rangeEnd.takeIf { mode == TranslationMode.CHAPTER_RANGE },
                 seamlessAheadChapters = seamlessAheadChapters.coerceIn(1, 50),
@@ -411,6 +427,10 @@ class BookPlatformRepository(
                 styleGuide = normalizedStyleGuide,
                 translationMode = mode.name,
                 maxBatchChapters = maxBatchChapters.coerceIn(1, 5),
+                parallelChapters = parallelChapters.coerceIn(1, 5),
+                continuityMode = normalizeContinuityMode(continuityMode),
+                metadataEnabled = metadataEnabled,
+                promptCacheEnabled = promptCacheEnabled,
                 rangeStart = rangeStart.takeIf { mode == TranslationMode.CHAPTER_RANGE },
                 rangeEnd = rangeEnd.takeIf { mode == TranslationMode.CHAPTER_RANGE },
                 seamlessAheadChapters = seamlessAheadChapters.coerceIn(1, 50),
@@ -659,6 +679,14 @@ class BookPlatformRepository(
     }
 
     private fun notesAreSafe(value: String): Boolean = value.none { it.code < 32 || it.code == 127 }
+
+    /** Unknown values fall back to the source-only mode instead of failing the save. */
+    private fun normalizeContinuityMode(value: String): String =
+        if (value == TranslationContinuity.TRANSLATION_TAIL) {
+            TranslationContinuity.TRANSLATION_TAIL
+        } else {
+            TranslationContinuity.SOURCE_TAIL
+        }
 
     private fun isSafeText(value: String, allowLineBreaks: Boolean = false): Boolean = value.none {
         it.code == 0 || it.code == 127 ||

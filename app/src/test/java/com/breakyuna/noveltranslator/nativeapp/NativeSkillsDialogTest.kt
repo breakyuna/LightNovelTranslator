@@ -1,0 +1,210 @@
+package com.breakyuna.noveltranslator.nativeapp
+
+import android.content.Context
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextReplacement
+import androidx.test.core.app.ApplicationProvider
+import com.breakyuna.noveltranslator.R
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceDigest
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillDraft
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillId
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillRecord
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSource
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillStoreException
+import com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillSummary
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
+
+@RunWith(RobolectricTestRunner::class)
+@GraphicsMode(GraphicsMode.Mode.NATIVE)
+@Config(qualifiers = "w412dp-h892dp-mdpi", sdk = [35])
+class NativeSkillsDialogTest {
+    @get:Rule val compose = createComposeRule()
+    private val context: Context get() = ApplicationProvider.getApplicationContext()
+
+    private fun record(source: WorkspaceSkillSource = WorkspaceSkillSource.USER) = WorkspaceSkillRecord(
+        WorkspaceSkillSummary(
+            id = WorkspaceSkillId("skill-one"),
+            name = "Guide",
+            description = "Existing",
+            enabled = true,
+            order = 3,
+            source = source,
+            languages = setOf("en"),
+            tags = setOf("style"),
+        ),
+        WorkspaceDigest("a".repeat(64)),
+    )
+
+    private fun actions(
+        record: WorkspaceSkillRecord,
+        read: suspend (WorkspaceSkillId) -> String? = { "body" },
+        writeResource: (suspend (WorkspaceSkillId, String, String, WorkspaceDigest, String?) ->
+            com.breakyuna.noveltranslator.nativecore.workspace.WorkspaceSkillFile)? = null,
+        update: suspend (WorkspaceSkillId, WorkspaceSkillDraft, WorkspaceDigest) -> WorkspaceSkillRecord =
+            { _, _, _ -> record },
+    ) = NativeSkillActions(
+        writeResource = writeResource,
+        list = { listOf(record) },
+        read = read,
+        create = { error("Create was not expected") },
+        update = update,
+        delete = { _, _ -> },
+        setEnabled = { _, _, _ -> record },
+        setOrder = { _, _, _ -> record },
+    )
+
+    private fun openEditor() {
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(context.getString(R.string.native_skills_edit))
+                .fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithText(context.getString(R.string.native_skills_edit)).performClick()
+        compose.waitForIdle()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("native-skills-catalog").assertDoesNotExist()
+        compose.onNodeWithTag("native-skill-policy").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("native-skill-content").performScrollTo()
+            .assertTextContains("body", substring = true)
+    }
+
+    @Test fun navigationSeesResourceDraftAndKeepEditingPreservesIt() {
+        val guard = NativeSkillNavigationGuard()
+        val fixed = record()
+        compose.setContent { NativeTheme {
+            NativeSkillFilesDialog(actions(fixed, writeResource = { _, _, _, _, _ -> error("Unexpected save") }),
+                fixed, {}, inline = true, navigationGuard = guard)
+        } }
+        compose.onNodeWithText(context.getString(R.string.native_skill_resource_new)).performScrollTo().performClick()
+        compose.onNodeWithText(context.getString(R.string.native_skill_resource_path)).performTextReplacement("notes.txt")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithText(context.getString(R.string.native_cancel)).performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNode(hasText(context.getString(R.string.native_cancel)) and hasAnyAncestor(isDialog())).performClick()
+        compose.onNodeWithText("notes.txt").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(guard.dirty) }
+    }
+
+    @Test fun navigationSeesUnsavedSkillBodyAndCancelKeepsIt() {
+        val guard = NativeSkillNavigationGuard()
+        compose.setContent { NativeTheme {
+            NativeSkillsDialog(actions(record()), {}, navigationGuard = guard)
+        } }
+        openEditor()
+        compose.runOnIdle { assertFalse(guard.dirty) }
+        compose.onNodeWithTag("native-skill-content").performScrollTo().performTextReplacement("unsaved draft")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_keep_editing)).performClick()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("unsaved draft")
+        compose.runOnIdle { assertTrue(guard.dirty) }
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onNodeWithText(context.getString(R.string.native_discard)).performClick()
+        compose.runOnIdle { assertFalse(guard.dirty) }
+    }
+
+    @Test fun editorReloadsAfterCancelThenSavesLanguagesTagsOrderAndEnabled() {
+        val record = record()
+        var saved: WorkspaceSkillDraft? = null
+        var reads = 0
+        val skillActions = actions(record, read = { "body-${++reads}" }) { _, draft, _ ->
+            saved = draft
+            record
+        }
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeSkillsDialog(skillActions, {})
+                }
+            }
+        }
+        openEditor()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("body-1")
+        compose.onNodeWithTag("native-skill-editor-cancel").performClick()
+        compose.onAllNodes(isDialog()).assertCountEquals(1)
+        compose.onNodeWithTag("native-skills-catalog").assertIsDisplayed()
+        compose.onNodeWithTag("native-skill-content").assertDoesNotExist()
+        compose.runOnIdle { assertNull(saved) }
+        openEditor()
+        compose.onNodeWithTag("native-skill-content").assertTextContains("body-2")
+        compose.runOnIdle { assertEquals(2, reads) }
+        compose.onNodeWithTag("native-skill-languages").performScrollTo().performTextReplacement("JA, en")
+        compose.onNodeWithTag("native-skill-tags").performScrollTo().performTextReplacement("New, Style")
+        compose.onNodeWithTag("native-skill-order").performScrollTo().performTextReplacement("7")
+        compose.onNodeWithTag("native-skill-enabled").performScrollTo().performClick()
+        compose.onNodeWithTag("native-skill-save").performClick()
+        compose.waitUntil(5_000) { saved != null }
+        val draft = requireNotNull(saved)
+        assertEquals("body-2", draft.content)
+        assertEquals(setOf("ja", "en"), draft.languages)
+        assertEquals(setOf("new", "style"), draft.tags)
+        assertEquals(7, draft.order)
+        assertFalse(draft.enabled)
+    }
+
+    @Test fun staleFingerprintShowsConflictInsideTheEditorAndKeepsTheDraft() {
+        val record = record()
+        val skillActions = actions(record) { _, _, _ ->
+            throw WorkspaceSkillStoreException(WorkspaceSkillStoreException.Reason.STALE_FINGERPRINT,
+                record.summary.id)
+        }
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeSkillsDialog(skillActions, {})
+                }
+            }
+        }
+        openEditor()
+        compose.onNodeWithTag("native-skill-tags").performScrollTo().performTextReplacement("kept-draft")
+        compose.onNodeWithTag("native-skill-save").performClick()
+        val conflict = context.getString(R.string.native_skills_conflict)
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(conflict).fetchSemanticsNodes().isNotEmpty()
+        }
+        compose.onNodeWithTag("native-skill-editor-error").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("native-skill-tags").assertTextContains("kept-draft")
+    }
+
+    @Test fun builtInSkillEditorIsReadOnly() {
+        val record = record(WorkspaceSkillSource.BUILT_IN)
+        compose.setContent {
+            NativeTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    NativeSkillsDialog(actions(record), {})
+                }
+            }
+        }
+        openEditor()
+        compose.onNodeWithTag("native-skill-name").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("native-skill-enabled").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("native-skill-languages").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("native-skill-tags").performScrollTo().assertIsNotEnabled()
+        compose.onNodeWithTag("native-skill-save").assertIsNotEnabled()
+        compose.onNodeWithText(context.getString(R.string.native_skills_builtin_readonly))
+            .performScrollTo().assertIsDisplayed()
+    }
+}

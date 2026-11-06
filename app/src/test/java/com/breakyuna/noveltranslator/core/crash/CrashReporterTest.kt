@@ -1,0 +1,208 @@
+package com.breakyuna.noveltranslator.core.crash
+
+import android.app.Application
+import android.os.Build
+import androidx.test.core.app.ApplicationProvider
+import com.breakyuna.noveltranslator.core.logger.SystemLogger
+import java.io.File
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+/**
+ * Crash durability contract: the record must be on disk before the process dies, it must
+ * chain to the previous handler, and it must never leak secrets or book content.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class CrashReporterTest {
+    private val context: Application
+        get() = ApplicationProvider.getApplicationContext()
+
+    private var previousHandler: Thread.UncaughtExceptionHandler? = null
+
+    @Before
+    fun setUp() {
+        previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+    }
+
+    @After
+    fun tearDown() {
+        // Restore whatever handler the test JVM had before this class ran.
+        Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+        CrashReporter.resetForTests()
+    }
+
+    @Test
+    fun installChainsPreviousHandlerAndStillForwardsTheException() {
+        val forwarded = mutableListOf<Pair<String, Throwable>>()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            forwarded += thread.name to error
+        }
+        val boom = IllegalStateException("chained boom")
+
+        CrashReporter.install(context)
+        Thread.getDefaultUncaughtExceptionHandler()!!.uncaughtException(Thread.currentThread(), boom)
+
+        assertEquals(1, forwarded.size)
+        assertEquals(boom, forwarded.single().second)
+    }
+
+    @Test
+    fun fatalCrashWritesDurableRecordThatSurvivesARestart() {
+        // 测试 JVM 里没有 Android 的 KillApplicationHandler（previous == null），此时直接
+        // 触发处理器会走进"终止 JVM"的兜底分支，把整个测试进程打死——run #94-#100 连续
+        // 崩六轮的根因就是这里（该测试入库前 CI 一直是绿的）。先装一个前驱处理器并强制
+        // 重装（installed 是粘性静态标记，不 reset 的话 install 是空操作），让链路指到
+        // 它身上：既验证"记录落盘"，也验证链式转发，且不会终止进程。
+        val forwarded = mutableListOf<Throwable>()
+        Thread.setDefaultUncaughtExceptionHandler { _, error -> forwarded += error }
+        CrashReporter.resetForTests()
+        CrashReporter.install(context)
+        SystemLogger.info("CRASH_SETUP", "right before the boom")
+
+        val boom = IllegalStateException("reader workbench boom")
+        Thread.getDefaultUncaughtExceptionHandler()!!.uncaughtException(Thread.currentThread(), boom)
+
+        assertEquals("异常必须继续链式转发给前驱处理器", listOf(boom), forwarded)
+
+        val directory = CrashReporter.crashDirectory(context)
+        val crashFiles = directory.listFiles { file -> file.name.startsWith("crash-") }.orEmpty()
+        assertTrue("expected at least one crash-*.txt", crashFiles.isNotEmpty())
+        assertTrue(File(directory, CrashReporter.LAST_CRASH_FILE_NAME).exists())
+
+        // A new process sees an empty in-memory logger; only the file survives.
+        // CrashReporter 与 SystemLogger 各有独立的内存缓冲，重启模拟要两个都重置——
+        // 上面的 CRASH_SETUP 日志还留在 SystemLogger 的内存里。
+        CrashReporter.resetForTests()
+        runBlocking { SystemLogger.resetForTests() }
+        assertTrue(SystemLogger.logsFlow.value.isEmpty())
+        assertNull(runBlocking { CrashReporter.readLastCrash() })
+
+        CrashReporter.install(context)
+        val restored = runBlocking { CrashReporter.readLastCrash() }
+        assertNotNull("record must be readable after a simulated restart", restored)
+        val record = restored!!
+        assertEquals(IllegalStateException::class.java.name, record.exceptionClass)
+        assertEquals("reader workbench boom", record.exceptionMessage)
+        assertTrue(record.fatal)
+        assertEquals(Build.MODEL, record.deviceModel)
+        assertEquals(Build.VERSION.RELEASE, record.androidRelease)
+        assertEquals(Build.VERSION.SDK_INT, record.androidSdkInt)
+        assertTrue("app version must be resolved", record.appVersionName != "unknown")
+        assertTrue("recent logs must be captured", record.recentLogs.contains("CRASH_SETUP"))
+        assertTrue(record.sessionSummary.contains("activity="))
+    }
+
+    @Test
+    fun recordNeverContainsSecretsOrBookBodies() {
+        CrashReporter.install(context)
+        val secret = "sk-abcdef1234567890abcdef1234567890"
+        val boom = RuntimeException(
+            "GET https://api.example.com/v1/chat failed: Authorization: Bearer $secret " +
+                "api_key=$secret Translation: 他站在城墙上，风吹动他的长发。"
+        )
+
+        CrashReporter.reportNonFatal(Thread.currentThread(), boom)
+
+        val record = runBlocking { CrashReporter.readLastCrash() }!!
+        assertFalse(record.fatal)
+        val text = record.formattedText() + record.recentLogs + record.sessionSummary
+        assertFalse("API key must not reach disk", text.contains(secret))
+        assertFalse("bearer token must not reach disk", text.contains("Bearer $secret"))
+        assertTrue("redaction marker expected", text.contains("[REDACTED]"))
+        assertFalse("novel body must not reach disk", text.contains("风吹动他的长发"))
+    }
+
+    @Test
+    fun nonFatalReportKeepsTheProcessAliveAndRecordsTheFailure() {
+        CrashReporter.install(context)
+        val before = Thread.getDefaultUncaughtExceptionHandler()
+
+        CrashReporter.reportNonFatal(Thread.currentThread(), IllegalStateException("soft failure"))
+
+        assertEquals(before, Thread.getDefaultUncaughtExceptionHandler())
+        val record = runBlocking { CrashReporter.readLastCrash() }!!
+        assertFalse(record.fatal)
+        assertEquals("soft failure", record.exceptionMessage)
+        assertTrue(record.headline().contains("IllegalStateException"))
+    }
+
+    @Test
+    fun encodeParseRoundTripPreservesEveryField() {
+        CrashReporter.install(context)
+        val boom = IllegalArgumentException("bad argument\nsecond line")
+        val record = CrashReporter.buildRecord(Thread.currentThread(), boom, fatal = true)
+
+        val parsed = CrashRecord.parse(record.encode())
+        assertNotNull("encoded record must be parseable", parsed)
+        assertEquals(record.id, parsed!!.id)
+        assertEquals(record.timestamp, parsed.timestamp)
+        assertEquals(record.threadName, parsed.threadName)
+        assertEquals(record.exceptionClass, parsed.exceptionClass)
+        // Newlines are collapsed on purpose: single-line header fields must stay parseable.
+        assertEquals(record.exceptionMessage.replace("\n", " ⏎ "), parsed.exceptionMessage)
+        // 磁盘格式按设计对自由文本块 trimEnd()（见 CrashRecord.encode 的格式约定），
+        // 因此 round-trip 对尾随空白保真、对内容保真。
+        assertEquals(record.stackTrace.trimEnd(), parsed.stackTrace.trimEnd())
+        assertEquals(record.deviceModel, parsed.deviceModel)
+        assertEquals(record.androidSdkInt, parsed.androidSdkInt)
+        assertEquals(record.appVersionName, parsed.appVersionName)
+        assertEquals(record.appVersionCode, parsed.appVersionCode)
+        assertEquals(record.fatal, parsed.fatal)
+        assertTrue(parsed.sessionSummary.contains("activity="))
+    }
+
+    @Test
+    fun observeLastCrashEmitsTheWrittenRecord() {
+        CrashReporter.install(context)
+        CrashReporter.reportNonFatal(Thread.currentThread(), IllegalStateException("observed"))
+
+        // StateFlow 不会 complete，直接 collect 会把 runBlocking 永久挂住（该测试此前
+        // 从未真正执行过——更早的 fatalCrash 测试会打死 JVM）。用 first 取首个非空发射。
+        val observed = runBlocking {
+            CrashReporter.observeLastCrash().filterNotNull().first()
+        }
+        assertEquals("observed", observed.exceptionMessage)
+    }
+
+    @Test
+    fun garbageFileIsNotParsedAsARecord() {
+        assertNull(CrashRecord.parse("not a crash record at all"))
+        assertNull(CrashRecord.parse(""))
+    }
+
+    @Test
+    fun clearLastCrashRemovesTheDurableRecord() {
+        CrashReporter.install(context)
+        CrashReporter.reportNonFatal(Thread.currentThread(), IllegalStateException("to be cleared"))
+        assertNotNull(runBlocking { CrashReporter.readLastCrash() })
+
+        runBlocking { CrashReporter.clearLastCrash() }
+
+        assertNull(runBlocking { CrashReporter.readLastCrash() })
+    }
+
+    @Test
+    fun exportWithLogsContainsBothSections() {
+        CrashReporter.install(context)
+        CrashReporter.reportNonFatal(Thread.currentThread(), IllegalStateException("exported boom"))
+        SystemLogger.info("EXPORT_CHECK", "a log line that must survive")
+
+        val text = runBlocking { CrashReporter.exportTextWithLogs() }
+        assertTrue(text.contains("=== LNT CRASH REPORT ==="))
+        assertTrue(text.contains("=== NOVEL TRANSLATOR STUDIO - SYSTEM RUNTIME LOG ==="))
+        assertTrue(text.contains("IllegalStateException"))
+    }
+}
